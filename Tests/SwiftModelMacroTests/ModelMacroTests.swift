@@ -1,0 +1,279 @@
+import SwiftSyntaxMacros
+import SwiftSyntaxMacrosTestSupport
+import XCTest
+import SwiftModelMacros
+import Dependencies
+import MacroTesting
+
+final class ModelMacroTests: XCTestCase {
+    override func invokeTest() {
+        withMacroTesting(isRecording: false, macros: [
+            "Model": ModelMacro.self,
+            "ModelTracked": ModelTrackedMacro.self,
+            "ModelIgnored": ModelIgnoredMacro.self,
+        ]) {
+            super.invokeTest()
+        }
+    }
+
+    func testClass() {
+        assertMacro {
+            """
+            @Model class MyModel {
+                var count = 0
+            }
+            """
+        } diagnostics: {
+            """
+            @Model class MyModel {
+            ┬─────
+            ╰─ 🛑 Requires type to be struct
+                var count = 0
+            }
+            """
+        }
+    }
+
+    func testEnum() {
+        assertMacro {
+            """
+            @Model enum MyModel {
+                case count(Int)
+            }
+            """
+        } diagnostics: {
+            """
+            @Model enum MyModel {
+            ┬─────
+            ╰─ 🛑 Requires type to be struct
+                case count(Int)
+            }
+            """
+        }
+    }
+
+    func testModelMacro() {
+        assertMacro {
+            """
+            @Model struct MyModel {
+                var count = 0
+            }
+            """
+        } expansion: {
+            #"""
+            struct MyModel {
+                var count = 0 {
+                    @storageRestrictions(initializes: _count)
+                    init {
+                        _count = newValue
+                    }
+                    _read {
+                        yield _$modelContext[model: self, path: \._count]
+                    }
+                    nonmutating _modify {
+                        yield &_$modelContext[model: self, path: \._count]
+                    }
+                }
+
+                private  var _count  = 0
+
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    visitor.visitStatically(at: \._count)
+
+                }
+
+                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                {
+                    @storageRestrictions(initializes: _node)
+                    init {
+                        _node = ModelNode(_$modelContext: newValue)
+                    }
+                    get {
+                        _node._$modelContext
+                    }
+                    set {
+                        _node = ModelNode(_$modelContext: newValue)
+                    }
+                }
+                private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+                private var node: ModelNode<Self> { _node }
+            }
+
+            extension MyModel: SwiftModel.Model {
+            }
+
+            extension MyModel: Sendable {
+            }
+
+            extension MyModel: Identifiable {
+            }
+
+            extension MyModel: CustomReflectable {
+                public var customMirror: Mirror {
+                    _$modelContext.mirror(of: self, children: [("count", count as Any)])
+                }
+            }
+
+            @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+            extension MyModel: Observation.Observable {
+            }
+            """#
+        }
+    }
+
+    func testEquatableAndHashableModel() {
+        assertMacro {
+            """
+            @Model struct MyModel: Hashable {
+                var count = 0
+            }
+            """
+        } expansion: {
+            #"""
+            struct MyModel: Hashable {
+                var count = 0 {
+                    @storageRestrictions(initializes: _count)
+                    init {
+                        _count = newValue
+                    }
+                    _read {
+                        yield _$modelContext[model: self, path: \._count]
+                    }
+                    nonmutating _modify {
+                        yield &_$modelContext[model: self, path: \._count]
+                    }
+                }
+
+                private  var _count  = 0
+
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    visitor.visitStatically(at: \._count)
+
+                }
+
+                public static func == (_ lhs: Self, _ rhs: Self) -> Bool {
+                    lhs.count == rhs.count && true
+                }
+
+                func hash(into hasher: inout Hasher) {
+                    hasher.combine(count)
+                }
+
+                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                {
+                    @storageRestrictions(initializes: _node)
+                    init {
+                        _node = ModelNode(_$modelContext: newValue)
+                    }
+                    get {
+                        _node._$modelContext
+                    }
+                    set {
+                        _node = ModelNode(_$modelContext: newValue)
+                    }
+                }
+                private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+                private var node: ModelNode<Self> { _node }
+            }
+
+            extension MyModel: SwiftModel.Model {
+            }
+
+            extension MyModel: Sendable {
+            }
+
+            extension MyModel: Identifiable {
+            }
+
+            extension MyModel: CustomReflectable {
+                public var customMirror: Mirror {
+                    _$modelContext.mirror(of: self, children: [("count", count as Any)])
+                }
+            }
+
+            @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+            extension MyModel: Observation.Observable {
+            }
+            """#
+        }
+    }
+
+    func testModelWillDidSet() {
+        assertMacro {
+            """
+            @Model struct MyModel {
+                var count = 0 {
+                    willSet { print("willSet") }
+                    didSet { print("didSet") }
+                }
+            }
+            """
+        } expansion: {
+            #"""
+            struct MyModel {
+                var count = 0 {
+                    willSet { print("willSet") }
+                    didSet { print("didSet") }
+                    @storageRestrictions(initializes: _count)
+                    init {
+                        _count = newValue
+                    }
+
+                    _read {
+                        yield _$modelContext[model: self, path: \._count]
+                    }
+
+                    nonmutating set {
+                        let oldValue = _$modelContext[model: self, path: \._count]
+                        print("willSet")
+                        _$modelContext[model: self, path: \._count] = newValue
+                        print("didSet")
+                    }
+                }
+
+                private  var _count  = 0
+
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    visitor.visitStatically(at: \._count)
+
+                }
+
+                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                {
+                    @storageRestrictions(initializes: _node)
+                    init {
+                        _node = ModelNode(_$modelContext: newValue)
+                    }
+                    get {
+                        _node._$modelContext
+                    }
+                    set {
+                        _node = ModelNode(_$modelContext: newValue)
+                    }
+                }
+                private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+                private var node: ModelNode<Self> { _node }
+            }
+
+            extension MyModel: SwiftModel.Model {
+            }
+
+            extension MyModel: Sendable {
+            }
+
+            extension MyModel: Identifiable {
+            }
+
+            extension MyModel: CustomReflectable {
+                public var customMirror: Mirror {
+                    _$modelContext.mirror(of: self, children: [])
+                }
+            }
+
+            @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+            extension MyModel: Observation.Observable {
+            }
+            """#
+        }
+    }
+}
