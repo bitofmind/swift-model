@@ -1,0 +1,226 @@
+import SwiftCompilerPlugin
+import SwiftSyntax
+import SwiftSyntaxBuilder
+import SwiftSyntaxMacros
+
+public struct ModelMacro { }
+
+extension ModelMacro: ExtensionMacro {
+    public static func expansion(
+        of node: AttributeSyntax,
+        attachedTo declaration: some DeclGroupSyntax,
+        providingExtensionsOf type: some TypeSyntaxProtocol,
+        conformingTo protocols: [TypeSyntax],
+        in context: some MacroExpansionContext) throws -> [ExtensionDeclSyntax] {
+            guard let structDecl = declaration.as(StructDeclSyntax.self) else {
+                return []
+            }
+
+            var extensions: [DeclSyntax] = []
+
+            func isConforming(to name: String) -> Bool {
+                structDecl.inheritanceClause.map {
+                    $0.inheritedTypes.contains(where: { $0.type.trimmedDescription.contains(name)
+                    })
+                } ?? false
+            }
+
+            func addConformance(_ name: String, qualifiedName: String? = nil) {
+                if !isConforming(to: name) {
+                    extensions.append(
+                    """
+                    extension \(raw: type.trimmedDescription): \(raw: qualifiedName ?? name) {}
+                    """)
+                }
+            }
+
+            addConformance("Model", qualifiedName: "SwiftModel.Model")
+            addConformance("Sendable")
+            addConformance("Identifiable")
+
+            let memberList = declaration.memberBlock.members.filter {
+                $0.decl.isObservableStoredProperty
+            }
+
+            let mirrorChildren = memberList.compactMap { member -> String? in
+                guard let decl = member.decl.as(VariableDeclSyntax.self),
+                      let identifier = decl.identifier else { return nil }
+
+                return "(\"\(identifier)\", \(identifier) as Any)"
+            }
+
+            if !isConforming(to: "CustomReflectable") {
+                extensions.append(
+                """
+                extension \(raw: type.trimmedDescription): \(raw: "CustomReflectable") {
+                    public var customMirror: Mirror {
+                        _$modelContext.mirror(of: self, children: [\(raw: mirrorChildren.joined(separator: ", "))])
+                    }
+                }
+                """)
+            }
+
+            if !isConforming(to: "Observable") {
+                extensions.append(
+                """
+                @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+                extension \(raw: type.trimmedDescription): \(raw: "Observation.Observable") {}
+                """)
+            }
+
+            return extensions.map { $0.cast(ExtensionDeclSyntax.self) }
+        }
+}
+
+enum ModelMacroError: String, Error, CustomStringConvertible {
+    case requiresStruct = "Requires type to be struct"
+    case requiresStructOrEnum = "Requires type to be either struct or enum"
+
+    var description: String { rawValue }
+}
+
+extension ModelMacro: MemberMacro {
+    public static func expansion<Declaration: DeclGroupSyntax,
+                                 Context: MacroExpansionContext>(
+        of node: AttributeSyntax,
+        providingMembersOf declaration: Declaration,
+        in context: Context
+    ) throws -> [DeclSyntax] {
+        guard let structDecl = declaration.as(StructDeclSyntax.self) else {
+            throw ModelMacroError.requiresStruct
+        }
+
+        var result: [DeclSyntax] = []
+
+        let storedInstanceVariables = declaration.definedVariables.filter {
+            $0.isValidForObservation && !$0.hasMacroApplication("ModelIgnored")
+        }
+        for property in storedInstanceVariables where !property.hasMacroApplication("ModelIgnored") {
+            let variable = VariableDeclSyntax(
+                leadingTrivia: property.leadingTrivia,
+                attributes: property.attributes + [.attribute("@ModelIgnored")],
+                modifiers: property.modifiers.privatePrefixed("_"),
+                bindingSpecifier: TokenSyntax(property.bindingSpecifier.tokenKind, leadingTrivia: .space, trailingTrivia: .space, presence: .present),
+                bindings: property.bindings.privatePrefixed("_"),
+                trailingTrivia: property.trailingTrivia
+            )
+
+
+            result.append(DeclSyntax(variable))
+        }
+
+        let visits = storedInstanceVariables.compactMap { member -> String? in
+            guard let identifier = member.identifier else { return nil }
+            return "visitor.visitStatically(at: \\._\(identifier))"
+        }
+
+        let letVariables = declaration.definedVariables.filter {
+            $0.isInstance && $0.isImmutable
+        }
+
+        let letVisits = letVariables.compactMap { member -> String? in
+            guard let identifier = member.identifier else { return nil }
+            return "visitor.visitStatically(at: \\.\(identifier))"
+        }
+
+        result.append(
+        """
+        public func visit(with visitor: inout ContainerVisitor<Self>) {
+            \(raw: visits.joined(separator: "\n"))
+            \(raw: letVisits.joined(separator: "\n"))
+        }
+        """
+        )
+
+        let inheritanceClause = structDecl.inheritanceClause
+        if let inheritedTypes = inheritanceClause?.inheritedTypes,
+           inheritedTypes.contains(where: { inherited in inherited.type.trimmedDescription == "Equatable" || inherited.type.trimmedDescription == "Hashable" })
+        {
+
+            let equals = MemberBlockItemListSyntax {
+                for member in storedInstanceVariables {
+                    if let identifier = member.identifier, !member.hasMacroApplication("ModelIgnored") {
+                        //DeclSyntax("lhs._modelContext.getValue(at: \\._\(identifier), from: lhs) == rhs._modelContext.getValue(at: \\._\(identifier), from: rhs) && ")
+                        DeclSyntax("lhs.\( identifier) == rhs.\(identifier) && ")
+                    }
+                }
+                DeclSyntax("true")
+            }
+
+            result.append(
+          """
+          public static func ==(_ lhs: Self, _ rhs: Self) -> Bool {
+              \(equals)
+          }
+          """
+            )
+        }
+
+        if let inheritedTypes = inheritanceClause?.inheritedTypes,
+           inheritedTypes.contains(where: { inherited in inherited.type.trimmedDescription == "Hashable" })
+        {
+
+            let hashables = MemberBlockItemListSyntax {
+                for member in storedInstanceVariables {
+                    if let identifier = member.identifier, !member.hasMacroApplication("ModelIgnored") {
+                        //DeclSyntax("lhs._modelContext.getValue(at: \\._\(identifier), from: lhs) == rhs._modelContext.getValue(at: \\._\(identifier), from: rhs) && ")
+                        DeclSyntax("hasher.combine(\(identifier))")
+                    }
+                }
+            }
+
+            result.append(
+          """
+          func hash(into hasher: inout Hasher) {
+              \(hashables)
+          }
+          """
+            )
+        }
+
+        result.append(
+        """
+        public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+        {
+            @storageRestrictions(initializes: _node)
+            init {
+                _node = ModelNode(_$modelContext: newValue)
+            }
+            get {
+                _node._$modelContext
+            }
+            set {
+                _node = ModelNode(_$modelContext: newValue)
+            }
+        }
+        private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+        private var node: ModelNode<Self> { _node }
+        """)
+
+        return result
+    }
+}
+
+extension ModelMacro: MemberAttributeMacro {
+    public static func expansion<
+        Declaration: DeclGroupSyntax,
+        MemberDeclaration: DeclSyntaxProtocol,
+        Context: MacroExpansionContext
+    >(
+        of node: AttributeSyntax,
+        attachedTo declaration: Declaration,
+        providingAttributesFor member: MemberDeclaration,
+        in context: Context
+    ) throws -> [AttributeSyntax] {
+        guard let property = member.as(VariableDeclSyntax.self), property.isValidForObservation,
+              property.identifier != nil else {
+            return []
+        }
+
+        if property.hasMacroApplication("ModelIgnored") {
+            return []
+        }
+
+        return ["@ModelTracked"]
+    }
+}
