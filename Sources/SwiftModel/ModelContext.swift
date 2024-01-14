@@ -48,7 +48,14 @@ private let initialLock = NSRecursiveLock()
 extension ModelContext: Sendable where M: Sendable {}
 
 extension ModelContext: Hashable {
-    public static func == (lhs: ModelContext<M>, rhs: ModelContext<M>) -> Bool { true }
+    public static func == (lhs: ModelContext<M>, rhs: ModelContext<M>) -> Bool {
+        return switch (lhs.source, rhs.source) {
+        case let (.initial(lhs), .initial(rhs)): lhs === rhs
+        case let (.reference(lhs), .reference(rhs)): lhs === rhs
+        case let (.frozenCopy(lhs), .frozenCopy(rhs)): lhs == rhs
+        default: false
+        }
+    }
 
     public func hash(into hasher: inout Hasher) { }
 }
