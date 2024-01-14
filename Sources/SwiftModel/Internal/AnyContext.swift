@@ -71,23 +71,26 @@ class AnyContext: @unchecked Sendable {
         lock(modeLifeTime == .destructed)
     }
 
-    func removeContext(for containerPath: AnyKeyPath, modelRef: ModelRef) {
-        children[containerPath]?[modelRef]?.onRemoval()
-        children[containerPath]?[modelRef] = nil
-        if children[containerPath]?.isEmpty == true {
-            children[containerPath] = nil
-        }
-    }
-
     func removeChild(_ context: AnyContext) {
-        for (containerPath, contexts) in children {
-            for (modelRef, child) in contexts {
-                if context === child {
-                    removeContext(for: containerPath, modelRef: modelRef)
-                    return
+        let onRemoval = lock {
+            for (containerPath, contexts) in children {
+                for (modelRef, child) in contexts {
+                    if context === child {
+                        let onRemoval = children[containerPath]?[modelRef]?.onRemoval
+                        children[containerPath]?[modelRef] = nil
+                        if children[containerPath]?.isEmpty == true {
+                            children[containerPath] = nil
+                        }
+
+                        return onRemoval
+                    }
                 }
             }
+
+            return nil
         }
+
+        onRemoval?()
     }
 
     var allChildren: [AnyContext] {
@@ -113,6 +116,7 @@ class AnyContext: @unchecked Sendable {
                 parent?.removeChild(self)
             }
         }
+        
         guard let removeSelfFromParent else { return }
         removeSelfFromParent()
 
