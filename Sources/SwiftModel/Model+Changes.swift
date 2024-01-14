@@ -39,7 +39,10 @@ public extension Model {
                                 container.forEachContext { subContext in
                                     let cancel = subContext.onAnyModification { didFinish in
                                         if !didFinish {
-                                            cont.yield(copy(context[path], shouldFreeze: freezeValues))
+                                            let copy = copy(context[path], shouldFreeze: freezeValues)
+                                            Task { // Don't call out when holding the context lock
+                                                cont.yield(copy)
+                                            }
                                         }
                                     }
                                     anyCallbacks.append(cancel)
@@ -65,7 +68,10 @@ public extension Model {
                         }
                     }
 
-                    cont.yield(copy(value, shouldFreeze: freezeValues))
+                    let copy = copy(value, shouldFreeze: freezeValues)
+                    Task { // Don't call out when holding the context lock
+                        cont.yield(copy)
+                    }
                 })
 
                 let _ = withAccess(collector)[keyPath: path]
