@@ -82,7 +82,7 @@ final class Context<M: Model>: AnyContext {
             }
 
             Task {
-                try? await Task.sleep(nanoseconds: NSEC_PER_SEC)
+                try? await Task.sleep(nanoseconds: NSEC_PER_SEC*2)
                 reference.clear()
             }
         }
