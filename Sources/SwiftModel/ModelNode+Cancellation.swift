@@ -28,6 +28,50 @@ public extension ModelNode {
 }
 
 public extension ModelNode {
+    /// Activities created while the context is active will be cancellable via the provided `key`.
+    /// Any nested tasks or forEach won't be affected
+    ///
+    ///     withCancellationContext(for: key) {
+    ///         task { }
+    ///         forEach { }
+    ///         onCancel { }
+    ///     }
+    ///
+    func cancellationContext<T>(for key: some Hashable, perform: () throws -> T) rethrows -> T {
+        guard let context = enforcedContext() else { return try perform() }
+
+        let _ = AnyCancellable(context: context) {
+            cancelAll(for: key)
+        }
+
+        return try AnyCancellable.$contexts.withValue(AnyCancellable.contexts + [CancellableKey(key: key)]) {
+            try perform()
+        }
+    }
+    
+    /// Activities created while the context is active will be cancellable via the provided `key`.
+    /// Any nested tasks or forEach won't be affected
+    ///
+    ///     withCancellationContext(for: key) {
+    ///         task { }
+    ///         forEach { }
+    ///         onCancel { }
+    ///     }
+    ///
+    func cancellationContext<T>(for key: some Hashable, perform: () async throws -> T) async rethrows -> T {
+        guard let context = enforcedContext() else { return try await perform() }
+
+        let _ = AnyCancellable(context: context) {
+            cancelAll(for: key)
+        }
+
+        return try await AnyCancellable.$contexts.withValue(AnyCancellable.contexts + [CancellableKey(key: key)]) {
+            try await perform()
+        }
+    }
+}
+
+public extension ModelNode {
     /// Activities created while the context is active will be cancellable via the returned `Cancellable`.
     /// Any nested tasks or forEach won't be affected
     ///
@@ -63,12 +107,14 @@ public extension ModelNode {
         guard let context = enforcedContext() else { return EmptyCancellable() }
 
         let key = UUID()
+        let cancellable = AnyCancellable(context: context) {
+            cancelAll(for: key)
+        }
+
         try await AnyCancellable.$contexts.withValue(AnyCancellable.contexts + [CancellableKey(key: key)]) {
             try await perform()
         }
 
-        return AnyCancellable(context: context) {
-            cancelAll(for: key)
-        }
+        return cancellable
     }
 }

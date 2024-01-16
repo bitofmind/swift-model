@@ -368,10 +368,10 @@ func stopOperation() {
 By using a cancellation context you can group several operations to allow cancellation of them all as a group:
 
 ```swift
-node.cancellationContext {
+node.cancellationContext(for: operationID) {
   node.task { }
   node.forEach(...) { }
-}.cancel(for: operationID)
+}
 ```
 
 You can also call `node.onCancel { ... }` to execute work upon cancellation.
