@@ -1,6 +1,6 @@
 # SwiftModel
 
-SwiftModel is a library for composing models that drives SwiftUI views. It comes with many powerful features using advanced tooling using a lightweight modern Swift style.
+SwiftModel is a library for composing models that drives SwiftUI views. It comes with many powerful features and advanced tooling using a lightweight modern Swift style.
 
 - [What is SwiftModel](#what-is-swiftmodel)
 - [Models and Composition](#models-and-composition)
@@ -142,7 +142,7 @@ If the model is later on removed from the parent anchored model, it will loose i
 
 The `Model` protocol provides an `onActivate()` extension point that is called by SwiftModel once the model becomes part of anchored model hierarchy. This is a perfect place to populate a model's state from its dependencies and to set up listeners on child events and state changes.
 
-> Any parent will always be activated before its children to allow the parent to set up listener on child events and value changes
+> Any parent will always be activated before its children to allow the parent to set up listener on child events and value changes. Similarly any children will always be deactivated (cancelled) before its parents
     
 ```swift
 func onActivate() {

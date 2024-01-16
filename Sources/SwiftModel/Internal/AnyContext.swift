@@ -107,6 +107,28 @@ class AnyContext: @unchecked Sendable {
     }
 
     func onRemoval() {
+        // Cancel self..
+        cancellations.cancelAll()
+
+        let (events, anyModifies) = lock {
+            defer {
+                eventContinuations.removeAll()
+                anyModificationCallbacks.removeAll()
+                anyModificationActiveCount = 0
+            }
+            return (eventContinuations.values, anyModificationCallbacks.values)
+        }
+
+        for cont in events {
+            cont.finish()
+        }
+
+        for cont in anyModifies {
+            cont(true)
+        }
+
+        // ...before children...
+        
         let removeSelfFromParent = lock {
             defer {
                 modeLifeTime = .destructed
@@ -127,25 +149,6 @@ class AnyContext: @unchecked Sendable {
 
         for child in children {
             child.onRemoval()
-        }
-
-        cancellations.cancelAll()
-
-        let (events, anyModifies) = lock {
-            defer {
-                eventContinuations.removeAll()
-                anyModificationCallbacks.removeAll()
-                anyModificationActiveCount = 0
-            }
-            return (eventContinuations.values, anyModificationCallbacks.values)
-        }
-
-        for cont in events {
-            cont.finish()
-        }
-
-        for cont in anyModifies {
-            cont(true)
         }
     }
 

@@ -45,7 +45,7 @@ final class ActivateTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(testResult.value, "PC0c0p")
+        XCTAssertEqual(testResult.value, "PC0pc0")
     }
 
     func testReplaceChild() throws {
@@ -58,7 +58,7 @@ final class ActivateTests: XCTestCase {
             parent.child = Child(id: 1)
         }
 
-        XCTAssertEqual(testResult.value, "PC0c0C1c1p")
+        XCTAssertEqual(testResult.value, "PC0c0C1pc1")
     }
 
 
@@ -74,7 +74,7 @@ final class ActivateTests: XCTestCase {
             child.leaf = Leaf()
         }
 
-        XCTAssertEqual(testResult.value, "C0LlLlc0")
+        XCTAssertEqual(testResult.value, "C0LlLc0l")
     }
 
     func testParentChildLeafOptionalActivation() throws {
@@ -89,7 +89,7 @@ final class ActivateTests: XCTestCase {
             parent.child.leaf = Leaf()
         }
 
-        XCTAssertEqual(testResult.value, "PC0LlLlc0p")
+        XCTAssertEqual(testResult.value, "PC0LlLpc0l")
     }
 
     func testParentChildrenActivation() throws {
@@ -104,7 +104,7 @@ final class ActivateTests: XCTestCase {
             parent.children.append(Child(id: 2))
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1c1C2c0c2p")
+        XCTAssertEqual(testResult.value, "PC0C1c1C2pc0c2")
     }
 
     func testParentChildrenLeafActivation() throws {
@@ -119,7 +119,7 @@ final class ActivateTests: XCTestCase {
             parent.children.append(Child(id: 2, leaf: Leaf()))
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1Llc1C2Lc0lc2p")
+        XCTAssertEqual(testResult.value, "PC0C1Lc1lC2Lpc0c2l")
     }
 
     func testParentMultipleChildrenActivation() throws {
@@ -133,7 +133,7 @@ final class ActivateTests: XCTestCase {
             parent.children.append(Child(id: 2))
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2c0c1c2p")
+        XCTAssertEqual(testResult.value, "PC0C1C2pc0c1c2")
     }
 
     func testParentMultipleChildrenAndRemoveActivation() throws {
@@ -148,7 +148,7 @@ final class ActivateTests: XCTestCase {
             parent.children.removeLast()
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2c2c0c1p")
+        XCTAssertEqual(testResult.value, "PC0C1C2c2pc0c1")
     }
 
     func testParentMultipleChildrenLeafActivation() throws {
@@ -163,7 +163,7 @@ final class ActivateTests: XCTestCase {
             parent.children.removeLast()
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2Llc2c0c1p")
+        XCTAssertEqual(testResult.value, "PC0C1C2Lc2lpc0c1")
     }
 
     func testParentMultipleChildrenSwapActivation() throws {
@@ -179,7 +179,7 @@ final class ActivateTests: XCTestCase {
             parent.children.removeLast()
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2c1c0c2p")
+        XCTAssertEqual(testResult.value, "PC0C1C2c1pc0c2")
     }
 
     func testParentMultipleChildrenSwapAltActivation() throws {
@@ -197,7 +197,7 @@ final class ActivateTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2c1C1c0c2c1p")
+        XCTAssertEqual(testResult.value, "PC0C1C2c1C1pc0c2c1")
     }
 
     func testParentMultipleChildrenSwapAlt2Activation() throws {
@@ -215,7 +215,7 @@ final class ActivateTests: XCTestCase {
             parent.children = children
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2c0c1c2p")
+        XCTAssertEqual(testResult.value, "PC0C1C2pc0c1c2")
     }
 
     func testChildCaseActivation() throws {
@@ -232,7 +232,7 @@ final class ActivateTests: XCTestCase {
             parent.cases = nil
         }
 
-        XCTAssertEqual(testResult.value, "PC0C2c2C3c3C4c4c0p")
+        XCTAssertEqual(testResult.value, "PC0C2c2C3c3C4c4pc0")
     }
 
     func testChildrenCaseActivation() throws {
@@ -252,7 +252,7 @@ final class ActivateTests: XCTestCase {
             parent.cases = nil
         }
 
-        XCTAssertEqual(testResult.value, "PC0C2C3c2c3C4c4C4c4c0p")
+        XCTAssertEqual(testResult.value, "PC0C2C3c2c3C4c4C4c4pc0")
     }
 }
 

@@ -10,7 +10,7 @@ final class DependencyTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(testResult.value, "PC0c0p")
+        XCTAssertEqual(testResult.value, "PC0pc0")
     }
 
     func testParentOverride() throws {
@@ -24,7 +24,7 @@ final class DependencyTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(parentResult.value, "PC0c0p")
+        XCTAssertEqual(parentResult.value, "PC0pc0")
         XCTAssertEqual(testResult.value, "")
     }
 
@@ -80,7 +80,7 @@ final class DependencyTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C3c1c0c3p")
+        XCTAssertEqual(testResult.value, "PC0C1C3c1pc0c3")
         XCTAssertEqual(childrenResult.value, "C2C4c2c4")
     }
 }
