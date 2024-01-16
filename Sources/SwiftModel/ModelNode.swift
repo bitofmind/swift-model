@@ -27,7 +27,7 @@ public extension ModelNode {
             return Dependency(keyPath).wrappedValue
         }
 
-        guard let context = enforcedContext() else {
+        guard let context = enforcedContext("Accessing dependency `\(String(describing: keyPath).replacingOccurrences(of: "\\DependencyValues.", with: ""))` on an unanchored model node is not allowed and will be redirected to the default dependency value") else {
             return Dependency(keyPath).wrappedValue
         }
         
