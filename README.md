@@ -142,7 +142,7 @@ If the model is later on removed from the parent anchored model, it will loose i
 
 The `Model` protocol provides an `onActivate()` extension point that is called by SwiftModel once the model becomes part of anchored model hierarchy. This is a perfect place to populate a model's state from its dependencies and to set up listeners on child events and state changes.
 
-> Any parent will always be activated before its children to allow the parent to set up listener on child events and value changes. Similarly any children will always be deactivated (cancelled) before its parents
+> Any parent will always be activated before its children to allow the parent to set up listener on child events and value changes. Once a parent is deactivated it will cancel it own activities before deactivating its children.
     
 ```swift
 func onActivate() {

@@ -47,7 +47,7 @@ public protocol Model: ModelContainer, Identifiable, Sendable {
     /// Will be called once a model becomes part of a anchored model hierarchy.
     /// > Any parent will always be activated before its children to allow the parent to set up listener on child events and value changes
     /// 
-    /// > Any children will always be deactivated (cancelled) before its parent to allow the parent to tear down listener on child events and value changes
+    /// > Any remaining children will always be deactivated (cancelled) just after its parent deactivation to allow the parent to access and tear down listeners on child events and value changes.
     func onActivate()
 }
 
