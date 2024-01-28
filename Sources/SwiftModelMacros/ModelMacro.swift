@@ -68,6 +68,16 @@ extension ModelMacro: ExtensionMacro {
                 """)
             }
 
+            if !isConforming(to: "CustomStringConvertible") {
+                extensions.append(
+                """
+                extension \(raw: type.trimmedDescription): \(raw: "CustomStringConvertible") {
+                    public var description: String {
+                        _$modelContext.description(of: self)
+                    }
+                }
+                """)
+            }
             return extensions.map { $0.cast(ExtensionDeclSyntax.self) }
         }
 }
@@ -94,19 +104,6 @@ extension ModelMacro: MemberMacro {
 
         let storedInstanceVariables = declaration.definedVariables.filter {
             $0.isValidForObservation && !$0.hasMacroApplication("ModelIgnored")
-        }
-        for property in storedInstanceVariables where !property.hasMacroApplication("ModelIgnored") {
-            let variable = VariableDeclSyntax(
-                leadingTrivia: property.leadingTrivia,
-                attributes: property.attributes + [.attribute("@ModelIgnored")],
-                modifiers: property.modifiers.privatePrefixed("_"),
-                bindingSpecifier: TokenSyntax(property.bindingSpecifier.tokenKind, leadingTrivia: .space, trailingTrivia: .space, presence: .present),
-                bindings: property.bindings.privatePrefixed("_"),
-                trailingTrivia: property.trailingTrivia
-            )
-
-
-            result.append(DeclSyntax(variable))
         }
 
         let visits = storedInstanceVariables.compactMap { member -> String? in

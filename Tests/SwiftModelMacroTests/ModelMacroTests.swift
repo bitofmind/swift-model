@@ -75,8 +75,6 @@ final class ModelMacroTests: XCTestCase {
                     }
                 }
 
-                private  var _count  = 0
-
                 public func visit(with visitor: inout ContainerVisitor<Self>) {
                     visitor.visitStatically(at: \._count)
 
@@ -117,6 +115,12 @@ final class ModelMacroTests: XCTestCase {
             @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
             extension MyModel: Observation.Observable {
             }
+
+            extension MyModel: CustomStringConvertible {
+                public var description: String {
+                    _$modelContext.description(of: self)
+                }
+            }
             """#
         }
     }
@@ -143,8 +147,6 @@ final class ModelMacroTests: XCTestCase {
                         yield &_$modelContext[model: self, path: \._count]
                     }
                 }
-
-                private  var _count  = 0
 
                 public func visit(with visitor: inout ContainerVisitor<Self>) {
                     visitor.visitStatically(at: \._count)
@@ -194,6 +196,12 @@ final class ModelMacroTests: XCTestCase {
             @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
             extension MyModel: Observation.Observable {
             }
+
+            extension MyModel: CustomStringConvertible {
+                public var description: String {
+                    _$modelContext.description(of: self)
+                }
+            }
             """#
         }
     }
@@ -230,8 +238,6 @@ final class ModelMacroTests: XCTestCase {
                         print("didSet")
                     }
                 }
-
-                private  var _count  = 0
 
                 public func visit(with visitor: inout ContainerVisitor<Self>) {
                     visitor.visitStatically(at: \._count)
@@ -272,6 +278,12 @@ final class ModelMacroTests: XCTestCase {
 
             @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
             extension MyModel: Observation.Observable {
+            }
+
+            extension MyModel: CustomStringConvertible {
+                public var description: String {
+                    _$modelContext.description(of: self)
+                }
             }
             """#
         }

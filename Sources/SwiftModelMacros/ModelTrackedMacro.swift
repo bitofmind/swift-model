@@ -83,6 +83,20 @@ extension ModelTrackedMacro: PeerMacro {
         providingPeersOf declaration: Declaration,
         in context: Context
     ) throws -> [DeclSyntax] {
-        return []
+        guard let property = declaration.as(VariableDeclSyntax.self),
+          property.isValidForObservation
+        else {
+          return []
+        }
+
+        if property.hasMacroApplication("ModelIgnored")
+          || property.hasMacroApplication("ModelTracked")
+        {
+          return []
+        }
+
+        let storage = DeclSyntax(
+          property.privatePrefixed("_", addingAttribute: "@ModelIgnored"))
+        return [storage]
     }
 }

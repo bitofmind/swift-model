@@ -68,6 +68,10 @@ public extension ModelContext {
             return Mirror(model, children: children, displayStyle: .struct)
         }
     }
+
+    func description(of model: M) -> String {
+        String(customDumping: model)
+    }
 }
 
 public extension ModelContext {
