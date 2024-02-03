@@ -66,10 +66,10 @@ extension Model {
         case .frozenCopy:
             return self
             
-        case .reference(let reference):
+        case let .reference(reference):
             if let context = reference.context {
                 var copy = context[\.self]
-                copy._$modelContext.source = .frozenCopy(copy.modelID)
+                copy._$modelContext.source = .frozenCopy(id: copy.modelID)
                 copy._$modelContext.access = nil
                 return copy
             } else if let last = reference.lastSeenValue {
@@ -78,8 +78,13 @@ extension Model {
                 return self
             }
             
-        case .initial(let initial):
+        case let .initial(initial):
             return initial[fallback: self]
+
+        case let .lastSeen(id: id, timestamp: _):
+            var copy = self
+            copy._$modelContext.source = .frozenCopy(id: id)
+            return copy
         }
     }
 }

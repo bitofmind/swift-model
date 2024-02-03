@@ -27,6 +27,11 @@ public extension ModelNode {
             return Dependency(keyPath).wrappedValue
         }
 
+        if case let .lastSeen(id: _, timestamp: timestamp) = _$modelContext.source, -timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
+            // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
+            return Dependency(keyPath).wrappedValue
+        }
+
         guard let context = enforcedContext("Accessing dependency `\(String(describing: keyPath).replacingOccurrences(of: "\\DependencyValues.", with: ""))` on an unanchored model node is not allowed and will be redirected to the default dependency value") else {
             return Dependency(keyPath).wrappedValue
         }

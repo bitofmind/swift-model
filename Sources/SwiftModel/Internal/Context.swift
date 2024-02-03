@@ -76,13 +76,13 @@ final class Context<M: Model>: AnyContext {
         lock {
             guard !_XCTIsTesting || AnyContext.keepLastSeenAround else { return }
 
-            let lastSeenValue = readModel.frozenCopy
+            let lastSeenValue = readModel.lastSeen(at: Date())
             lock {
                 reference._lastSeenValue = lastSeenValue
             }
 
             Task {
-                try? await Task.sleep(nanoseconds: NSEC_PER_SEC*2)
+                try? await Task.sleep(nanoseconds: NSEC_PER_MSEC*UInt64(lastSeenTimeToLive*1000))
                 reference.clear()
             }
         }
@@ -290,3 +290,5 @@ func _testing_keepLastSeenAround<T>(_ operation: () throws -> T) rethrows -> T {
         try operation()
     }
 }
+
+let lastSeenTimeToLive: TimeInterval = 2

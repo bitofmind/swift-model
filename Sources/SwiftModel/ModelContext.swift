@@ -37,7 +37,8 @@ public struct ModelContext<M: Model> {
     enum Source {
         case initial(Initial)
         case reference(Context<M>.Reference)
-        case frozenCopy(ModelID)
+        case frozenCopy(id: ModelID)
+        case lastSeen(id: ModelID, timestamp: Date)
     }
 
     public init() {}

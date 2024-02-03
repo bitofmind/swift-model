@@ -25,6 +25,11 @@ extension ModelContainer {
         transformModel(with: MakeInitialTransformer())
     }
 
+    func lastSeen(at timestamp: Date) -> Self {
+        transformModel(with: LastSeenTransformer(timestamp: timestamp))
+    }
+
+
     func reduceValue<Reducer: ValueReducer>(with reducer: Reducer.Type, initialValue: Reducer.Value) -> Reducer.Value {
         var visitor = ReduceValueVisitor(root: self, path: \.self, reducer: reducer, value: initialValue)
         visit(with: &visitor, includeSelf: true)
@@ -56,7 +61,16 @@ private struct MakeInitialTransformer: ModelTransformer {
 private struct FrozenCopyTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
         model = model.shallowCopy.noAccess
-        model._$modelContext.source = .frozenCopy(model.modelID)
+        model._$modelContext.source = .frozenCopy(id: model.modelID)
+    }
+}
+
+private struct LastSeenTransformer: ModelTransformer {
+    let timestamp: Date
+
+    func transform<M: Model>(_ model: inout M) -> Void {
+        model = model.shallowCopy.noAccess
+        model._$modelContext.source = .lastSeen(id: model.modelID, timestamp: timestamp)
     }
 }
 

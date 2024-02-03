@@ -7,7 +7,7 @@ extension ModelContext {
         case let .reference(reference):
             return reference
 
-        case .initial, .frozenCopy:
+        case .initial, .frozenCopy, .lastSeen:
             return nil
         }
     }
@@ -20,7 +20,7 @@ extension ModelContext {
         switch source {
         case let .reference(reference): reference.modelID
         case let .initial(initial): initial.id
-        case let .frozenCopy(id): id
+        case let .frozenCopy(id: id), let .lastSeen(id: id, timestamp: _): id
         }
     }
 
@@ -29,6 +29,7 @@ extension ModelContext {
         case let .reference(reference): reference.context?.lifetime ?? .destructed
         case .initial: .initial
         case .frozenCopy: .frozenCopy
+        case .lastSeen: .destructed
         }
     }
 
@@ -53,6 +54,9 @@ extension ModelContext {
             return nil
         case .frozenCopy:
             XCTFail("Modifying an frozen copy of a model is not allowed and has no effect")
+            return nil
+        case .lastSeen:
+            XCTFail("Modifying an destructed model is not allowed and has no effect")
             return nil
         }
     }
@@ -147,7 +151,7 @@ extension ModelContext {
                 case let .initial(initial):
                     yield initial[fallback: model][keyPath: path]
 
-                case .frozenCopy:
+                case .frozenCopy, .lastSeen:
                     yield model[keyPath: path]
                 }
             }
