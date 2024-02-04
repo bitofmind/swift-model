@@ -119,6 +119,7 @@ public enum AssertBuilder { }
 public extension AssertBuilder {
     struct Predicate {
         var predicate: () -> Bool
+        var values: () -> (Any, Any)? = { nil }
         var fileAndLine: FileAndLine
     }
     typealias Result = [Predicate]
@@ -127,8 +128,13 @@ public extension AssertBuilder {
         layers.flatMap { $0 }
     }
 
+    @_disfavoredOverload
     static func buildExpression(_ predicate: @autoclosure @escaping () -> Bool, file: StaticString = #file, line: UInt = #line) -> Result {
         [Predicate(predicate: predicate, fileAndLine: .init(file: file, line: line))]
+    }
+
+    static func buildExpression(_ predicate: TestPredicate, file: StaticString = #file, line: UInt = #line) -> Result {
+        [Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: .init(file: file, line: line))]
     }
 }
 
@@ -138,14 +144,30 @@ func predicate(@AssertBuilder _ builder: () -> AssertBuilder.Result) -> Bool {
     return result.allSatisfy { $0.predicate() }
 }
 
+public struct TestPredicate {
+    var predicate: () -> Bool
+    var values: () -> (Any, Any)? = { nil }
+}
+
+public func == <T: Equatable>(lhs: @escaping @autoclosure () -> T, rhs: @escaping @autoclosure () -> T) -> TestPredicate {
+    TestPredicate(predicate: { lhs() == rhs() }, values: { (lhs(), rhs()) })
+}
+
 public extension ModelTester {
     func assert(timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, file: StaticString = #file, line: UInt = #line, @AssertBuilder _ builder: () -> AssertBuilder.Result) async {
         await access.assert(timeoutNanoseconds: timeout, at: .init(file: file, line: line), predicates: builder())
     }
 
+    @_disfavoredOverload
     func assert(_ predicate: @escaping @autoclosure () -> Bool, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, file: StaticString = #file, line: UInt = #line) async {
         let fileAndLine = FileAndLine(file: file, line: line)
         let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
+        await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
+    }
+
+    func assert(_ predicate: TestPredicate, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, file: StaticString = #file, line: UInt = #line) async {
+        let fileAndLine = FileAndLine(file: file, line: line)
+        let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
         await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
     }
 

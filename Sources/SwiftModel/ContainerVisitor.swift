@@ -45,7 +45,9 @@ public extension ContainerVisitor {
         XCTFail("Model(Container) of type \(M.self) declared in \(State.self) can't be declared as a let.")
     }
 
-    mutating func visitStatically<T>(at path: KeyPath<State, T>) { }
+    mutating func visitStatically<T>(at path: KeyPath<State, T>) {
+        modelVisitor.visit(path: path)
+    }
 }
 
 private extension ContainerVisitor {

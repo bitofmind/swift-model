@@ -4,7 +4,7 @@ import XCTestDynamicOverlay
 import Dependencies
 
 final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
-    let lock = NSLock()
+    let lock = NSRecursiveLock()
     let context: Context<Root>
     var lastState: Root
     var expectedState: Root
@@ -171,11 +171,12 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                             for (probe, value) in context.probes {
                                 probe.consume(value)
                             }
+
+                            if enableExhaustionTest {
+                                checkExhaustion(at: fileAndLine, includeUpdates: true)
+                            }
                         }
 
-                        if enableExhaustionTest {
-                            checkExhaustion(at: fileAndLine, includeUpdates: true)
-                        }
                         return
                     }
                 }
@@ -183,14 +184,31 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 if start.distance(to: DispatchTime.now().uptimeNanoseconds) > timeout {
                     lock {
                         for failure in failures {
-                            for access in failure.accesses {
-                                let predicate = access.propertyName.map {
-                                    "\(access.modelName).\($0) == \(access.value)"
-                                } ?? access.value
+                            if let (lhs, rhs) = failure.predicate.values() {
+                                let propertyNames = failure.accesses.compactMap { access in
+                                    access.propertyName.map { "\(access.modelName).\($0)" }
+                                }.joined(separator: ", ")
 
-                                fail("Failed to assert: \(predicate)", at: failure.predicate.fileAndLine)
+                                for access in failure.accesses {
+                                    access.apply(&expectedState)
+                                }
 
-                                access.apply(&expectedState)
+                                let title = "Failed to assert: \(propertyNames)"
+                                if let message = diffMessage(expected: rhs, actual: lhs, title: "Failed to assert: \(propertyNames)") {
+                                    fail(message, at: failure.predicate.fileAndLine)
+                                } else {
+                                    fail(title, at: failure.predicate.fileAndLine)
+                                }
+                            } else {
+                                for access in failure.accesses {
+                                    let predicate = access.propertyName.map {
+                                        "\(access.modelName).\($0) == \(access.value)"
+                                    } ?? access.value
+
+                                    fail("Failed to assert: \(predicate)", at: failure.predicate.fileAndLine)
+
+                                    access.apply(&expectedState)
+                                }
                             }
 
                             for event in failure.events {

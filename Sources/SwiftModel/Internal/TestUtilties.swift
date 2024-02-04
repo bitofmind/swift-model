@@ -95,7 +95,7 @@ struct IndexVisitor<State, Child>: ModelVisitor {
     var foundIndex: Int?
     var index = 0
 
-    private mutating func check<T>(_ path: WritableKeyPath<State, T>) {
+    private mutating func check<T>(_ path: KeyPath<State, T>) {
         if path == self.path {
             foundIndex = index
         }
@@ -103,6 +103,7 @@ struct IndexVisitor<State, Child>: ModelVisitor {
         index += 1
     }
 
+    mutating func visit<T>(path: KeyPath<State, T>) { check(path) }
     mutating func visit<T>(path: WritableKeyPath<State, T>) { check(path) }
     mutating func visit<T: Model>(path: WritableKeyPath<State, T>) { check(path) }
     mutating func visit<T: ModelContainer>(path: WritableKeyPath<State, T>) { check(path) }

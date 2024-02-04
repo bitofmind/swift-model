@@ -7,7 +7,7 @@ import MacroTesting
 
 final class ModelMacroTests: XCTestCase {
     override func invokeTest() {
-        withMacroTesting(isRecording: false, macros: [
+        withMacroTesting(isRecording: true, macros: [
             "Model": ModelMacro.self,
             "ModelTracked": ModelTrackedMacro.self,
             "ModelIgnored": ModelIgnoredMacro.self,
@@ -77,7 +77,6 @@ final class ModelMacroTests: XCTestCase {
 
                 public func visit(with visitor: inout ContainerVisitor<Self>) {
                     visitor.visitStatically(at: \._count)
-
                 }
 
                 public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
@@ -150,7 +149,6 @@ final class ModelMacroTests: XCTestCase {
 
                 public func visit(with visitor: inout ContainerVisitor<Self>) {
                     visitor.visitStatically(at: \._count)
-
                 }
 
                 public static func == (_ lhs: Self, _ rhs: Self) -> Bool {
@@ -210,15 +208,22 @@ final class ModelMacroTests: XCTestCase {
         assertMacro {
             """
             @Model struct MyModel {
+                let id = 4711
+
                 var count = 0 {
                     willSet { print("willSet") }
                     didSet { print("didSet") }
                 }
+
+                var computed: Int { 4711 }
+                var computedGet: Int { get { 4711 } }
             }
             """
         } expansion: {
             #"""
             struct MyModel {
+                let id = 4711
+
                 var count = 0 {
                     willSet { print("willSet") }
                     didSet { print("didSet") }
@@ -239,9 +244,12 @@ final class ModelMacroTests: XCTestCase {
                     }
                 }
 
-                public func visit(with visitor: inout ContainerVisitor<Self>) {
-                    visitor.visitStatically(at: \._count)
+                var computed: Int { 4711 }
+                var computedGet: Int { get { 4711 } }
 
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    visitor.visitStatically(at: \.id)
+                    visitor.visitStatically(at: \._count)
                 }
 
                 public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
@@ -272,7 +280,79 @@ final class ModelMacroTests: XCTestCase {
 
             extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
-                    _$modelContext.mirror(of: self, children: [])
+                    _$modelContext.mirror(of: self, children: [("id", id as Any), ("count", count as Any)])
+                }
+            }
+
+            @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+            extension MyModel: Observation.Observable {
+            }
+
+            extension MyModel: CustomStringConvertible {
+                public var description: String {
+                    _$modelContext.description(of: self)
+                }
+            }
+            """#
+        }
+    }
+
+    func testModelPrivateSet() {
+        assertMacro {
+            """
+            @Model struct MyModel {
+                private(set) var count = 0
+            }
+            """
+        } expansion: {
+            #"""
+            struct MyModel {
+                private(set) var count = 0 {
+                    @storageRestrictions(initializes: _count)
+                    init {
+                        _count = newValue
+                    }
+                    _read {
+                        yield _$modelContext[model: self, path: \._count]
+                    }
+                    nonmutating _modify {
+                        yield &_$modelContext[model: self, path: \._count]
+                    }
+                }
+
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    visitor.visitStatically(at: \._count)
+                }
+
+                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                {
+                    @storageRestrictions(initializes: _node)
+                    init {
+                        _node = ModelNode(_$modelContext: newValue)
+                    }
+                    get {
+                        _node._$modelContext
+                    }
+                    set {
+                        _node = ModelNode(_$modelContext: newValue)
+                    }
+                }
+                private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+                private var node: ModelNode<Self> { _node }
+            }
+
+            extension MyModel: SwiftModel.Model {
+            }
+
+            extension MyModel: Sendable {
+            }
+
+            extension MyModel: Identifiable {
+            }
+
+            extension MyModel: CustomReflectable {
+                public var customMirror: Mirror {
+                    _$modelContext.mirror(of: self, children: [("count", count as Any)])
                 }
             }
 

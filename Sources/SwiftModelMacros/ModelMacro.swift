@@ -39,7 +39,7 @@ extension ModelMacro: ExtensionMacro {
             addConformance("Identifiable")
 
             let memberList = declaration.memberBlock.members.filter {
-                $0.decl.isObservableStoredProperty
+                $0.decl.isStoredProperty
             }
 
             let mirrorChildren = memberList.compactMap { member -> String? in
@@ -102,37 +102,30 @@ extension ModelMacro: MemberMacro {
 
         var result: [DeclSyntax] = []
 
-        let storedInstanceVariables = declaration.definedVariables.filter {
-            $0.isValidForObservation && !$0.hasMacroApplication("ModelIgnored")
-        }
-
-        let visits = storedInstanceVariables.compactMap { member -> String? in
+        let visits = declaration.definedVariables.filter {
+            !$0.isComputed && $0.isInstance && !$0.hasMacroApplication("ModelIgnored")
+        }.compactMap { member -> String? in
             guard let identifier = member.identifier else { return nil }
-            return "visitor.visitStatically(at: \\._\(identifier))"
-        }
-
-        let letVariables = declaration.definedVariables.filter {
-            $0.isInstance && $0.isImmutable
-        }
-
-        let letVisits = letVariables.compactMap { member -> String? in
-            guard let identifier = member.identifier else { return nil }
-            return "visitor.visitStatically(at: \\.\(identifier))"
+            return "visitor.visitStatically(at: \\.\(member.isImmutable ? "" :  "_")\(identifier))"
         }
 
         result.append(
         """
         public func visit(with visitor: inout ContainerVisitor<Self>) {
             \(raw: visits.joined(separator: "\n"))
-            \(raw: letVisits.joined(separator: "\n"))
         }
         """
         )
+
+        let storedInstanceVariables = declaration.definedVariables.filter {
+            $0.isValidForObservation && !$0.hasMacroApplication("ModelIgnored")
+        }
 
         let inheritanceClause = structDecl.inheritanceClause
         if let inheritedTypes = inheritanceClause?.inheritedTypes,
            inheritedTypes.contains(where: { inherited in inherited.type.trimmedDescription == "Equatable" || inherited.type.trimmedDescription == "Hashable" })
         {
+
 
             let equals = MemberBlockItemListSyntax {
                 for member in storedInstanceVariables {

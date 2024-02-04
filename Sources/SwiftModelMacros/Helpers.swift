@@ -3,13 +3,23 @@ import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 
 extension DeclSyntaxProtocol {
-    var isObservableStoredProperty: Bool {
+    var isStoredProperty: Bool {
         if let property = self.as(VariableDeclSyntax.self),
            let binding = property.bindings.first,
            let identifier = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier,
-           identifier.text != "context",
-           binding.accessorBlock == nil {
-            return true
+           identifier.text != "context" {
+
+            if let accessors = binding.accessorBlock?.accessors.as(AccessorDeclListSyntax.self) {
+                for accessor in accessors {
+                    let text = accessor.accessorSpecifier.text
+                    if text != "willSet" && text != "didSet" {
+                        return false
+                    }
+                }
+                return true
+            }
+
+            return binding.accessorBlock == nil
         }
 
         return false

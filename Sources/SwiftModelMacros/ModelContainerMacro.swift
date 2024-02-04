@@ -16,7 +16,7 @@ public struct ModelContainerMacro: ExtensionMacro {
 
         if declaration.is(StructDeclSyntax.self) {
             let memberList = declaration.memberBlock.members.filter {
-                $0.decl.isObservableStoredProperty
+                $0.decl.isStoredProperty
             }
 
             let visits = memberList.compactMap { member in

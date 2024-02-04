@@ -2,12 +2,14 @@ import OrderedCollections
 
 protocol ModelVisitor<State> {
     associatedtype State
+    mutating func visit<T>(path: KeyPath<State, T>)
     mutating func visit<T>(path: WritableKeyPath<State, T>)
     mutating func visit<T: Model>(path: WritableKeyPath<State, T>)
     mutating func visit<T: ModelContainer>(path: WritableKeyPath<State, T>)
 }
 
 extension ModelVisitor {
+    mutating func visit<T>(path: KeyPath<State, T>) { }
     mutating func visit<T>(path: WritableKeyPath<State, T>) { }
 }
 
