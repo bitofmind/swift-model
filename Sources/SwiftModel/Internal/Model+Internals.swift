@@ -54,9 +54,6 @@ extension Model {
 }
 
 extension Model {
-
-extension Model {
-
     var noAccess: Self {
         var copy = self
         copy._$modelContext.access = nil

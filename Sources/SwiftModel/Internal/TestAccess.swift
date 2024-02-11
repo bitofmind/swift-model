@@ -147,12 +147,13 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 if failures.isEmpty {
                     let isEqualIncludingIds = lock {
                         var expected = expectedState.frozenCopy
+                        var last = lastState.frozenCopy
                         return ModelID.$includeInMirror.withValue(true) {
                             passedAccesses.reduce(true) { result, access in
                                 access.apply(&expected)
+                                access.apply(&last)
                                 let e = expected[keyPath: access.path]
-                                let a = lastState[keyPath: access.path]
-
+                                let a = last[keyPath: access.path]
 
                                 return result && (diff(e, a) == nil)
                             }

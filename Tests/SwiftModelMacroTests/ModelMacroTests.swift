@@ -7,7 +7,7 @@ import MacroTesting
 
 final class ModelMacroTests: XCTestCase {
     override func invokeTest() {
-        withMacroTesting(isRecording: true, macros: [
+        withMacroTesting(isRecording: false, macros: [
             "Model": ModelMacro.self,
             "ModelTracked": ModelTrackedMacro.self,
             "ModelIgnored": ModelIgnoredMacro.self,
