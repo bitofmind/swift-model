@@ -36,6 +36,18 @@ class AnyContext: @unchecked Sendable {
         var id: AnyHashable
     }
 
+    final class PostTransactions {
+        var callbacks: [() -> Void] = []
+    }
+    @TaskLocal static var postTransactions: PostTransactions? = nil
+
+    func onPostTransaction(callback: @escaping () -> Void) {
+        if let postTransactions = AnyContext.postTransactions {
+            postTransactions.callbacks.append(callback)
+        } else {
+            callback()
+        }
+    }
 
     init(lock: NSRecursiveLock, parent: AnyContext?) {
         self.lock = lock

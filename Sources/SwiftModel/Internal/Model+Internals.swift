@@ -45,13 +45,15 @@ extension Model {
     }
 
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
-        guard let context = enforcedContext() else {
+        if let context {
+            return try context.transaction(callback)
+        } else {
             return try callback()
         }
-
-        return try context.transaction(callback)
     }
 }
+
+extension Model {
 
 extension Model {
 

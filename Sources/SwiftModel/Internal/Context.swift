@@ -184,10 +184,12 @@ final class Context<M: Model>: AnyContext {
                 readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
                 isMutating = false
                 callback?()
-                for callback in (modifyCallbacks[path] ?? [:]).values {
-                    callback(false)
+                onPostTransaction {
+                    for callback in (self.modifyCallbacks[path] ?? [:]).values {
+                        callback(false)
+                    }
+                    self.didModify()
                 }
-                didModify()
                 lock.unlock()
             }
         }
@@ -206,10 +208,12 @@ final class Context<M: Model>: AnyContext {
             readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
             isMutating = false
             callback?()
-            for callback in (modifyCallbacks[path] ?? [:]).values {
-                callback(false)
+            onPostTransaction {
+                for callback in (self.modifyCallbacks[path] ?? [:]).values {
+                    callback(false)
+                }
+                self.didModify()
             }
-            didModify()
             lock.unlock()
         }
         return result
@@ -219,7 +223,22 @@ final class Context<M: Model>: AnyContext {
         if reference.lastSeenValue != nil {
             return try callback()
         } else {
-            return try lock { try callback() }
+            return try lock {
+                if AnyContext.postTransactions == nil {
+                    let postTransactions = PostTransactions()
+                    defer {
+                        for callback in postTransactions.callbacks {
+                            callback()
+                        }
+                    }
+
+                    return try AnyContext.$postTransactions.withValue(postTransactions) {
+                        try callback()
+                    }
+                } else {
+                    return try callback()
+                }
+            }
         }
     }
 
