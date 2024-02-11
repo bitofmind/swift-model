@@ -36,9 +36,7 @@ public extension ModelNode {
             return Dependency(keyPath).wrappedValue
         }
         
-        return context.withDependencies {
-            Dependency(keyPath).wrappedValue
-        }
+        return context.dependency(for: keyPath)
     }
 }
 

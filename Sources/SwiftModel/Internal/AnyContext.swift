@@ -164,8 +164,6 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    func withDependencies<Value>(_ operation: () -> Value) -> Value { fatalError() }
-
     func sendEvent(_ eventInfo: EventInfo, to receivers: EventReceivers) {
         let parent = lock(parent)
 

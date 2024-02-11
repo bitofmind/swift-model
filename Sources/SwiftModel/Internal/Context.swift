@@ -13,6 +13,7 @@ final class Context<M: Model>: AnyContext {
     private var isMutating = false
 
     @Dependency(\.uuid) private var dependencies
+    var dependencyCache: [PartialKeyPath<DependencyValues>: Any] = [:]
 
     init(model: M, rootPath: AnyKeyPath, lock: NSRecursiveLock, dependencies: (inout DependencyValues) -> Void, parent: AnyContext?) {
         readModel = model.assertInitialCopy()
@@ -260,8 +261,18 @@ final class Context<M: Model>: AnyContext {
         }
     }
 
-    override func withDependencies<Value>(_ operation: () -> Value) -> Value {
-        Dependencies.withDependencies(from: self, { _ in }, operation: operation)
+    func dependency<Value>(for keyPath: KeyPath<DependencyValues, Value>) -> Value {
+        lock {
+            if let value = dependencyCache[keyPath] as? Value {
+                return value
+            }
+            
+            return Dependencies.withDependencies(from: self, { _ in }) {
+                let value = Dependency(keyPath).wrappedValue
+                dependencyCache[keyPath] = value
+                return value
+            }
+        }
     }
 }
 
