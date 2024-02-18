@@ -92,8 +92,12 @@ final class ModelMacroTests: XCTestCase {
                         _node = ModelNode(_$modelContext: newValue)
                     }
                 }
+
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
-                private var node: ModelNode<Self> { _node }
+
+                private var node: ModelNode<Self> {
+                    _node
+                }
             }
 
             extension MyModel: SwiftModel.Model {
@@ -152,7 +156,7 @@ final class ModelMacroTests: XCTestCase {
                 }
 
                 public static func == (_ lhs: Self, _ rhs: Self) -> Bool {
-                    lhs.count == rhs.count && true
+                    lhs.count == rhs.count
                 }
 
                 func hash(into hasher: inout Hasher) {
@@ -172,8 +176,12 @@ final class ModelMacroTests: XCTestCase {
                         _node = ModelNode(_$modelContext: newValue)
                     }
                 }
+
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
-                private var node: ModelNode<Self> { _node }
+
+                private var node: ModelNode<Self> {
+                    _node
+                }
             }
 
             extension MyModel: SwiftModel.Model {
@@ -265,8 +273,12 @@ final class ModelMacroTests: XCTestCase {
                         _node = ModelNode(_$modelContext: newValue)
                     }
                 }
+
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
-                private var node: ModelNode<Self> { _node }
+
+                private var node: ModelNode<Self> {
+                    _node
+                }
             }
 
             extension MyModel: SwiftModel.Model {
@@ -337,8 +349,12 @@ final class ModelMacroTests: XCTestCase {
                         _node = ModelNode(_$modelContext: newValue)
                     }
                 }
+
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
-                private var node: ModelNode<Self> { _node }
+
+                private var node: ModelNode<Self> {
+                    _node
+                }
             }
 
             extension MyModel: SwiftModel.Model {

@@ -127,44 +127,41 @@ extension ModelMacro: MemberMacro {
         {
 
 
-            let equals = MemberBlockItemListSyntax {
-                for member in storedInstanceVariables {
-                    if let identifier = member.identifier, !member.hasMacroApplication("ModelIgnored") {
-                        //DeclSyntax("lhs._modelContext.getValue(at: \\._\(identifier), from: lhs) == rhs._modelContext.getValue(at: \\._\(identifier), from: rhs) && ")
-                        DeclSyntax("lhs.\( identifier) == rhs.\(identifier) && ")
-                    }
+            let equals: [String] = storedInstanceVariables.compactMap { member in
+                if let identifier = member.identifier, !member.hasMacroApplication("ModelIgnored") {
+                    //DeclSyntax("lhs._modelContext.getValue(at: \\._\(identifier), from: lhs) == rhs._modelContext.getValue(at: \\._\(identifier), from: rhs) && ")
+                    return "lhs.\( identifier) == rhs.\(identifier)"
+                } else {
+                    return nil
                 }
-                DeclSyntax("true")
             }
 
             result.append(
-          """
-          public static func ==(_ lhs: Self, _ rhs: Self) -> Bool {
-              \(equals)
-          }
-          """
+            """
+            public static func ==(_ lhs: Self, _ rhs: Self) -> Bool {
+                \(raw: equals.isEmpty ? "true" : equals.joined(separator: " && "))
+            }
+            """
             )
         }
 
         if let inheritedTypes = inheritanceClause?.inheritedTypes,
            inheritedTypes.contains(where: { inherited in inherited.type.trimmedDescription == "Hashable" })
         {
-
-            let hashables = MemberBlockItemListSyntax {
-                for member in storedInstanceVariables {
-                    if let identifier = member.identifier, !member.hasMacroApplication("ModelIgnored") {
-                        //DeclSyntax("lhs._modelContext.getValue(at: \\._\(identifier), from: lhs) == rhs._modelContext.getValue(at: \\._\(identifier), from: rhs) && ")
-                        DeclSyntax("hasher.combine(\(identifier))")
-                    }
+            let hashables: [String] = storedInstanceVariables.compactMap { member in
+                if let identifier = member.identifier, !member.hasMacroApplication("ModelIgnored") {
+                    return "hasher.combine(\(identifier))"
+                } else {
+                    return nil
                 }
             }
 
             result.append(
-          """
-          func hash(into hasher: inout Hasher) {
-              \(hashables)
-          }
-          """
+            """
+            func hash(into hasher: inout Hasher) {
+                \(raw: hashables.joined(separator: "\n"))
+            }
+            """
             )
         }
 
@@ -183,7 +180,15 @@ extension ModelMacro: MemberMacro {
                 _node = ModelNode(_$modelContext: newValue)
             }
         }
+        """)
+
+        result.append(
+        """
         private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+        """)
+
+        result.append(
+        """
         private var node: ModelNode<Self> { _node }
         """)
 
