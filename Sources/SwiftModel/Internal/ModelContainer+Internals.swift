@@ -26,9 +26,8 @@ extension ModelContainer {
     }
 
     func lastSeen(at timestamp: Date) -> Self {
-        transformModel(with: LastSeenTransformer(timestamp: timestamp))
+        transformModel(with: LastSeenTransformer(lastSeenAccess: LastSeenAccess(timestamp: timestamp)))
     }
-
 
     func reduceValue<Reducer: ValueReducer>(with reducer: Reducer.Type, initialValue: Reducer.Value) -> Reducer.Value {
         var visitor = ReduceValueVisitor(root: self, path: \.self, reducer: reducer, value: initialValue)
@@ -66,11 +65,20 @@ private struct FrozenCopyTransformer: ModelTransformer {
 }
 
 private struct LastSeenTransformer: ModelTransformer {
-    let timestamp: Date
+    let lastSeenAccess: LastSeenAccess
 
     func transform<M: Model>(_ model: inout M) -> Void {
-        model = model.shallowCopy.noAccess
-        model._$modelContext.source = .lastSeen(id: model.modelID, timestamp: timestamp)
+        model = model.shallowCopy.withAccess(lastSeenAccess)
+        model._$modelContext.source = .lastSeen(id: model.modelID)
+    }
+}
+
+final class LastSeenAccess: ModelAccess {
+    let timestamp: Date
+
+    init(timestamp: Date) {
+        self.timestamp = timestamp
+        super.init(useWeakReference: false)
     }
 }
 

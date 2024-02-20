@@ -20,7 +20,7 @@ extension ModelContext {
         switch source {
         case let .reference(reference): reference.modelID
         case let .initial(initial): initial.id
-        case let .frozenCopy(id: id), let .lastSeen(id: id, timestamp: _): id
+        case let .frozenCopy(id: id), let .lastSeen(id: id): id
         }
     }
 

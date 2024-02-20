@@ -27,7 +27,7 @@ public extension ModelNode {
             return Dependency(keyPath).wrappedValue
         }
 
-        if case let .lastSeen(id: _, timestamp: timestamp) = _$modelContext.source, -timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
+        if case .lastSeen = _$modelContext.source, let access = _$modelContext.access as? LastSeenAccess, -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
             // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
             return Dependency(keyPath).wrappedValue
         }

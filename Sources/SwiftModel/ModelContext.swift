@@ -38,7 +38,7 @@ public struct ModelContext<M: Model> {
         case initial(Initial)
         case reference(Context<M>.Reference)
         case frozenCopy(id: ModelID)
-        case lastSeen(id: ModelID, timestamp: Date)
+        case lastSeen(id: ModelID)
     }
 
     public init() {}

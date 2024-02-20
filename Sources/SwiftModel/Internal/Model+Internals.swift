@@ -80,7 +80,7 @@ extension Model {
         case let .initial(initial):
             return initial[fallback: self]
 
-        case let .lastSeen(id: id, timestamp: _):
+        case let .lastSeen(id: id):
             var copy = self
             copy._$modelContext.source = .frozenCopy(id: id)
             return copy
