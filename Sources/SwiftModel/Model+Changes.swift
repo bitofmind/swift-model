@@ -25,55 +25,68 @@ public extension Model {
         guard let context = enforcedContext() else { return .never }
         return AsyncStream { cont in
             let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])
-            let state = LockIsolated<(last: AnyKeyPath, isNil: Bool)?>(nil)
-            self.transaction {
-                let collector = AccessCollector(foundPaths: { updatePath in
-                    let value = context[path]
-                    state.withValue {
-                        $0 = (updatePath, isNil(value))
+            let valueQueue = LockIsolated<[T]>([])
+
+            @Sendable func yield() {
+                valueQueue.withValue {
+                    let copy = copy(context[path], shouldFreeze: freezeValues)
+                    $0.append(copy)
+                }
+
+                Task { // Don't call out when holding the context lock
+                    let values = valueQueue.withValue {
+                        let values = $0
+                        $0.removeAll()
+                        return values
                     }
 
-                    if recursive, !isNil(value), anyCallbacks.value.isEmpty, let container = value as? any ModelContainer {
-                        let cancels = anyCallbacks.withValue { anyCallbacks in
-                            defer {
-                                container.forEachContext { subContext in
-                                    let cancel = subContext.onAnyModification { didFinish in
-                                        if !didFinish {
-                                            let copy = copy(context[path], shouldFreeze: freezeValues)
-                                            Task { // Don't call out when holding the context lock
-                                                cont.yield(copy)
-                                            }
-                                        }
+                    for value in values {
+                        cont.yield(value)
+                    }
+                }
+            }
+
+            @Sendable func reset() {
+                let value = context[path]
+                if recursive, let container = value as? any ModelContainer {
+                    let cancels = anyCallbacks.withValue { anyCallbacks in
+                        defer {
+                            container.forEachContext { subContext in
+                                let cancel = subContext.onAnyModification { didFinish in
+                                    if !didFinish {
+                                        yield()
                                     }
-                                    anyCallbacks.append(cancel)
                                 }
+                                anyCallbacks.append(cancel)
                             }
-                            return anyCallbacks
                         }
-
-                        for cancel in cancels {
-                            cancel()
-                        }
+                        return anyCallbacks
                     }
-                }, onModify: { collector, updatePath, finished in
-                    let value = context[path]
-                    let isNil = isNil(value)
-                    let (lastPath, wasNil) = state.value ?? (nil, false)
-                    if finished || isNil || (wasNil && !isNil) || updatePath != lastPath || (value is any ModelContainer) {
-                        collector.cancel()
+
+                    for cancel in cancels {
+                        cancel()
+                    }
+                }
+            }
+
+            self.transaction {
+                let collector = AccessCollector { collector, modifiedValue, finished in
+                    if finished {
+                        return
+                    }
+
+                    if modifiedValue is any ModelContainer {
+                        collector.reset()
                         anyCallbacks.withValue { $0.removeAll(keepingCapacity: true) }
+
+                        reset()
                         _ = withAccess(collector)[keyPath: path]
-                        if finished {
-                            return
-                        }
                     }
 
-                    let copy = copy(value, shouldFreeze: freezeValues)
-                    Task { // Don't call out when holding the context lock
-                        cont.yield(copy)
-                    }
-                })
+                    yield()
+                }
 
+                reset()
                 let _ = withAccess(collector)[keyPath: path]
 
                 if initial {
@@ -81,7 +94,7 @@ public extension Model {
                 }
 
                 cont.onTermination = { _ in
-                    collector.cancel()
+                    collector.reset()
                 }
             }
         }
@@ -121,28 +134,26 @@ public struct PrintTextOutputStream: TextOutputStream {
 }
 
 private final class AccessCollector: ModelAccess, @unchecked Sendable {
-    let foundPaths: @Sendable (AnyKeyPath) -> Void
-    let onModify: @Sendable (AccessCollector, AnyKeyPath, Bool) -> Void
+    let onModify: @Sendable (AccessCollector, Any, Bool) -> Void
     var cancellables: [() -> Void] = []
 
-    init(foundPaths: @Sendable @escaping (AnyKeyPath) -> Void, onModify: @Sendable @escaping (AccessCollector, AnyKeyPath, Bool) -> Void) {
-        self.foundPaths = foundPaths
+    init(onModify: @Sendable @escaping (AccessCollector, Any, Bool) -> Void) {
         self.onModify = onModify
         super.init(useWeakReference: false)
     }
 
-    func cancel() {
+    func reset() {
         for cancellable in cancellables {
             cancellable()
         }
+        cancellables.removeAll(keepingCapacity: true)
     }
 
     override var shouldPropagateToChildren: Bool { true }
 
     override func willAccess<M: Model, T>(_ model: M, at path: WritableKeyPath<M, T>) -> (() -> Void)? {
-        foundPaths(path)
         cancellables.append(model.context!.onModify(for: path, {
-            self.onModify(self, path, $0)
+            self.onModify(self, model.context![path], $0)
         }))
 
         return nil

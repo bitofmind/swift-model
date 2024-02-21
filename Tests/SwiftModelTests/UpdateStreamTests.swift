@@ -260,6 +260,35 @@ final class UpdateStreamTests: XCTestCase {
             model.childrenCounts == [[5], [6], [6, 10], [10], []]
         }
     }
+
+    func testComputed() async throws {
+        let (model, tester) = ComputedModel().andTester()
+        tester.exhaustivity = .full.subtracting(.tasks)
+
+        model.count1 = 7
+        model.count2 = 4
+
+        await tester.assert {
+            model.computes == [3, 9, 11]
+            model.count1 == 7
+            model.count2 == 4
+        }
+    }
+
+    func testNestedComputed() async throws {
+        let (model, tester) = NestedComputedModel().andTester()
+        tester.exhaustivity = .off
+
+        model.computed = ComputedModel(count1: 4, count2: 8)
+        model.computed?.count1 = 5
+        model.computed = ComputedModel()
+        model.computed?.count2 = 5
+        model.computed = nil
+
+        await tester.assert {
+            model.computes == [nil, 12, 13, 3, 6, nil]
+        }
+    }
 }
 
 @Model private struct ValuesModel: Sendable {
@@ -319,4 +348,31 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 }
+
+@Model private struct ComputedModel: Sendable, Equatable {
+    var count1: Int = 1
+    var count2: Int = 2
+    var computed: Int { count1 + count2 }
+
+    var computes: [Int] = []
+
+    func onActivate() {
+        node.forEach(update(of: \.computed, initial: true)) {
+            computes.append($0)
+        }
+    }
+}
+
+@Model private struct NestedComputedModel: Sendable, Equatable {
+    var computed: ComputedModel?
+
+    var computes: [Int?] = []
+
+    func onActivate() {
+        node.forEach(update(of: \.computed?.computed, initial: true)) {
+            computes.append($0)
+        }
+    }
+}
+
 
