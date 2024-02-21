@@ -61,31 +61,25 @@ final class Context<M: Model>: AnyContext {
         return shouldActivate
     }
 
-    override func onRemoval() {
-        super.onRemoval()
-        let modifies = lock {
-            defer {
-                modifyCallbacks.removeAll()
+    override func onRemoval(callbacks: inout [() -> Void]) {
+        super.onRemoval(callbacks: &callbacks)
+        let modifies = modifyCallbacks.values.flatMap({ $0.values })
+        modifyCallbacks.removeAll()
+
+        callbacks.append {
+            for cont in modifies {
+                cont(true)
             }
-            return modifyCallbacks.values.flatMap({ $0.values })
         }
 
-        for cont in modifies {
-            cont(true)
-        }
+        guard !_XCTIsTesting || AnyContext.keepLastSeenAround else { return }
 
-        lock {
-            guard !_XCTIsTesting || AnyContext.keepLastSeenAround else { return }
+        let lastSeenValue = readModel.lastSeen(at: Date())
+        reference._lastSeenValue = lastSeenValue
 
-            let lastSeenValue = readModel.lastSeen(at: Date())
-            lock {
-                reference._lastSeenValue = lastSeenValue
-            }
-
-            Task {
-                try? await Task.sleep(nanoseconds: NSEC_PER_MSEC*UInt64(lastSeenTimeToLive*1000))
-                reference.clear()
-            }
+        Task {
+            try? await Task.sleep(nanoseconds: NSEC_PER_MSEC*UInt64(lastSeenTimeToLive*1000))
+            reference.clear()
         }
     }
 

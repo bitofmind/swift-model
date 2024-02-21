@@ -84,25 +84,17 @@ class AnyContext: @unchecked Sendable {
     }
 
     func removeChild(_ context: AnyContext) {
-        let onRemoval = lock {
-            for (containerPath, contexts) in children {
-                for (modelRef, child) in contexts {
-                    if context === child {
-                        let onRemoval = children[containerPath]?[modelRef]?.onRemoval
-                        children[containerPath]?[modelRef] = nil
-                        if children[containerPath]?.isEmpty == true {
-                            children[containerPath] = nil
-                        }
-
-                        return onRemoval
+        for (containerPath, contexts) in children {
+            for (modelRef, child) in contexts {
+                if context === child {
+                    children[containerPath]?[modelRef] = nil
+                    if children[containerPath]?.isEmpty == true {
+                        children[containerPath] = nil
                     }
+                    return
                 }
             }
-
-            return nil
         }
-
-        onRemoval?()
     }
 
     var allChildren: [AnyContext] {
@@ -118,49 +110,45 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    func onRemoval() {
-        // Cancel self..
-        cancellations.cancelAll()
+    func onRemoval(callbacks: inout [() -> Void]) {
+        let events = eventContinuations.values
+        let anyModifies = anyModificationCallbacks.values
+        let children = allChildren
 
-        let (events, anyModifies) = lock {
-            defer {
-                eventContinuations.removeAll()
-                anyModificationCallbacks.removeAll()
-                anyModificationActiveCount = 0
+        eventContinuations.removeAll()
+        anyModificationCallbacks.removeAll()
+        anyModificationActiveCount = 0
+        modeLifeTime = .destructed
+        parent?.removeChild(self)
+        parent = nil
+        self.children.removeAll()
+
+        callbacks.append {
+            self.cancellations.cancelAll()
+
+            for cont in events {
+                cont.finish()
             }
-            return (eventContinuations.values, anyModificationCallbacks.values)
-        }
 
-        for cont in events {
-            cont.finish()
-        }
-
-        for cont in anyModifies {
-            cont(true)
-        }
-
-        // ...before children...
-        
-        let removeSelfFromParent = lock {
-            defer {
-                modeLifeTime = .destructed
-                parent = nil
+            for cont in anyModifies {
+                cont(true)
             }
-            return modeLifeTime == .destructed ? nil : { [parent] in
-                parent?.removeChild(self)
-            }
-        }
-        
-        guard let removeSelfFromParent else { return }
-        removeSelfFromParent()
-
-        let children = lock {
-            defer { self.children.removeAll() }
-            return allChildren
         }
 
         for child in children {
-            child.onRemoval()
+            child.onRemoval(callbacks: &callbacks)
+        }
+    }
+
+    func onRemoval() {
+        var callbacks: [() -> Void] = []
+        
+        lock {
+            onRemoval(callbacks: &callbacks)
+        }
+
+        for callback in callbacks {
+            callback()
         }
     }
 
