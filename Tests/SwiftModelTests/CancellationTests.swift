@@ -99,7 +99,7 @@ class CancellationTests: XCTestCase {
             model.task {
                 await channel.send(1)
                 try await withTaskCancellationHandler {
-                    try await Task.sleep(nanoseconds: NSEC_PER_MSEC*10)
+                    try await Task.sleep(nanoseconds: NSEC_PER_MSEC*1000)
                 } onCancel: {
                     $count.wrappedValue += 1
                 }

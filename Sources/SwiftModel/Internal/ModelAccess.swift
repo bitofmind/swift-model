@@ -12,7 +12,6 @@ class ModelAccess: ModelAccessReference {
 
     var shouldPropagateToChildren: Bool { false }
 
-    @TaskLocal static var forceDirectAccess = false
     @TaskLocal static var isInModelTaskContext = false
     @TaskLocal static var current: ModelAccess?
 

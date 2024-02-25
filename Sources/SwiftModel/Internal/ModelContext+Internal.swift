@@ -62,10 +62,6 @@ extension ModelContext {
     }
 }
 
-extension ModelLifetime {
-    @TaskLocal static var didReplaceModelWithAnchoredModel: @Sendable () -> Void = {}
-}
-
 extension Model {
     var lifetime: ModelLifetime {
         _$modelContext.lifetime
@@ -129,19 +125,52 @@ extension Model {
 }
 
 extension ModelContext {
+    func willAccess<T>(_ model: M, at path: WritableKeyPath<M, T>) -> (() -> Void)? {
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, let observable = model as? any Observable&Model {
+            observable.access(path: path, from: context)
+        }
+
+        return access?.willAccess(model, at: path)
+    }
+
+    func willModify<T>(_ model: M, at path: WritableKeyPath<M, T>) -> (() -> Void)? {
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, let observable = model as? any Observable&Model {
+            observable.willSet(path: path, from: context)
+            defer {
+                observable.didSet(path: path, from: context)
+            }
+            return access?.willModify(model, at: path)
+        } else {
+            return access?.willModify(model, at: path)
+        }
+    }
+}
+
+extension ModelNode {
+    func access<T>(path: WritableKeyPath<M, T>, from model: M) {
+        _$modelContext.willAccess(model, at: path)?()
+    }
+
+    func withMutation<Member, T>(of model: M, keyPath: WritableKeyPath<M, Member>, _ mutation: () throws -> T) rethrows -> T {
+
+        let postModify = _$modelContext.willModify(model, at: keyPath)
+        defer {
+            postModify?()
+        }
+        return try mutation()
+    }
+}
+
+extension ModelContext {
     subscript<T>(model: M, path: WritableKeyPath<M, T>) -> T {
         _read {
-            if ModelAccess.forceDirectAccess {
+            if threadLocals.forceDirectAccess {
                 yield model[keyPath: path]
             } else {
                 switch source {
                 case let .reference(reference):
                     if let context = reference.context {
-                        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let observable = model as? any Observable&Model {
-                            observable.access(path: path, from: context)
-                        }
-
-                        yield context[path, access?.willAccess(model, at: path)]
+                        yield context[path, willAccess(model, at: path)]
                     } else if let lastSeenValue = reference.lastSeenValue  {
                         yield lastSeenValue[keyPath: path]
                     } else {
@@ -168,13 +197,7 @@ extension ModelContext {
                 return
             }
 
-            if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let observable = model as? any Observable&Model {
-                observable.willSet(path: path, from: context)
-                yield &context[path, access?.willModify(model, at: path)]
-                observable.didSet(path: path, from: context)
-            } else {
-                yield &context[path, access?.willModify(model, at: path)]
-            }
+            yield &context[path, willModify(model, at: path)]
         }
     }
 

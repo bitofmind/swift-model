@@ -63,7 +63,7 @@ extension ModelContext: Hashable {
 
 public extension ModelContext {
     func mirror(of model: M, children: [(String, Any)]) -> Mirror {
-        if ModelID.includeInMirror, !children.map(\.0).contains("id") {
+        if threadLocals.includeInMirror, !children.map(\.0).contains("id") {
             return Mirror(model, children: [("id", modelID)] + children, displayStyle: .struct)
         } else {
             return Mirror(model, children: children, displayStyle: .struct)
@@ -158,28 +158,31 @@ public extension ModelContext {
                 return
             }
 
-            let oldContexts: [AnyContext] = transaction(with: model, at: path) { container in
+            var postLockCallbacks: [() -> Void] = []
+            transaction(with: model, at: path) { container in
                 var newContainer = newValue
 
-                let didReplaceModelWithAnchoredModel = LockIsolated(false)
-                let oldContexts = ModelLifetime.$didReplaceModelWithAnchoredModel.withValue({
-                    didReplaceModelWithAnchoredModel.setValue(true)
-                }) {
+                var didReplaceModelWithAnchoredModel = false
+                let oldContexts = threadLocals.withValue({
+                    didReplaceModelWithAnchoredModel = true
+                }, at: \.didReplaceModelWithAnchoredModel) {
                     context.updateContext(for: &newContainer, at: path)
                 }
 
-                if didReplaceModelWithAnchoredModel.value {
+                if didReplaceModelWithAnchoredModel {
                     XCTFail("It is not allowed to add an already anchored model, instead create new unanchored instance.")
-                    return []
+                    return
                 }
 
                 container = newContainer
 
-                return oldContexts
+                for context in oldContexts {
+                    context.onRemoval(callbacks: &postLockCallbacks)
+                }
             }
 
-            for context in oldContexts {
-                context.onRemoval()
+            for callback in postLockCallbacks {
+                callback()
             }
 
             if let access, access.shouldPropagateToChildren {

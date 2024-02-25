@@ -148,7 +148,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     let isEqualIncludingIds = lock {
                         var expected = expectedState.frozenCopy
                         var last = lastState.frozenCopy
-                        return ModelID.$includeInMirror.withValue(true) {
+                        return threadLocals.withValue(true, at: \.includeInMirror) {
                             passedAccesses.reduce(true) { result, access in
                                 access.apply(&expected)
                                 access.apply(&last)
@@ -307,7 +307,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         if let message = diffMessage(expected: lastAsserted, actual: actual, title: title) {
             fail(message, for: .state, at: fileAndLine)
         } else {
-            let message = ModelID.$includeInMirror.withValue(true) {
+            let message = threadLocals.withValue(true, at: \.includeInMirror) {
                 diffMessage(expected: lastAsserted, actual: actual, title: title)
             }
 

@@ -157,6 +157,8 @@ final class Context<M: Model>: AnyContext {
             lock.lock()
             if let last = reference._lastSeenValue {
                 yield last[keyPath: path]
+            } else if isDestructed {
+                yield readModel[keyPath: path]
             } else {
                 if isMutating { // Handle will and did set recursion
                     yield modifyModel[keyPath: path]
@@ -172,6 +174,10 @@ final class Context<M: Model>: AnyContext {
             if var last = reference._lastSeenValue {
                 yield &last[keyPath: path]
                 reference._lastSeenValue = last
+                lock.unlock()
+            } else if isDestructed {
+                var value = readModel[keyPath: path]
+                yield &value
                 lock.unlock()
             } else {
                 yield &modifyModel[keyPath: path]
@@ -217,23 +223,23 @@ final class Context<M: Model>: AnyContext {
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
         if reference.lastSeenValue != nil {
             return try callback()
-        } else {
-            return try lock {
-                if AnyContext.postTransactions == nil {
-                    let postTransactions = PostTransactions()
-                    defer {
-                        for callback in postTransactions.callbacks {
-                            callback()
-                        }
-                    }
+        }
 
-                    return try AnyContext.$postTransactions.withValue(postTransactions) {
-                        try callback()
-                    }
-                } else {
-                    return try callback()
+        return try lock {
+            if threadLocals.postTransactions != nil {
+                return try callback()
+            }
+
+            threadLocals.postTransactions = []
+            defer {
+                let posts = threadLocals.postTransactions!
+                threadLocals.postTransactions = nil
+                for postTransaction in posts {
+                    postTransaction()
                 }
             }
+
+            return try callback()
         }
     }
 

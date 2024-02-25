@@ -25,6 +25,4 @@ extension ModelID {
             return $0
         }
     }
-
-    @TaskLocal static var includeInMirror = false
 }

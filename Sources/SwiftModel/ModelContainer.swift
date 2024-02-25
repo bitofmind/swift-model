@@ -33,7 +33,7 @@ public extension MutableCollection where Self: ModelContainer, Element: Identifi
     func visit(with visitor: inout ContainerVisitor<Self>) {
         for index in indices {
             let element = self[index]
-            let id = ModelAccess.$forceDirectAccess.withValue(true) { element.id }
+            let id = threadLocals.withValue(true, at: \.forceDirectAccess) { element.id }
             let path = path(id: id) { collection in
                 if index >= collection.startIndex && index < collection.endIndex {
                     let element = collection[index]

@@ -8,7 +8,7 @@ import Observation
 ///
 /// >  In iOS 17, tvOS 17, macOS 14 and watchOS 10.0, `@ObservedModel` is not required, instead your models will automatically conform to the new `Observable` protocol.
 ///
-/// > In iOS 17, tvOS 17, macOS 14 and watchOS 10.0, `@ObservedModel` is not required, here you will use SwiftUI's new `@Bindable` annotation instead.
+/// > In iOS 17, tvOS 17, macOS 14 and watchOS 10.0, `@ObservedModel` has to be used instead SwiftUI's new `@Bindable` annotation, as the latter does not yet accept non class types.
 ///
 /// >`@ObservedModel` has been carefully crafted to only trigger view updates when properties you are accessing from your view is updated.
 ///
@@ -21,10 +21,6 @@ import Observation
 ///       }
 ///     }
 ///   }
-@available(iOS, deprecated: 17.0, message: "@ObservedModel can be removed or replaced with @Bindable")
-@available(macOS, deprecated: 14.0, message: "@ObservedModel can be removed or replaced with @Bindable")
-@available(tvOS, deprecated: 17.0, message: "@ObservedModel can be removed or replaced with @Bindable")
-@available(watchOS, deprecated: 10.0, message: "@ObservedModel can be removed or replaced with @Bindable")
 @propertyWrapper @dynamicMemberLookup
 public struct ObservedModel<M: Model>: DynamicProperty {
     @StateObject private var access = ViewAccess()

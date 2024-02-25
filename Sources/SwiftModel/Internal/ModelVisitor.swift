@@ -91,7 +91,7 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
 
         if childContext !== childModel.context {
             if childModel.context != nil {
-                ModelLifetime.didReplaceModelWithAnchoredModel()
+                threadLocals.didReplaceModelWithAnchoredModel()
             }
             value[keyPath: path].withContextAdded(context: childContext, containerPath: \.self, elementPath: \.self, includeSelf: false)
             value[keyPath: path]._$modelContext = ModelContext(context: childContext)
