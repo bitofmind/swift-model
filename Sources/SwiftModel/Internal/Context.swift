@@ -245,6 +245,10 @@ final class Context<M: Model>: AnyContext {
         }
 
         return try lock {
+            if threadLocals.postTransactions != nil {
+                return try callback()
+            }
+
             threadLocals.postTransactions = []
             defer {
                 let posts = threadLocals.postTransactions!
