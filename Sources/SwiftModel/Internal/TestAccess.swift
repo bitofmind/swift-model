@@ -85,7 +85,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     "\(String(describing: M.self)).\(propertyName(from: model, path: path) ?? "UNKOWN") = \(String(customDumping: value))"
                 }
 
-                self.lastState = frozenCopy(self.context.model)
+                self.lastState[keyPath: fullPath] = value
             }
         }
     }

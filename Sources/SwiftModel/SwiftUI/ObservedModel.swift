@@ -123,11 +123,13 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
             let observer = (observers[id] as? Observer<M>) ?? Observer(context: model.context!, viewAccess: self)
             if observer.accesses[path] == nil {
                 observer.accesses[path] = model.context!.onModify(for: path) { [weak self] finished in
-                    if !finished {
-                        self?.didUpdate()
-                    } else {
-                        self?.lock {
-                            observer.accesses[path] = nil
+                    return {
+                        if !finished {
+                            self?.didUpdate()
+                        } else {
+                            self?.lock {
+                                observer.accesses[path] = nil
+                            }
                         }
                     }
                 }

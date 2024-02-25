@@ -5,7 +5,7 @@ import XCTestDynamicOverlay
 
 final class Context<M: Model>: AnyContext {
     private let activations: [(M) -> Void]
-    private var modifyCallbacks: [PartialKeyPath<M>: [Int: (Bool) -> Void]] = [:]
+    private var modifyCallbacks: [PartialKeyPath<M>: [Int: (Bool) -> (() -> Void)?]] = [:]
     let reference: Reference
     let rootPath: AnyKeyPath
     var readModel: M
@@ -68,7 +68,7 @@ final class Context<M: Model>: AnyContext {
 
         callbacks.append {
             for cont in modifies {
-                cont(true)
+                cont(true)?()
             }
         }
 
@@ -88,7 +88,7 @@ final class Context<M: Model>: AnyContext {
         sendEvent(eventInfo, to: receivers)
     }
 
-    func onModify<T>(for path: KeyPath<M, T>, _ callback: @Sendable @escaping (Bool) -> Void) -> @Sendable () -> Void {
+    func onModify<T>(for path: KeyPath<M, T>, _ callback: @Sendable @escaping (Bool) -> (() -> Void)?) -> @Sendable () -> Void {
         guard !isDestructed else {
             return {}
         }
@@ -185,13 +185,18 @@ final class Context<M: Model>: AnyContext {
                 readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
                 isMutating = false
                 callback?()
-                onPostTransaction {
+                var postLockCallbacks: [() -> Void] = []
+                onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
                     for callback in (self.modifyCallbacks[path] ?? [:]).values {
-                        callback(false)
+                        if let postCallback = callback(false) {
+                            postCallbacks.append(postCallback)
+                        }
                     }
-                    self.didModify()
+                    self.didModify(callbacks: &postCallbacks)
                 }
                 lock.unlock()
+
+                for plc in postLockCallbacks { plc() }
             }
         }
     }
@@ -209,13 +214,20 @@ final class Context<M: Model>: AnyContext {
             readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
             isMutating = false
             callback?()
-            onPostTransaction {
+
+            var postLockCallbacks: [() -> Void] = []
+            onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
                 for callback in (self.modifyCallbacks[path] ?? [:]).values {
-                    callback(false)
+                    if let postCallback = callback(false) {
+                        postCallbacks.append(postCallback)
+                    }
                 }
-                self.didModify()
+                self.didModify(callbacks: &postCallbacks)
             }
+
             lock.unlock()
+
+            for plc in postLockCallbacks { plc() }
         }
         return result
     }
@@ -225,17 +237,20 @@ final class Context<M: Model>: AnyContext {
             return try callback()
         }
 
-        return try lock {
-            if threadLocals.postTransactions != nil {
-                return try callback()
+        var postLockCallbacks: [() -> Void] = []
+        defer {
+            for plc in postLockCallbacks {
+                plc()
             }
+        }
 
+        return try lock {
             threadLocals.postTransactions = []
             defer {
                 let posts = threadLocals.postTransactions!
                 threadLocals.postTransactions = nil
                 for postTransaction in posts {
-                    postTransaction()
+                    postTransaction(&postLockCallbacks)
                 }
             }
 

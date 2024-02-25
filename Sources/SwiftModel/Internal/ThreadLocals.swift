@@ -1,7 +1,7 @@
 import Foundation
 
 final class ThreadLocals: @unchecked Sendable {
-    var postTransactions: [() -> Void]? = nil
+    var postTransactions: [(inout [() -> Void]) -> Void]? = nil
     var forceDirectAccess = false
     var didReplaceModelWithAnchoredModel: () -> Void = {}
     var includeInMirror = false

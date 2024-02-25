@@ -24,7 +24,7 @@ class AnyContext: @unchecked Sendable {
     let cancellations = Cancellations()
 
     private(set) var anyModificationActiveCount = 0
-    private var anyModificationCallbacks: [Int: (Bool) -> Void] = [:]
+    private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] = [:]
 
     struct EventInfo: @unchecked Sendable {
         var event: Any
@@ -36,11 +36,11 @@ class AnyContext: @unchecked Sendable {
         var id: AnyHashable
     }
 
-    func onPostTransaction(callback: @escaping () -> Void) {
+    func onPostTransaction(callbacks: inout [() -> Void], callback: @escaping (inout [() -> Void]) -> Void) {
         if threadLocals.postTransactions != nil {
             threadLocals.postTransactions!.append(callback)
         } else {
-            callback()
+            callback(&callbacks)
         }
     }
 
@@ -126,7 +126,7 @@ class AnyContext: @unchecked Sendable {
             }
 
             for cont in anyModifies {
-                cont(true)
+                cont(true)?()
             }
         }
 
@@ -219,7 +219,7 @@ class AnyContext: @unchecked Sendable {
 
     }
 
-    func onAnyModification(callback: @Sendable @escaping (Bool) -> Void) -> @Sendable () -> Void {
+    func onAnyModification(callback: @Sendable @escaping (Bool) -> (() -> Void)?) -> @Sendable () -> Void {
         let key = generateKey()
         lock {
             anyModificationCallbacks[key] = callback
@@ -238,14 +238,16 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    func didModify() {
-        guard lock(anyModificationActiveCount) > 0 else { return }
+    func didModify(callbacks: inout [() -> Void]) {
+        guard anyModificationActiveCount > 0 else { return }
 
-        for callback in lock(anyModificationCallbacks.values) {
-            callback(false)
+        for callback in anyModificationCallbacks.values {
+            if let c = callback(false) {
+                callbacks.append(c)
+            }
         }
 
-        parent?.didModify()
+        parent?.didModify(callbacks: &callbacks)
     }
 
     @TaskLocal static var keepLastSeenAround = false

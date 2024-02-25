@@ -25,24 +25,12 @@ public extension Model {
         guard let context = enforcedContext() else { return .never }
         return AsyncStream { cont in
             let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])
-            let valueQueue = LockIsolated<[T]>([])
 
-            @Sendable func yield() {
-                valueQueue.withValue {
-                    let copy = copy(context[path], shouldFreeze: freezeValues)
-                    $0.append(copy)
-                }
+            @Sendable func yield() -> () -> Void {
+                let copy = copy(context[path], shouldFreeze: freezeValues)
 
-                Task { // Don't call out when holding the context lock
-                    let values = valueQueue.withValue {
-                        let values = $0
-                        $0.removeAll()
-                        return values
-                    }
-
-                    for value in values {
-                        cont.yield(value)
-                    }
+                return { // Callout outside of held lock
+                    cont.yield(copy)
                 }
             }
 
@@ -53,9 +41,8 @@ public extension Model {
                         defer {
                             container.forEachContext { subContext in
                                 let cancel = subContext.onAnyModification { didFinish in
-                                    if !didFinish {
-                                        yield()
-                                    }
+                                    if didFinish { return nil }
+                                    return yield()
                                 }
                                 anyCallbacks.append(cancel)
                             }
@@ -72,7 +59,7 @@ public extension Model {
             self.transaction {
                 let collector = AccessCollector { collector, modifiedValue, finished in
                     if finished {
-                        return
+                        return nil
                     }
 
                     if modifiedValue is any ModelContainer {
@@ -83,7 +70,7 @@ public extension Model {
                         _ = withAccess(collector)[keyPath: path]
                     }
 
-                    yield()
+                    return yield()
                 }
 
                 reset()
@@ -108,15 +95,17 @@ public extension Model {
         let previous = LockIsolated(context.model.frozenCopy)
 
         let cancel = context.onAnyModification { hasEnded in
-            guard !hasEnded else { return }
-            
+            guard !hasEnded else { return nil }
+
             let current = context.model
             defer { previous.setValue(current.frozenCopy) }
 
-            guard let diff = diff(previous.value, current) else { return }
+            guard let diff = diff(previous.value, current) else { return nil }
 
-            var printer = printer
-            printer.write("State did update for \(name ?? typeDescription):\n" + diff)
+            return {
+                var printer = printer
+                printer.write("State did update for \(name ?? typeDescription):\n" + diff)
+            }
         }
 
         return AnyCancellable(context: context, onCancel: cancel)
@@ -134,10 +123,10 @@ public struct PrintTextOutputStream: TextOutputStream {
 }
 
 private final class AccessCollector: ModelAccess, @unchecked Sendable {
-    let onModify: @Sendable (AccessCollector, Any, Bool) -> Void
+    let onModify: @Sendable (AccessCollector, Any, Bool) -> (() -> Void)?
     var cancellables: [() -> Void] = []
 
-    init(onModify: @Sendable @escaping (AccessCollector, Any, Bool) -> Void) {
+    init(onModify: @Sendable @escaping (AccessCollector, Any, Bool) -> (() -> Void)?) {
         self.onModify = onModify
         super.init(useWeakReference: false)
     }
