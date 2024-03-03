@@ -54,7 +54,7 @@ final class Context<M: Model>: AnyContext {
             }
         }
 
-        for child in allChildren {
+        for child in lock(allChildren) {
             _ = child.onActivate()
         }
 
