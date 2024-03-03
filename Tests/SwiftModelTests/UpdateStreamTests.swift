@@ -306,11 +306,11 @@ final class UpdateStreamTests: XCTestCase {
     let recursive: Bool
 
     func onActivate() {
-        node.forEach(update(of: \.count, initial: initial, recursive: recursive)) { count in
+        node.forEach(update(of: \.count, initial: initial)) { count in
             counts.append(count)
         }
 
-        node.forEach(update(of: \.child.count, initial: initial, recursive: recursive)) { count in
+        node.forEach(update(of: \.child.count, initial: initial)) { count in
             childCounts.append(count)
         }
 
@@ -328,7 +328,7 @@ final class UpdateStreamTests: XCTestCase {
             }
         }
 
-        node.forEach(update(of: \.optChild?.count, initial: initial, recursive: recursive)) { count in
+        node.forEach(update(of: \.optChild?.count, initial: initial)) { count in
             optChildCounts.append(count)
         }
     }

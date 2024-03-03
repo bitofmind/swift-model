@@ -17,9 +17,4 @@ final class InitializationTests: XCTestCase {
 private struct MyModel: Sendable {
     let id: Int
     private(set) var integer: Int?
-
-    init(id: Int, integer: Int? = nil) {
-        self.id = id
-        self.integer = integer
-    }
 }

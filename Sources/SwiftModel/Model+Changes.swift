@@ -7,9 +7,27 @@ public extension Model {
     ///
     /// - Parameter path: key path to value to be observed
     /// - Parameter initial: Start by sending current initial value (defaults to true).
+    func change<T: Equatable>(of path: KeyPath<Self, T>, initial: Bool = true) -> AsyncStream<T> where Self: Sendable {
+        update(of: path, initial: initial).removeDuplicates().eraseToStream()
+    }
+
+    /// Returns a stream observing updates of the value at `path`
+    ///
+    /// Will be called when value was updated, even if updated to same value, use `change(of:)` to only receive changes
+    ///
+    /// - Parameter path: KeyPath to value to be observed
+    /// - Parameter initial: Start by sending current initial value (defaults to true)
+    func update<T>(of path: KeyPath<Self, T>, initial: Bool = true) -> AsyncStream<T> where Self: Sendable {
+        _update(of: path, initial: initial, recursive: false, freezeValues: false)
+    }
+
+    /// Returns a stream observing changes (using equality checks) of the value at `path`
+    ///
+    /// - Parameter path: key path to value to be observed
+    /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter recursive: Also trigger updates if any sub-value or there of is updated (default to false).
     /// - Parameter freezeValues: Returned frozen copies (snap-shots) of models (defaults to false).
-    func change<T: Equatable>(of path: KeyPath<Self, T>, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
+    func change<T: ModelContainer&Equatable>(of path: KeyPath<Self, T>, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
         update(of: path, initial: initial, recursive: recursive, freezeValues: freezeValues).removeDuplicates().eraseToStream()
     }
 
@@ -21,7 +39,47 @@ public extension Model {
     /// - Parameter initial: Start by sending current initial value (defaults to true)
     /// - Parameter recursive: Also trigger updates if any sub-value or there of is updated (default to false).
     /// - Parameter freezeValues: Returned frozen copies (snap-shots) of models (defaults to false).
-    func update<T>(of path: KeyPath<Self, T>, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
+    func update<T: ModelContainer>(of path: KeyPath<Self, T>, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
+        _update(of: path, initial: initial, recursive: recursive, freezeValues: freezeValues)
+    }
+
+    /// Will start to print state changes until cancelled, but only in `DEBUG` configurations.
+    @discardableResult
+    func _printChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Cancellable where Self: Sendable {
+#if DEBUG
+        guard let context = enforcedContext() else { return EmptyCancellable() }
+        let previous = LockIsolated(context.model.frozenCopy)
+
+        let cancel = context.onAnyModification { hasEnded in
+            guard !hasEnded else { return nil }
+
+            let current = context.model
+            defer { previous.setValue(current.frozenCopy) }
+
+            guard let diff = diff(previous.value, current) else { return nil }
+
+            return {
+                var printer = printer
+                printer.write("State did update for \(name ?? typeDescription):\n" + diff)
+            }
+        }
+
+        return AnyCancellable(context: context, onCancel: cancel)
+#else
+       return EmptyCancellable()
+#endif
+    }
+}
+
+public struct PrintTextOutputStream: TextOutputStream {
+    public init() {}
+    public func write(_ string: String) {
+        print(string)
+    }
+}
+
+private extension Model {
+    func _update<T>(of path: KeyPath<Self, T>, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
         guard let context = enforcedContext() else { return .never }
         return AsyncStream { cont in
             let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])
@@ -85,40 +143,6 @@ public extension Model {
                 }
             }
         }
-    }
-
-    /// Will start to print state changes until cancelled, but only in `DEBUG` configurations.
-    @discardableResult
-    func _printChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Cancellable where Self: Sendable {
-#if DEBUG
-        guard let context = enforcedContext() else { return EmptyCancellable() }
-        let previous = LockIsolated(context.model.frozenCopy)
-
-        let cancel = context.onAnyModification { hasEnded in
-            guard !hasEnded else { return nil }
-
-            let current = context.model
-            defer { previous.setValue(current.frozenCopy) }
-
-            guard let diff = diff(previous.value, current) else { return nil }
-
-            return {
-                var printer = printer
-                printer.write("State did update for \(name ?? typeDescription):\n" + diff)
-            }
-        }
-
-        return AnyCancellable(context: context, onCancel: cancel)
-#else
-       return EmptyCancellable()
-#endif
-    }
-}
-
-public struct PrintTextOutputStream: TextOutputStream {
-    public init() {}
-    public func write(_ string: String) {
-        print(string)
     }
 }
 
