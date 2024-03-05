@@ -6,13 +6,14 @@ struct EmptyCancellable: Cancellable {
     func cancel(for key: some Hashable & Sendable, cancelInFlight: Bool) -> EmptyCancellable { self }
 }
 
-struct AnyCancellable: Cancellable, InternalCancellable {
-    var cancellations: Cancellations
+
+final class AnyCancellable: Cancellable, InternalCancellable {
+    weak var cancellations: Cancellations?
     var id: Int
     private var _onCancel: @Sendable () -> Void
 
-    init(context: AnyContext, onCancel: @escaping @Sendable () -> Void) {
-        self.cancellations = context.cancellations
+    init(cancellations: Cancellations, onCancel: @escaping @Sendable () -> Void) {
+        self.cancellations = cancellations
         id = cancellations.nextId
         _onCancel = onCancel
         cancellations.register(self)
@@ -23,12 +24,12 @@ struct AnyCancellable: Cancellable, InternalCancellable {
     }
 
     public func cancel() {
-        cancellations.cancel(self)
+        cancellations?.cancel(self)
     }
 
     @discardableResult
     public func cancel(for key: some Hashable&Sendable, cancelInFlight: Bool) -> Self {
-        cancellations.cancel(self, for: key, cancelInFlight: cancelInFlight)
+        cancellations?.cancel(self, for: key, cancelInFlight: cancelInFlight)
         return self
     }
 
@@ -38,7 +39,7 @@ struct AnyCancellable: Cancellable, InternalCancellable {
 
 final class TaskCancellable: Cancellable, InternalCancellable {
     var id: Int
-    var cancellations: Cancellations
+    weak var cancellations: Cancellations?
     var task: Task<Void, Error>!
     var name: String
     var fileAndLine: FileAndLine
@@ -47,13 +48,13 @@ final class TaskCancellable: Cancellable, InternalCancellable {
 
     init(name: String, fileAndLine: FileAndLine, context: AnyContext, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
         self.cancellations = context.cancellations
-        let id = cancellations.nextId
+        let id = context.cancellations.nextId
         self.id = id
         self.name = name
         self.fileAndLine = fileAndLine
         self.task = nil
 
-        cancellations.register(self)
+        context.cancellations.register(self)
 
         lock {
             guard !self.hasBeenCancelled else { return }
@@ -71,12 +72,12 @@ final class TaskCancellable: Cancellable, InternalCancellable {
     }
 
     public func cancel() {
-        cancellations.cancel(self)
+        cancellations?.cancel(self)
     }
 
     @discardableResult
     public func cancel(for key: some Hashable&Sendable, cancelInFlight: Bool) -> Self {
-        cancellations.cancel(self, for: key, cancelInFlight: cancelInFlight)
+        cancellations?.cancel(self, for: key, cancelInFlight: cancelInFlight)
         return self
     }
 }

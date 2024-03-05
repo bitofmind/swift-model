@@ -6,9 +6,9 @@ public extension ModelNode {
     /// - Returns: A cancellable to optionally allow cancelling before deactivation.
     @discardableResult
     func onCancel(perform: @Sendable @escaping () -> Void) -> Cancellable {
-        guard let context = enforcedContext() else { return EmptyCancellable() }
+        guard let cancellations = enforcedContext()?.cancellations else { return EmptyCancellable() }
 
-        return AnyCancellable(context: context, onCancel: perform)
+        return AnyCancellable(cancellations: cancellations, onCancel: perform)
     }
 
 
@@ -38,10 +38,10 @@ public extension ModelNode {
     ///     }
     ///
     func cancellationContext<T>(for key: some Hashable, perform: () throws -> T) rethrows -> T {
-        guard let context = enforcedContext() else { return try perform() }
+        guard let cancellations = enforcedContext()?.cancellations else { return try perform() }
 
-        let _ = AnyCancellable(context: context) {
-            cancelAll(for: key)
+        let _ = AnyCancellable(cancellations: cancellations) { [weak cancellations] in
+            cancellations?.cancelAll(for: key)
         }
 
         return try AnyCancellable.$contexts.withValue(AnyCancellable.contexts + [CancellableKey(key: key)]) {
@@ -59,10 +59,11 @@ public extension ModelNode {
     ///     }
     ///
     func cancellationContext<T>(for key: some Hashable, perform: () async throws -> T) async rethrows -> T {
-        guard let context = enforcedContext() else { return try await perform() }
+        guard let cancellations = enforcedContext()?.cancellations else { return try await perform() }
 
-        let _ = AnyCancellable(context: context) {
-            cancelAll(for: key)
+
+        let _ = AnyCancellable(cancellations: cancellations) { [weak cancellations] in
+            cancellations?.cancelAll(for: key)
         }
 
         return try await AnyCancellable.$contexts.withValue(AnyCancellable.contexts + [CancellableKey(key: key)]) {
@@ -82,15 +83,15 @@ public extension ModelNode {
     ///     }.cancelInFlight()
     ///
     func cancellationContext(perform: () throws -> Void) rethrows -> Cancellable {
-        guard let context = enforcedContext() else { return EmptyCancellable() }
+        guard let cancellations = enforcedContext()?.cancellations else { return EmptyCancellable() }
 
         let key = UUID()
         try AnyCancellable.$contexts.withValue(AnyCancellable.contexts + [CancellableKey(key: key)]) {
             try perform()
         }
 
-        return AnyCancellable(context: context) {
-            cancelAll(for: key)
+        return AnyCancellable(cancellations: cancellations) { [weak cancellations] in
+            cancellations?.cancelAll(for: key)
         }
     }
 
@@ -104,11 +105,11 @@ public extension ModelNode {
     ///     }.cancelInFlight()
     ///
     func cancellationContext(perform: () async throws -> Void) async rethrows -> Cancellable {
-        guard let context = enforcedContext() else { return EmptyCancellable() }
+        guard let cancellations = enforcedContext()?.cancellations else { return EmptyCancellable() }
 
         let key = UUID()
-        let cancellable = AnyCancellable(context: context) {
-            cancelAll(for: key)
+        let cancellable = AnyCancellable(cancellations: cancellations) { [weak cancellations] in
+            cancellations?.cancelAll(for: key)
         }
 
         try await AnyCancellable.$contexts.withValue(AnyCancellable.contexts + [CancellableKey(key: key)]) {

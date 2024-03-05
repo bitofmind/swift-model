@@ -64,7 +64,7 @@ public extension Model {
             }
         }
 
-        return AnyCancellable(context: context, onCancel: cancel)
+        return AnyCancellable(cancellations: context.cancellations, onCancel: cancel)
 #else
        return EmptyCancellable()
 #endif

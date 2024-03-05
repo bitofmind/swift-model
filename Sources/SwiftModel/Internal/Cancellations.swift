@@ -93,7 +93,6 @@ final class Cancellations: @unchecked Sendable {
 }
 
 protocol InternalCancellable {
-    var cancellations: Cancellations { get }
     var id: Int { get }
     func onCancel()
 }

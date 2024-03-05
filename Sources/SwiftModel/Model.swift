@@ -84,8 +84,8 @@ public extension Model {
         return withActivation { model in
             var printer = printer
             printer.write("\(name) was activated")
-            guard let context = model.enforcedContext() else { return }
-            _ = AnyCancellable(context: context) { [printer] in
+            guard let cancellations = model.enforcedContext()?.cancellations else { return }
+            _ = AnyCancellable(cancellations: cancellations) { [printer] in
                 var printer = printer
                 printer.write("\(name) was deactivated")
             }
