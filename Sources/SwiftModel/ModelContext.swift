@@ -117,12 +117,17 @@ public extension ModelContext {
                 return
             }
 
+            var callbacks: [() -> Void] = []
             transaction(with: model, at: path) { child in
                 var newChild = newValue
-                context[path].context?.onRemoval()
+                context[path].context?.onRemoval(callbacks: &callbacks)
                 context.updateContext(for: &newChild, at: path)
 
                 child = newChild
+            }
+
+            for callback in callbacks {
+                callback()
             }
 
             if let access, access.shouldPropagateToChildren {
