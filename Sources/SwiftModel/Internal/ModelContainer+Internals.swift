@@ -52,8 +52,14 @@ extension ModelContainer {
 
 private struct MakeInitialTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
+        if model.context != nil { return }
+        let initial = model._$modelContext.initial
         model = model.shallowCopy
-        model._$modelContext.source = .initial(.init(id: model.modelID))
+        if let initial {
+            model._$modelContext.source = .reference(initial)
+        } else {
+            model._$modelContext.source = .reference(.init(modelID: model.modelID))
+        }
     }
 }
 

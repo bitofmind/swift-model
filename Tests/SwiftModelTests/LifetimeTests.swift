@@ -14,20 +14,20 @@ final class LifetimeTests: XCTestCase {
         i.count += 10
         a.count += 1
 
-        XCTAssertEqual(i.count, 4722)
-        XCTAssertEqual(a.count, 4713)
+        XCTAssertEqual(i.count, 4723)
+        XCTAssertEqual(a.count, 4723)
 
         let fi = i.frozenCopy
         let fa = a.frozenCopy
 
-        XCTAssertEqual(fi.count, 4722)
-        XCTAssertEqual(fa.count, 4713)
+        XCTAssertEqual(fi.count, 4723)
+        XCTAssertEqual(fa.count, 4723)
 
         i.count += 1
         a.count += 1
 
-        XCTAssertEqual(fi.count, 4722)
-        XCTAssertEqual(fa.count, 4713)
+        XCTAssertEqual(fi.count, 4723)
+        XCTAssertEqual(fa.count, 4723)
 
         XCTExpectFailure {
             fi.count += 1
@@ -48,8 +48,8 @@ final class LifetimeTests: XCTestCase {
         i.child.count += 10
         a.child.count += 1
 
-        XCTAssertEqual(i.child.count, 36)
-        XCTAssertEqual(a.child.count, 27)
+        XCTAssertEqual(i.child.count, 37)
+        XCTAssertEqual(a.child.count, 37)
 
         i.child = Child(count: 100)
         XCTAssertEqual(i.child.count, 100)
@@ -68,9 +68,7 @@ final class LifetimeTests: XCTestCase {
             fa.child = Child(count: 3)
         }
 
-        XCTExpectFailure {
-            i.child = a.child
-        }
+        i.child = a.child
 
         a.child = i.child
 
@@ -93,8 +91,8 @@ final class LifetimeTests: XCTestCase {
         i.children[0].count += 10
         a.children[0].count += 1
 
-        XCTAssertEqual(i.children[0].count, 36)
-        XCTAssertEqual(a.children[0].count, 27)
+        XCTAssertEqual(i.children[0].count, 37)
+        XCTAssertEqual(a.children[0].count, 37)
 
         i.children[0] = Child(count: 100)
         XCTAssertEqual(i.children[0].count, 100)
@@ -113,9 +111,7 @@ final class LifetimeTests: XCTestCase {
             fa.children[0] = Child(count: 3)
         }
 
-        XCTExpectFailure {
-            i.children[0] = a.children[0]
-        }
+        i.children[0] = a.children[0]
 
         a.children[0] = i.children[0]
 

@@ -15,3 +15,6 @@ public macro ModelTracked() = #externalMacro(module: "SwiftModelMacros", type: "
 
 @attached(accessor, names: named(willSet))
 public macro ModelIgnored() = #externalMacro(module: "SwiftModelMacros", type: "ModelIgnoredMacro")
+
+@attached(accessor, names: named(get))
+public macro ModelDependency() = #externalMacro(module: "SwiftModelMacros", type: "ModelDependencyMacro")

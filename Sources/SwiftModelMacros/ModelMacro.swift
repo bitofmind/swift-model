@@ -44,6 +44,7 @@ extension ModelMacro: ExtensionMacro {
 
             let mirrorChildren = memberList.compactMap { member -> String? in
                 guard let decl = member.decl.as(VariableDeclSyntax.self),
+                      !decl.hasMacroApplication("ModelDependency"),
                       let identifier = decl.identifier else { return nil }
 
                 return "(\"\(identifier)\", \(identifier) as Any)"
@@ -89,6 +90,12 @@ enum ModelMacroError: String, Error, CustomStringConvertible {
     var description: String { rawValue }
 }
 
+private extension VariableDeclSyntax {
+    var isValid: Bool {
+        !hasMacroApplication("ModelIgnored") && !hasMacroApplication("ModelDependency")
+    }
+}
+
 extension ModelMacro: MemberMacro {
     public static func expansion<Declaration: DeclGroupSyntax,
                                  Context: MacroExpansionContext>(
@@ -103,7 +110,7 @@ extension ModelMacro: MemberMacro {
         var result: [DeclSyntax] = []
 
         let visits = declaration.definedVariables.filter {
-            !$0.isComputed && $0.isInstance && !$0.hasMacroApplication("ModelIgnored")
+            !$0.isComputed && $0.isInstance && $0.isValid
         }.compactMap { member -> String? in
             guard let identifier = member.identifier else { return nil }
             return "visitor.visitStatically(at: \\.\(member.isImmutable ? "" :  "_")\(identifier))"
@@ -118,7 +125,7 @@ extension ModelMacro: MemberMacro {
         )
 
         let storedInstanceVariables = declaration.definedVariables.filter {
-            $0.isValidForObservation && !$0.hasMacroApplication("ModelIgnored")
+            $0.isValidForObservation && $0.isValid
         }
 
         let inheritanceClause = structDecl.inheritanceClause
@@ -128,7 +135,7 @@ extension ModelMacro: MemberMacro {
 
 
             let equals: [String] = storedInstanceVariables.compactMap { member in
-                if let identifier = member.identifier, !member.hasMacroApplication("ModelIgnored") {
+                if let identifier = member.identifier, member.isValid {
                     //DeclSyntax("lhs._modelContext.getValue(at: \\._\(identifier), from: lhs) == rhs._modelContext.getValue(at: \\._\(identifier), from: rhs) && ")
                     return "lhs.\( identifier) == rhs.\(identifier)"
                 } else {
@@ -149,7 +156,7 @@ extension ModelMacro: MemberMacro {
            inheritedTypes.contains(where: { inherited in inherited.type.trimmedDescription == "Hashable" })
         {
             let hashables: [String] = storedInstanceVariables.compactMap { member in
-                if let identifier = member.identifier, !member.hasMacroApplication("ModelIgnored") {
+                if let identifier = member.identifier, member.isValid {
                     return "hasher.combine(\(identifier))"
                 } else {
                     return nil
@@ -212,7 +219,7 @@ extension ModelMacro: MemberAttributeMacro {
             return []
         }
 
-        if property.hasMacroApplication("ModelIgnored") {
+        if property.hasMacroApplication("ModelIgnored") || property.hasMacroApplication("ModelDependency") {
             return []
         }
 

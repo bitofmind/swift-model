@@ -7,7 +7,15 @@ extension ModelContext {
         case let .reference(reference):
             return reference
 
-        case .initial, .frozenCopy, .lastSeen:
+        case .frozenCopy, .lastSeen:
+            return nil
+        }
+    }
+
+    var initial: Context<M>.Reference? {
+        if let reference, reference.lifetime == .initial {
+            return reference
+        } else {
             return nil
         }
     }
@@ -19,15 +27,13 @@ extension ModelContext {
     var modelID: ModelID {
         switch source {
         case let .reference(reference): reference.modelID
-        case let .initial(initial): initial.id
         case let .frozenCopy(id: id), let .lastSeen(id: id): id
         }
     }
 
     var lifetime: ModelLifetime {
         switch source {
-        case let .reference(reference): reference.context?.lifetime ?? .destructed
-        case .initial: .initial
+        case let .reference(reference): reference.lifetime
         case .frozenCopy: .frozenCopy
         case .lastSeen: .destructed
         }
@@ -50,12 +56,15 @@ extension ModelContext {
         switch source {
         case let .reference(reference):
             return reference.context
-        case .initial:
-            return nil
         case .frozenCopy:
-            XCTFail("Modifying an frozen copy of a model is not allowed and has no effect")
+            XCTFail("Modifying a frozen copy of a model is not allowed and has no effect")
             return nil
         case .lastSeen:
+            if let access = access as? LastSeenAccess, -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
+                // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
+                return nil
+            }
+
             XCTFail("Modifying an destructed model is not allowed and has no effect")
             return nil
         }
@@ -110,7 +119,7 @@ extension Model {
     }
 
     var isInitial: Bool {
-        if case .initial = _$modelContext.source { true } else { false }
+        reference?.lifetime == .initial
     }
 
     var modelID: ModelID {
@@ -171,14 +180,11 @@ extension ModelContext {
                 case let .reference(reference):
                     if let context = reference.context {
                         yield context[path, willAccess(model, at: path)]
-                    } else if let lastSeenValue = reference.lastSeenValue  {
+                    } else if let lastSeenValue = reference.model  {
                         yield lastSeenValue[keyPath: path]
                     } else {
                         yield model[keyPath: path]
                     }
-
-                case let .initial(initial):
-                    yield initial[fallback: model][keyPath: path]
 
                 case .frozenCopy, .lastSeen:
                     yield model[keyPath: path]
@@ -188,8 +194,8 @@ extension ModelContext {
 
         nonmutating _modify {
             guard let context = modifyContext else {
-                if case let .initial(initial) = source {
-                    yield &initial[fallback: model][keyPath: path]
+                if let reference, reference.lifetime == .initial {
+                    yield &reference[fallback: model][keyPath: path]
                 } else {
                     var model = model
                     yield &model[keyPath: path]
@@ -203,8 +209,8 @@ extension ModelContext {
 
     func transaction<Value, T>(with model: M, at path: WritableKeyPath<M, Value>, modify: (inout Value) throws -> T) rethrows -> T {
         guard let context = modifyContext else {
-            if case let .initial(initial) = source {
-                return try modify(&initial[fallback: model][keyPath: path])
+            if let reference, reference.lifetime == .initial {
+                return try modify(&reference[fallback: model][keyPath: path])
             } else {
                 var value = model[keyPath: path]
                 return try modify(&value)
@@ -220,5 +226,9 @@ extension ModelContext {
         } else {
             return try context.transaction(at: path, callback: access?.willModify(model, at: path), modify: modify)
         }
+    }
+
+    func _dependency<D: DependencyKey>() -> D where D.Value == D {
+        ModelNode(_$modelContext: self)[D.self]
     }
 }

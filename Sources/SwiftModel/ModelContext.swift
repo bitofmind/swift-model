@@ -2,7 +2,7 @@ import Foundation
 import Dependencies
 
 public struct ModelContext<M: Model> {
-    var source: Source = .initial(Initial())
+    var source: Source = .reference(.init(modelID: .generate()))
     var _access: ModelAccess.Reference?
 
     var access: ModelAccess? {
@@ -10,32 +10,8 @@ public struct ModelContext<M: Model> {
         set { _access = newValue?.reference }
     }
 
-    class Initial: @unchecked Sendable {
-        let id: ModelID
-        private var _model: M?
-
-        public init(id: ModelID = .generate()) {
-            self.id = id
-        }
-
-        subscript (fallback fallback: M) -> M {
-            _read {
-                initialLock.lock()
-                yield _model?.withAccess(fallback.access) ?? fallback
-                initialLock.unlock()
-            }
-            _modify {
-                initialLock.lock()
-                var model = _model?.withAccess(fallback.access) ?? fallback
-                yield &model
-                _model = model
-                initialLock.unlock()
-            }
-        }
-    }
 
     enum Source {
-        case initial(Initial)
         case reference(Context<M>.Reference)
         case frozenCopy(id: ModelID)
         case lastSeen(id: ModelID)
@@ -44,14 +20,11 @@ public struct ModelContext<M: Model> {
     public init() {}
 }
 
-private let initialLock = NSRecursiveLock()
-
 extension ModelContext: Sendable where M: Sendable {}
 
 extension ModelContext: Hashable {
     public static func == (lhs: ModelContext<M>, rhs: ModelContext<M>) -> Bool {
         return switch (lhs.source, rhs.source) {
-        case let (.initial(lhs), .initial(rhs)): lhs === rhs
         case let (.reference(lhs), .reference(rhs)): lhs === rhs
         case let (.frozenCopy(lhs), .frozenCopy(rhs)): lhs == rhs
         default: false
@@ -96,7 +69,7 @@ public extension ModelContext {
 
         nonmutating set {
             guard let context = modifyContext else {
-                if case let .initial(initial) = source {
+                if let initial {
                     guard newValue.isInitial else {
                         XCTFail("It is not allowed to add an already anchored or frozen model, instead create new instance instead.")
                         return
@@ -112,15 +85,17 @@ public extension ModelContext {
                 return
             }
 
-            guard newValue.isInitial else {
-                XCTFail("It is not allowed to add an already anchored or frozen model, instead create new instance instead.")
+            guard newValue.isInitial || newValue.context != nil else {
+                XCTFail("It is not allowed to add a frozen model, instead create new instance instead or add an already anchored model.")
                 return
             }
 
             var callbacks: [() -> Void] = []
             transaction(with: model, at: path) { child in
                 var newChild = newValue
-                context[path].context?.onRemoval(callbacks: &callbacks)
+                if let childContext = context[path].context {
+                    context.removeChild(childContext, callbacks: &callbacks)
+                }
                 context.updateContext(for: &newChild, at: path)
 
                 child = newChild
@@ -151,7 +126,7 @@ public extension ModelContext {
         }
         nonmutating set {
             guard let context = modifyContext else {
-                if case let .initial(initial) = source {
+                if let initial {
                     guard newValue.isAllInitial else {
                         XCTFail("It is not allowed to add an already anchored or frozen model, instead create new instance instead.")
                         return
@@ -167,22 +142,22 @@ public extension ModelContext {
             transaction(with: model, at: path) { container in
                 var newContainer = newValue
 
-                var didReplaceModelWithAnchoredModel = false
+                var didReplaceModelWithDestructedOrFrozenCopy = false
                 let oldContexts = threadLocals.withValue({
-                    didReplaceModelWithAnchoredModel = true
-                }, at: \.didReplaceModelWithAnchoredModel) {
+                    didReplaceModelWithDestructedOrFrozenCopy = true
+                }, at: \.didReplaceModelWithDestructedOrFrozenCopy) {
                     context.updateContext(for: &newContainer, at: path)
                 }
 
-                if didReplaceModelWithAnchoredModel {
-                    XCTFail("It is not allowed to add an already anchored model, instead create new unanchored instance.")
+                if didReplaceModelWithDestructedOrFrozenCopy {
+                    XCTFail("It is not allowed to add a destructed nor frozen model.")
                     return
                 }
 
                 container = newContainer
 
-                for context in oldContexts {
-                    context.onRemoval(callbacks: &postLockCallbacks)
+                for oldContext in oldContexts {
+                    context.removeChild(oldContext, callbacks: &postLockCallbacks)
                 }
             }
 
@@ -199,9 +174,18 @@ public extension ModelContext {
             }
         }
     }
+
+    func dependency<D: Model&DependencyKey>() -> D where D.Value == D {
+        if let access, access.shouldPropagateToChildren {
+            (_dependency() as D).withAccess(access)
+        } else {
+            _dependency()
+        }
+    }
+
+    @_disfavoredOverload
+    func dependency<D: DependencyKey>() -> D where D.Value == D {
+        _dependency()
+    }
 }
-
-
-
-
 

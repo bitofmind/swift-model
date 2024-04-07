@@ -3,10 +3,11 @@ import Foundation
 final class ThreadLocals: @unchecked Sendable {
     var postTransactions: [(inout [() -> Void]) -> Void]? = nil
     var forceDirectAccess = false
-    var didReplaceModelWithAnchoredModel: () -> Void = {}
+    var didReplaceModelWithDestructedOrFrozenCopy: () -> Void = {}
     var includeInMirror = false
+    var coalesceSends: Set<ObjectIdentifier> = []
 
-    init() {}
+    fileprivate init() {}
 
     func withValue<Value, T>(_ value: Value, at path: ReferenceWritableKeyPath<ThreadLocals, Value>, perform: () throws -> T) rethrows -> T {
         let prevValue = self[keyPath: path]

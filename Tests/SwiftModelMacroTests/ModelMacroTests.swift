@@ -11,6 +11,7 @@ final class ModelMacroTests: XCTestCase {
             "Model": ModelMacro.self,
             "ModelTracked": ModelTrackedMacro.self,
             "ModelIgnored": ModelIgnoredMacro.self,
+            "ModelDependency": ModelDependencyMacro.self,
         ]) {
             super.invokeTest()
         }
@@ -382,6 +383,75 @@ final class ModelMacroTests: XCTestCase {
                 }
             }
             """#
+        }
+    }
+
+    func testModelDependency() {
+        assertMacro(record: false) {
+            """
+            @Model struct MyModel {
+                @ModelDependency var someModel: SomeModel
+            }
+            """
+        } expansion: {
+            """
+            struct MyModel {
+                var someModel: SomeModel {
+                    get {
+                        _$modelContext.dependency()
+                    }
+                }
+
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+
+                }
+
+                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                {
+                    @storageRestrictions(initializes: _node)
+                    init {
+                        _node = ModelNode(_$modelContext: newValue)
+                    }
+                    get {
+                        _node._$modelContext
+                    }
+                    set {
+                        _node = ModelNode(_$modelContext: newValue)
+                    }
+                }
+
+                private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+
+                private var node: ModelNode<Self> {
+                    _node
+                }
+            }
+
+            extension MyModel: SwiftModel.Model {
+            }
+
+            extension MyModel: Sendable {
+            }
+
+            extension MyModel: Identifiable {
+            }
+
+            extension MyModel: CustomReflectable {
+                public var customMirror: Mirror {
+                    _$modelContext.mirror(of: self, children: [])
+                }
+            }
+
+            @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+            extension MyModel: Observation.Observable {
+            }
+
+            extension MyModel: CustomStringConvertible {
+                public var description: String {
+                    _$modelContext.description(of: self)
+                }
+            }
+            """
         }
     }
 }

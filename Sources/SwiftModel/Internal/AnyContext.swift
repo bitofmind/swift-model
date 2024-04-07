@@ -10,12 +10,27 @@ enum ModelLifetime: Comparable {
     case frozenCopy
 }
 
+extension ModelLifetime {
+    var isDestructedOrFrozenCopy: Bool {
+        self == .destructed || self == .frozenCopy
+    }
+}
+
 class AnyContext: @unchecked Sendable {
-    private let lock: NSRecursiveLock
+    let lock: NSRecursiveLock
     private var nextKey = 0
 
-    private(set) weak var parent: AnyContext?
+    final class WeakParent {
+        weak var parent: AnyContext?
+
+        init(parent: AnyContext? = nil) {
+            self.parent = parent
+        }
+    }
+
+    private(set) var weakParents: [WeakParent] = []
     var children: OrderedDictionary<AnyKeyPath, OrderedDictionary<ModelRef, AnyContext>> = [:]
+    var dependencyContexts: [ObjectIdentifier: AnyContext] = [:]
 
     private var modeLifeTime: ModelLifetime = .anchored
 
@@ -36,6 +51,55 @@ class AnyContext: @unchecked Sendable {
         var id: AnyHashable
     }
 
+    func addParent(_ parent: AnyContext) {
+        weakParents.append(WeakParent(parent: parent))
+    }
+
+    func removeParent(_ parent: AnyContext, callbacks: inout [() -> Void]) {
+        for i in weakParents.indices {
+            if weakParents[i].parent === parent {
+                weakParents.remove(at: i)
+                break
+            }
+        }
+
+        if parents.isEmpty {
+            onRemoval(callbacks: &callbacks)
+        }
+    }
+
+    var rootParent: AnyContext?{
+        parents.first?.rootParent ?? self
+    }
+
+    var parents: [AnyContext] {
+        weakParents.compactMap(\.parent)
+    }
+
+    var selfPath: AnyKeyPath { fatalError() }
+
+    var rootPaths: [AnyKeyPath] {
+        if parents.isEmpty {
+            return [selfPath]
+        }
+
+        return parents.flatMap { parent in
+            let childPaths = parent.children.flatMap { childPath, modelRefs in
+                modelRefs.compactMap { modalRef, context in
+                    if context === self {
+                        return childPath.appending(path: modalRef.elementPath)
+                    } else {
+                        return nil
+                    }
+                }
+            }
+
+            return parent.rootPaths.flatMap { rootPath in
+                childPaths.compactMap { rootPath.appending(path: $0) }
+            }
+        }
+    }
+
     func onPostTransaction(callbacks: inout [() -> Void], callback: @escaping (inout [() -> Void]) -> Void) {
         if threadLocals.postTransactions != nil {
             threadLocals.postTransactions!.append(callback)
@@ -46,12 +110,14 @@ class AnyContext: @unchecked Sendable {
 
     init(lock: NSRecursiveLock, parent: AnyContext?) {
         self.lock = lock
-        self.parent = parent
-
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
             _observationRegistrar = ObservationRegistrar()
         } else {
             _observationRegistrar = nil
+        }
+
+        if let parent {
+            addParent(parent)
         }
     }
 
@@ -75,10 +141,12 @@ class AnyContext: @unchecked Sendable {
     }
 
     var isDestructed: Bool {
-        lock(modeLifeTime == .destructed)
+        lifetime == .destructed
     }
 
-    func removeChild(_ context: AnyContext) {
+    func removeChild(_ context: AnyContext, callbacks: inout [() -> Void]) {
+        context.removeParent(self, callbacks: &callbacks)
+
         for (containerPath, contexts) in children {
             for (modelRef, child) in contexts {
                 if context === child {
@@ -93,7 +161,7 @@ class AnyContext: @unchecked Sendable {
     }
 
     var allChildren: [AnyContext] {
-        children.values.flatMap { $0.values }
+        children.values.flatMap { $0.values } + dependencyContexts.values
     }
 
     func onActivate() -> Bool {
@@ -114,9 +182,8 @@ class AnyContext: @unchecked Sendable {
         anyModificationCallbacks.removeAll()
         anyModificationActiveCount = 0
         modeLifeTime = .destructed
-        parent?.removeChild(self)
-        parent = nil
         self.children.removeAll()
+        dependencyContexts.removeAll()
 
         callbacks.append {
             self.cancellations.cancelAll()
@@ -131,7 +198,7 @@ class AnyContext: @unchecked Sendable {
         }
 
         for child in children {
-            child.onRemoval(callbacks: &callbacks)
+            child.removeParent(self, callbacks: &callbacks)
         }
     }
 
@@ -148,18 +215,22 @@ class AnyContext: @unchecked Sendable {
     }
 
     func sendEvent(_ eventInfo: EventInfo, to receivers: EventReceivers) {
-        let parent = lock(parent)
+        let parents = lock(parents)
 
-        if receivers.contains(.self) {
+        if receivers.contains(.self), !threadLocals.coalesceSends.contains(ObjectIdentifier(self)) {
             for continuation in eventContinuations.values {
                 continuation.yield(eventInfo)
             }
+
+            threadLocals.coalesceSends.insert(ObjectIdentifier(self))
         }
 
-        if receivers.contains(.ancestors) {
-            parent?.sendEvent(eventInfo, to: [.self, .ancestors])
-        } else if receivers.contains(.parent) {
-            parent?.sendEvent(eventInfo, to: .self)
+        for parent in parents {
+            if receivers.contains(.ancestors) {
+                parent.sendEvent(eventInfo, to: [.self, .ancestors])
+            } else if receivers.contains(.parent) {
+                parent.sendEvent(eventInfo, to: .self)
+            }
         }
 
         if receivers.contains(.descendants) {
@@ -247,7 +318,9 @@ class AnyContext: @unchecked Sendable {
             }
         }
 
-        parent?.didModify(callbacks: &callbacks)
+        for parent in parents {
+            parent.didModify(callbacks: &callbacks)
+        }
     }
 
     @TaskLocal static var keepLastSeenAround = false

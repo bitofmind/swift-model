@@ -115,11 +115,7 @@ private extension Model {
             }
 
             self.transaction {
-                let collector = AccessCollector { collector, modifiedValue, finished in
-                    if finished {
-                        return nil
-                    }
-
+                let collector = AccessCollector { collector, modifiedValue in
                     if modifiedValue is any ModelContainer {
                         collector.reset()
                         anyCallbacks.withValue { $0.removeAll(keepingCapacity: true) }
@@ -147,10 +143,10 @@ private extension Model {
 }
 
 private final class AccessCollector: ModelAccess, @unchecked Sendable {
-    let onModify: @Sendable (AccessCollector, Any, Bool) -> (() -> Void)?
+    let onModify: @Sendable (AccessCollector, Any) -> (() -> Void)?
     var cancellables: [() -> Void] = []
 
-    init(onModify: @Sendable @escaping (AccessCollector, Any, Bool) -> (() -> Void)?) {
+    init(onModify: @Sendable @escaping (AccessCollector, Any) -> (() -> Void)?) {
         self.onModify = onModify
         super.init(useWeakReference: false)
     }
@@ -165,8 +161,9 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
     override var shouldPropagateToChildren: Bool { true }
 
     override func willAccess<M: Model, T>(_ model: M, at path: WritableKeyPath<M, T>) -> (() -> Void)? {
-        cancellables.append(model.context!.onModify(for: path, {
-            self.onModify(self, model.context![path], $0)
+        cancellables.append(model.context!.onModify(for: path, { finished in
+            if finished { return {} }
+            return self.onModify(self, model.context![path])
         }))
 
         return nil

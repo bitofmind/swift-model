@@ -71,15 +71,12 @@ extension Model {
                 copy._$modelContext.source = .frozenCopy(id: copy.modelID)
                 copy._$modelContext.access = nil
                 return copy
-            } else if let last = reference.lastSeenValue {
+            } else if let last = reference.model {
                 return last
             } else {
                 return self
             }
             
-        case let .initial(initial):
-            return initial[fallback: self]
-
         case let .lastSeen(id: id):
             var copy = self
             copy._$modelContext.source = .frozenCopy(id: id)
@@ -100,14 +97,6 @@ extension Model {
         }
 
         return context
-    }
-
-    func assertInitialCopy() -> Self {
-        if lifetime != .initial {
-            XCTFail("It is not allowed to add an already anchored or fozen model, instead create new instance.")
-        }
-
-        return initialCopy
     }
 }
 

@@ -22,7 +22,7 @@ public extension ModelNode {
     }
 
     subscript<Value>(dynamicMember keyPath: KeyPath<DependencyValues, Value>) -> Value {
-        if case let .reference(reference) = _$modelContext.source, reference.lastSeenValue != nil {
+        if case let .reference(reference) = _$modelContext.source, reference.model != nil {
             // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
             return Dependency(keyPath).wrappedValue
         }
@@ -35,8 +35,54 @@ public extension ModelNode {
         guard let context = enforcedContext("Accessing dependency `\(String(describing: keyPath).replacingOccurrences(of: "\\DependencyValues.", with: ""))` on an unanchored model node is not allowed and will be redirected to the default dependency value") else {
             return Dependency(keyPath).wrappedValue
         }
-        
+
         return context.dependency(for: keyPath)
+    }
+
+    subscript<Value: DependencyKey>(type: Value.Type) -> Value where Value.Value == Value {
+        if case let .reference(reference) = _$modelContext.source, reference.model != nil {
+            // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
+            return Dependency(type).wrappedValue
+        }
+
+        if case .lastSeen = _$modelContext.source, let access = _$modelContext.access as? LastSeenAccess, -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
+            // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
+            return Dependency(type).wrappedValue
+        }
+
+        guard let context = enforcedContext("Accessing dependency `\(String(describing: type))` on an unanchored model node is not allowed and will be redirected to the default dependency value") else {
+            return Dependency(type).wrappedValue
+        }
+
+        return context.dependency(for: type)
+    }
+
+    var isUniquelyReferenced: Bool {
+        context.map { $0.parents.count <= 1 } ?? true
+    }
+
+    func uniquelyReferenced() -> AsyncStream<Bool> {
+        guard let rootParent = enforcedContext()?.rootParent else {
+            return .never
+        }
+
+        return AsyncStream { cont in
+            cont.yield(isUniquelyReferenced)
+
+            let cancel = rootParent.onAnyModification { isFinished in
+                if isFinished {
+                    cont.finish()
+                } else {
+                    cont.yield(isUniquelyReferenced)
+                }
+
+                return nil
+            }
+
+            cont.onTermination = { _ in
+                cancel()
+            }
+        }.removeDuplicates().eraseToStream()
     }
 }
 

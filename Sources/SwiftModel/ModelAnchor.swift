@@ -46,13 +46,12 @@ public extension Model {
     ///     })
     ///
     /// - Parameter dependencies: A closure for to overriding dependencies that will be accessed by the model
-
     func andAnchor(function: String = #function, andDependencies dependencies: @escaping (inout DependencyValues) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
         assertInitialState(function: function)
 
-        let context = Context(model: self, rootPath: \Self.self, lock: NSRecursiveLock(), dependencies: dependencies, parent: nil)
+        let context = Context(model: self, lock: NSRecursiveLock(), dependencies: dependencies, parent: nil)
 
-        var model = self.assertInitialCopy()
+        var model = self
         model.withContextAdded(context: context)
         context.model.activate()
 

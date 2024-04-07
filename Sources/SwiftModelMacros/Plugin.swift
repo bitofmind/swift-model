@@ -10,6 +10,7 @@ struct OneStateMacroPlugin: CompilerPlugin {
         ModelContainerMacro.self,
         ModelTrackedMacro.self,
         ModelIgnoredMacro.self,
+        ModelDependencyMacro.self,
     ]
 }
 

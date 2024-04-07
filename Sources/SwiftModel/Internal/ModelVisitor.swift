@@ -84,15 +84,16 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
     mutating func visit<T: Model>(path: WritableKeyPath<Value, T>) {
         let childModel = value[keyPath: path]
         let isSelf = self.containerPath == \.self && path == \.self
-
         let modelElementPath = elementPath.appending(path: path)
+
+        if childModel.lifetime.isDestructedOrFrozenCopy {
+            threadLocals.didReplaceModelWithDestructedOrFrozenCopy()
+            return
+        }
 
         let childContext = isSelf ? (context as! Context<T>) : context.childContext(containerPath: containerPath, elementPath: modelElementPath, childModel: childModel)
 
         if childContext !== childModel.context {
-            if childModel.context != nil {
-                threadLocals.didReplaceModelWithAnchoredModel()
-            }
             value[keyPath: path].withContextAdded(context: childContext, containerPath: \.self, elementPath: \.self, includeSelf: false)
             value[keyPath: path]._$modelContext = ModelContext(context: childContext)
         }

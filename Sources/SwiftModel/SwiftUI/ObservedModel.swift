@@ -24,11 +24,11 @@ import Observation
 @propertyWrapper @dynamicMemberLookup
 public struct ObservedModel<M: Model>: DynamicProperty {
     @StateObject private var access = ViewAccess()
-    
+
     public init(wrappedValue: M) {
         self.wrappedValue = wrappedValue
     }
-    
+
     public var wrappedValue: M
 
     public mutating func update() {
@@ -49,6 +49,20 @@ public struct ObservedModel<M: Model>: DynamicProperty {
             model[keyPath: path] = newValue
         }
     }
+
+    public subscript<T: Model>(dynamicMember path: KeyPath<M, T>) -> Binding<T> {
+        Binding {
+            wrappedValue[keyPath: path]
+        } set: { _ in }
+    }
+}
+
+public extension Binding {
+    subscript<Subject: Model>(dynamicMember keyPath: KeyPath<Value, Subject>) -> Binding<Subject> {
+        Binding<Subject> {
+            wrappedValue[keyPath: keyPath]
+        } set: { _ in }
+    }
 }
 
 public struct UsingModel<M: Model, Content: View>: View {
@@ -64,7 +78,6 @@ public struct UsingModel<M: Model, Content: View>: View {
         content(model)
     }
 }
-
 
 private class BaseObserver {
     func reset() { fatalError() }

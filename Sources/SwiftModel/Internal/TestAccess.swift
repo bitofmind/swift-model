@@ -29,7 +29,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         expectedState = model.frozenCopy
         lastState = model.frozenCopy
         self.fileAndLine = fileAndLine
-        context = Context(model: model, rootPath: \Root.self, lock: NSRecursiveLock(), dependencies: dependencies, parent: nil)
+        context = Context(model: model, lock: NSRecursiveLock(), dependencies: dependencies, parent: nil)
 
         super.init(useWeakReference: true)
 
@@ -43,7 +43,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     override var shouldPropagateToChildren: Bool { true }
 
     override func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>) -> (() -> Void)? {
-        guard let rootPath = model.context!.rootPath as? WritableKeyPath<Root, M> else {
+        let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
+        guard let rootPaths else {
             if let assertContext {
                 assertContext.modelsNoLongerPartOfTester.append(model.typeDescription)
             } else {
@@ -54,38 +55,43 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
         guard let assertContext else { return nil }
 
-        let fullPath = rootPath.appending(path: path)
+        let fullPaths = rootPaths.map { $0.appending(path: path) }
 
         return {
             let value = frozenCopy(model.context![path])
-            assertContext.accesses.append(.init(
-                path: fullPath,
-                modelName: model.typeDescription,
-                propertyName: propertyName(from: model, path: path),
-                value: String(customDumping: value)
-            ) {
-                $0[keyPath: fullPath] = value
-            })
+            for fullPath in fullPaths {
+                assertContext.accesses.append(.init(
+                    path: fullPath,
+                    modelName: model.typeDescription,
+                    propertyName: propertyName(from: model, path: path),
+                    value: String(customDumping: value)
+                ) {
+                    $0[keyPath: fullPath] = value
+                })
+            }
         }
     }
 
     override func willModify<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>) -> (() -> Void)? {
-        guard let rootPath = model.context!.rootPath as? WritableKeyPath<Root, M> else {
+        let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
+        guard let rootPaths else {
             fatalError()
         }
 
-        let fullPath = rootPath.appending(path: path)
+        let fullPaths = rootPaths.map { $0.appending(path: path) }
         return {
             let value = frozenCopy(model.context![path])
 
             self.lock {
-                self.valueUpdates[fullPath] = .init {
-                    $0[keyPath: fullPath] = value
-                } debugInfo: {
-                    "\(String(describing: M.self)).\(propertyName(from: model, path: path) ?? "UNKOWN") = \(String(customDumping: value))"
-                }
+                for fullPath in fullPaths {
+                    self.valueUpdates[fullPath] = .init {
+                        $0[keyPath: fullPath] = value
+                    } debugInfo: {
+                        "\(String(describing: M.self)).\(propertyName(from: model, path: path) ?? "UNKOWN") == \(String(customDumping: value))"
+                    }
 
-                self.lastState[keyPath: fullPath] = value
+                    self.lastState[keyPath: fullPath] = value
+                }
             }
         }
     }
@@ -130,7 +136,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     context.modelsNoLongerPartOfTester.removeAll(keepingCapacity: true)
 
                     let passed = predicate.predicate()
-                    let accesses = context.accesses//.last.map { [$0] } ?? [] // Only want leaf access
+                    let accesses = context.accesses
                     if passed {
                         passedAccesses += accesses
                     } else {
@@ -141,6 +147,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                             modelsNoLongerPartOfTester: context.modelsNoLongerPartOfTester,
                             probes: context.probes
                         ))
+
+                        break
                     }
                 }
 

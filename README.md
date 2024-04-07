@@ -28,7 +28,7 @@ Much like SwiftUI's composition of views, SwiftModel uses well-integrated modern
 
 SwiftModel requires Swift 5.9.2 (Xcode 15.1) that fixes compiler bugs around the new [init accessor](https://github.com/apple/swift-evolution/blob/main/proposals/0400-init-accessors.md) 
 
-> Even more [init accessor](https://github.com/apple/swift-evolution/blob/main/proposals/0400-init-accessors.md) compiler fixes will land in Swift 5.10, until then @Model custom initializers might require accessing the underscore private members directly instead of the regular ones.
+> Even more [init accessor](https://github.com/apple/swift-evolution/blob/main/proposals/0400-init-accessors.md) compiler fixes did land in Swift 5.10, but there still some remaining fixes that did not make it to 5.10. Until then @Model custom initializers might require accessing the underscore private members directly instead of the regular ones.
 
 ### Documentation
 
@@ -123,18 +123,18 @@ If a view is not called more than once, you can create the model with an anchor 
 
 ### Model Life Stages
 
-A SwiftModel model goes through different life stages. It starts out in the initial state. This is typically just far a really brief period between calling the initializer and being added to a model hierarchy of anchored models.
+A SwiftModel model goes through different life stages. It starts out in the initial state. This is typically just for a really brief period between calling the initializer and being added to a model hierarchy of anchored models.
 
 ```swift
 func addButtonTapped() {
   let row = CounterRowModel(...) // Initial state           
-  counters.append(row) // row is copied and anchored
+  counters.append(row) // row is anchored
 }
 ```
 
-Once an initial model is added to an anchored model, it is copied and set up with a supporting context. The initial copy should no longer be used after that point. Instead you should now access your model from the anchored parent.
+Once an initial model is added to an anchored model, it is set up with a supporting context and becomes anchored.
 
-If the model is later on removed from the parent anchored model, it will loose its supporting context and enter a destructed state.
+If the model is later on removed from the parent’s anchored model, it will loose its supporting context and enter a destructed state.
 
 > A model can also be copied into a frozen copy where the state will become immutable. This is used e.g. when printing state updates, and while running unit tests, to be able to compare a previous states of a model with later ones.   
 
@@ -151,6 +151,17 @@ func onActivate() {
   }
 }
 ```
+
+### Sharing of Models
+
+A model is typically instantiated and assigned to one place in a model hierarchy, but sometimes it can be useful to share a model in different parts of a model hierarchy. 
+
+SwiftModel supports sharing with the following implications:
+
+- A shared model will inherit the dependencies at its initial point of entry to the model hierarchy.
+- Sent event from a shared model will be coalesced to any receivers will only se on event sent (even though it sent from all its locations in the model hierarchy).
+- Similarly a shared model will only receive a sent event once.
+- The shared model is activated on initial anchoring and deactivated once the last reference of the model is removed. 
 
 ### Debugging State Changes
 
@@ -234,7 +245,7 @@ For improved control of a model's dependencies to outside systems, such as backe
 
 > This has been popularized by the [swift-dependency](https://github.com/pointfreeco/swift-dependencies) package which SwiftModel integrates with.
 
-You define your dependencies similar to as you would set up a custom SwiftUI environment: 
+You define a dependency type by conforming to DependencyKey where you provide a default value: 
 
 ```swift
 import Dependencies 
@@ -251,18 +262,36 @@ extension FactClient: DependencyKey {
       }
    )
 }
+```
 
-extension DependencyValues {
-  var factClient: FactClient {
-    get { self[FactClientKey.self] }
-    set { self[FactClientKey.self] = newValue }
-  }
+A model get access to its dependencies via its `node`.
+
+```swift
+let fact = try await node[FactClient.self].fetch(count)
+``` 
+
+> A model's `node` gives private access to many of model's functionality. 
+
+There is also a convenience macro for dependencies:
+
+```swift
+@Model struct CounterModel {
+    @ModelDependency var factClient: FactClient
 }
 ```
 
-A model get access to its dependencies via its `node`, such as `node.factClient`.
+### DependencyValues
 
-> A model's `node` gives private access to many of model's functionality. 
+By also extending `DependencyValues` you will get more convenient access to commonly used dependencies:
+
+```
+extension DependencyValues {
+  var factClient: FactClient {
+    get { self[FactClient.self] }
+    set { self[FactClient.self] = newValue }
+  }
+}
+```
 
 ```swift
 let fact = try await node.factClient.fetch(count)
@@ -285,6 +314,28 @@ You can also override a child model's dependencies (and its descendants) using t
 ```swift
 appModel.factPrompt = FactPromptModel(...).withDependencies {
   $0.factClient.fetch = { "\($0) is a great number!" }
+}
+```
+
+### Model Dependency
+
+Models can also be shared via dependencies if it conforms to `DependencyKey` where the model will behave as a shared model and participate as it was added to the model hierarchy for model’s reference to it.
+
+> A dependency model will be lazily inserted upon first access. 
+
+```swift
+@Model struct SharedModel { ... }
+
+extension SharedModel: DependencyKey {
+    static let liveValue = SharedModel()
+}
+
+let model = AppModel().withAnchor {
+    $0[SharedModel.self] = SharedModel()
+}
+
+@Model struct ChildModel {
+    var shared: SharedModel { node[SharedModel.self] }
 }
 ```
 

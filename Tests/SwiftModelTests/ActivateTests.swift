@@ -12,6 +12,10 @@ class TestResult: @unchecked Sendable {
         values.append(value)
         lock.unlock()
     }
+
+//    func add(_ value: Any) {
+//        add(String(describing: value))
+//    }
 }
 
 extension DependencyValues {
@@ -197,7 +201,7 @@ final class ActivateTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2c1C1pc0c2c1")
+        XCTAssertEqual(testResult.value, "PC0C1C2c1pc0c2")
     }
 
     func testParentMultipleChildrenSwapAlt2Activation() throws {

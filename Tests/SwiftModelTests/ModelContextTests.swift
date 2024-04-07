@@ -43,10 +43,10 @@ final class ModelContextTests: XCTestCase {
         let initChild = ChildModel()
         XCTAssertEqual(initChild.lifetime, .initial)
         let anchoredChild = initChild.withAnchor()
-        XCTAssertEqual(initChild.lifetime, .initial)
+        XCTAssertEqual(initChild.lifetime, .active)
 
-        XCTAssertFalse(anchoredChild.lifetime == .initial)
-        XCTAssertEqual(initChild.lifetime, .initial)
+        XCTAssertEqual(anchoredChild.lifetime, .active)
+        XCTAssertEqual(initChild.lifetime, .active)
     }
 
     func testCopy() {
@@ -86,15 +86,11 @@ final class ModelContextTests: XCTestCase {
     
     func testAssigningAnchoredModel() {
         let root = RootModel().withAnchor()
-        XCTExpectFailure {
-            root.optChild = root.child
-        }
+        root.optChild = root.child
 
         root.optChild = ChildModel()
 
-        XCTExpectFailure {
-            root.child = root.optChild!
-        }
+        root.child = root.optChild!
     }
 
     func testDetaching() {
@@ -104,7 +100,7 @@ final class ModelContextTests: XCTestCase {
 
         XCTAssertFalse(anchoredChild.lifetime == .initial)
         XCTAssertFalse(anchoredChild.lifetime == .initial)
-        XCTAssertEqual(initChild.lifetime, .initial)
+        XCTAssertEqual(initChild.lifetime, .active)
         let copy = anchoredChild
         XCTAssertFalse(copy.lifetime == .initial)
         let frozenCopy = anchoredChild.frozenCopy
@@ -113,7 +109,6 @@ final class ModelContextTests: XCTestCase {
         anchoredChild.count += 1
         XCTAssertNotEqual(frozenCopy, anchoredChild)
     }
-
 
     func testNonOptionalChild() {
         let root = RootModel().withAnchor()

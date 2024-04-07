@@ -7,24 +7,25 @@ final class Context<M: Model>: AnyContext {
     private let activations: [(M) -> Void]
     private var modifyCallbacks: [PartialKeyPath<M>: [Int: (Bool) -> (() -> Void)?]] = [:]
     let reference: Reference
-    let rootPath: AnyKeyPath
     var readModel: M
     var modifyModel: M
     private var isMutating = false
 
     @Dependency(\.uuid) private var dependencies
-    var dependencyCache: [PartialKeyPath<DependencyValues>: Any] = [:]
+    var dependencyCache: [AnyHashable: Any] = [:]
 
-    init(model: M, rootPath: AnyKeyPath, lock: NSRecursiveLock, dependencies: (inout DependencyValues) -> Void, parent: AnyContext?) {
-        readModel = model.assertInitialCopy()
+    init(model: M, lock: NSRecursiveLock, dependencies: (inout DependencyValues) -> Void, parent: AnyContext?) {
+        if model.lifetime != .initial {
+            XCTFail("It is not allowed to add an already anchored or fozen model, instead create new instance.")
+        }
+
+        readModel = model.initialCopy
         modifyModel = readModel
-        self.rootPath = rootPath
 
         let modelSetup = model.modelSetup
         self.activations = modelSetup?.activations ?? []
-        reference = Reference(modelID: model.modelID, lock: lock)
+        reference = readModel.reference ?? Reference(modelID: model.modelID)
         super.init(lock: lock, parent: parent)
-        reference._context = self
 
         Dependencies.withDependencies(from: parent ?? self) {
             dependencies(&$0)
@@ -37,9 +38,8 @@ final class Context<M: Model>: AnyContext {
 
         readModel.withContextAdded(context: self)
         modifyModel = readModel
+        reference.setContext(self)
     }
-
-    private var lock: NSRecursiveLock { reference.lock }
 
     override func onActivate() -> Bool {
         let shouldActivate = super.onActivate()
@@ -72,10 +72,13 @@ final class Context<M: Model>: AnyContext {
             }
         }
 
-        guard !_XCTIsTesting || AnyContext.keepLastSeenAround else { return }
+        guard !_XCTIsTesting || AnyContext.keepLastSeenAround else {
+            reference.destruct(nil)
+            return
+        }
 
         let lastSeenValue = readModel.lastSeen(at: Date())
-        reference._lastSeenValue = lastSeenValue
+        reference.destruct(lastSeenValue)
 
         Task {
             try? await Task.sleep(nanoseconds: NSEC_PER_MSEC*UInt64(lastSeenTimeToLive*1000))
@@ -85,6 +88,7 @@ final class Context<M: Model>: AnyContext {
 
     func sendEvent(_ event: Any, to receivers: EventReceivers, context: AnyContext) {
         let eventInfo = EventInfo(event: event, context: context)
+        threadLocals.coalesceSends.removeAll()
         sendEvent(eventInfo, to: receivers)
     }
 
@@ -108,6 +112,8 @@ final class Context<M: Model>: AnyContext {
     override var typeDescription: String {
         String(describing: M.self)
     }
+
+    override var selfPath: AnyKeyPath { \M.self }
 
     var model: M {
         lock(readModel)
@@ -138,7 +144,7 @@ final class Context<M: Model>: AnyContext {
     subscript<T>(path: KeyPath<M, T>, callback: (() -> Void)? = nil) -> T {
         _read {
             lock.lock()
-            if let last = reference._lastSeenValue {
+            if let last = reference._model {
                 yield last[keyPath: path]
             } else {
                 if isMutating { // Handle will and did set recursion
@@ -155,7 +161,7 @@ final class Context<M: Model>: AnyContext {
     subscript<T>(path: WritableKeyPath<M, T>, callback: (() -> Void)? = nil) -> T {
         _read {
             lock.lock()
-            if let last = reference._lastSeenValue {
+            if let last = reference._model {
                 yield last[keyPath: path]
             } else if isDestructed {
                 yield readModel[keyPath: path]
@@ -171,9 +177,9 @@ final class Context<M: Model>: AnyContext {
         }
         _modify {
             lock.lock()
-            if var last = reference._lastSeenValue {
+            if var last = reference._model {
                 yield &last[keyPath: path]
-                reference._lastSeenValue = last
+                reference.destruct(last)
                 lock.unlock()
             } else if isDestructed {
                 var value = readModel[keyPath: path]
@@ -204,9 +210,9 @@ final class Context<M: Model>: AnyContext {
     func transaction<Value, T>(at path: WritableKeyPath<M, Value>, callback: (() -> Void)? = nil, modify: (inout Value) throws -> T) rethrows -> T {
         lock.lock()
         let result: T
-        if var last = reference._lastSeenValue {
+        if var last = reference._model {
             result = try modify(&last[keyPath: path])
-            reference._lastSeenValue = last
+            reference.destruct(last)
             lock.unlock()
         } else {
             result = try modify(&modifyModel[keyPath: path])
@@ -233,7 +239,7 @@ final class Context<M: Model>: AnyContext {
     }
 
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
-        if reference.lastSeenValue != nil {
+        if reference.model != nil {
             return try callback()
         }
 
@@ -270,13 +276,38 @@ final class Context<M: Model>: AnyContext {
             if let child = children[containerPath]?[modelRef] as? Context<Child> {
                 return child
             }
-            assert(children[containerPath]?[modelRef] == nil)
-            let rootPath = rootPath.appending(path: containerPath)!.appending(path: elementPath)!
-            let child = Context<Child>(model: childModel, rootPath: rootPath, lock: lock, dependencies: { _ in }, parent: self)
-            child.withModificationActiveCount { $0 = anyModificationActiveCount }
-            children[containerPath, default: [:]][modelRef] = child
 
-            return child
+            assert(children[containerPath]?[modelRef] == nil)
+
+            if let child = childModel.context {
+                child.addParent(self)
+                children[containerPath, default: [:]][modelRef] = child
+                return child
+            } else {
+                let child = Context<Child>(model: childModel, lock: lock, dependencies: { _ in }, parent: self)
+                child.withModificationActiveCount { $0 = anyModificationActiveCount }
+                children[containerPath, default: [:]][modelRef] = child
+                return child
+            }
+        }
+    }
+
+    func setupModelDependency<D: Model>(_ model: inout D) {
+        switch model._$modelContext.source {
+        case let .reference(reference):
+            if let _ = reference.context {
+                return
+            } else if let _ = reference.model  {
+                return
+            } else {
+                let child = Context<D>(model: model, lock: lock, dependencies: { _ in }, parent: self)
+                child.withModificationActiveCount { $0 = anyModificationActiveCount }
+                dependencyContexts[ObjectIdentifier(D.self)] = child
+                model.withContextAdded(context: child)
+                _ = child.onActivate()
+            }
+        case .frozenCopy, .lastSeen:
+            return // warn?
         }
     }
 
@@ -288,7 +319,32 @@ final class Context<M: Model>: AnyContext {
             
             return Dependencies.withDependencies(from: self, { _ in }) {
                 let value = Dependency(keyPath).wrappedValue
-                dependencyCache[keyPath] = value
+                if var model = value as? any Model {
+                    setupModelDependency(&model)
+                    dependencyCache[keyPath] = value
+                } else {
+                    dependencyCache[keyPath] = value
+                }
+                return value
+            }
+        }
+    }
+
+    func dependency<Value: DependencyKey>(for type: Value.Type) -> Value where Value.Value == Value {
+        lock {
+            let key = ObjectIdentifier(type)
+            if let value = dependencyCache[key] as? Value {
+                return value
+            }
+
+            return Dependencies.withDependencies(from: self, { _ in }) {
+                let value = Dependency(type).wrappedValue
+                if var model = value as? any Model {
+                    setupModelDependency(&model)
+                    dependencyCache[key] = value
+                } else {
+                    dependencyCache[key] = value
+                }
                 return value
             }
         }
@@ -297,32 +353,68 @@ final class Context<M: Model>: AnyContext {
 
 extension Context {
     final class Reference: @unchecked Sendable {
-        let lock: NSRecursiveLock
         let modelID: ModelID
-        fileprivate weak var _context: Context<M>?
-        fileprivate var _lastSeenValue: M?
+        private let lock = NSRecursiveLock()
+        private weak var _context: Context<M>?
+        private(set) var _model: M?
+        private var isDestructed = false
 
-        fileprivate init(modelID: ModelID, lock: NSRecursiveLock) {
+        init(modelID: ModelID) {
             self.modelID = modelID
-            self.lock = lock
         }
 
         deinit {
             //print("Context.Reference deinit: \(type(of: self))")
         }
 
+        var lifetime: ModelLifetime {
+            context?.lifetime ?? lock {
+                isDestructed ? .destructed : .initial
+            }
+        }
+
         var context: Context<M>? {
             lock { _context }
         }
 
-        var lastSeenValue: M? {
-            lock { _lastSeenValue }
+        var model: M? {
+            lock { _model }
+        }
+
+        func destruct(_ model: M?) {
+            lock {
+                isDestructed = true
+                _model = model
+            }
         }
 
         func clear() {
             lock {
                 _context = nil
-                _lastSeenValue = nil
+                _model = nil
+            }
+        }
+
+        func setContext(_ context: Context) {
+            lock {
+                assert(!isDestructed)
+                _context = context
+                _model = nil
+            }
+        }
+
+        subscript (fallback fallback: M) -> M {
+            _read {
+                lock.lock()
+                yield _model?.withAccess(fallback.access) ?? fallback
+                lock.unlock()
+            }
+            _modify {
+                lock.lock()
+                var model = _model?.withAccess(fallback.access) ?? fallback
+                yield &model
+                _model = model
+                lock.unlock()
             }
         }
     }
