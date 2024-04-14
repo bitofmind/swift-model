@@ -161,10 +161,12 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
     override var shouldPropagateToChildren: Bool { true }
 
     override func willAccess<M: Model, T>(_ model: M, at path: WritableKeyPath<M, T>) -> (() -> Void)? {
-        cancellables.append(model.context!.onModify(for: path, { finished in
-            if finished { return {} }
-            return self.onModify(self, model.context![path])
-        }))
+        if let context = model.context {
+            cancellables.append(context.onModify(for: path, { finished in
+                if finished { return {} }
+                return self.onModify(self, context[path])
+            }))
+        }
 
         return nil
     }
