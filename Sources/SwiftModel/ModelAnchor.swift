@@ -19,7 +19,7 @@ public extension Model {
     ///     })
     ///
     /// - Parameter dependencies: A closure for to overriding dependencies that will be accessed by the model
-    func withAnchor(function: String = #function, andDependencies dependencies: @escaping (inout DependencyValues) -> Void = { _ in }) -> Self {
+    func withAnchor(function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> Self {
         let (model, anchor) = andAnchor(function: function, andDependencies: dependencies)
        
         // Hold on to anchor as long as model is alive.
@@ -46,7 +46,7 @@ public extension Model {
     ///     })
     ///
     /// - Parameter dependencies: A closure for to overriding dependencies that will be accessed by the model
-    func andAnchor(function: String = #function, andDependencies dependencies: @escaping (inout DependencyValues) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
+    func andAnchor(function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
         assertInitialState(function: function)
 
         let context = Context(model: self, lock: NSRecursiveLock(), dependencies: dependencies, parent: nil)

@@ -36,7 +36,12 @@ public extension ModelNode {
             return Dependency(keyPath).wrappedValue
         }
 
-        return context.dependency(for: keyPath)
+        let value = context.dependency(for: keyPath)
+        if let access = _$modelContext.access, access.shouldPropagateToChildren, let dependencyModel = value as? any Model {
+            return dependencyModel.withAccess(access) as! Value
+        } else {
+            return value
+        }
     }
 
     subscript<Value: DependencyKey>(type: Value.Type) -> Value where Value.Value == Value {
@@ -54,7 +59,12 @@ public extension ModelNode {
             return Dependency(type).wrappedValue
         }
 
-        return context.dependency(for: type)
+        let value = context.dependency(for: type)
+        if let access = _$modelContext.access, access.shouldPropagateToChildren, let dependencyModel = value as? any Model {
+            return dependencyModel.withAccess(access) as! Value
+        } else {
+            return value
+        }
     }
 
     var isUniquelyReferenced: Bool {

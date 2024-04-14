@@ -319,7 +319,7 @@ appModel.factPrompt = FactPromptModel(...).withDependencies {
 
 ### Model Dependency
 
-Models can also be shared via dependencies if it conforms to `DependencyKey` where the model will behave as a shared model and participate as it was added to the model hierarchy for model’s reference to it.
+Models can also be shared via dependencies if it conforms to `DependencyKey`.
 
 > A dependency model will be lazily inserted upon first access. 
 

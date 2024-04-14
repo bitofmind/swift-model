@@ -58,6 +58,7 @@ final class ModelDependencyTests: XCTestCase {
             await tester.assert {
                 model.children.count == 2
                 model.child.dependency.value == 7
+                testResult.value.contains("->7")
             }
         }
 
@@ -91,6 +92,7 @@ final class ModelDependencyTests: XCTestCase {
 
             await tester.assert {
                 model.child.dependency.value == 5
+                testResult.value.contains("->5")
             }
         }
 
@@ -139,6 +141,7 @@ final class ModelDependencyTests: XCTestCase {
 
             await tester.assert {
                 model.dependency == nil
+                testResult.value.contains("->8")
             }
         }
 
@@ -147,7 +150,7 @@ final class ModelDependencyTests: XCTestCase {
 }
 
 @Model
-private struct Dependency {
+private struct Dependency: Sendable {
     var value: Int
 
     func onActivate() {
@@ -162,7 +165,7 @@ extension Dependency: DependencyKey {
     static let liveValue = Dependency(value: 4711)
 }
 
-@Model private struct Child {
+@Model private struct Child: Sendable {
     let id: Int
     @ModelDependency var dependency: Dependency
 

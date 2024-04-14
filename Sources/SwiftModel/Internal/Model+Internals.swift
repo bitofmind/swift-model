@@ -22,10 +22,10 @@ extension Model {
 }
 
 final class ModelSetupAccess<M: Model>: ModelAccess {
-    var dependencies: [(inout DependencyValues) -> Void] = []
+    var dependencies: [(inout ModelDependencies) -> Void] = []
     var activations: [(M) -> Void] = []
 
-    var allDependencies: ((inout DependencyValues) -> Void)? {
+    var allDependencies: ((inout ModelDependencies) -> Void)? {
         if dependencies.isEmpty { return nil }
         return { [dependencies = dependencies] in
             for dependency in dependencies {
@@ -45,11 +45,7 @@ extension Model {
     }
 
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
-        if let context {
-            return try context.transaction(callback)
-        } else {
-            return try callback()
-        }
+        try _$modelContext.transaction(callback)
     }
 }
 

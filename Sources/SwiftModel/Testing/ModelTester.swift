@@ -20,7 +20,7 @@ public final class ModelTester<M: Model> {
     /// - Parameter dependencies: A closure for to overriding dependencies that will be accessed by the model
     ///
     ///  - Note: It is often more convenient to use the `andTester()` method on a model.
-    public init(_ model: M, dependencies: (inout DependencyValues) -> Void = { _ in }, file: StaticString = #file, line: UInt = #line) {
+    public init(_ model: M, dependencies: (inout ModelDependencies) -> Void = { _ in }, file: StaticString = #file, line: UInt = #line) {
         fileAndLine = .init(file: file, line: line)
         access = TestAccess(model: model, dependencies: dependencies, fileAndLine: fileAndLine)
     }
@@ -49,7 +49,7 @@ public extension Model {
     ///     }
     ///
     /// - Parameter dependencies: A closure for to overriding dependencies that will be accessed by the model
-    func andTester(withDependencies dependencies: (inout DependencyValues) -> Void = { _ in }, file: StaticString = #file, function: String = #function, line: UInt = #line) -> (Self, ModelTester<Self>) {
+    func andTester(withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, file: StaticString = #file, function: String = #function, line: UInt = #line) -> (Self, ModelTester<Self>) {
         assertInitialState(function: function)
         let tester = ModelTester(self, dependencies: dependencies, file: file, line: line)
         return (tester.model, tester)

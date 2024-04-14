@@ -112,7 +112,6 @@ public extension ModelContext {
             } else {
                 _ = context[path].context?.onActivate()
             }
-
         }
     }
 

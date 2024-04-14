@@ -228,6 +228,14 @@ extension ModelContext {
         }
     }
 
+    func transaction<T>(_ callback: () throws -> T) rethrows -> T {
+        if let context {
+            return try context.transaction(callback)
+        } else {
+            return try callback()
+        }
+    }
+
     func _dependency<D: DependencyKey>() -> D where D.Value == D {
         ModelNode(_$modelContext: self)[D.self]
     }

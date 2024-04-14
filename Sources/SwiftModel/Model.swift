@@ -61,7 +61,7 @@ public extension Model {
 
 /// Model modifiers
 public extension Model {
-    func withDependencies(_ dependencies: @escaping (inout DependencyValues) -> Void) -> Self {
+    func withDependencies(_ dependencies: @escaping (inout ModelDependencies) -> Void) -> Self {
         withSetupAccess {
             $0.dependencies.append(dependencies)
         }

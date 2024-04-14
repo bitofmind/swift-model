@@ -25,7 +25,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         var context: AnyContext
     }
 
-    init(model: Root, dependencies: (inout DependencyValues) -> Void, fileAndLine: FileAndLine) {
+    init(model: Root, dependencies: (inout ModelDependencies) -> Void, fileAndLine: FileAndLine) {
         expectedState = model.frozenCopy
         lastState = model.frozenCopy
         self.fileAndLine = fileAndLine
