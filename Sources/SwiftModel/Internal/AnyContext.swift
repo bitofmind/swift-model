@@ -79,23 +79,25 @@ class AnyContext: @unchecked Sendable {
     var selfPath: AnyKeyPath { fatalError() }
 
     var rootPaths: [AnyKeyPath] {
-        if parents.isEmpty {
-            return [selfPath]
-        }
-
-        return parents.flatMap { parent in
-            let childPaths = parent.children.flatMap { childPath, modelRefs in
-                modelRefs.compactMap { modalRef, context in
-                    if context === self {
-                        return childPath.appending(path: modalRef.elementPath)
-                    } else {
-                        return nil
-                    }
-                }
+        lock {
+            if parents.isEmpty {
+                return [selfPath]
             }
 
-            return parent.rootPaths.flatMap { rootPath in
-                childPaths.compactMap { rootPath.appending(path: $0) }
+            return parents.flatMap { parent in
+                let childPaths = parent.children.flatMap { childPath, modelRefs in
+                    modelRefs.compactMap { modalRef, context in
+                        if context === self {
+                            return childPath.appending(path: modalRef.elementPath)
+                        } else {
+                            return nil
+                        }
+                    }
+                }
+
+                return parent.rootPaths.flatMap { rootPath in
+                    childPaths.compactMap { rootPath.appending(path: $0) }
+                }
             }
         }
     }
