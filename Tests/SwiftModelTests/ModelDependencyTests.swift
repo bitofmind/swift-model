@@ -52,6 +52,9 @@ final class ModelDependencyTests: XCTestCase {
             }
 
             model.child.dependency.value = 7
+            await tester.assert {
+                testResult.value.contains("->7")
+            }
 
             model.children.append(Child(id:5))
 
@@ -146,6 +149,67 @@ final class ModelDependencyTests: XCTestCase {
         }
 
         XCTAssertEqual(testResult.value, "D(1:4)D(3:7)(->5)(->9)d(->8)d")
+    }
+
+    func testSharedDependency() async throws {
+        let testResult = TestResult()
+        do {
+            let (model, tester) = Parent().andTester {
+                $0[Dependency.self] = Dependency(value: 4711)
+                $0.testResult = testResult
+            }
+
+            let sharedDep = Dependency(value: 8)
+            model.children.append(Child(id: 3).withDependencies {
+                $0[Dependency.self] = sharedDep
+            })
+
+            await tester.assert {
+                model.children[0].dependency.value == 8
+            }
+
+            sharedDep.value -= 1
+
+            await tester.assert {
+                testResult.value.contains("(->7)")
+            }
+
+
+            model.children.append(Child(id: 4).withDependencies {
+                $0[Dependency.self] = sharedDep
+            })
+
+            await tester.assert {
+                model.children[0].dependency.value == 7
+                model.children[1].dependency.value == 7
+                testResult.value.contains("(4:7)")
+            }
+
+            sharedDep.value -= 2
+            await tester.assert {
+                model.children[0].dependency.value == 5
+                testResult.value.contains("(->5)")
+            }
+
+            model.children.remove(at: 0)
+
+            await tester.assert {
+                model.children.count == 1
+                model.children[0].dependency.value == 5
+            }
+
+            model.children.removeAll()
+
+            await tester.assert {
+                model.children.isEmpty
+                sharedDep.lifetime == .destructed
+                testResult.value.contains("(->5)(->5)")
+            }
+
+            XCTAssertEqual(testResult.value, "D(1:4711)D(3:8)(->7)(4:7)(->5)(->5)d")
+        }
+
+        XCTAssertEqual(testResult.value, "D(1:4711)D(3:8)(->7)(4:7)(->5)(->5)dd")
     }
 }
 

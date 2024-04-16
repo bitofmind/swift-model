@@ -5,7 +5,7 @@ import Dependencies
 class TestResult: @unchecked Sendable {
     let lock = NSLock()
     var values: [String] = []
-    var value: String { values.joined() }
+    var value: String { lock { values.joined() } }
 
     func add(_ value: String) {
         lock.lock()

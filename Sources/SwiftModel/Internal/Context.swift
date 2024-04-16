@@ -306,7 +306,11 @@ final class Context<M: Model>: AnyContext {
     func setupModelDependency<D: Model>(_ model: inout D, postSetups: inout [() -> Void]) {
         switch model._$modelContext.source {
         case let .reference(reference):
-            if let _ = reference.context {
+            if let child = reference.context {
+                if dependencyContexts[ObjectIdentifier(D.self)] == nil {
+                    dependencyContexts[ObjectIdentifier(D.self)] = child
+                    child.addParent(self)
+                }
                 return
             } else if let _ = reference.model  {
                 return
