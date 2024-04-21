@@ -144,7 +144,7 @@ private extension Model {
 
 private final class AccessCollector: ModelAccess, @unchecked Sendable {
     let onModify: @Sendable (AccessCollector, Any) -> (() -> Void)?
-    var cancellables: [() -> Void] = []
+    let cancellables = LockIsolated<[() -> Void]>([])
 
     init(onModify: @Sendable @escaping (AccessCollector, Any) -> (() -> Void)?) {
         self.onModify = onModify
@@ -152,20 +152,28 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
     }
 
     func reset() {
-        for cancellable in cancellables {
-            cancellable()
+        let cancels = cancellables.withValue { cancels in
+            defer {
+                cancels.removeAll(keepingCapacity: true)
+            }
+            return cancels
         }
-        cancellables.removeAll(keepingCapacity: true)
+
+        for cancel in cancels {
+            cancel()
+        }
     }
 
     override var shouldPropagateToChildren: Bool { true }
 
     override func willAccess<M: Model, T>(_ model: M, at path: WritableKeyPath<M, T>) -> (() -> Void)? {
         if let context = model.context {
-            cancellables.append(context.onModify(for: path, { finished in
-                if finished { return {} }
-                return self.onModify(self, context[path])
-            }))
+            cancellables.withValue {
+                $0.append(context.onModify(for: path, { finished in
+                    if finished { return {} }
+                    return self.onModify(self, context[path])
+                }))
+            }
         }
 
         return nil
