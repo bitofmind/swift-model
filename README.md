@@ -17,18 +17,18 @@ Much like SwiftUI's composition of views, SwiftModel uses well-integrated modern
 - Natural injection and propagation of dependencies down the model hierarchy.
 - Support for sending events up or down the model hierarchy.
 - Exhaustive testing of state changes, events and concurrent operations.
-- Integrates fully with modern swift concurrency with extended tools for powerful lifetime management. 
-
+- Integrates fully with modern swift concurrency with extended tools for powerful lifetime management.
+- Fine-grained observation of model state changes.
 
  > SwiftModel is an evolution of the [Swift One State](https://github.com/bitofmind/swift-one-state) library, where the introduction of Swift macros allows a more lightweight syntax. 
 
- > SwiftModel takes inspiration from similar architectures such as [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture), but aims to be less strict and esoteric by using a more familiar style.
+ > SwiftModel takes inspiration from similar architectures such as [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture), but aims to be less esoteric by using a more familiar style.
 
 ### Requirements
 
 SwiftModel requires Swift 5.9.2 (Xcode 15.1) that fixes compiler bugs around the new [init accessor](https://github.com/apple/swift-evolution/blob/main/proposals/0400-init-accessors.md) 
 
-> Even more [init accessor](https://github.com/apple/swift-evolution/blob/main/proposals/0400-init-accessors.md) compiler fixes did land in Swift 5.10, but there still some remaining fixes that did not make it to 5.10. Until then @Model custom initializers might require accessing the underscore private members directly instead of the regular ones.
+> Even more [init accessor](https://github.com/apple/swift-evolution/blob/main/proposals/0400-init-accessors.md) compiler fixes did land in Swift 5.10, but there still some remaining fixes that did not make it to 5.10. Until then @Model custom initializers might require accessing the underscored private members directly instead of the regular ones.
 
 ### Documentation
 
@@ -58,7 +58,7 @@ import SwiftModel
 }
 ``` 
 
-> Note, that your model types is required to be a struct, even though its behavior is more like a reference type such as class. This is required to unlock some of the powerful state update tracking that is used in testing and debugging as well as to avoid issues with retain cycles that are so common with reference types. 
+> Note, that your model types is required to be a struct, even though its behavior is more like a reference type such as class. This is required to unlock some of the powerful state update tracking that is used in testing and debugging as well as to avoid issues with retain cycles that are common with reference types. 
 
 ### Composition 
 
@@ -136,7 +136,7 @@ Once an initial model is added to an anchored model, it is set up with a support
 
 If the model is later on removed from the parent’s anchored model, it will loose its supporting context and enter a destructed state.
 
-> A model can also be copied into a frozen copy where the state will become immutable. This is used e.g. when printing state updates, and while running unit tests, to be able to compare a previous states of a model with later ones.   
+> A model can also be copied into a frozen copy where the state will become immutable. This is used e.g. when printing state updates, and while running unit tests, to be able to compare previous states of a model with later ones.   
 
 ### Model Activation
 
@@ -159,13 +159,13 @@ A model is typically instantiated and assigned to one place in a model hierarchy
 SwiftModel supports sharing with the following implications:
 
 - A shared model will inherit the dependencies at its initial point of entry to the model hierarchy.
-- Sent event from a shared model will be coalesced to any receivers will only se on event sent (even though it sent from all its locations in the model hierarchy).
-- Similarly a shared model will only receive a sent event once.
 - The shared model is activated on initial anchoring and deactivated once the last reference of the model is removed. 
+- An event sent from a shared model will be coalesced and receivers will only see a single event (even though it was sent from all its locations in the model hierarchy).
+- Similarly a shared model will only receive sent events at most once.
 
 ### Debugging State Changes
 
-As SwiftModel keeps track of all model state changes, it supports printing of differences between previous and updated state. You can enable this for the lifetime of a model by adding a modifier: 
+As SwiftModels keeps track of all model state changes, it supports printing of differences between previous and updated state. You can enable this for the lifetime of a model by adding a modifier: 
 
 ```swift
 AppModel()._withPrintChanges()
@@ -179,7 +179,7 @@ await workToTrack()
 printTask.cancel()
 ```
 
-> `_printChanges()` is only active in `DEBUG` builds.
+> Printing of changes are only active in `DEBUG` builds.
 
 ## SwiftUI Integration
 
@@ -245,7 +245,7 @@ For improved control of a model's dependencies to outside systems, such as backe
 
 > This has been popularized by the [swift-dependency](https://github.com/pointfreeco/swift-dependencies) package which SwiftModel integrates with.
 
-You define a dependency type by conforming to DependencyKey where you provide a default value: 
+You define a dependency type by conforming it to DependencyKey where you provide a default value: 
 
 ```swift
 import Dependencies 
@@ -319,9 +319,7 @@ appModel.factPrompt = FactPromptModel(...).withDependencies {
 
 ### Model Dependency
 
-Models can also be shared via dependencies if it conforms to `DependencyKey`.
-
-> A dependency model will be lazily inserted upon first access. 
+Models can also be shared via dependencies if it conforms to `DependencyKey` where the model will behave as a shared model and participate as it was added to the model hierarchy.
 
 ```swift
 @Model struct SharedModel { ... }
@@ -335,7 +333,7 @@ let model = AppModel().withAnchor {
 }
 
 @Model struct ChildModel {
-    var shared: SharedModel { node[SharedModel.self] }
+  @ModelDependency var shared: SharedModel
 }
 ```
 
@@ -395,11 +393,11 @@ node.forEach(change(of: \.count), cancelPrevious: true) { count in
 All tasks started from a model are automatically cancelled once the model is deactivated (it is removed from an anchored model hierarchy). But `task()` and `forEach()` also returns a `Cancellable` instance that allows you to cancel an operation earlier.
 
 ```swift
-    let task = task { ... }
+let task = task { ... }
     
-    ...
+...
     
-    task.cancel()
+task.cancel()
 ```
 
 A cancellable can also be set up to cancel given a hashable id.
@@ -514,7 +512,7 @@ node.forEach(node.event(fromType: StandupDetail.self)) { event, standupDetail in
 
 ## Testing
 
-As SwiftModel manages your model's state and knows when events are being sent as well if any asynchronous works is ongoing, it can help tests to be more exhaustive.
+Because SwiftModel manages your model's state and knows when events are being sent as well if any asynchronous works is ongoing, it can help tests to be more exhaustive.
 
 For your tests you will set up your root model with a tester instead of an anchor, to get access to testing facilities. This is typically done by using the `andTester()` modifier, where you can conveniently override your dependencies as well.
 
