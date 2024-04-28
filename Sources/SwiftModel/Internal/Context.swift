@@ -312,8 +312,6 @@ final class Context<M: Model>: AnyContext {
                     child.addParent(self)
                 }
                 return
-            } else if let _ = reference.model  {
-                return
             } else if dependencyContexts[ObjectIdentifier(D.self)] == nil || reference.lifetime == .destructed {
                 model = model.initialCopy
                 let child = Context<D>(model: model, lock: lock, dependencies: { _ in }, parent: self)
