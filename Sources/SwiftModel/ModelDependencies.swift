@@ -3,11 +3,11 @@ import Dependencies
 @dynamicMemberLookup
 public struct ModelDependencies {
     var dependencies: DependencyValues
-    var models: [any Model] = []
+    var models: [AnyHashable: any Model] = [:]
 
-    private mutating func updateWithValue<Value>(_ value: Value) {
+    private mutating func updateWithValue<Value>(_ value: Value, forKey key: AnyHashable) {
         if let model = value as? any Model {
-            models.append(model)
+            models[key] = model
         }
     }
 
@@ -15,7 +15,7 @@ public struct ModelDependencies {
         get { dependencies[type] }
         set {
             dependencies[type] = newValue
-            updateWithValue(newValue)
+            updateWithValue(newValue, forKey: ObjectIdentifier(type))
         }
     }
 
@@ -23,7 +23,7 @@ public struct ModelDependencies {
         get { dependencies[keyPath: key] }
         set {
             dependencies[keyPath: key] = newValue
-            updateWithValue(newValue)
+            updateWithValue(newValue, forKey: key)
         }
     }
 }

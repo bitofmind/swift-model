@@ -211,6 +211,78 @@ final class ModelDependencyTests: XCTestCase {
 
         XCTAssertEqual(testResult.value, "D(1:4711)D(3:8)(->7)(4:7)(->5)(->5)dd")
     }
+
+    func testDefaultDependency() async throws {
+        XCTAssertEqual(Dependency.testValue.lifetime, .initial)
+
+        let testResult = TestResult()
+        do {
+            let (model, tester) = Parent().andTester {
+                $0.testResult = testResult
+            }
+
+            model.child.dependency.value = 8
+
+            await tester.assert {
+                testResult.value.contains("(->8)")
+            }
+
+            model.children.append(Child(id: 3))
+
+            await tester.assert {
+                model.children[0].dependency.value == 8
+            }
+
+            model.child.dependency.value -= 1
+
+            await tester.assert {
+                testResult.value.contains("(->7)(->7)")
+            }
+
+            model.children.append(Child(id: 4))
+
+            await tester.assert {
+                model.children[0].dependency.value == 7
+                model.children[1].dependency.value == 7
+                testResult.value.contains("(4:7)")
+            }
+
+            model.child.dependency.value -= 2
+            await tester.assert {
+                model.children[0].dependency.value == 5
+                model.children[1].dependency.value == 5
+                testResult.value.contains("(->5)(->5)(->5)")
+            }
+
+            model.children.remove(at: 0)
+
+            await tester.assert {
+                model.children.count == 1
+                model.children[0].dependency.value == 5
+            }
+
+            model.children.removeAll()
+
+            await tester.assert {
+                model.children.isEmpty
+                Dependency.testValue.lifetime != .destructed
+            }
+
+            model.children.append(Child(id: 6))
+
+            model.child.dependency.value -= 3
+
+            await tester.assert {
+                testResult.value.contains("(6:5)(->2)(->2)")
+                model.children[0].dependency.value == 2
+            }
+
+            XCTAssertEqual(testResult.value, "D(1:3711)(->8)(3:8)(->7)(->7)(4:7)(->5)(->5)(->5)(6:5)(->2)(->2)")
+        }
+
+        XCTAssertEqual(testResult.value, "D(1:3711)(->8)(3:8)(->7)(->7)(4:7)(->5)(->5)(->5)(6:5)(->2)(->2)d")
+        XCTAssertEqual(Dependency.testValue.lifetime, .initial)
+    }
 }
 
 @Model
@@ -227,6 +299,7 @@ private struct Dependency: Sendable {
 
 extension Dependency: DependencyKey {
     static let liveValue = Dependency(value: 4711)
+    static let testValue = Dependency(value: 3711)
 }
 
 @Model private struct Child: Sendable {

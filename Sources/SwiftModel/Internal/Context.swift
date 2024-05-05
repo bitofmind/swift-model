@@ -12,7 +12,6 @@ final class Context<M: Model>: AnyContext {
     private var isMutating = false
 
     @Dependency(\.uuid) private var dependencies
-    var dependencyCache: [AnyHashable: Any] = [:]
 
     init(model: M, lock: NSRecursiveLock, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
         if model.lifetime != .initial {
@@ -27,7 +26,7 @@ final class Context<M: Model>: AnyContext {
         reference = readModel.reference ?? Reference(modelID: model.modelID)
         super.init(lock: lock, parent: parent)
 
-        var dependencyModels: [any Model] = []
+        var dependencyModels: [AnyHashable: any Model] = [:]
         Dependencies.withDependencies(from: parent ?? self) {
             var contextDependencies = ModelDependencies(dependencies: $0)
             dependencies(&contextDependencies)
@@ -46,8 +45,10 @@ final class Context<M: Model>: AnyContext {
         reference.setContext(self)
 
         withPostActions { postActions in
-            for var model in dependencyModels {
-                setupModelDependency(&model, postSetups: &postActions)
+            for (key, model) in dependencyModels {
+                var model = model
+                setupModelDependency(&model, cacheKey: nil, postSetups: &postActions)
+                dependencyCache[key] = model
             }
         }
     }
@@ -302,75 +303,6 @@ final class Context<M: Model>: AnyContext {
             }
         }
     }
-
-    func setupModelDependency<D: Model>(_ model: inout D, postSetups: inout [() -> Void]) {
-        switch model._$modelContext.source {
-        case let .reference(reference):
-            if let child = reference.context {
-                if dependencyContexts[ObjectIdentifier(D.self)] == nil {
-                    dependencyContexts[ObjectIdentifier(D.self)] = child
-                    child.addParent(self)
-                }
-                return
-            } else if dependencyContexts[ObjectIdentifier(D.self)] == nil || reference.lifetime == .destructed {
-                model = model.initialCopy
-                let child = Context<D>(model: model, lock: lock, dependencies: { _ in }, parent: self)
-                child.withModificationActiveCount { $0 = anyModificationActiveCount }
-                dependencyContexts[ObjectIdentifier(D.self)] = child
-                model.withContextAdded(context: child)
-                postSetups.append {
-                    _ = child.onActivate()
-                }
-            }
-        case .frozenCopy, .lastSeen:
-            return // warn?
-        }
-    }
-
-    func dependency<Value>(for keyPath: KeyPath<DependencyValues, Value>) -> Value {
-        lock {
-            if let value = dependencyCache[keyPath] as? Value {
-                return value
-            }
-            
-            return Dependencies.withDependencies(from: self, { _ in }) {
-                let value = Dependency(keyPath).wrappedValue
-                if var model = value as? any Model {
-                    withPostActions { postActions in
-                        setupModelDependency(&model, postSetups: &postActions)
-                        dependencyCache[keyPath] = model
-                    }
-                    return model as! Value
-                } else {
-                    dependencyCache[keyPath] = value
-                    return value
-                }
-            }
-        }
-    }
-
-    func dependency<Value: DependencyKey>(for type: Value.Type) -> Value where Value.Value == Value {
-        lock {
-            let key = ObjectIdentifier(type)
-            if let value = dependencyCache[key] as? Value {
-                return value
-            }
-
-            return Dependencies.withDependencies(from: self, { _ in }) {
-                let value = Dependency(type).wrappedValue
-                if var model = value as? any Model {
-                    withPostActions { postActions in
-                        setupModelDependency(&model, postSetups: &postActions)
-                        dependencyCache[key] = model
-                    }
-                    return model as! Value
-                } else {
-                    dependencyCache[key] = value
-                    return value
-                }
-            }
-        }
-    }
 }
 
 extension Context {
@@ -455,13 +387,3 @@ func _testing_keepLastSeenAround<T>(_ operation: () throws -> T) rethrows -> T {
 }
 
 let lastSeenTimeToLive: TimeInterval = 2
-
-private func withPostActions<T>(perform: (inout [() -> Void]) throws -> T) rethrows -> T {
-    var postActions: [() -> Void] = []
-    defer {
-        for action in postActions {
-            action()
-        }
-    }
-    return try perform(&postActions)
-}

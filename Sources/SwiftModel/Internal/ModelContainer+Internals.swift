@@ -25,6 +25,10 @@ extension ModelContainer {
         transformModel(with: MakeInitialTransformer())
     }
 
+    var initialDependencyCopy: Self {
+        transformModel(with: MakeInitialDependencyCopyTransformer())
+    }
+
     func lastSeen(at timestamp: Date) -> Self {
         transformModel(with: LastSeenTransformer(lastSeenAccess: LastSeenAccess(timestamp: timestamp)))
     }
@@ -60,6 +64,13 @@ private struct MakeInitialTransformer: ModelTransformer {
         } else {
             model._$modelContext.source = .reference(.init(modelID: model.modelID))
         }
+    }
+}
+
+private struct MakeInitialDependencyCopyTransformer: ModelTransformer {
+    func transform<M: Model>(_ model: inout M) -> Void {
+        model = model.shallowCopy
+        model._$modelContext.source = .reference(.init(modelID: .generate()))
     }
 }
 

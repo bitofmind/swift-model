@@ -31,6 +31,7 @@ class AnyContext: @unchecked Sendable {
     private(set) var weakParents: [WeakParent] = []
     var children: OrderedDictionary<AnyKeyPath, OrderedDictionary<ModelRef, AnyContext>> = [:]
     var dependencyContexts: [ObjectIdentifier: AnyContext] = [:]
+    var dependencyCache: [AnyHashable: Any] = [:]
 
     private var modeLifeTime: ModelLifetime = .anchored
 
@@ -68,7 +69,7 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    var rootParent: AnyContext?{
+    var rootParent: AnyContext {
         parents.first?.rootParent ?? self
     }
 
@@ -326,4 +327,95 @@ class AnyContext: @unchecked Sendable {
     }
 
     @TaskLocal static var keepLastSeenAround = false
+
+    func setupModelDependency<D: Model>(_ model: inout D, cacheKey: AnyHashable?, postSetups: inout [() -> Void]) {
+        switch model._$modelContext.source {
+        case let .reference(reference):
+            if let child = reference.context, child.rootParent === rootParent {
+                if dependencyContexts[ObjectIdentifier(D.self)] == nil {
+                    dependencyContexts[ObjectIdentifier(D.self)] = child
+                    child.addParent(self)
+                }
+                return
+            } else if dependencyContexts[ObjectIdentifier(D.self)] == nil || reference.lifetime == .destructed {
+                if let cacheKey {
+                    if let context = rootParent.dependencyContexts[ObjectIdentifier(D.self)] as? Context<D> {
+                        model.withContextAdded(context: context)
+                    } else {
+                        model = model.initialDependencyCopy // make sure to do unique copy of default value (liveValue etc).
+                        rootParent.setupModelDependency(&model, cacheKey: nil, postSetups: &postSetups)
+                        rootParent.dependencyCache[cacheKey] = model
+                    }
+                    setupModelDependency(&model, cacheKey: cacheKey, postSetups: &postSetups)
+                } else {
+                    model = model.initialCopy
+                    assert(model.context == nil)
+                    let child = Context<D>(model: model, lock: lock, dependencies: { _ in }, parent: self)
+                    child.withModificationActiveCount { $0 = anyModificationActiveCount }
+                    dependencyContexts[ObjectIdentifier(D.self)] = child
+                    model.withContextAdded(context: child)
+                    postSetups.append {
+                        _ = child.onActivate()
+                    }
+                }
+            }
+        case .frozenCopy, .lastSeen:
+            return // warn?
+        }
+    }
+
+    func dependency<Value>(for keyPath: KeyPath<DependencyValues, Value>) -> Value {
+        lock {
+            if let value = dependencyCache[keyPath] as? Value {
+                return value
+            }
+
+            return Dependencies.withDependencies(from: self, { _ in }) {
+                let value = Dependency(keyPath).wrappedValue
+                if var model = value as? any Model {
+                    withPostActions { postActions in
+                        setupModelDependency(&model, cacheKey: keyPath, postSetups: &postActions)
+                        dependencyCache[keyPath] = model
+                    }
+                    return model as! Value
+                } else {
+                    dependencyCache[keyPath] = value
+                    return value
+                }
+            }
+        }
+    }
+
+    func dependency<Value: DependencyKey>(for type: Value.Type) -> Value where Value.Value == Value {
+        lock {
+            let key = ObjectIdentifier(type)
+            if let value = dependencyCache[key] as? Value {
+                return value
+            }
+
+            return Dependencies.withDependencies(from: self, { _ in }) {
+                let value = Dependency(type).wrappedValue
+                if var model = value as? any Model {
+                    withPostActions { postActions in
+                        setupModelDependency(&model, cacheKey: key, postSetups: &postActions)
+                        dependencyCache[key] = model
+                    }
+                    return model as! Value
+                } else {
+                    dependencyCache[key] = value
+                    return value
+                }
+            }
+        }
+    }
+}
+
+func withPostActions<T>(perform: (inout [() -> Void]) throws -> T) rethrows -> T {
+    var postActions: [() -> Void] = []
+    defer {
+        for action in postActions {
+            action()
+        }
+    }
+    return try perform(&postActions)
 }
