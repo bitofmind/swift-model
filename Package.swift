@@ -12,10 +12,10 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.2.2"),
+        .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.3.7"),
         .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-async-algorithms.git", from: "1.0.0"),
-        .package(url: "https://github.com/apple/swift-syntax.git", from: "509.0.0"),
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "509.0.0"),
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.2.2"),
         .package(url: "https://github.com/pointfreeco/swift-identified-collections", from: "1.0.0"),
     ],

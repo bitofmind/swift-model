@@ -4,7 +4,7 @@ class ModelAccessReference: @unchecked Sendable {
     var access: ModelAccess? { fatalError() }
 }
 
-class ModelAccess: ModelAccessReference {
+class ModelAccess: ModelAccessReference, @unchecked Sendable {
     func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>) -> (() -> Void)? { nil }
     func willModify<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>) -> (() -> Void)? { nil }
 
@@ -19,7 +19,7 @@ class ModelAccess: ModelAccessReference {
         self
     }
 
-    private final class Weak: ModelAccessReference {
+    private final class Weak: ModelAccessReference, @unchecked Sendable {
         weak var _access: ModelAccess?
 
         override var access: ModelAccess? {

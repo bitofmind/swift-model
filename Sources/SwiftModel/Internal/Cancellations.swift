@@ -103,6 +103,14 @@ enum ContextCancellationKey {
 
 struct CancellableKey: Hashable, @unchecked Sendable {
     var key: AnyHashable
+
+    init<Key: Hashable&Sendable>(key: Key) {
+        if let key = key as? CancellableKey {
+            self.key = key.key
+        } else {
+            self.key = key
+        }
+    }
 }
 
 struct FileAndLine: Hashable, Sendable {

@@ -352,7 +352,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         }
     }
 
-    final class TesterAssertContext: TesterAssertContextBase {
+    final class TesterAssertContext: TesterAssertContextBase, @unchecked Sendable {
         let events: () -> [Event]
         let fileAndLine: FileAndLine
         var predicate: AssertBuilder.Predicate?

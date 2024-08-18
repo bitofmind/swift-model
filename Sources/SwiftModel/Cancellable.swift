@@ -44,7 +44,7 @@ public extension Cancellable {
     @discardableResult
     func inheritCancellationContext() -> Self {
         for cancellableKey in AnyCancellable.inheritedContexts {
-            cancel(for: cancellableKey.key, cancelInFlight: false)
+            cancel(for: cancellableKey, cancelInFlight: false)
         }
         return self
     }

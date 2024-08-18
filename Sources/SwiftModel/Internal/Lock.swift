@@ -9,5 +9,3 @@ extension NSLocking {
         try withLock(operation)
     }
 }
-
-extension AnyKeyPath: @unchecked Sendable {}

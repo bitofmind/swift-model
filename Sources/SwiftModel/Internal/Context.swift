@@ -3,7 +3,7 @@ import Dependencies
 import OrderedCollections
 import XCTestDynamicOverlay
 
-final class Context<M: Model>: AnyContext {
+final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
     private var modifyCallbacks: [PartialKeyPath<M>: [Int: (Bool) -> (() -> Void)?]] = [:]
     let reference: Reference
@@ -51,6 +51,10 @@ final class Context<M: Model>: AnyContext {
                 dependencyCache[key] = model
             }
         }
+    }
+
+    deinit {
+        //print("Context deinit: \(type(of: self))")
     }
 
     override func onActivate() -> Bool {
