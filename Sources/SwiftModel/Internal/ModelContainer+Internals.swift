@@ -29,8 +29,8 @@ extension ModelContainer {
         transformModel(with: MakeInitialDependencyCopyTransformer())
     }
 
-    func lastSeen(at timestamp: Date) -> Self {
-        transformModel(with: LastSeenTransformer(lastSeenAccess: LastSeenAccess(timestamp: timestamp)))
+    func lastSeen(at timestamp: Date, dependencyCache: [AnyHashable: Any]) -> Self {
+        transformModel(with: LastSeenTransformer(lastSeenAccess: LastSeenAccess(timestamp: timestamp, dependencyCache: dependencyCache)))
     }
 
     func reduceValue<Reducer: ValueReducer>(with reducer: Reducer.Type, initialValue: Reducer.Value) -> Reducer.Value {
@@ -90,11 +90,13 @@ private struct LastSeenTransformer: ModelTransformer {
     }
 }
 
-final class LastSeenAccess: ModelAccess {
+final class LastSeenAccess: ModelAccess, @unchecked Sendable {
     let timestamp: Date
+    let dependencyCache: [AnyHashable: Any]
 
-    init(timestamp: Date) {
+    init(timestamp: Date, dependencyCache: [AnyHashable: Any]) {
         self.timestamp = timestamp
+        self.dependencyCache = dependencyCache
         super.init(useWeakReference: false)
     }
 }

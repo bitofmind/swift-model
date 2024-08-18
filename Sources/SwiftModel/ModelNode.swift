@@ -21,14 +21,25 @@ public extension ModelNode {
         }
     }
 
-    subscript<Value>(dynamicMember keyPath: KeyPath<DependencyValues, Value>) -> Value {
-        if case let .reference(reference) = _$modelContext.source, reference.model != nil {
-            // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
-            return Dependency(keyPath).wrappedValue
+    private var isDestructed: Bool {
+        if case let .reference(reference) = _$modelContext.source, reference.isDestructed, reference.context == nil {
+            true
+        } else if case .lastSeen = _$modelContext.source {
+            true
+        } else {
+            false
         }
+    }
 
-        if case .lastSeen = _$modelContext.source, let access = _$modelContext.access as? LastSeenAccess, -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
+    subscript<Value>(dynamicMember keyPath: KeyPath<DependencyValues, Value>) -> Value {
+        if isDestructed {
             // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
+            if let access = _$modelContext.access as? LastSeenAccess,
+               -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive,
+               let value = access.dependencyCache[keyPath] as? Value {
+                return value
+            }
+
             return Dependency(keyPath).wrappedValue
         }
 
@@ -45,13 +56,16 @@ public extension ModelNode {
     }
 
     subscript<Value: DependencyKey>(type: Value.Type) -> Value where Value.Value == Value {
-        if case let .reference(reference) = _$modelContext.source, reference.model != nil {
-            // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
-            return Dependency(type).wrappedValue
-        }
 
-        if case .lastSeen = _$modelContext.source, let access = _$modelContext.access as? LastSeenAccess, -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
+        if isDestructed {
             // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
+            let key = ObjectIdentifier(type)
+            if let access = _$modelContext.access as? LastSeenAccess,
+               -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive,
+               let value = access.dependencyCache[key] as? Value {
+                return value
+            }
+
             return Dependency(type).wrappedValue
         }
 

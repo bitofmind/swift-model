@@ -93,7 +93,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             return
         }
 
-        let lastSeenValue = readModel.lastSeen(at: Date())
+        let lastSeenValue = readModel.lastSeen(at: Date(), dependencyCache: dependencyCache)
         reference.destruct(lastSeenValue)
 
         Task {
@@ -315,7 +315,7 @@ extension Context {
         private let lock = NSRecursiveLock()
         private weak var _context: Context<M>?
         private(set) var _model: M?
-        private var isDestructed = false
+        private(set) var isDestructed = false
 
         init(modelID: ModelID) {
             self.modelID = modelID
