@@ -270,6 +270,7 @@ final class UpdateStreamTests: XCTestCase {
 
         await tester.assert {
             model.computes == [3, 9, 11]
+            model.squareds == [1, 49]
             model.count1 == 7
             model.count2 == 4
         }
@@ -287,6 +288,7 @@ final class UpdateStreamTests: XCTestCase {
 
         await tester.assert {
             model.computes == [nil, 12, 13, 3, 6, nil]
+            model.squareds == [nil, 16, 25, 1, nil]
         }
     }
 }
@@ -353,12 +355,18 @@ final class UpdateStreamTests: XCTestCase {
     var count1: Int = 1
     var count2: Int = 2
     var computed: Int { count1 + count2 }
+    var squared: Int { count1 * count1 }
 
     var computes: [Int] = []
+    var squareds: [Int] = []
 
     func onActivate() {
         node.forEach(update(of: \.computed, initial: true)) {
             computes.append($0)
+        }
+
+        node.forEach(update(of: \.squared, initial: true)) {
+            squareds.append($0)
         }
     }
 }
@@ -367,10 +375,14 @@ final class UpdateStreamTests: XCTestCase {
     var computed: ComputedModel?
 
     var computes: [Int?] = []
+    var squareds: [Int?] = []
 
     func onActivate() {
         node.forEach(update(of: \.computed?.computed, initial: true)) {
             computes.append($0)
+        }
+        node.forEach(update(of: \.computed?.squared, initial: true)) {
+            squareds.append($0)
         }
     }
 }

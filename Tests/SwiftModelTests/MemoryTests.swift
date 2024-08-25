@@ -166,7 +166,7 @@ private final class Object: @unchecked Sendable {
     }
 }
 
-private class MemoryAccess: ModelAccess {
+private class MemoryAccess: ModelAccess, @unchecked Sendable {
     override var shouldPropagateToChildren: Bool { true }
 }
 
