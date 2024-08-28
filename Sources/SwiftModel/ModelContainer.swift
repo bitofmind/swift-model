@@ -82,7 +82,6 @@ public extension ModelContainer {
         return \Self.[cursor: cursor]
     }
 
-
     func path<Value>(caseName: String, value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
         let cursor = ContainerCursor(id: caseName, get: { get($0)! }, set: set)
         return \Self.[cursor: cursor]
@@ -99,4 +98,3 @@ public extension ModelContainer {
         return \Self.[cursor: cursor]
     }
 }
-

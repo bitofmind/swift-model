@@ -91,7 +91,11 @@ extension ModelContainer {
     }
 
     func activate() {
-        forEachContext { _ = $0.onActivate() }
+        var contexts: [AnyContext] = []
+        forEachContext { contexts.append($0) }
+        for context in contexts {
+            _ = context.onActivate()
+        }
     }
 }
 
