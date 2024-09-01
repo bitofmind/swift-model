@@ -314,8 +314,8 @@ extension Context {
         let modelID: ModelID
         private let lock = NSRecursiveLock()
         private weak var _context: Context<M>?
-        private(set) var _model: M?
-        private(set) var isDestructed = false
+        fileprivate private(set) var _model: M?
+        private var _isDestructed = false
 
         init(modelID: ModelID) {
             self.modelID = modelID
@@ -327,7 +327,7 @@ extension Context {
 
         var lifetime: ModelLifetime {
             context?.lifetime ?? lock {
-                isDestructed ? .destructed : .initial
+                _isDestructed ? .destructed : .initial
             }
         }
 
@@ -339,9 +339,13 @@ extension Context {
             lock { _model }
         }
 
+        var isDestructed: Bool {
+            lock { _isDestructed }
+        }
+
         func destruct(_ model: M?) {
             lock {
-                isDestructed = true
+                _isDestructed = true
                 _model = model
             }
         }
@@ -355,7 +359,7 @@ extension Context {
 
         func setContext(_ context: Context) {
             lock {
-                assert(!isDestructed)
+                assert(!_isDestructed)
                 _context = context
                 _model = nil
             }
