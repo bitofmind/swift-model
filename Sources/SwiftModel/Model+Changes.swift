@@ -8,7 +8,7 @@ public extension Model {
     /// - Parameter path: key path to value to be observed
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     func change<T: Equatable>(of path: KeyPath<Self, T>, initial: Bool = true) -> AsyncStream<T> where Self: Sendable {
-        update(of: path, initial: initial).removeDuplicates().eraseToStream()
+        update(of: path).removeDuplicates().dropFirst(initial ? 0 : 1).eraseToStream()
     }
 
     /// Returns a stream observing updates of the value at `path`
@@ -28,7 +28,7 @@ public extension Model {
     /// - Parameter recursive: Also trigger updates if any sub-value or there of is updated (default to false).
     /// - Parameter freezeValues: Returned frozen copies (snap-shots) of models (defaults to false).
     func change<T: ModelContainer&Equatable>(of path: KeyPath<Self, T>, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
-        update(of: path, initial: initial, recursive: recursive, freezeValues: freezeValues).removeDuplicates().eraseToStream()
+        update(of: path, recursive: recursive, freezeValues: freezeValues).removeDuplicates().dropFirst(initial ? 0 : 1).eraseToStream()
     }
 
     /// Returns a stream observing updates of the value at `path`
