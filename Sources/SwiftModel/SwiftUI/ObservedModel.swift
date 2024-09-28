@@ -32,9 +32,12 @@ public struct ObservedModel<M: Model>: DynamicProperty {
     public var wrappedValue: M
 
     public mutating func update() {
-        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), wrappedValue is Observable {
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *),
+            wrappedValue.context?.hasObservationRegistrar == true,
+            wrappedValue is Observable {
             return
         }
+
         wrappedValue = wrappedValue.withAccess(access)
         access.reset()
     }

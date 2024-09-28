@@ -139,6 +139,10 @@ class AnyContext: @unchecked Sendable {
         _observationRegistrar as? ObservationRegistrar
     }
 
+    var hasObservationRegistrar: Bool {
+        _observationRegistrar != nil
+    }
+
     var lifetime: ModelLifetime {
         lock(modeLifeTime)
     }
