@@ -225,8 +225,6 @@ struct AppView: View {
 
 > `@ObservedModel` has been carefully crafted to only trigger view updates when properties you are accessing from your view is updated. In comparison, `@ObservedObject` will trigger a view update no matter what `@Published` property is updated in your `ObservableObject` model object.
 
-> In iOS 17, tvOS 17, macOS 14 and watchOS 10.0, `@ObservedModel` is no longer required, instead your models will automatically conform to the new `Observable` protocol.
-
 ### Bindings
 
 The `@ObservedModel` also expose bindings to a model's properties:
@@ -236,8 +234,6 @@ Stepper(value: $model.count) {
   Text("\(model.count)")
 }
 ```
-
-> In iOS 17, tvOS 17, macOS 14 and watchOS 10.0, `@ObservedModel` has to be used instead SwiftUI's new `@Bindable` annotation, as the latter does not yet accept non class types.
 
 ## Dependencies
 

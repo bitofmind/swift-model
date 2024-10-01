@@ -114,7 +114,7 @@ class AnyContext: @unchecked Sendable {
     init(lock: NSRecursiveLock, parent: AnyContext?) {
         self.lock = lock
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            _observationRegistrar = ObservationRegistrar()
+            _observationRegistrar = nil//ObservationRegistrar() // There seem to be some issue with the Swift 6 compiler where updates or not always registered properly. We have to disable this for now.
         } else {
             _observationRegistrar = nil
         }
