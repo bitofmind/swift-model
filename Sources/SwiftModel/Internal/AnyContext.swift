@@ -41,6 +41,28 @@ class AnyContext: @unchecked Sendable {
 
     private(set) var anyModificationActiveCount = 0
     private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] = [:]
+    private var modificationCount = 0
+
+    func didModify() {
+        modificationCount &+= 1
+    }
+
+    typealias ModificationCounts = [ObjectIdentifier: Int]
+
+    var modificationCounts: ModificationCounts {
+        lock {
+            var counts = ModificationCounts()
+            collectModificationCounts(&counts)
+            return counts
+        }
+    }
+
+    private func collectModificationCounts(_ counts: inout ModificationCounts) {
+        counts[ObjectIdentifier(self)] = modificationCount
+        for child in allChildren {
+            child.collectModificationCounts(&counts)
+        }
+    }
 
     struct EventInfo: @unchecked Sendable {
         var event: Any

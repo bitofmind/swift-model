@@ -22,11 +22,13 @@ import Observation
 ///     }
 ///   }
 @propertyWrapper @dynamicMemberLookup
-public struct ObservedModel<M: Model>: DynamicProperty {
+public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
     @StateObject private var access = ViewAccess()
+    private var modificationCounts: AnyContext.ModificationCounts?
 
     public init(wrappedValue: M) {
         self.wrappedValue = wrappedValue
+        self.modificationCounts = wrappedValue.context?.modificationCounts
     }
 
     public var wrappedValue: M
@@ -57,6 +59,14 @@ public struct ObservedModel<M: Model>: DynamicProperty {
         Binding {
             wrappedValue[keyPath: path]
         } set: { _ in }
+    }
+
+    public static func == (lhs: ObservedModel, rhs: ObservedModel) -> Bool {
+        guard let lCounts = lhs.modificationCounts, let rCounts = rhs.modificationCounts else {
+            return false
+        }
+
+        return lCounts == rCounts
     }
 }
 

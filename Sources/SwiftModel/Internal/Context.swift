@@ -203,6 +203,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 lock.unlock()
             } else {
                 yield &modifyModel[keyPath: path]
+                didModify()
                 isMutating = true
                 readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
                 isMutating = false
@@ -232,6 +233,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             lock.unlock()
         } else {
             result = try modify(&modifyModel[keyPath: path])
+            didModify()
             isMutating = true
             readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
             isMutating = false
