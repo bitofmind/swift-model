@@ -56,14 +56,22 @@ public extension Model {
             let current = context.model
             defer { previous.setValue(current.frozenCopy) }
 
-            guard let diff = diff(previous.value, current) else { return nil }
+            var difference: String? = diff(previous.value, current)
+
+            if difference == nil {
+                difference = threadLocals.withValue(true, at: \.includeInMirror) {
+                    diff(previous.value, current)
+                }
+            }
+
+            guard let difference else { return nil }
 
             return {
                 var printer = printer
-                printer.write("State did update for \(name ?? typeDescription):\n" + diff)
+                printer.write("State did update for \(name ?? typeDescription):\n" + difference)
             }
         }
-
+        
         return AnyCancellable(cancellations: context.cancellations, onCancel: cancel)
 #else
        return EmptyCancellable()
