@@ -133,36 +133,43 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
             return nil
         }
 
-        return lock {
-            if shouldReset {
-                shouldReset = false
-                
-                for (_, observer) in observers {
-                    observer.reset()
-                }
+        lock.lock()
 
-                observers.removeAll(keepingCapacity: true)
+        if shouldReset {
+            shouldReset = false
+
+            for (_, observer) in observers {
+                observer.reset()
             }
 
-            let id = model.modelID
+            observers.removeAll(keepingCapacity: true)
+        }
 
-            let observer = (observers[id] as? Observer<M>) ?? Observer(context: model.context!, viewAccess: self)
-            if observer.accesses[path] == nil {
-                observer.accesses[path] = model.context!.onModify(for: path) { [weak self] finished in
-                    return {
-                        if !finished {
-                            self?.didUpdate()
-                        } else {
-                            self?.lock {
-                                observer.accesses[path] = nil
-                            }
+        let id = model.modelID
+
+        let observer = (observers[id] as? Observer<M>) ?? Observer(context: model.context!, viewAccess: self)
+        observers[id] = observer
+        if observer.accesses[path] == nil {
+            lock.unlock()
+            let access = model.context!.onModify(for: path) { [weak self] finished in
+                return {
+                    if !finished {
+                        self?.didUpdate()
+                    } else {
+                        self?.lock {
+                            observer.accesses[path] = nil
                         }
                     }
                 }
             }
-            observers[id] = observer
-            return nil
+            lock.lock()
+            observer.accesses[path] = access
         }
+
+        observers[id] = observer
+
+        lock.unlock()
+        return nil
     }
 
     override var shouldPropagateToChildren: Bool { true }
