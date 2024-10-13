@@ -5,8 +5,8 @@ class ModelAccessReference: @unchecked Sendable {
 }
 
 class ModelAccess: ModelAccessReference, @unchecked Sendable {
-    func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>) -> (() -> Void)? { nil }
-    func willModify<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>) -> (() -> Void)? { nil }
+    func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>&Sendable) -> (() -> Void)? { nil }
+    func willModify<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>&Sendable) -> (() -> Void)? { nil }
 
     func didSend<M: Model, Event>(event: Event, from context: Context<M>) {}
 

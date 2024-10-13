@@ -49,7 +49,7 @@ public extension ModelContext {
 }
 
 public extension ModelContext {
-    subscript<T>(model model: M, path path: WritableKeyPath<M, T>) -> T {
+    subscript<T>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
         _read {
             yield self[model, path]
         }
@@ -58,7 +58,7 @@ public extension ModelContext {
         }
     }
 
-    subscript<T: Model>(model model: M, path path: WritableKeyPath<M, T>) -> T {
+    subscript<T: Model>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
         _read {
             if let access, access.shouldPropagateToChildren {
                 yield self[model, path].withAccess(access)
@@ -115,7 +115,7 @@ public extension ModelContext {
         }
     }
 
-    subscript<T: ModelContainer>(model model: M, path path: WritableKeyPath<M, T>) -> T {
+    subscript<T: ModelContainer>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
         _read {
             if let access, access.shouldPropagateToChildren {
                 yield self[model, path].withDeepAccess(access)

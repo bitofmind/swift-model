@@ -21,7 +21,7 @@ public extension ModelNode {
 }
 
 public extension ModelNode {
-    func event() -> AsyncStream<Any> {
+    func event() -> AsyncStream<Any&Sendable> {
         guard let context = enforcedContext() else { return .never }
         return context.events().map(\.event).eraseToStream()
     }
@@ -96,7 +96,7 @@ public extension ModelNode {
     }
 }
 
-public struct EventReceivers: OptionSet {
+public struct EventReceivers: OptionSet, Sendable {
     public let rawValue: Int
 
     public init(rawValue: Int) {

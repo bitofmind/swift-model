@@ -7,7 +7,7 @@ public extension Model {
     ///
     /// - Parameter path: key path to value to be observed
     /// - Parameter initial: Start by sending current initial value (defaults to true).
-    func change<T: Equatable>(of path: KeyPath<Self, T>, initial: Bool = true) -> AsyncStream<T> where Self: Sendable {
+    func change<T: Equatable&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true) -> AsyncStream<T> where Self: Sendable {
         update(of: path).removeDuplicates().dropFirst(initial ? 0 : 1).eraseToStream()
     }
 
@@ -17,7 +17,7 @@ public extension Model {
     ///
     /// - Parameter path: KeyPath to value to be observed
     /// - Parameter initial: Start by sending current initial value (defaults to true)
-    func update<T>(of path: KeyPath<Self, T>, initial: Bool = true) -> AsyncStream<T> where Self: Sendable {
+    func update<T: Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true) -> AsyncStream<T> where Self: Sendable {
         _update(of: path, initial: initial, recursive: false, freezeValues: false)
     }
 
@@ -27,7 +27,7 @@ public extension Model {
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter recursive: Also trigger updates if any sub-value or there of is updated (default to false).
     /// - Parameter freezeValues: Returned frozen copies (snap-shots) of models (defaults to false).
-    func change<T: ModelContainer&Equatable>(of path: KeyPath<Self, T>, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
+    func change<T: ModelContainer&Equatable&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
         update(of: path, recursive: recursive, freezeValues: freezeValues).removeDuplicates().dropFirst(initial ? 0 : 1).eraseToStream()
     }
 
@@ -39,7 +39,7 @@ public extension Model {
     /// - Parameter initial: Start by sending current initial value (defaults to true)
     /// - Parameter recursive: Also trigger updates if any sub-value or there of is updated (default to false).
     /// - Parameter freezeValues: Returned frozen copies (snap-shots) of models (defaults to false).
-    func update<T: ModelContainer>(of path: KeyPath<Self, T>, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
+    func update<T: ModelContainer&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
         _update(of: path, initial: initial, recursive: recursive, freezeValues: freezeValues)
     }
 
@@ -79,7 +79,7 @@ public extension Model {
     }
 }
 
-public struct PrintTextOutputStream: TextOutputStream {
+public struct PrintTextOutputStream: TextOutputStream, Sendable {
     public init() {}
     public func write(_ string: String) {
         print(string)
@@ -87,7 +87,7 @@ public struct PrintTextOutputStream: TextOutputStream {
 }
 
 private extension Model {
-    func _update<T>(of path: KeyPath<Self, T>, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
+    func _update<T: Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
         guard let context = enforcedContext() else { return .never }
         return AsyncStream { cont in
             let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])
@@ -95,15 +95,16 @@ private extension Model {
             @Sendable func yield() -> () -> Void {
                 let copy = copy(context[path], shouldFreeze: freezeValues)
 
-                return { // Callout outside of held lock
+                return { // Call out outside of held lock
                     cont.yield(copy)
                 }
             }
 
             @Sendable func reset() {
                 let value = context[path]
-                if recursive, let container = value as? any ModelContainer {
+                if recursive, value is any ModelContainer {
                     let cancels = anyCallbacks.withValue { anyCallbacks in
+                        let container = value as! any ModelContainer
                         defer {
                             container.forEachContext { subContext in
                                 let cancel = subContext.onAnyModification { didFinish in
@@ -152,9 +153,9 @@ private extension Model {
 
 private final class AccessCollector: ModelAccess, @unchecked Sendable {
     let onModify: @Sendable (AccessCollector, Any) -> (() -> Void)?
-    let cancellables = LockIsolated<[Key: () -> Void]>([:])
+    let cancellables = LockIsolated<[Key: @Sendable () -> Void]>([:])
 
-    struct Key: Hashable {
+    struct Key: Hashable, @unchecked Sendable {
         var id: ModelID
         var path: AnyKeyPath
     }
@@ -179,7 +180,7 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
 
     override var shouldPropagateToChildren: Bool { true }
 
-    override func willAccess<M: Model, T>(_ model: M, at path: WritableKeyPath<M, T>) -> (() -> Void)? {
+    override func willAccess<M: Model, T>(_ model: M, at path: WritableKeyPath<M, T>&Sendable) -> (() -> Void)? {
         if let context = model.context {
             cancellables.withValue {
                 let key = Key(id: model.modelID, path: path)

@@ -42,7 +42,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
     override var shouldPropagateToChildren: Bool { true }
 
-    override func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>) -> (() -> Void)? {
+    override func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>&Sendable) -> (() -> Void)? {
         let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
         guard let rootPaths else {
             if let assertContext {
@@ -72,7 +72,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         }
     }
 
-    override func willModify<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>) -> (() -> Void)? {
+    override func willModify<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>&Sendable) -> (() -> Void)? {
         let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
         guard let rootPaths else {
             fatalError()

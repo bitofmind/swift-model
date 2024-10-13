@@ -1,16 +1,6 @@
 import XCTest
 
 final class StandupsUITests: XCTestCase {
-  var app: XCUIApplication!
-
-  override func setUpWithError() throws {
-    self.continueAfterFailure = false
-    self.app = XCUIApplication()
-    app.launchEnvironment = [
-      "UITesting": "true"
-    ]
-  }
-
   // This test demonstrates the simple flow of tapping the "Add" button, filling in some fields in
   // the form, and then adding the standup to the list. It's a very simple test, but it takes
   // approximately 10 seconds to run, and it depends on a lot of internal implementation details to
@@ -20,7 +10,14 @@ final class StandupsUITests: XCTestCase {
   // it takes 0.025 seconds (400 times faster) and it even tests more. It further confirms that when
   // the standup is added to the list its data will be persisted to disk so that it will be
   // available on next launch.
-  func testAdd() throws {
+  @MainActor func testAdd() throws {
+    continueAfterFailure = false
+    let app = XCUIApplication()
+
+    app.launchEnvironment = [
+      "UITesting": "true"
+    ]
+
     app.launch()
     app.navigationBars["Daily Standups"].buttons["Add"].tap()
 

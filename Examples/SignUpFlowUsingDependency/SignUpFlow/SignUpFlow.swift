@@ -25,7 +25,7 @@ struct SignUpData: Sendable {
 }
 
 extension SignUpData: DependencyKey {
-  static var liveValue = SignUpData()
+  static let liveValue = SignUpData()
 }
 
 struct StackItem<Value: Identifiable>: Hashable  {

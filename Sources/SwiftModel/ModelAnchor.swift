@@ -23,7 +23,7 @@ public extension Model {
         let (model, anchor) = andAnchor(function: function, andDependencies: dependencies)
        
         // Hold on to anchor as long as model is alive.
-        objc_setAssociatedObject(model.access!.reference, anchorKey, anchor, .OBJC_ASSOCIATION_RETAIN)
+        objc_setAssociatedObject(model.access!.reference, &anchorKey, anchor, .OBJC_ASSOCIATION_RETAIN)
 
         return model
     }
@@ -75,4 +75,4 @@ public class ModelAnchor<M: Model>: @unchecked Sendable {
     }
 }
 
-private let anchorKey = malloc(1)!
+private nonisolated(unsafe) var anchorKey: Void?

@@ -1,4 +1,4 @@
-// swift-tools-version:6.0
+// swift-tools-version: 5.9
 import PackageDescription
 import CompilerPluginSupport
 
@@ -14,8 +14,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.3.9"),
         .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.3.3"),
-        .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),
-        .package(url: "https://github.com/swiftlang/swift-syntax", from: "509.0.0"),
+        .package(url: "https://github.com/apple/swift-async-algorithms.git", from: "1.0.0"),
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "509.0.0"),
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.5.2"),
         .package(url: "https://github.com/pointfreeco/swift-identified-collections", from: "1.1.0"),
         .package(url: "https://github.com/pointfreeco/swift-concurrency-extras", from: "1.2.0"),
@@ -52,6 +52,15 @@ let package = Package(
                 .product(name: "MacroTesting", package: "swift-macro-testing")
             ]
         ),
-    ],
-    swiftLanguageModes: [.v6]
+    ]
 )
+
+//for target in package.targets where target.type != .system {
+//    target.swiftSettings = target.swiftSettings ?? []
+//    target.swiftSettings?.append(
+//        .unsafeFlags([
+//            "-Xfrontend", "-warn-concurrency",
+//            "-Xfrontend", "-enable-actor-data-race-checks",
+//        ])
+//    )
+//}

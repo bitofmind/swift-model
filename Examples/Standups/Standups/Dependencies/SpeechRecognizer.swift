@@ -29,14 +29,14 @@ extension SpeechClient: DependencyKey {
   }
 
   static var previewValue: SpeechClient {
-    let isRecording = ActorIsolated(false)
+    let isRecording = LockIsolated(false)
     return Self(
       authorizationStatus: { .authorized },
       requestAuthorization: { .authorized },
       startTask: { _ in
         AsyncThrowingStream { continuation in
           Task { @MainActor in
-            await isRecording.setValue(true)
+            isRecording.withValue { $0 = true }
             var finalText = """
               Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor \
               incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud \
@@ -46,7 +46,7 @@ extension SpeechClient: DependencyKey {
               officia deserunt mollit anim id est laborum.
               """
             var text = ""
-            while await isRecording.value {
+            while isRecording.value {
               let word = finalText.prefix { $0 != " " }
               try await Task.sleep(for: .milliseconds(word.count * 50 + .random(in: 0...200)))
               finalText.removeFirst(word.count)
@@ -72,7 +72,7 @@ extension SpeechClient: DependencyKey {
   static let testValue = SpeechClient(
     authorizationStatus: unimplemented("SpeechClient.authorizationStatus", placeholder: .denied),
     requestAuthorization: unimplemented("SpeechClient.requestAuthorization", placeholder: .denied),
-    startTask: unimplemented("SpeechClient.startTask")
+    startTask: unimplemented("SpeechClient.startTask", placeholder: .never)
   )
 
   static func fail(after duration: Duration) -> Self {

@@ -6,10 +6,6 @@ import Observation
 ///
 /// Use the projectedValue to access a binding of a property such as `$model.count`.
 ///
-/// >  In iOS 17, tvOS 17, macOS 14 and watchOS 10.0, `@ObservedModel` is not required, instead your models will automatically conform to the new `Observable` protocol.
-///
-/// > In iOS 17, tvOS 17, macOS 14 and watchOS 10.0, `@ObservedModel` has to be used instead SwiftUI's new `@Bindable` annotation, as the latter does not yet accept non class types.
-///
 /// >`@ObservedModel` has been carefully crafted to only trigger view updates when properties you are accessing from your view is updated.
 ///
 ///   struct CounterView: View {
@@ -22,6 +18,7 @@ import Observation
 ///     }
 ///   }
 @propertyWrapper @dynamicMemberLookup
+@MainActor
 public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
     @StateObject private var access = ViewAccess()
     private var modificationCounts: AnyContext.ModificationCounts?
@@ -33,15 +30,17 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
 
     public var wrappedValue: M
 
-    public mutating func update() {
+    public nonisolated mutating func update() {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *),
             wrappedValue.context?.hasObservationRegistrar == true,
             wrappedValue is Observable {
             return
         }
 
-        wrappedValue = wrappedValue.withAccess(access)
-        access.reset()
+        MainActor.assumeIsolated {
+            wrappedValue = wrappedValue.withAccess(access)
+            access.reset()
+        }
     }
 
     public var projectedValue: Self { self }
@@ -61,7 +60,7 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
         } set: { _ in }
     }
 
-    public static func == (lhs: ObservedModel, rhs: ObservedModel) -> Bool {
+    public nonisolated static func == (lhs: ObservedModel, rhs: ObservedModel) -> Bool {
         guard let lCounts = lhs.modificationCounts, let rCounts = rhs.modificationCounts else {
             return false
         }
@@ -71,7 +70,7 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
 }
 
 public extension Binding {
-    subscript<Subject: Model>(dynamicMember keyPath: KeyPath<Value, Subject>) -> Binding<Subject> {
+    subscript<Subject: Model>(dynamicMember keyPath: KeyPath<Value, Subject>&Sendable) -> Binding<Subject> where Value: Sendable {
         Binding<Subject> {
             wrappedValue[keyPath: keyPath]
         } set: { _ in }
@@ -128,7 +127,7 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
         super.init(useWeakReference: true)
     }
 
-    override func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>) -> (() -> Void)? {
+    override func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>&Sendable) -> (() -> Void)? {
         if ModelAccess.isInModelTaskContext {
             return nil
         }
@@ -184,7 +183,7 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
         }
     }
 
-    func reset() {
+    nonisolated func reset() {
         lock {
             shouldReset = true
         }

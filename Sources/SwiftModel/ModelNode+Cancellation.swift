@@ -37,7 +37,7 @@ public extension ModelNode {
     ///         onCancel { }
     ///     }
     ///
-    func cancellationContext<T>(for key: some Hashable, perform: () throws -> T) rethrows -> T {
+    func cancellationContext<T>(for key: some Hashable&Sendable, perform: () throws -> T) rethrows -> T {
         guard let cancellations = enforcedContext()?.cancellations else { return try perform() }
 
         let _ = AnyCancellable(cancellations: cancellations) { [weak cancellations] in
@@ -58,7 +58,7 @@ public extension ModelNode {
     ///         onCancel { }
     ///     }
     ///
-    func cancellationContext<T>(for key: some Hashable, perform: () async throws -> T) async rethrows -> T {
+    func cancellationContext<T>(for key: some Hashable&Sendable, perform: () async throws -> T) async rethrows -> T {
         guard let cancellations = enforcedContext()?.cancellations else { return try await perform() }
 
 

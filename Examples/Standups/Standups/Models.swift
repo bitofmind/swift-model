@@ -2,7 +2,7 @@ import IdentifiedCollections
 import SwiftUI
 import Tagged
 
-struct Standup: Equatable, Identifiable, Codable {
+struct Standup: Equatable, Identifiable, Codable, Sendable {
   let id: Tagged<Self, UUID>
   var attendees: IdentifiedArrayOf<Attendee> = []
   var duration: Duration = .seconds(60 * 5)

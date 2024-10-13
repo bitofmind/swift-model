@@ -108,7 +108,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         sendEvent(eventInfo, to: receivers)
     }
 
-    func onModify<T>(for path: KeyPath<M, T>, _ callback: @Sendable @escaping (Bool) -> (() -> Void)?) -> @Sendable () -> Void {
+    func onModify<T>(for path: KeyPath<M, T>&Sendable, _ callback: @Sendable @escaping (Bool) -> (() -> Void)?) -> @Sendable () -> Void {
         guard !isDestructed else {
             return {}
         }

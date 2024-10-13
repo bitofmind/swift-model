@@ -57,11 +57,11 @@ public extension Model {
 }
 
 public extension Model {
-    func didSend(_ event: Event, file: StaticString = #file, line: UInt = #line) -> Bool {
+    func didSend(_ event: Event, file: StaticString = #filePath, line: UInt = #line) -> Bool {
         didSend(event as Any, file: file, line: line)
     }
 
-    func didSend(_ event: Any, file: StaticString = #file, line: UInt = #line) -> Bool {
+    func didSend(_ event: Any, file: StaticString = #filePath, line: UInt = #line) -> Bool {
         guard let assertContext = TesterAssertContextBase.assertContext else {
             XCTFail("Can only call didSend inside a ModelTester assert", file: file, line: line)
             return false
@@ -171,7 +171,7 @@ public extension ModelTester {
         await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
     }
 
-    func unwrap<T>(_ unwrap: @escaping @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, file: StaticString = #file, line: UInt = #line) async throws -> T  {
+    func unwrap<T>(_ unwrap: @escaping @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, file: StaticString = #filePath, line: UInt = #line) async throws -> T  {
         let start = DispatchTime.now().uptimeNanoseconds
         while true {
             if let value = unwrap() {

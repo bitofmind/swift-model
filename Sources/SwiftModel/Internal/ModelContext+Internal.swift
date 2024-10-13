@@ -138,7 +138,7 @@ extension Model {
 }
 
 extension ModelContext {
-    func willAccess<T>(_ model: M, at path: WritableKeyPath<M, T>) -> (() -> Void)? {
+    func willAccess<T>(_ model: M, at path: WritableKeyPath<M, T>&Sendable) -> (() -> Void)? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, let observable = model as? any Observable&Model {
             observable.access(path: path, from: context)
         }
@@ -146,7 +146,7 @@ extension ModelContext {
         return access?.willAccess(model, at: path)
     }
 
-    func willModify<T>(_ model: M, at path: WritableKeyPath<M, T>) -> (() -> Void)? {
+    func willModify<T>(_ model: M, at path: WritableKeyPath<M, T>&Sendable) -> (() -> Void)? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, let observable = model as? any Observable&Model {
             observable.willSet(path: path, from: context)
             defer {
@@ -160,11 +160,11 @@ extension ModelContext {
 }
 
 extension ModelNode {
-    func access<T>(path: WritableKeyPath<M, T>, from model: M) {
+    func access<T>(path: WritableKeyPath<M, T>&Sendable, from model: M) {
         _$modelContext.willAccess(model, at: path)?()
     }
 
-    func withMutation<Member, T>(of model: M, keyPath: WritableKeyPath<M, Member>, _ mutation: () throws -> T) rethrows -> T {
+    func withMutation<Member, T>(of model: M, keyPath: WritableKeyPath<M, Member>&Sendable, _ mutation: () throws -> T) rethrows -> T {
 
         let postModify = _$modelContext.willModify(model, at: keyPath)
         defer {
@@ -175,7 +175,7 @@ extension ModelNode {
 }
 
 extension ModelContext {
-    subscript<T>(model: M, path: WritableKeyPath<M, T>) -> T {
+    subscript<T>(model: M, path: WritableKeyPath<M, T>&Sendable) -> T {
         _read {
             if threadLocals.forceDirectAccess {
                 yield model[keyPath: path]
@@ -211,7 +211,7 @@ extension ModelContext {
         }
     }
 
-    func transaction<Value, T>(with model: M, at path: WritableKeyPath<M, Value>, modify: (inout Value) throws -> T) rethrows -> T {
+    func transaction<Value, T>(with model: M, at path: WritableKeyPath<M, Value>&Sendable, modify: (inout Value) throws -> T) rethrows -> T {
         guard let context = modifyContext else {
             if let reference, reference.lifetime == .initial {
                 return try modify(&reference[fallback: model][keyPath: path])

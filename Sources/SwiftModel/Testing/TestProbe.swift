@@ -44,7 +44,7 @@ public extension TestProbe {
     var count: Int { values.count }
     var isEmpty: Bool { values.isEmpty }
 
-    func wasCalled<each S>(with value: repeat each S, file: StaticString = #file, line: UInt = #line) -> Bool {
+    func wasCalled<each S>(with value: repeat each S, file: StaticString = #filePath, line: UInt = #line) -> Bool {
         guard let context = TesterAssertContextBase.assertContext else {
             XCTFail("Can only call wasCalled inside a ModelTester assert", file: file, line: line)
             return false

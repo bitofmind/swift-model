@@ -1,13 +1,14 @@
 import Dependencies
+import ConcurrencyExtras
 
 @dynamicMemberLookup
-public struct ModelDependencies {
+public struct ModelDependencies: Sendable {
     var dependencies: DependencyValues
-    var models: [AnyHashable: any Model] = [:]
+    var models: [AnyHashableSendable: any Model] = [:]
 
-    private mutating func updateWithValue<Value>(_ value: Value, forKey key: AnyHashable) {
+    private mutating func updateWithValue<Value>(_ value: Value, forKey key: some Hashable&Sendable) {
         if let model = value as? any Model {
-            models[key] = model
+            models[AnyHashableSendable(key)] = model
         }
     }
 
@@ -19,7 +20,7 @@ public struct ModelDependencies {
         }
     }
 
-    public subscript<Value>(dynamicMember key: WritableKeyPath<DependencyValues, Value>) -> Value {
+    public subscript<Value>(dynamicMember key: WritableKeyPath<DependencyValues, Value>&Sendable) -> Value {
         get { dependencies[keyPath: key] }
         set {
             dependencies[keyPath: key] = newValue

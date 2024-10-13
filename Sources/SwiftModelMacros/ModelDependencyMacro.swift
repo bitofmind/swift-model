@@ -4,10 +4,7 @@ import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 
 public struct ModelDependencyMacro: AccessorMacro {
-    public static func expansion<
-        Context: MacroExpansionContext,
-        Declaration: DeclSyntaxProtocol
-    >(
+    public static func expansion<Context: MacroExpansionContext, Declaration: DeclSyntaxProtocol>(
         of node: AttributeSyntax,
         providingAccessorsOf declaration: Declaration,
         in context: Context
@@ -29,3 +26,5 @@ public struct ModelDependencyMacro: AccessorMacro {
         return [readAccessor]
     }
 }
+
+

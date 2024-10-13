@@ -102,7 +102,7 @@ extension Model where Self: Observable {
         context.observationRegistrar?.access(self, keyPath: path as! KeyPath<Self, T>)
     }
 
-    func willSet<M: Model, T>(path: KeyPath<M, T>, from context: Context<M>) {
+    func willSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
         if Thread.isMainThread {
             context.observationRegistrar?.willSet(self, keyPath: path as! KeyPath<Self, T>)
         } else {
@@ -112,7 +112,7 @@ extension Model where Self: Observable {
         }
     }
 
-    func didSet<M: Model, T>(path: KeyPath<M, T>, from context: Context<M>) {
+    func didSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
         if Thread.isMainThread {
             context.observationRegistrar?.didSet(self, keyPath: path as! KeyPath<Self, T>)
         } else {

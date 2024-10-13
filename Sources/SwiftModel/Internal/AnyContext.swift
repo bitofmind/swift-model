@@ -390,7 +390,7 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    func dependency<Value>(for keyPath: KeyPath<DependencyValues, Value>) -> Value {
+    func dependency<Value>(for keyPath: KeyPath<DependencyValues, Value>&Sendable) -> Value {
         lock {
             if let value = dependencyCache[keyPath] as? Value {
                 return value

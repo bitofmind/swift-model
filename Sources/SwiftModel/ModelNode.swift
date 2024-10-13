@@ -31,7 +31,7 @@ public extension ModelNode {
         }
     }
 
-    subscript<Value>(dynamicMember keyPath: KeyPath<DependencyValues, Value>) -> Value {
+    subscript<Value>(dynamicMember keyPath: KeyPath<DependencyValues, Value>&Sendable) -> Value {
         if isDestructed {
             // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
             if let access = _$modelContext.access as? LastSeenAccess,

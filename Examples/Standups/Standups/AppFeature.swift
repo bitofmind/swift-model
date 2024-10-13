@@ -6,6 +6,7 @@ import AsyncAlgorithms
 import CustomDump
 import Clocks
 import IdentifiedCollections
+import ConcurrencyExtras
 
 @Model struct AppFeature: Sendable {
   var path: IdentifiedArrayOf<Path>
@@ -57,11 +58,11 @@ import IdentifiedCollections
     case meeting(Meeting, standup: Standup)
     case record(RecordMeeting)
 
-    var id: AnyHashable {
+    var id: AnyHashableSendable {
       switch self {
-      case let .detail(detail): detail
-      case let .meeting(meeting, standup: standup): [AnyHashable(meeting.id), AnyHashable(standup.id)]
-      case let .record(record): record.id
+      case let .detail(detail): AnyHashableSendable(detail)
+      case let .meeting(meeting, standup: standup): AnyHashableSendable([AnyHashableSendable(meeting.id), AnyHashableSendable(standup.id)])
+      case let .record(record): AnyHashableSendable(record.id)
       }
     }
 
