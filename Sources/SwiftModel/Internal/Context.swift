@@ -160,8 +160,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     subscript<T>(path: KeyPath<M, T>, callback: (() -> Void)? = nil) -> T {
         _read {
             lock.lock()
-            if let last = reference._model {
-                yield last[keyPath: path]
+            if unprotectedIisDestructed {
+                if let last = reference._model {
+                    yield last[keyPath: path]
+                } else {
+                    yield readModel[keyPath: path]
+                }
             } else {
                 if isMutating { // Handle will and did set recursion
                     yield modifyModel[keyPath: path]
@@ -177,10 +181,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     subscript<T>(path: WritableKeyPath<M, T>, callback: (() -> Void)? = nil) -> T {
         _read {
             lock.lock()
-            if let last = reference._model {
-                yield last[keyPath: path]
-            } else if isDestructed {
-                yield readModel[keyPath: path]
+            if unprotectedIisDestructed {
+                if let last = reference._model {
+                    yield last[keyPath: path]
+                } else {
+                    yield readModel[keyPath: path]
+                }
             } else {
                 if isMutating { // Handle will and did set recursion
                     yield modifyModel[keyPath: path]
@@ -193,13 +199,14 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
         _modify {
             lock.lock()
-            if var last = reference._model {
-                yield &last[keyPath: path]
-                reference.destruct(last)
-                lock.unlock()
-            } else if isDestructed {
-                var value = readModel[keyPath: path]
-                yield &value
+            if unprotectedIisDestructed {
+                if var last = reference._model {
+                    yield &last[keyPath: path]
+                    reference.destruct(last)
+                } else {
+                    var value = readModel[keyPath: path]
+                    yield &value
+                }
                 lock.unlock()
             } else {
                 yield &modifyModel[keyPath: path]

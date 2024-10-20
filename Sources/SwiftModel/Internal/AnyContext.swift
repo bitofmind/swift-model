@@ -173,6 +173,10 @@ class AnyContext: @unchecked Sendable {
         lifetime == .destructed
     }
 
+    var unprotectedIisDestructed: Bool {
+        modeLifeTime == .destructed
+    }
+
     func removeChild(_ context: AnyContext, callbacks: inout [() -> Void]) {
         context.removeParent(self, callbacks: &callbacks)
 
