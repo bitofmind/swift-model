@@ -98,7 +98,7 @@ private class BaseObserver {
 private final class Observer<M: Model>: BaseObserver, @unchecked Sendable { // Protected by ViewAccess's lock
     weak var context: Context<M>?
     weak var viewAccess: ViewAccess?
-    var accesses: [PartialKeyPath<M>: () -> Void] = [:]
+    var accesses: [PartialKeyPath<M>: (Any, () -> Void)] = [:]
 
     init(context: Context<M>, viewAccess: ViewAccess) {
         self.context = context
@@ -111,7 +111,7 @@ private final class Observer<M: Model>: BaseObserver, @unchecked Sendable { // P
     }
 
     override func reset() {
-        for cancellable in accesses.values {
+        for (_ , cancellable) in accesses.values {
             cancellable()
         }
         accesses.removeAll(keepingCapacity: true)
@@ -148,12 +148,25 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
 
         let observer = (observers[id] as? Observer<M>) ?? Observer(context: model.context!, viewAccess: self)
         observers[id] = observer
-        if observer.accesses[path] == nil {
+
+        if observer.accesses[path] == nil, let context = model.context {
             lock.unlock()
-            let access = model.context!.onModify(for: path) { [weak self] finished in
+            let access = context.onModify(for: path) { [weak self] finished in
                 return {
                     if !finished {
-                        self?.didUpdate()
+                        let newValue = context[path]
+                        let didChange = self?.lock {
+                            if let oldValue = observer.accesses[path]?.0, isEqual(oldValue, newValue) == true {
+                                return false
+                            }
+
+                            observer.accesses[path]?.0 = newValue
+                            return true
+                        }
+
+                        if didChange == true {
+                            self?.didUpdate()
+                        }
                     } else {
                         self?.lock {
                             observer.accesses[path] = nil
@@ -161,10 +174,10 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
                     }
                 }
             }
+            let initialValue = context[path]
             lock.lock()
-            observer.accesses[path] = access
+            observer.accesses[path] = (initialValue, access)
         }
-
         observers[id] = observer
 
         lock.unlock()
