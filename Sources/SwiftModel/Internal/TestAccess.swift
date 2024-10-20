@@ -1,6 +1,6 @@
 import Foundation
 import CustomDump
-import XCTestDynamicOverlay
+import IssueReporting
 import Dependencies
 
 final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
@@ -103,7 +103,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     }
 
     func fail(_ message: String, at fileAndLine: FileAndLine) {
-        XCTFail(message, file: fileAndLine.file, line: fileAndLine.line)
+        reportIssue(message, filePath: fileAndLine.file, line: fileAndLine.line)
     }
 
     func fail(_ message: String, for area: Exhaustivity, at fileAndLine: FileAndLine) {

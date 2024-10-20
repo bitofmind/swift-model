@@ -1,6 +1,6 @@
 import Foundation
 import CustomDump
-import XCTestDynamicOverlay
+import IssueReporting
 
 extension String {
     func indent(by indent: Int) -> String {

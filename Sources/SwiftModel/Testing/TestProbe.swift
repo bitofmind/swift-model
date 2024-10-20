@@ -1,5 +1,5 @@
 import Foundation
-import XCTestDynamicOverlay
+import IssueReporting
 import CustomDump
 
 public final class TestProbe: @unchecked Sendable {
@@ -44,9 +44,9 @@ public extension TestProbe {
     var count: Int { values.count }
     var isEmpty: Bool { values.isEmpty }
 
-    func wasCalled<each S>(with value: repeat each S, file: StaticString = #filePath, line: UInt = #line) -> Bool {
+    func wasCalled<each S>(with value: repeat each S, filePath: StaticString = #filePath, line: UInt = #line) -> Bool {
         guard let context = TesterAssertContextBase.assertContext else {
-            XCTFail("Can only call wasCalled inside a ModelTester assert", file: file, line: line)
+            reportIssue("Can only call wasCalled inside a ModelTester assert", filePath: filePath, line: line)
             return false
         }
 

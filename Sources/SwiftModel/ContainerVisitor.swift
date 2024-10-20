@@ -1,4 +1,4 @@
-import XCTestDynamicOverlay
+import IssueReporting
 
 /// Helper used by `ModelContainer`'s visit to implement
 public struct ContainerVisitor<State> {
@@ -37,12 +37,12 @@ public extension ContainerVisitor {
     }
 
     mutating func visitStatically<T: Sequence>(at path: WritableKeyPath<State, T>) where T.Element: Model {
-        XCTFail("Collection of models needs to conform to ModelContainer")
+        reportIssue("Collection of models needs to conform to ModelContainer")
         modelVisitor.visit(path: path)
     }
 
     mutating func visitStatically<M: ModelContainer>(at path: KeyPath<State, M>) {
-        XCTFail("Model(Container) of type \(M.self) declared in \(State.self) can't be declared as a let.")
+        reportIssue("Model(Container) of type \(M.self) declared in \(State.self) can't be declared as a let.")
     }
 
     mutating func visitStatically<T>(at path: KeyPath<State, T>) {

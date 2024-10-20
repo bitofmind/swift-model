@@ -45,7 +45,7 @@ extension ModelContext {
 
     func enforcedContext(_ message: @autoclosure () -> String) -> Context<M>? {
         guard let context else {
-            XCTFail(message())
+            reportIssue(message())
             return nil
         }
 
@@ -57,7 +57,7 @@ extension ModelContext {
         case let .reference(reference):
             return reference.context
         case .frozenCopy:
-            XCTFail("Modifying a frozen copy of a model is not allowed and has no effect")
+            reportIssue("Modifying a frozen copy of a model is not allowed and has no effect")
             return nil
         case .lastSeen:
             if let access = access as? LastSeenAccess, -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
@@ -65,7 +65,7 @@ extension ModelContext {
                 return nil
             }
 
-            XCTFail("Modifying an destructed model is not allowed and has no effect")
+            reportIssue("Modifying an destructed model is not allowed and has no effect")
             return nil
         }
     }

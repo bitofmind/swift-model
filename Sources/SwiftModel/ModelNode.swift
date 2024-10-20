@@ -119,7 +119,7 @@ extension ModelNode {
 
     func enforcedContext(_ message: @autoclosure () -> String) -> Context<M>? {
         guard let context else {
-            XCTFail(message())
+            reportIssue(message())
             return nil
         }
 

@@ -1,7 +1,7 @@
 import Foundation
 import Dependencies
 import OrderedCollections
-import XCTestDynamicOverlay
+import IssueReporting
 
 final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
@@ -15,7 +15,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     init(model: M, lock: NSRecursiveLock, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
         if model.lifetime != .initial {
-            XCTFail("It is not allowed to add an already anchored or fozen model, instead create new instance.")
+            reportIssue("It is not allowed to add an already anchored or fozen model, instead create new instance.")
         }
 
         readModel = model.initialCopy

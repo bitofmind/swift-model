@@ -1,7 +1,7 @@
 import Foundation
 import AsyncAlgorithms
 import Dependencies
-import XCTestDynamicOverlay
+import IssueReporting
 import CustomDump
 
 /// An model tester is used when testing models
@@ -57,18 +57,18 @@ public extension Model {
 }
 
 public extension Model {
-    func didSend(_ event: Event, file: StaticString = #filePath, line: UInt = #line) -> Bool {
-        didSend(event as Any, file: file, line: line)
+    func didSend(_ event: Event, filePath: StaticString = #filePath, line: UInt = #line) -> Bool {
+        didSend(event as Any, filePath: filePath, line: line)
     }
 
-    func didSend(_ event: Any, file: StaticString = #filePath, line: UInt = #line) -> Bool {
+    func didSend(_ event: Any, filePath: StaticString = #filePath, line: UInt = #line) -> Bool {
         guard let assertContext = TesterAssertContextBase.assertContext else {
-            XCTFail("Can only call didSend inside a ModelTester assert", file: file, line: line)
+            reportIssue("Can only call didSend inside a ModelTester assert", filePath: filePath, line: line)
             return false
         }
 
         guard lifetime >= .active else {
-            XCTFail("Can only call didSend on models that is part of a ModelTester", file: file, line: line)
+            reportIssue("Can only call didSend on models that is part of a ModelTester", filePath: filePath, line: line)
             return false
         }
 
@@ -171,18 +171,18 @@ public extension ModelTester {
         await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
     }
 
-    func unwrap<T>(_ unwrap: @escaping @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, file: StaticString = #filePath, line: UInt = #line) async throws -> T  {
+    func unwrap<T>(_ unwrap: @escaping @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, filePath: StaticString = #filePath, line: UInt = #line) async throws -> T  {
         let start = DispatchTime.now().uptimeNanoseconds
         while true {
             if let value = unwrap() {
-                let fileAndLine = FileAndLine(file: file, line: line)
+                let fileAndLine = FileAndLine(file: filePath, line: line)
                 let predicate = AssertBuilder.Predicate(predicate: { unwrap() != nil }, fileAndLine: fileAndLine)
                 await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate], enableExhaustionTest: false)
                 return value
             }
 
             if start.distance(to: DispatchTime.now().uptimeNanoseconds) > timeout {
-                XCTFail("Failed to unwrap value", file: file, line: line)
+                reportIssue("Failed to unwrap value", filePath: filePath, line: line)
                 throw UnwrapError()
             }
 

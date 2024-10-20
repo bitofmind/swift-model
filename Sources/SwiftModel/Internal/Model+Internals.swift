@@ -4,7 +4,7 @@ import Dependencies
 extension Model {
     func assertInitialState(function: String = #function) {
         if lifetime != .initial {
-            XCTFail("Calling \(function) on an anchored model is not allowed and has no effect")
+            reportIssue("Calling \(function) on an anchored model is not allowed and has no effect")
         }
     }
 
@@ -88,7 +88,7 @@ extension Model {
 
     func enforcedContext(_ message: @autoclosure () -> String) -> Context<Self>? {
         guard let context else {
-            XCTFail(message())
+            reportIssue(message())
             return nil
         }
 
