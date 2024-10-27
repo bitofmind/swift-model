@@ -39,7 +39,7 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
 
         MainActor.assumeIsolated {
             wrappedValue = wrappedValue.withAccess(access)
-            access.reset()
+            access.updateObserved(wrappedValue)
         }
     }
 
@@ -91,93 +91,115 @@ public struct UsingModel<M: Model, Content: View>: View {
     }
 }
 
-private class BaseObserver {
-    func reset() { fatalError() }
-}
-
-private final class Observer<M: Model>: BaseObserver, @unchecked Sendable { // Protected by ViewAccess's lock
+private final class Observer<M: Model>: @unchecked Sendable {
+    // Protected by ViewAccess's lock
     weak var context: Context<M>?
     weak var viewAccess: ViewAccess?
-    var accesses: [PartialKeyPath<M>: (Any, () -> Void)] = [:]
+    var accesses: [PartialKeyPath<M>: ((any Equatable)?, () -> Void)] = [:]
 
     init(context: Context<M>, viewAccess: ViewAccess) {
         self.context = context
         self.viewAccess = viewAccess
-        super.init()
     }
 
     deinit {
-        reset()
-    }
-
-    override func reset() {
         for (_ , cancellable) in accesses.values {
             cancellable()
         }
-        accesses.removeAll(keepingCapacity: true)
     }
 }
 
 private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendable {
-    let lock = NSLock()
-    var observers: [AnyHashable: BaseObserver] = [:]
-    var shouldReset = false
+    private let lock = NSLock()
+    private var observers: [ModelID: AnyObject] = [:]
+    private var root: AnyContext?
 
     init() {
         super.init(useWeakReference: true)
     }
 
-    override func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>&Sendable) -> (() -> Void)? {
-        if ModelAccess.isInModelTaskContext {
-            return nil
-        }
-
-        lock.lock()
-
-        if shouldReset {
-            shouldReset = false
-
-            for (_, observer) in observers {
-                observer.reset()
+    func updateObserved<M: Model>(_ model: M) {
+        lock.withLock {
+            if let root, root !== model.context {
+                observers.removeAll(keepingCapacity: true)
             }
+            self.root = model.context
+        }
+    }
 
-            observers.removeAll(keepingCapacity: true)
+    override func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>&Sendable) -> (() -> Void)? {
+        guard let context = model.context, !ModelAccess.isInModelTaskContext else {
+            return nil
         }
 
         let id = model.modelID
 
-        let observer = (observers[id] as? Observer<M>) ?? Observer(context: model.context!, viewAccess: self)
+        if context.isDestructed {
+            lock {
+                observers[id] = nil
+            }
+            return nil
+        }
+
+        if let root {
+            if root.isDestructed {
+                lock {
+                    observers.removeAll(keepingCapacity: true)
+                }
+                return nil
+            }
+
+            if !context.hasPredecessor(root), root !== context {
+                lock {
+                    observers[id] = nil
+                }
+                return nil
+            }
+        }
+
+        lock.lock()
+
+        let observer = (observers[id] as? Observer<M>) ?? Observer(context: context, viewAccess: self)
         observers[id] = observer
 
-        if observer.accesses[path] == nil, let context = model.context {
+        if observer.accesses[path] == nil {
             lock.unlock()
+
             let access = context.onModify(for: path) { [weak self] finished in
+                guard let self else {
+                    return {}
+                }
+
                 return {
                     if !finished {
-                        let newValue = context[path]
-                        let didChange = self?.lock {
-                            if let oldValue = observer.accesses[path]?.0, isEqual(oldValue, newValue) == true {
-                                return false
+                        let shouldUpdate = self.lock {
+                            if let oldValue = observer.accesses[path]?.0, let newValue = context[path] as? any Equatable {
+                                if isEqual(oldValue, newValue) == true {
+                                    return false
+                                } else {
+                                    observer.accesses[path]?.0 = newValue
+                                }
                             }
 
-                            observer.accesses[path]?.0 = newValue
                             return true
                         }
 
-                        if didChange == true {
-                            self?.didUpdate()
+                        if shouldUpdate {
+                            self.didUpdate()
                         }
                     } else {
-                        self?.lock {
+                        self.lock {
                             observer.accesses[path] = nil
                         }
                     }
                 }
             }
-            let initialValue = context[path]
+            
+            let initialValue = context[path] as? any Equatable
             lock.lock()
             observer.accesses[path] = (initialValue, access)
         }
+
         observers[id] = observer
 
         lock.unlock()
@@ -193,16 +215,6 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
             Task { @MainActor in
                 objectWillChange.send()
             }
-        }
-    }
-
-    nonisolated func reset() {
-        lock {
-            shouldReset = true
-        }
-
-        Task { @MainActor in
-            lock { shouldReset = false }
         }
     }
 }

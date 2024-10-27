@@ -119,8 +119,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
 
         return { [weak self] in
-            self?.lock {
-                _ = self?.modifyCallbacks[path]?.removeValue(forKey: key)
+            guard let self else { return }
+            self.lock {
+                _ = self.modifyCallbacks[path]?.removeValue(forKey: key)
             }
         }
     }

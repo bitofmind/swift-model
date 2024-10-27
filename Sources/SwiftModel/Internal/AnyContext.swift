@@ -99,6 +99,16 @@ class AnyContext: @unchecked Sendable {
         weakParents.compactMap(\.parent)
     }
 
+    func hasPredecessor(_ context: AnyContext) -> Bool {
+        for parent in lock(parents) {
+            if parent === context || parent.hasPredecessor(context) {
+                return true
+            }
+        }
+
+        return false
+    }
+
     var selfPath: AnyKeyPath { fatalError() }
 
     var rootPaths: [AnyKeyPath] {
