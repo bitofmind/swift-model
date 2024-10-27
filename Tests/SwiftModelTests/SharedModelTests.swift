@@ -1,41 +1,46 @@
 @testable import SwiftModel
-import XCTest
+import Testing
 import ConcurrencyExtras
+import Observation
 
-final class SharedModelTests: XCTestCase {
-    func testBasicSharing() throws {
+struct SharedModelTests {
+    @Test func testBasicSharing() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor() {
                 $0.testResult = testResult
             }
 
             parent.children.append(parent.child)
+
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0pc0")
+        #expect(testResult.value == "PC0pc0")
     }
 
-    func testReassign() throws {
+    @Test func testReassign() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor() {
                 $0.testResult = testResult
             }
 
             let child = Child(id: 2)
             parent.children.append(child)
-            XCTAssertEqual(testResult.value, "PC0C2")
+            #expect(testResult.value == "PC0C2")
             parent.child = parent.children[0]
-            XCTAssertEqual(testResult.value, "PC0C2c0")
+            #expect(testResult.value == "PC0C2c0")
+
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C2c0pc2")
+        #expect(testResult.value == "PC0C2c0pc2")
     }
 
-    func testArray() throws {
+    @Test func testArray() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor() {
                 $0.testResult = testResult
             }
@@ -43,42 +48,48 @@ final class SharedModelTests: XCTestCase {
             let child = Child(id: 2)
             parent.children.append(child)
             parent.children.append(child)
+
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C2pc0c2")
+        #expect(testResult.value == "PC0C2pc0c2")
     }
 
-    func testArrayAlt() throws {
+    @Test func testArrayAlt() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor() {
                 $0.testResult = testResult
             }
 
             parent.children.append(parent.child)
             parent.child = Child(id: 2)
-            XCTAssertEqual(testResult.value, "PC0C2")
+            #expect(testResult.value == "PC0C2")
 
             parent.children.removeAll()
-            XCTAssertEqual(testResult.value, "PC0C2c0")
+            #expect(testResult.value == "PC0C2c0")
+
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C2c0pc2")
+        #expect(testResult.value == "PC0C2c0pc2")
     }
 
-    func testMultipleInit() throws {
+    @Test func testMultipleInit() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let leaf = Leaf()
             let _ = Parent(child: Child(id: 1, leaf: leaf), children: [Child(id: 2, leaf: leaf)]).withAnchor() {
                 $0.testResult = testResult
             }
+
+            return leaf
         }
 
-        XCTAssertEqual(testResult.value, "PC1LC2pc1c2l")
+        #expect(testResult.value == "PC1LC2pc1c2l")
     }
 
-    func testEvents() async throws {
+    @Test func testEvents() async throws {
         let testResult = TestResult()
 
         let (parent, tester) = EventParent().andTester {
@@ -99,7 +110,7 @@ final class SharedModelTests: XCTestCase {
 }
 
 @Model
-private struct Parent: Sendable {
+private struct Parent {
     var child: Child = Child(id: 0)
     var children: [Child] = []
 
@@ -112,7 +123,7 @@ private struct Parent: Sendable {
 }
 
 @Model
-private struct Child: Sendable, Equatable {
+private struct Child: Equatable {
     var id: Int
     var leaf: Leaf? = nil
 
@@ -129,7 +140,7 @@ private struct Child: Sendable, Equatable {
 }
 
 @Model
-private struct Leaf: Sendable, Equatable {
+private struct Leaf: Equatable {
     func onActivate() {
         node.testResult.add("L")
         node.onCancel {
@@ -139,7 +150,7 @@ private struct Leaf: Sendable, Equatable {
 }
 
 @Model 
-private struct EventParent: Sendable {
+private struct EventParent {
     var child: EventChild = EventChild(id: 0)
     var children: [EventChild] = []
 
@@ -155,7 +166,7 @@ private struct EventParent: Sendable {
 }
 
 @Model
-private struct EventChild: Sendable, Equatable {
+private struct EventChild: Equatable {
     var id: Int
 
     func sendEvent(_ event: String) {

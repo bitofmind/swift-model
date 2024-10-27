@@ -3,7 +3,7 @@ import SwiftUI
 import SwiftModel
 import Dependencies
 
-@Model struct CounterModel: Sendable {
+@Model struct CounterModel {
     fileprivate(set) var alert: Alert?
     private(set) var count: Int
     let onFact: @Sendable (Int, String) -> Void
@@ -52,7 +52,7 @@ struct CounterView: View {
     }
 }
 
-@Model struct CounterRowModel: Sendable {
+@Model struct CounterRowModel {
     private(set) var counter: CounterModel
     let onRemove: @Sendable (Self) -> Void
 
@@ -78,7 +78,7 @@ struct CounterRowView: View {
     }
 }
 
-@Model struct AppModel: Sendable {
+@Model struct AppModel {
     private(set) var counters: [CounterRowModel] = []
     private(set) var factPrompt: FactPromptModel?
 
@@ -134,7 +134,7 @@ struct AppView: View {
     }
 }
 
-@Model struct FactPromptModel: Sendable {
+@Model struct FactPromptModel {
     let count: Int
     private(set) var fact: String
     private(set) var isLoading = false

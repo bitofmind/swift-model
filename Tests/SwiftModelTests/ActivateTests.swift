@@ -1,74 +1,47 @@
-import XCTest
-import SwiftModel
-import Dependencies
+import Testing
+@testable import SwiftModel
+import Foundation
 
-class TestResult: @unchecked Sendable {
-    let lock = NSLock()
-    var values: [String] = []
-    var value: String { lock { values.joined() } }
-
-    func add(_ value: String) {
-        lock.lock()
-        values.append(value)
-        lock.unlock()
-    }
-
-//    func add(_ value: Any) {
-//        add(String(describing: value))
-//    }
-}
-
-extension DependencyValues {
-    var testResult: TestResult {
-        get { self[Key.self] }
-        set { self[Key.self] = newValue }
-    }
-
-    private enum Key: DependencyKey {
-        static let liveValue = TestResult()
-    }
-}
-
-final class ActivateTests: XCTestCase {
-    func testRootActivation() throws {
+struct ActivateTests {
+    @Test func testRootActivation() async {
         let testResult = TestResult()
-        do {
-            let _ = Leaf().withAnchor {
+        await waitUntilRemoved {
+            Leaf().withAnchor {
                 $0.testResult = testResult
             }
         }
 
-        XCTAssertEqual(testResult.value, "Ll")
+        #expect(testResult.value == "Ll")
     }
 
-    func testParentNonOptionalActivation() throws {
+    @Test func testParentNonOptionalActivation() async {
         let testResult = TestResult()
-        do {
-            let _ = Parent().withAnchor {
+        await waitUntilRemoved {
+            Parent().withAnchor {
                 $0.testResult = testResult
             }
         }
 
-        XCTAssertEqual(testResult.value, "PC0pc0")
+        #expect(testResult.value == "PC0pc0")
     }
 
-    func testReplaceChild() throws {
+    @Test func testReplaceChild() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor() {
                 $0.testResult = testResult
             }
 
             parent.child = Child(id: 1)
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0c0C1pc1")
+        #expect(testResult.value == "PC0c0C1pc1")
     }
 
-
-    func testChildOptionalActivation() throws {
+    @Test func testChildOptionalActivation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let child = Child(id: 0).withAnchor {
                 $0.testResult = testResult
             }
@@ -76,14 +49,16 @@ final class ActivateTests: XCTestCase {
             child.leaf = Leaf()
             child.leaf = nil
             child.leaf = Leaf()
+
+            return child
         }
 
-        XCTAssertEqual(testResult.value, "C0LlLc0l")
+        #expect(testResult.value == "C0LlLc0l")
     }
 
-    func testParentChildLeafOptionalActivation() throws {
+    @Test func testParentChildLeafOptionalActivation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
@@ -91,14 +66,15 @@ final class ActivateTests: XCTestCase {
             parent.child.leaf = Leaf()
             parent.child.leaf = nil
             parent.child.leaf = Leaf()
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0LlLpc0l")
+        #expect(testResult.value == "PC0LlLpc0l")
     }
 
-    func testParentChildrenActivation() throws {
+    @Test func testParentChildrenActivation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
@@ -106,14 +82,15 @@ final class ActivateTests: XCTestCase {
             parent.children.append(Child(id: 1))
             parent.children.removeLast()
             parent.children.append(Child(id: 2))
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1c1C2pc0c2")
+        #expect(testResult.value == "PC0C1c1C2pc0c2")
     }
 
-    func testParentChildrenLeafActivation() throws {
+    @Test func testParentChildrenLeafActivation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
@@ -121,28 +98,30 @@ final class ActivateTests: XCTestCase {
             parent.children.append(Child(id: 1, leaf: Leaf()))
             parent.children.removeLast()
             parent.children.append(Child(id: 2, leaf: Leaf()))
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1Lc1lC2Lpc0c2l")
+        #expect(testResult.value == "PC0C1Lc1lC2Lpc0c2l")
     }
 
-    func testParentMultipleChildrenActivation() throws {
+    @Test func testParentMultipleChildrenActivation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
 
             parent.children.append(Child(id: 1))
             parent.children.append(Child(id: 2))
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2pc0c1c2")
+        #expect(testResult.value == "PC0C1C2pc0c1c2")
     }
 
-    func testParentMultipleChildrenAndRemoveActivation() throws {
+    @Test func testParentMultipleChildrenAndRemoveActivation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
@@ -150,14 +129,15 @@ final class ActivateTests: XCTestCase {
             parent.children.append(Child(id: 1))
             parent.children.append(Child(id: 2))
             parent.children.removeLast()
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2c2pc0c1")
+        #expect(testResult.value == "PC0C1C2c2pc0c1")
     }
 
-    func testParentMultipleChildrenLeafActivation() throws {
+    @Test func testParentMultipleChildrenLeafActivation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
@@ -165,14 +145,15 @@ final class ActivateTests: XCTestCase {
             parent.children.append(Child(id: 1))
             parent.children.append(Child(id: 2, leaf: Leaf()))
             parent.children.removeLast()
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2Lc2lpc0c1")
+        #expect(testResult.value == "PC0C1C2Lc2lpc0c1")
     }
 
-    func testParentMultipleChildrenSwapActivation() throws {
+    @Test func testParentMultipleChildrenSwapActivation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
@@ -181,14 +162,15 @@ final class ActivateTests: XCTestCase {
             parent.children.append(Child(id: 2))
             parent.children.swapAt(0, 1)
             parent.children.removeLast()
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2c1pc0c2")
+        #expect(testResult.value == "PC0C1C2c1pc0c2")
     }
 
-    func testParentMultipleChildrenSwapAltActivation() throws {
+    @Test func testParentMultipleChildrenSwapAltActivation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
@@ -196,17 +178,18 @@ final class ActivateTests: XCTestCase {
             parent.children.append(Child(id: 1))
             parent.children.append(Child(id: 2))
             let child = parent.children.removeFirst()
-            XCTExpectFailure {
+            withKnownIssue {
                 parent.children.append(child)
             }
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2c1pc0c2")
+        #expect(testResult.value == "PC0C1C2c1pc0c2")
     }
 
-    func testParentMultipleChildrenSwapAlt2Activation() throws {
+    @Test func testParentMultipleChildrenSwapAlt2Activation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
@@ -217,14 +200,16 @@ final class ActivateTests: XCTestCase {
             let child = children.removeFirst()
             children.append(child)
             parent.children = children
+
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C2pc0c1c2")
+        #expect(testResult.value == "PC0C1C2pc0c1c2")
     }
 
-    func testChildCaseActivation() throws {
+    @Test func testChildCaseActivation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
@@ -234,14 +219,15 @@ final class ActivateTests: XCTestCase {
             parent.cases = .count(55)
             parent.cases = .child(Child(id: 4))
             parent.cases = nil
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C2c2C3c3C4c4pc0")
+        #expect(testResult.value == "PC0C2c2C3c3C4c4pc0")
     }
 
-    func testChildrenCaseActivation() throws {
+    @Test func testChildrenCaseActivation() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
@@ -254,9 +240,11 @@ final class ActivateTests: XCTestCase {
             parent.cases = .children([Child(id: 4)])
             parent.cases = .child(Child(id: 4))
             parent.cases = nil
+
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C2C3c2c3C4c4C4c4pc0")
+        #expect(testResult.value == "PC0C2C3c2c3C4c4C4c4pc0")
     }
 }
 
@@ -266,7 +254,7 @@ final class ActivateTests: XCTestCase {
     case children([Child])
 }
 
-@Model private struct Parent: Sendable {
+@Model private struct Parent {
     var child: Child = Child(id: 0)
     var children: [Child] = []
     var cases: Cases?
@@ -280,7 +268,7 @@ final class ActivateTests: XCTestCase {
 }
 
 @Model
-private struct Child: Sendable, Equatable {
+private struct Child {
     var id: Int
     var leaf: Leaf? = nil
 
@@ -293,7 +281,7 @@ private struct Child: Sendable, Equatable {
 }
 
 @Model
-private struct Leaf: Sendable, Equatable {
+private struct Leaf {
     func onActivate() {
         node.testResult.add("L")
         node.onCancel {

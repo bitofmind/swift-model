@@ -1,5 +1,7 @@
-import XCTest
 @testable import SwiftModel
+import ConcurrencyExtras
+import Dependencies
+import Foundation
 
 @propertyWrapper
 final class Locked<Value> {
@@ -42,5 +44,61 @@ extension NSLock {
         lock()
         defer { unlock() }
         return try operation()
+    }
+}
+
+extension Optional where Wrapped: AnyObject {
+    var waitUntilNil: () async -> Void {
+        { [weak self] in
+            while self != nil {
+                await Task.yield()
+            }
+        }
+    }
+}
+
+extension Model {
+    var waitUntilRemoved: () async -> Void {
+        context.waitUntilNil
+    }
+}
+
+extension ModelNode {
+    var waitUntilRemoved: () async -> Void {
+        context.waitUntilNil
+    }
+}
+
+extension Context {
+    var waitUntilRemoved: () async -> Void {
+        reference.context.waitUntilNil
+    }
+}
+
+func waitUntilRemoved<M: Model>(_ model: () async throws -> M) async rethrows {
+    try await model().context.waitUntilNil()
+}
+
+class TestResult: @unchecked Sendable {
+    let values = LockIsolated<[String]>([])
+    var value: String {
+        values.value.joined()
+    }
+
+    func add(_ value: String) {
+        values.withValue {
+            $0.append(value)
+        }
+    }
+}
+
+extension DependencyValues {
+    var testResult: TestResult {
+        get { self[Key.self] }
+        set { self[Key.self] = newValue }
+    }
+
+    enum Key: DependencyKey {
+        static let liveValue = TestResult()
     }
 }

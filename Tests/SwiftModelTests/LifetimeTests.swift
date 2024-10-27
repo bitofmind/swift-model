@@ -1,70 +1,71 @@
-import XCTest
+import Testing
 import AsyncAlgorithms
 @testable import SwiftModel
+import Observation
 
-final class LifetimeTests: XCTestCase {
-    func testPropertyLifetime() {
+struct LifetimeTests {
+    @Test func testPropertyLifetime() {
         let i = Child(count: 4711)
-        XCTAssertEqual(i.count, 4711)
+        #expect(i.count == 4711)
         i.count += 1
-        XCTAssertEqual(i.count, 4712)
+        #expect(i.count == 4712)
 
         let a = i.withAnchor()
-        XCTAssertEqual(a.count, 4712)
+        #expect(a.count == 4712)
         i.count += 10
         a.count += 1
 
-        XCTAssertEqual(i.count, 4723)
-        XCTAssertEqual(a.count, 4723)
+        #expect(i.count == 4723)
+        #expect(a.count == 4723)
 
         let fi = i.frozenCopy
         let fa = a.frozenCopy
 
-        XCTAssertEqual(fi.count, 4723)
-        XCTAssertEqual(fa.count, 4723)
+        #expect(fi.count == 4723)
+        #expect(fa.count == 4723)
 
         i.count += 1
         a.count += 1
 
-        XCTAssertEqual(fi.count, 4723)
-        XCTAssertEqual(fa.count, 4723)
+        #expect(fi.count == 4723)
+        #expect(fa.count == 4723)
 
-        XCTExpectFailure {
+        withKnownIssue {
             fi.count += 1
         }
 
-        XCTExpectFailure {
+        withKnownIssue {
             fa.count += 1
         }
     }
 
-    func testChildLifetime() {
+    @Test func testChildLifetime() {
         let i = Parent(child: Child(count: 25))
-        XCTAssertEqual(i.child.count, 25)
+        #expect(i.child.count == 25)
         i.child.count += 1
 
         let a = i.withAnchor()
-        XCTAssertEqual(a.child.count, 26)
+        #expect(a.child.count == 26)
         i.child.count += 10
         a.child.count += 1
 
-        XCTAssertEqual(i.child.count, 37)
-        XCTAssertEqual(a.child.count, 37)
+        #expect(i.child.count == 37)
+        #expect(a.child.count == 37)
 
         i.child = Child(count: 100)
-        XCTAssertEqual(i.child.count, 100)
+        #expect(i.child.count == 100)
 
         a.child = Child(count: 120)
-        XCTAssertEqual(a.child.count, 120)
+        #expect(a.child.count == 120)
 
         let fi = i.frozenCopy
         let fa = a.frozenCopy
 
-        XCTExpectFailure {
+        withKnownIssue {
             fi.child = Child(count: 2)
         }
 
-        XCTExpectFailure {
+        withKnownIssue {
             fa.child = Child(count: 3)
         }
 
@@ -72,42 +73,42 @@ final class LifetimeTests: XCTestCase {
 
         a.child = i.child
 
-        XCTExpectFailure {
+        withKnownIssue {
             i.child = fi.child
         }
 
-        XCTExpectFailure {
+        withKnownIssue {
             a.child = fa.child
         }
     }
 
-    func testChildrenLifetime() {
+    @Test func testChildrenLifetime() {
         let i = Parent(children: [Child(count: 25)])
-        XCTAssertEqual(i.children[0].count, 25)
+        #expect(i.children[0].count == 25)
         i.children[0].count += 1
 
         let a = i.withAnchor()
-        XCTAssertEqual(a.children[0].count, 26)
+        #expect(a.children[0].count == 26)
         i.children[0].count += 10
         a.children[0].count += 1
 
-        XCTAssertEqual(i.children[0].count, 37)
-        XCTAssertEqual(a.children[0].count, 37)
+        #expect(i.children[0].count == 37)
+        #expect(a.children[0].count == 37)
 
         i.children[0] = Child(count: 100)
-        XCTAssertEqual(i.children[0].count, 100)
+        #expect(i.children[0].count == 100)
 
         a.children[0] = Child(count: 120)
-        XCTAssertEqual(a.children[0].count, 120)
+        #expect(a.children[0].count == 120)
 
         let fi = i.frozenCopy
         let fa = a.frozenCopy
 
-        XCTExpectFailure {
+        withKnownIssue {
             fi.children[0] = Child(count: 2)
         }
 
-        XCTExpectFailure {
+        withKnownIssue {
             fa.children[0] = Child(count: 3)
         }
 
@@ -115,11 +116,11 @@ final class LifetimeTests: XCTestCase {
 
         a.children[0] = i.children[0]
 
-        XCTExpectFailure {
+        withKnownIssue {
             i.children[0] = fi.children[0]
         }
 
-        XCTExpectFailure {
+        withKnownIssue {
             a.children[0] = fa.children[0]
         }
     }
@@ -131,17 +132,17 @@ final class LifetimeTests: XCTestCase {
     case children([Child])
 }
 
-@Model private struct Parent: Sendable {
+@Model private struct Parent {
     var child: Child = Child(count: 0)
     var children: [Child] = []
     var cases: Cases?
 }
 
 @Model
-private struct Child: Sendable {
+private struct Child {
     var count: Int
     var leaf: Leaf? = nil
 }
 
 @Model
-private struct Leaf: Sendable { }
+private struct Leaf { }

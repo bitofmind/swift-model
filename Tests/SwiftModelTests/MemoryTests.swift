@@ -1,37 +1,43 @@
-import XCTest
+import Testing
 @testable import SwiftModel
+import Observation
 
-final class MemoryTests: XCTestCase {
-    func testParent() throws {
+struct MemoryTests {
+    @Test func testParent() async {
         weak var parentRef: Context<Parent>.Reference?
         do {
             let parent = Parent().withAnchor()
 
             parentRef = parent.context?.reference
-            XCTAssertNotNil(parentRef)
+            #expect(parentRef != nil)
         }
-        XCTAssertNil(parentRef)
+
+        await parentRef.waitUntilNil()
+
+        #expect(parentRef == nil)
     }
 
-    func testParentChild() throws {
+    @Test func testParentChild() async {
         weak var parentRef: Context<Parent>.Reference?
         weak var childRef: Context<Child>.Reference?
         do {
             let parent = Parent().withAnchor()
 
             parentRef = parent.context?.reference
-            XCTAssertNotNil(parentRef)
+            #expect(parentRef != nil)
 
             parent.child = Child { } mutableCallback: { }
             childRef = parent.child?.context?.reference
-            XCTAssertNotNil(childRef)
-
+            #expect(childRef != nil)
         }
-        XCTAssertNil(parentRef)
-        XCTAssertNil(childRef)
+
+        await parentRef.waitUntilNil()
+
+        #expect(parentRef == nil)
+        #expect(childRef == nil)
     }
 
-    func testParentChildBackReference() {
+    @Test func testParentChildBackReference() async {
         weak var parentRef: Context<Parent>.Reference?
         weak var childRef: Context<Child>.Reference?
         weak var parentContext: Context<Parent>?
@@ -43,9 +49,9 @@ final class MemoryTests: XCTestCase {
             let (parent, anchor) = Parent().withAccess(access).andAnchor()
 
             parentRef = parent.context?.reference
-            XCTAssertNotNil(parentRef)
+            #expect(parentRef != nil)
             parentContext = parent.context
-            XCTAssertNotNil(parentContext)
+            #expect(parentContext != nil)
 
             parent.child = Child {
                 _ = parent
@@ -53,20 +59,23 @@ final class MemoryTests: XCTestCase {
                 _ = parent
             }
             childRef = parent.child?.context?.reference
-            XCTAssertNotNil(childRef)
+            #expect(childRef != nil)
             childContext = parent.child?.context
-            XCTAssertNotNil(childContext)
+            #expect(childContext != nil)
 
             let _ = anchor
         }
-        XCTAssertNil(parentRef)
-        XCTAssertNil(childRef)
-        XCTAssertNil(parentContext)
-        XCTAssertNil(childContext)
-        XCTAssertNil(modelAccess)
+
+        await parentRef.waitUntilNil()
+
+        #expect(parentRef == nil)
+        #expect(childRef == nil)
+        #expect(parentContext == nil)
+        #expect(childContext == nil)
+        #expect(modelAccess == nil)
     }
 
-    func testCallbackToSelf() {
+    @Test func testCallbackToSelf() async {
         weak var childRef: Context<Child>.Reference?
         weak var objectRef: Object?
         do {
@@ -77,18 +86,21 @@ final class MemoryTests: XCTestCase {
                 _ = child.object
             }
             childRef = child.reference
-            XCTAssertNotNil(childRef)
+            #expect(childRef != nil)
 
             objectRef = child.object
-            XCTAssertNotNil(objectRef)
+            #expect(objectRef != nil)
 
             let _ = anchor
         }
-        XCTAssertNil(childRef)
-        XCTAssertNil(objectRef)
+
+        await childRef.waitUntilNil()
+
+        #expect(childRef == nil)
+        #expect(objectRef == nil)
     }
 
-    func testCallbackToSelfInBox() {
+    @Test func testCallbackToSelfInBox() async {
         weak var childRef: Context<Child>.Reference?
         weak var objectRef: Object?
         do {
@@ -102,18 +114,21 @@ final class MemoryTests: XCTestCase {
                 _ = child.object
             }
             childRef = child.reference
-            XCTAssertNotNil(childRef)
+            #expect(childRef != nil)
 
             objectRef = child.object
-            XCTAssertNotNil(objectRef)
+            #expect(objectRef != nil)
 
             let _ = parent
         }
-        XCTAssertNil(childRef)
-        XCTAssertNil(objectRef)
+
+        await childRef.waitUntilNil()
+
+        #expect(childRef == nil)
+        #expect(objectRef == nil)
     }
 
-    func testReplaceAnchor() {
+    @Test func testReplaceAnchor() async {
         weak var childRef: Context<Child>.Reference?
         weak var objectRef: Object?
         do {
@@ -123,38 +138,43 @@ final class MemoryTests: XCTestCase {
                 _ = child.object
             }
             childRef = child.reference
-            XCTAssertNotNil(childRef)
+            #expect(childRef != nil)
 
             objectRef = child.object
-            XCTAssertNotNil(objectRef)
+            #expect(objectRef != nil)
 
             // Replace
             let _ = anchor
             (child, anchor) = Child(callback: {}, mutableCallback: {}).andAnchor()
 
-            XCTAssertNil(childRef)
-            XCTAssertNil(objectRef)
+            await childRef.waitUntilNil()
+
+            #expect(childRef == nil)
+            #expect(objectRef == nil)
 
             childRef = child.reference
-            XCTAssertNotNil(childRef)
+            #expect(childRef != nil)
 
             objectRef = child.object
-            XCTAssertNotNil(objectRef)
+            #expect(objectRef != nil)
 
             let _ = anchor
         }
-        XCTAssertNil(childRef)
-        XCTAssertNil(objectRef)
+
+        await childRef.waitUntilNil()
+
+        #expect(childRef == nil)
+        #expect(objectRef == nil)
     }
 }
 
 @Model
-private struct Parent: Sendable {
+private struct Parent {
     var child: Child?
 }
 
 @Model
-private struct Child: Sendable {
+private struct Child {
     let callback: @Sendable () -> Void
     var mutableCallback: @Sendable () -> Void
     let object = Object()

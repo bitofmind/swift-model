@@ -1,54 +1,55 @@
-import XCTest
+import Testing
 import SwiftModel
+import Observation
 
-final class DependencyTests: XCTestCase {
-    func testParent() throws {
+struct DependencyTests {
+    @Test func testParent() async {
         let testResult = TestResult()
-        do {
-            let _ = Parent().withAnchor {
+        await waitUntilRemoved {
+            Parent().withAnchor {
                 $0.testResult = testResult
             }
         }
 
-        XCTAssertEqual(testResult.value, "PC0pc0")
+        #expect(testResult.value == "PC0pc0")
     }
 
-    func testParentOverride() throws {
+    @Test func testParentOverride() async {
         let testResult = TestResult()
         let parentResult = TestResult()
-        do {
-            let _ = Parent().withDependencies {
+        await waitUntilRemoved {
+            Parent().withDependencies {
                 $0.testResult = parentResult
             }.withAnchor {
                 $0.testResult = testResult
             }
         }
 
-        XCTAssertEqual(parentResult.value, "PC0pc0")
-        XCTAssertEqual(testResult.value, "")
+        #expect(parentResult.value == "PC0pc0")
+        #expect(testResult.value == "")
     }
 
-    func testChildOverride() throws {
+    @Test func testChildOverride() async {
         let testResult = TestResult()
         let childResult = TestResult()
-        do {
-            let _ = Parent(child: Child(id: 1).withDependencies {
+        await waitUntilRemoved {
+            Parent(child: Child(id: 1).withDependencies {
                 $0.testResult = childResult
             }).withAnchor {
                 $0.testResult = testResult
             }
         }
 
-        XCTAssertEqual(testResult.value, "Pp")
-        XCTAssertEqual(childResult.value, "C1c1")
+        #expect(testResult.value == "Pp")
+        #expect(childResult.value == "C1c1")
     }
 
-    func testParentChildOverride() throws {
+    @Test func testParentChildOverride() async {
         let testResult = TestResult()
         let parentResult = TestResult()
         let childResult = TestResult()
-        do {
-            let _ = Parent(child: Child(id: 1).withDependencies {
+        await waitUntilRemoved {
+            Parent(child: Child(id: 1).withDependencies {
                 $0.testResult = childResult
             }).withDependencies {
                 $0.testResult = parentResult
@@ -57,15 +58,15 @@ final class DependencyTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(testResult.value, "")
-        XCTAssertEqual(parentResult.value, "Pp")
-        XCTAssertEqual(childResult.value, "C1c1")
+        #expect(testResult.value == "")
+        #expect(parentResult.value == "Pp")
+        #expect(childResult.value == "C1c1")
     }
 
-    func testChildrenOverride() throws {
+    @Test func testChildrenOverride() async {
         let testResult = TestResult()
         let childrenResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let parent = Parent(child: Child(id: 0)).withAnchor {
                 $0.testResult = testResult
             }
@@ -78,16 +79,18 @@ final class DependencyTests: XCTestCase {
             parent.children[0] = Child(id: 4).withDependencies {
                 $0.testResult = childrenResult
             }
+
+            return parent
         }
 
-        XCTAssertEqual(testResult.value, "PC0C1C3c1pc0c3")
-        XCTAssertEqual(childrenResult.value, "C2C4c2c4")
+        #expect(testResult.value == "PC0C1C3c1pc0c3")
+        #expect(childrenResult.value == "C2C4c2c4")
     }
 }
 
 
 @Model
-private struct Parent: Sendable {
+private struct Parent {
     var child: Child = Child(id: 0)
     var children: [Child] = []
 
@@ -100,7 +103,7 @@ private struct Parent: Sendable {
 }
 
 @Model
-private struct Child: Sendable, Equatable {
+private struct Child {
     var id: Int
     var leaf: Leaf?
 
@@ -113,7 +116,7 @@ private struct Child: Sendable, Equatable {
 }
 
 @Model
-private struct Leaf: Sendable, Equatable {
+private struct Leaf {
     func onActivate() {
         node.testResult.add("L")
         node.onCancel {

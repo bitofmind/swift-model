@@ -1,12 +1,13 @@
-import XCTest
+import Testing
 import AsyncAlgorithms
 @testable import SwiftModel
 import Dependencies
+import Observation
 
-final class ModelDependencyTests: XCTestCase {
-    func testChildDependency() async throws {
+struct ModelDependencyTests {
+    @Test func testChildDependency() async {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let (model, tester) = Child(id: 2).andTester {
                 $0.testResult = testResult
                 $0[Dependency.self] = Dependency(value: 4)
@@ -15,14 +16,16 @@ final class ModelDependencyTests: XCTestCase {
             await tester.assert {
                 model.dependency.value == 4
             }
+
+            return model
         }
 
-        XCTAssertEqual(testResult.value, "D(2:4)d")
+        #expect(testResult.value == "D(2:4)d")
     }
 
-    func testParentChildDependency() async throws {
+    @Test func testParentChildDependency() async throws {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let (model, tester) = Parent().andTester {
                 $0.testResult = testResult
                 $0[Dependency.self] = Dependency(value: 4)
@@ -31,14 +34,16 @@ final class ModelDependencyTests: XCTestCase {
             await tester.assert {
                 model.child.dependency.value == 4
             }
+
+            return model
         }
 
-        XCTAssertEqual(testResult.value, "D(1:4)d")
+        #expect(testResult.value == "D(1:4)d")
     }
 
-    func testParentChildrenDependency() async throws {
+    @Test func testParentChildrenDependency() async throws {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let (model, tester) = Parent().andTester {
                 $0.testResult = testResult
                 $0[Dependency.self] = Dependency(value: 4)
@@ -63,14 +68,17 @@ final class ModelDependencyTests: XCTestCase {
                 model.child.dependency.value == 7
                 testResult.value.contains("->7")
             }
+
+            return model
         }
 
-        XCTAssertEqual(testResult.value, "D(1:4)(3:4)(->7)(->7)(5:7)d")
+        #expect(testResult.value == "D(1:4)(3:4)(->7)(->7)(5:7)d")
     }
 
-    func testParentChildMultiDependency() async throws {
+    @Test func testParentChildMultiDependency() async throws {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
+
             let (model, tester) = Parent().andTester {
                 $0.testResult = testResult
                 $0[Dependency.self] = Dependency(value: 4)
@@ -97,14 +105,16 @@ final class ModelDependencyTests: XCTestCase {
                 model.child.dependency.value == 5
                 testResult.value.contains("->5")
             }
+
+            return model
         }
 
-        XCTAssertEqual(testResult.value, "D(1:4)D(3:8)d(->5)d")
+        #expect(testResult.value == "D(1:4)D(3:8)d(->5)d")
     }
 
-    func testParentDependency() async throws {
+    @Test func testParentDependency() async throws {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let (model, tester) = Parent(dependency: Dependency(value: 7)).andTester {
                 $0.testResult = testResult
                 $0[Dependency.self] = Dependency(value: 4)
@@ -131,6 +141,7 @@ final class ModelDependencyTests: XCTestCase {
             await tester.assert {
                 model.dependency?.value == 9
                 model.children[0].dependency.value == 9
+                testResult.value.contains("->9")
             }
 
             model.children.removeAll()
@@ -146,14 +157,16 @@ final class ModelDependencyTests: XCTestCase {
                 model.dependency == nil
                 testResult.value.contains("->8")
             }
+
+            return model
         }
 
-        XCTAssertEqual(testResult.value, "D(1:4)D(3:7)(->5)(->9)d(->8)d")
+        #expect(testResult.value == "D(1:4)D(3:7)(->5)(->9)d(->8)d")
     }
 
-    func testSharedDependency() async throws {
+    @Test func testSharedDependency() async throws {
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let (model, tester) = Parent().andTester {
                 $0[Dependency.self] = Dependency(value: 4711)
                 $0.testResult = testResult
@@ -206,17 +219,19 @@ final class ModelDependencyTests: XCTestCase {
                 testResult.value.contains("(->5)(->5)")
             }
 
-            XCTAssertEqual(testResult.value, "D(1:4711)D(3:8)(->7)(4:7)(->5)(->5)d")
+            #expect(testResult.value == "D(1:4711)D(3:8)(->7)(4:7)(->5)(->5)d")
+
+            return model
         }
 
-        XCTAssertEqual(testResult.value, "D(1:4711)D(3:8)(->7)(4:7)(->5)(->5)dd")
+        #expect(testResult.value == "D(1:4711)D(3:8)(->7)(4:7)(->5)(->5)dd")
     }
 
-    func testDefaultDependency() async throws {
-        XCTAssertEqual(Dependency.testValue.lifetime, .initial)
+    @Test func testDefaultDependency() async throws {
+        #expect(Dependency.testValue.lifetime == .initial)
 
         let testResult = TestResult()
-        do {
+        await waitUntilRemoved {
             let (model, tester) = Parent().andTester {
                 $0.testResult = testResult
             }
@@ -277,16 +292,18 @@ final class ModelDependencyTests: XCTestCase {
                 model.children[0].dependency.value == 2
             }
 
-            XCTAssertEqual(testResult.value, "D(1:3711)(->8)(3:8)(->7)(->7)(4:7)(->5)(->5)(->5)(6:5)(->2)(->2)")
+            #expect(testResult.value == "D(1:3711)(->8)(3:8)(->7)(->7)(4:7)(->5)(->5)(->5)(6:5)(->2)(->2)")
+
+            return model
         }
 
-        XCTAssertEqual(testResult.value, "D(1:3711)(->8)(3:8)(->7)(->7)(4:7)(->5)(->5)(->5)(6:5)(->2)(->2)d")
-        XCTAssertEqual(Dependency.testValue.lifetime, .initial)
+        #expect(testResult.value == "D(1:3711)(->8)(3:8)(->7)(->7)(4:7)(->5)(->5)(->5)(6:5)(->2)(->2)d")
+        #expect(Dependency.testValue.lifetime == .initial)
     }
 }
 
 @Model
-private struct Dependency: Sendable {
+private struct Dependency {
     var value: Int
 
     func onActivate() {
@@ -302,7 +319,7 @@ extension Dependency: DependencyKey {
     static let testValue = Dependency(value: 3711)
 }
 
-@Model private struct Child: Sendable {
+@Model private struct Child {
     let id: Int
     @ModelDependency var dependency: Dependency
 
@@ -314,7 +331,7 @@ extension Dependency: DependencyKey {
     }
 }
 
-@Model private struct Parent: Sendable {
+@Model private struct Parent {
     var child: Child = Child(id: 1)
     var children: [Child] = []
 

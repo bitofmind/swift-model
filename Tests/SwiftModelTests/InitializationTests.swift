@@ -1,20 +1,21 @@
-import XCTest
+import Testing
 import SwiftModel
+import Observation
 
-final class InitializationTests: XCTestCase {
-    func testMyModel() throws {
+struct InitializationTests {
+    @Test func testMyModel() throws {
         let myModel = MyModel(id: 5, integer: 4)
         Task {
             let _ = MyModel(id: 5, integer: 4)
         }
 
-        XCTAssertEqual(myModel.id, 5)
-        XCTAssertEqual(myModel.integer, 4)
+        #expect(myModel.id == 5)
+        #expect(myModel.integer == 4)
     }
 }
 
 @Model
-private struct MyModel: Sendable {
+private struct MyModel {
     let id: Int
     private(set) var integer: Int?
 }

@@ -1,10 +1,10 @@
-import XCTest
+import Testing
 import SwiftModel
 import Dependencies
 @testable import CounterFact
 
-class CounterFactTests: XCTestCase {
-    func testExample() async throws {
+struct CounterFactTests {
+    @Test func testExample() async throws {
         let (appModel, tester) = AppModel().andTester {
             $0.factClient.fetch = { "\($0) is a good number." }
         }
@@ -33,7 +33,7 @@ class CounterFactTests: XCTestCase {
         await tester.assert(appModel.counters.isEmpty)
     }
 
-    func testFactButtonTapped() async throws {
+    @Test func testFactButtonTapped() async throws {
         let onFact = TestProbe()
         let (model, tester) = CounterModel(count: 2, onFact: onFact.call).andTester {
             $0.factClient.fetch = { "\($0) is a good number." }

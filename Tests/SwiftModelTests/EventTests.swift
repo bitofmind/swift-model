@@ -1,9 +1,10 @@
-import XCTest
+import Testing
 import AsyncAlgorithms
 @testable import SwiftModel
+import Foundation
 
-final class EventTests: XCTestCase {
-    func testEvent() async throws {
+struct EventTests {
+    @Test func testEvent() async throws {
         let (model, tester) = Child().andTester()
 
         await tester.assert {
@@ -12,7 +13,7 @@ final class EventTests: XCTestCase {
         }
     }
     
-    func testModelEvents() async throws {
+    @Test func testModelEvents() async throws {
         let (model, tester) = EventModel().andTester()
 
         await tester.assert(model.count == 3)
@@ -35,7 +36,7 @@ final class EventTests: XCTestCase {
         }
     }
 
-    func testChildEvents() async throws {
+    @Test func testChildEvents() async throws {
         let (parent, tester) = ParentModel().andTester()
         let child = parent.child
 
@@ -100,7 +101,7 @@ final class EventTests: XCTestCase {
     }
 }
 
-@Model private struct ChildModel: Sendable, Equatable {
+@Model private struct ChildModel: Equatable {
     var id = 0
 
     enum Event: Equatable {
@@ -111,7 +112,7 @@ final class EventTests: XCTestCase {
     var testNode: ModelNode<Self> { node }
 }
 
-@Model private struct ParentModel: Sendable {
+@Model private struct ParentModel {
     var child = ChildModel(id: 1)
     var childAlt = ChildModel(id: 9)
     var optChild: ChildModel? = nil
@@ -147,7 +148,7 @@ final class EventTests: XCTestCase {
     }
 }
 
-@Model private struct Child: Sendable {
+@Model private struct Child {
     enum Event {
         case basic
         case other
@@ -162,7 +163,7 @@ final class EventTests: XCTestCase {
     var testNode: ModelNode<Self> { node }
 }
 
-@Model private struct EventModel: Sendable {
+@Model private struct EventModel {
     var id: Int = 0
     var count: Int = 0
     var receivedEvents: [EventModel.Event] = []

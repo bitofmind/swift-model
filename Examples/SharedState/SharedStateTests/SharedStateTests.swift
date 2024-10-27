@@ -1,10 +1,10 @@
 import SwiftModel
-import XCTest
+import Testing
 import SwiftUINavigation
 @testable import SharedState
 
-final class SharedStateTests: XCTestCase {
-  func testTabSelection() async {
+struct SharedStateTests {
+  @Test func testTabSelection() async {
     let (model, tester) = SharedState().andTester()
     let stats = Stats()
 
@@ -25,7 +25,7 @@ final class SharedStateTests: XCTestCase {
     }
   }
 
-  func testSharedCounts() async {
+  @Test func testSharedCounts() async {
     let (model, tester) = SharedState().andTester()
     let stats = Stats()
 
@@ -51,7 +51,7 @@ final class SharedStateTests: XCTestCase {
     }
   }
 
-  func testAlert() async {
+  @Test func testAlert() async {
     let (model, tester) = SharedState().andTester()
 
     model.counter.isPrimeButtonTapped()

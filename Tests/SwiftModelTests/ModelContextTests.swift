@@ -1,9 +1,11 @@
 @testable import SwiftModel
-import XCTest
+import Testing
 import ConcurrencyExtras
+import Observation
+import Foundation
 
 @Model
-private struct ChildModel: Equatable, Identifiable, Sendable {
+private struct ChildModel: Equatable, Identifiable {
     let id = nextID()
     var count: Int = 77
     private(set) var privateCount: Int = 1177
@@ -24,7 +26,7 @@ private struct Part: Equatable {
 }
 
 @Model
-private struct RootModel: Sendable, Equatable {
+private struct RootModel: Equatable {
     var count: Int = 66
     //var notEquatable = NotEquatable()
     var child: ChildModel = .init()
@@ -38,53 +40,50 @@ private struct RootModel: Sendable, Equatable {
     var optPart: Part? = Part()
 }
 
-final class ModelContextTests: XCTestCase {
-    func testRootDetached() {
+struct ModelContextTests {
+    @Test func testRootDetached() {
         let initChild = ChildModel()
-        XCTAssertEqual(initChild.lifetime, .initial)
+        #expect(initChild.lifetime == .initial)
         let anchoredChild = initChild.withAnchor()
-        XCTAssertEqual(initChild.lifetime, .active)
+        #expect(initChild.lifetime == .active)
 
-        XCTAssertEqual(anchoredChild.lifetime, .active)
-        XCTAssertEqual(initChild.lifetime, .active)
+        #expect(anchoredChild.lifetime == .active)
+        #expect(initChild.lifetime == .active)
     }
 
-    func testCopy() {
+    @Test func testCopy() {
         let child = ChildModel().withAnchor()
         child.count = 2
         let child2 = child
         let child3 = child.frozenCopy
-        //let child4 = child.copy
         child.count = 3
-        //child4.count = 4
 
-        XCTAssertEqual(child.count, 3)
-        XCTAssertEqual(child2.count, 3)
-        XCTAssertEqual(child3.count, 2)
-        //XCTAssertEqual(child4.count, 4)
+        #expect(child.count == 3)
+        #expect(child2.count == 3)
+        #expect(child3.count == 2)
     }
 
-    func testEquatable() {
+    @Test func testEquatable() {
         let child = ChildModel().withAnchor()
 
         let childA = child
         let childB = child
-        XCTAssertEqual(childA, childB)
+        #expect(childA == childB)
 
         childA.count += 1
-        XCTAssertEqual(childA, childB)
+        #expect(childA == childB)
 
         let childC = childA.frozenCopy
         let childD = childC
-        XCTAssertEqual(childA, childC)
-        XCTAssertEqual(childC, childD)
+        #expect(childA == childC)
+        #expect(childC == childD)
 
-        XCTExpectFailure {
+        withKnownIssue {
             childC.count += 1
         }
     }
     
-    func testAssigningAnchoredModel() {
+    @Test func testAssigningAnchoredModel() {
         let root = RootModel().withAnchor()
         root.optChild = root.child
 
@@ -93,45 +92,45 @@ final class ModelContextTests: XCTestCase {
         root.child = root.optChild!
     }
 
-    func testDetaching() {
+    @Test func testDetaching() {
         let initChild = ChildModel()
-        XCTAssertEqual(initChild.lifetime, .initial)
+        #expect(initChild.lifetime == .initial)
         let anchoredChild = initChild.withAnchor()
 
-        XCTAssertFalse(anchoredChild.lifetime == .initial)
-        XCTAssertFalse(anchoredChild.lifetime == .initial)
-        XCTAssertEqual(initChild.lifetime, .active)
+        #expect(anchoredChild.lifetime != .initial)
+        #expect(anchoredChild.lifetime != .initial)
+        #expect(initChild.lifetime == .active)
         let copy = anchoredChild
-        XCTAssertFalse(copy.lifetime == .initial)
+        #expect(copy.lifetime != .initial)
         let frozenCopy = anchoredChild.frozenCopy
-        XCTAssertTrue(frozenCopy.lifetime == .frozenCopy)
-        XCTAssertEqual(frozenCopy, anchoredChild)
+        #expect(frozenCopy.lifetime == .frozenCopy)
+        #expect(frozenCopy == anchoredChild)
         anchoredChild.count += 1
-        XCTAssertNotEqual(frozenCopy, anchoredChild)
+        #expect(frozenCopy != anchoredChild)
     }
 
-    func testNonOptionalChild() {
+    @Test func testNonOptionalChild() {
         let root = RootModel().withAnchor()
-        XCTAssertFalse(root.lifetime == .initial)
-        XCTAssertFalse(root.child.lifetime == .initial)
+        #expect(root.lifetime != .initial)
+        #expect(root.child.lifetime != .initial)
 
         root.child.count = 100
-        XCTAssertFalse(root.child.lifetime == .initial)
+        #expect(root.child.lifetime != .initial)
 
         root.child.count += 1
-        XCTAssertFalse(root.child.lifetime == .initial)
+        #expect(root.child.lifetime != .initial)
 
         root.child = ChildModel()
-        XCTAssertFalse(root.child.lifetime == .initial)
+        #expect(root.child.lifetime != .initial)
 
         root.child.count = 100
-        XCTAssertFalse(root.child.lifetime == .initial)
+        #expect(root.child.lifetime != .initial)
 
         root.child.count += 1
-        XCTAssertFalse(root.child.lifetime == .initial)
+        #expect(root.child.lifetime != .initial)
     }
 
-    func testAsyncSequence() async {
+    @Test func testAsyncSequence() async {
         let stream = AsyncStream<Int> {
             $0.yield(2)
             $0.yield(12)
@@ -143,19 +142,20 @@ final class ModelContextTests: XCTestCase {
         }
     }
 
-    func testActivate() async throws {
+    @Test func testActivate() async throws {
         let test = TestModel().withAnchor()
-        XCTAssertEqual(test.activateCount, 1)
-        XCTAssertEqual(test.child.activateCount, 2)
+        #expect(test.activateCount == 1)
+        #expect(test.child.activateCount == 2)
 
         try await Task.sleep(nanoseconds: NSEC_PER_MSEC * 2)
 
-        XCTAssertEqual(test.totalCount, (-1 + 2*1)*(3*2))
+        let result = (-1 + 2*1)*(3*2)
+        #expect(test.totalCount == result)
         //try await Task.sleep(nanoseconds: NSEC_PER_MSEC * 1102)
     }
 }
 
-@Model private struct TestModel: Sendable {
+@Model private struct TestModel {
     var activateCount: Int = 0
     var totalCount: Int = -1
     var child: ChildModel = ChildModel()
@@ -174,7 +174,7 @@ final class ModelContextTests: XCTestCase {
         }
     }
 
-    @Model struct ChildModel: Sendable {
+    @Model struct ChildModel {
         var activateCount: Int = 0
         var grandChild: GrandChildModel = GrandChildModel()
 

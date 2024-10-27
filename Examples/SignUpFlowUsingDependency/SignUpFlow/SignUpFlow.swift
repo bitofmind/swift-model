@@ -4,7 +4,7 @@ import SwiftUINavigation
 import Dependencies
 
 @Model
-struct SignUpData: Sendable {
+struct SignUpData {
   var email = ""
   var firstName = ""
   var lastName = ""
@@ -58,7 +58,7 @@ extension NavigationLink where Destination == Never {
 }
 
 @Model
-struct SignUpFeature: Sendable {
+struct SignUpFeature {
   @ModelContainer @CasePathable
   @dynamicMemberLookup
   enum Path: Identifiable  {
@@ -123,7 +123,7 @@ struct SignUpFlow: View {
 }
 
 @Model
-struct BasicsFeature: Sendable {
+struct BasicsFeature {
   @ModelDependency var signUpData: SignUpData
 }
 
@@ -159,7 +159,7 @@ struct BasicsStep: View {
 }
 
 @Model
-struct PersonalInfoFeature: Sendable {
+struct PersonalInfoFeature {
   @ModelDependency var signUpData: SignUpData
 }
 
@@ -201,7 +201,7 @@ struct PersonalInfoStep: View {
 }
 
 @Model
-struct TopicsFeature: Sendable {
+struct TopicsFeature {
   var alert: AlertState<Never>?
   @ModelDependency var signUpData: SignUpData
 
@@ -288,7 +288,7 @@ extension Set {
 }
 
 @Model
-struct SummaryFeature: Sendable {
+struct SummaryFeature {
   @ModelContainer @CasePathable
   @dynamicMemberLookup
   enum Destination {

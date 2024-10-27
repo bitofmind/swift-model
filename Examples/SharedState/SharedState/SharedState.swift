@@ -3,7 +3,7 @@ import SwiftUI
 import SwiftUINavigation
 
 @Model
-struct CounterTab: Sendable {
+struct CounterTab {
   var alert: AlertState<Never>?
   var stats: Stats
 
@@ -59,7 +59,7 @@ struct CounterTabView: View {
 }
 
 @Model
-struct ProfileTab: Sendable {
+struct ProfileTab {
   var stats: Stats
 
   func resetStatsButtonTapped() {
@@ -96,7 +96,7 @@ struct ProfileTabView: View {
 }
 
 @Model
-struct SharedState: Sendable {
+struct SharedState {
   enum Tab { case counter, profile }
 
   var currentTab = Tab.counter
@@ -142,7 +142,7 @@ struct SharedStateView: View {
 }
 
 @Model
-struct Stats: Sendable, Equatable {
+struct Stats: Equatable {
   private(set) var count = 0
   private(set) var maxCount = 0
   private(set) var minCount = 0

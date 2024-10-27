@@ -1,9 +1,11 @@
-import XCTest
+import Testing
 import AsyncAlgorithms
 @testable import SwiftModel
+import Observation
+import Foundation
 
-class CancellationTests: XCTestCase {
-    func testDestroyCancellation() {
+struct CancellationTests {
+    @Test func testDestroyCancellation() {
         @Locked var count = 0
 
         do {
@@ -14,10 +16,10 @@ class CancellationTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(count, 5)
+        #expect(count == 5)
     }
 
-    func testDoubleDestroyCancellation() {
+    @Test func testDoubleDestroyCancellation() {
         @Locked var count = 0
 
         do {
@@ -32,10 +34,10 @@ class CancellationTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(count, 8)
+        #expect(count == 8)
     }
 
-    func testKeyCancellation() {
+    @Test func testKeyCancellation() {
         @Locked var count = 0
 
         do {
@@ -54,19 +56,19 @@ class CancellationTests: XCTestCase {
             }
             .cancel(for: CancelKey.one)
 
-            XCTAssertEqual(count, 0)
+            #expect(count == 0)
             model.testNode.cancelAll(for: CancelKey.one)
-            XCTAssertEqual(count, 0)
+            #expect(count == 0)
             counter1.testNode.cancelAll(for: CancelKey.one)
-            XCTAssertEqual(count, 5)
+            #expect(count == 5)
             counter2.testNode.cancelAll(for: CancelKey.one)
-            XCTAssertEqual(count, 8)
+            #expect(count == 8)
         }
 
-        XCTAssertEqual(count, 8)
+        #expect(count == 8)
     }
 
-    func testCancellationContext() {
+    @Test func testCancellationContext() {
         @Locked var count = 0
 
         do {
@@ -79,15 +81,15 @@ class CancellationTests: XCTestCase {
             }.cancel(for: CancelKey.one)
             
             model.cancelAll(for: CancelKey.two)
-            XCTAssertEqual(count, 0)
+            #expect(count == 0)
             model.cancelAll(for: CancelKey.one)
-            XCTAssertEqual(count, 5)
+            #expect(count == 5)
         }
 
-        XCTAssertEqual(count, 5)
+        #expect(count == 5)
     }
 
-    func testCancelInFlight() async {
+    @Test func testCancelInFlight() async {
         @Locked var count = 0
         let channel = AsyncChannel<(Int)>()
 
@@ -109,22 +111,22 @@ class CancellationTests: XCTestCase {
 
             let _ = await v
 
-            XCTAssertEqual(count, 0)
+            #expect(count == 0)
 
             model.onCancel {
                 $count.wrappedValue += 3
             }
             .cancel(for: CancelKey.one, cancelInFlight: true)
-            XCTAssertEqual(count, 1)
-            
+            #expect(count == 1)
+
             model.cancelAll(for: CancelKey.one)
-            XCTAssertEqual(count, 4)
+            #expect(count == 4)
         }
 
-        XCTAssertEqual(count, 4)
+        #expect(count == 4)
     }
 
-    func testCancelInFlightAlt() async throws {
+    @Test func testCancelInFlightAlt() async throws {
         @Locked var count = 0
 
         do {
@@ -144,15 +146,15 @@ class CancellationTests: XCTestCase {
                 try await Task.sleep(nanoseconds: NSEC_PER_MSEC*10)
             }
 
-            XCTAssertEqual(count, 4)
+            #expect(count == 4)
 
             model.cancelAll(for: CancelKey.one)
         }
 
-        XCTAssertEqual(count, 5)
+        #expect(count == 5)
     }
 
-    func testForEachCancelPrevious() async throws {
+    @Test func testForEachCancelPrevious() async throws {
         @Locked var count = 0
         let channel = AsyncChannel<Int>()
         let sync = AsyncChannel<()>()
@@ -166,18 +168,18 @@ class CancellationTests: XCTestCase {
         .cancel(for: CancelKey.one)
 
         var it = sync.makeAsyncIterator()
-        XCTAssertEqual(count, 0)
+        #expect(count == 0)
         await channel.send(1)
         await it.next()
-        XCTAssertEqual(count, 1)
+        #expect(count == 1)
 
         await channel.send(10)
         await it.next()
-        XCTAssertEqual(count, 11)
+        #expect(count == 11)
 
         await channel.send(100)
         await it.next()
-        XCTAssertEqual(count, 111)
+        #expect(count == 111)
 
         model.cancelAll(for: CancelKey.one)
     }
@@ -187,7 +189,7 @@ enum CancelKey {
     case one, two
 }
 
-@Model private struct CounterModel: Sendable {
+@Model private struct CounterModel {
     var count: Int
 
     func increment() {
@@ -197,7 +199,7 @@ enum CancelKey {
     var testNode: ModelNode<Self> { node }
 }
 
-@Model private struct TwoCountersModel: Sendable {
+@Model private struct TwoCountersModel {
     var counter1: CounterModel
     var counter2: CounterModel
 

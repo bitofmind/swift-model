@@ -1,21 +1,18 @@
-import XCTest
+import Testing
 import SwiftModel
+import Observation
 
-final class IdentityTests: XCTestCase {
-    
-    func testImplicitId() {
+struct IdentityTests {
+    @Test func testImplicitId() {
         let model1 = ImplicitModel()
         let model2 = ImplicitModel()
-        XCTAssertNotEqual(model1.id, model2.id)
+        #expect(model1.id != model2.id)
     }
 
-    func testExplicit() {
+    @Test func testExplicit() {
         let model1 = ExplicitModel(id: 1)
         let model2 = ExplicitModel(id: 2)
-        XCTAssertNotEqual(model1.id, model2.id)
-
-//        model1.id = model2.id
-//        XCTAssertEqual(model1.id, model2.id)
+        #expect(model1.id != model2.id)
     }
 }
 
@@ -27,12 +24,11 @@ extension APA {
     mutating func hej() { _ = \Self.count }
 }
 
-
 @Model
-private struct ImplicitModel: Sendable {
+private struct ImplicitModel {
 }
 
 @Model
-private struct ExplicitModel: Sendable {
+private struct ExplicitModel {
     private(set) var id: Int
 }

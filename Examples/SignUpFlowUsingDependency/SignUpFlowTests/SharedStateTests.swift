@@ -1,10 +1,10 @@
 import SwiftModel
-import XCTest
+import Testing
 import SwiftUINavigation
 @testable import SignUpFlow
 
-final class SharedStateTests: XCTestCase {
-  func testSignUpFlow() async {
+struct SharedStateTests {
+  @Test func testSignUpFlow() async {
     let (model, tester) = SignUpFeature(
       path: [
         .basics(BasicsFeature()),

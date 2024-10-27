@@ -1,8 +1,9 @@
-import XCTest
+import Testing
 @testable import SwiftModel
+import Observation
 
-final class UpdateStreamTests: XCTestCase {
-    func testChangeOf() async throws {
+struct UpdateStreamTests {
+    @Test func testChangeOf() async throws {
         let (model, tester) = ValuesModel(initial: false, recursive: false).andTester()
 
         model.count += 5
@@ -18,7 +19,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testChangeOfConcurrency() async throws {
+    @Test func testChangeOfConcurrency() async throws {
         let (model, tester) = ValuesModel(initial: false, recursive: false).andTester()
 
         let range = 1...10
@@ -40,7 +41,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testChangeOfChild() async throws {
+    @Test func testChangeOfChild() async throws {
         let (model, tester) = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).andTester()
 
         await tester.assert {
@@ -63,7 +64,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testChangeOfChildWhereChildIsUpdated() async throws {
+    @Test func testChangeOfChildWhereChildIsUpdated() async throws {
         let (model, tester) = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).andTester()
 
         await tester.assert {
@@ -80,7 +81,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testChangeOfChildConcurrency() async throws {
+    @Test func testChangeOfChildConcurrency() async throws {
         let (model, tester) = ValuesModel(child: ChildModel(count: 0), initial: false, recursive: false).andTester()
 
         let range = 1...10
@@ -104,7 +105,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testChangeOfOptChildWhereChildIsUpdated() async throws {
+    @Test func testChangeOfOptChildWhereChildIsUpdated() async throws {
         let (model, tester) = ValuesModel(initial: false, recursive: false).andTester()
 
         model.optChild = ChildModel(count: 4)
@@ -126,7 +127,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testRace() async throws {
+    @Test func testRace() async throws {
         let (model, tester) = RaceModel().andTester()
         tester.exhaustivity = .full.subtracting(.tasks)
 
@@ -142,7 +143,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testRaceVariant() async throws {
+    @Test func testRaceVariant() async throws {
         let (model, tester) = RaceModel().andTester()
         tester.exhaustivity = .full.subtracting(.tasks)
 
@@ -160,7 +161,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testRecursiveChild() async throws {
+    @Test func testRecursiveChild() async throws {
         let (model, tester) = ValuesModel(initial: false, recursive: true).andTester()
 
         await tester.assert {
@@ -185,7 +186,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testRecursiveOptChild() async throws {
+    @Test func testRecursiveOptChild() async throws {
         let (model, tester) = ValuesModel(initial: false, recursive: true).andTester()
 
         await tester.assert {
@@ -218,7 +219,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testRecursiveChildren() async throws {
+    @Test func testRecursiveChildren() async throws {
         let (model, tester) = ValuesModel(initial: false, recursive: true).andTester()
 
         await tester.assert {
@@ -261,7 +262,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testComputed() async throws {
+    @Test func testComputed() async throws {
         let (model, tester) = ComputedModel().andTester()
         tester.exhaustivity = .full.subtracting(.tasks)
 
@@ -276,7 +277,7 @@ final class UpdateStreamTests: XCTestCase {
         }
     }
 
-    func testNestedComputed() async throws {
+    @Test func testNestedComputed() async throws {
         let (model, tester) = NestedComputedModel().andTester()
         tester.exhaustivity = .off
 
@@ -293,7 +294,7 @@ final class UpdateStreamTests: XCTestCase {
     }
 }
 
-@Model private struct ValuesModel: Sendable {
+@Model private struct ValuesModel {
     var count = 0
     var counts: [Int] = []
     var childCounts: [Int] = []
@@ -336,11 +337,11 @@ final class UpdateStreamTests: XCTestCase {
     }
 }
 
-@Model private struct ChildModel: Sendable, Equatable {
+@Model private struct ChildModel: Equatable {
     var count: Int = 0
 }
 
-@Model private struct RaceModel: Sendable {
+@Model private struct RaceModel {
     var count: Int = 0
     var counts: [Int] = []
 
@@ -351,7 +352,7 @@ final class UpdateStreamTests: XCTestCase {
     }
 }
 
-@Model private struct ComputedModel: Sendable, Equatable {
+@Model private struct ComputedModel: Equatable {
     var count1: Int = 1
     var count2: Int = 2
     var computed: Int { count1 + count2 }
@@ -371,7 +372,7 @@ final class UpdateStreamTests: XCTestCase {
     }
 }
 
-@Model private struct NestedComputedModel: Sendable, Equatable {
+@Model private struct NestedComputedModel: Equatable {
     var computed: ComputedModel?
 
     var computes: [Int?] = []
