@@ -19,6 +19,7 @@ let package = Package(
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.5.2"),
         .package(url: "https://github.com/pointfreeco/swift-identified-collections", from: "1.1.0"),
         .package(url: "https://github.com/pointfreeco/swift-concurrency-extras", from: "1.2.0"),
+        .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.4.2"),
     ],
     targets: [
         .target(name: "SwiftModel", dependencies: [
@@ -28,6 +29,7 @@ let package = Package(
             .product(name: "CustomDump", package: "swift-custom-dump"),
             .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
             .product(name: "ConcurrencyExtras", package: "swift-concurrency-extras"),
+            .product(name: "IssueReporting", package: "xctest-dynamic-overlay"),
         ]),
         .testTarget(
             name: "SwiftModelTests",

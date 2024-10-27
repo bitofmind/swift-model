@@ -103,7 +103,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     }
 
     func fail(_ message: String, at fileAndLine: FileAndLine) {
-        reportIssue(message, filePath: fileAndLine.file, line: fileAndLine.line)
+        reportIssue(message, fileID: fileAndLine.fileID, filePath: fileAndLine.filePath, line: fileAndLine.line, column: fileAndLine.column)
     }
 
     func fail(_ message: String, for area: Exhaustivity, at fileAndLine: FileAndLine) {

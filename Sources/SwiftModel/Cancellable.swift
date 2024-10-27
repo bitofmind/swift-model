@@ -29,8 +29,8 @@ public extension Cancellable {
     ///         task { ... }.cancelInFlight()
     ///     }
     @discardableResult
-    func cancelInFlight(file: StaticString = #file, line: UInt = #line) -> Self {
-        cancel(for: FileAndLine(file: file, line: line), cancelInFlight: true)
+    func cancelInFlight(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Self {
+        cancel(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), cancelInFlight: true)
     }
 
     /// Let this cancellable inherit the the context of any containing context

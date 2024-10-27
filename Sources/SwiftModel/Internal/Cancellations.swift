@@ -114,15 +114,21 @@ struct CancellableKey: Hashable, @unchecked Sendable {
 }
 
 struct FileAndLine: Hashable, Sendable {
-    var file: StaticString
+    var fileID: StaticString
+    var filePath: StaticString
     var line: UInt
+    var column: UInt
 
     static func == (lhs: FileAndLine, rhs: FileAndLine) -> Bool {
-        lhs.line == rhs.line && lhs.file.description == rhs.file.description
+        lhs.line == rhs.line && lhs.column == rhs.column
+        && lhs.fileID.description == rhs.fileID.description
+        && lhs.filePath.description == rhs.filePath.description
     }
 
     func hash(into hasher: inout Hasher) {
-        hasher.combine(file.description)
+        hasher.combine(fileID.description)
+        hasher.combine(filePath.description)
         hasher.combine(line)
+        hasher.combine(column)
     }
 }

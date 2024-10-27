@@ -20,8 +20,8 @@ public final class ModelTester<M: Model> {
     /// - Parameter dependencies: A closure for to overriding dependencies that will be accessed by the model
     ///
     ///  - Note: It is often more convenient to use the `andTester()` method on a model.
-    public init(_ model: M, dependencies: (inout ModelDependencies) -> Void = { _ in }, file: StaticString = #file, line: UInt = #line) {
-        fileAndLine = .init(file: file, line: line)
+    public init(_ model: M, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
+        fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         access = TestAccess(model: model, dependencies: dependencies, fileAndLine: fileAndLine)
     }
 
@@ -49,19 +49,19 @@ public extension Model {
     ///     }
     ///
     /// - Parameter dependencies: A closure for to overriding dependencies that will be accessed by the model
-    func andTester(withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, file: StaticString = #file, function: String = #function, line: UInt = #line) -> (Self, ModelTester<Self>) {
+    func andTester(withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
         assertInitialState(function: function)
-        let tester = ModelTester(self, dependencies: dependencies, file: file, line: line)
+        let tester = ModelTester(self, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
         return (tester.model, tester)
     }
 }
 
 public extension Model {
-    func didSend(_ event: Event, filePath: StaticString = #filePath, line: UInt = #line) -> Bool {
+    func didSend(_ event: Event, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Bool {
         didSend(event as Any, filePath: filePath, line: line)
     }
 
-    func didSend(_ event: Any, filePath: StaticString = #filePath, line: UInt = #line) -> Bool {
+    func didSend(_ event: Any, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Bool {
         guard let assertContext = TesterAssertContextBase.assertContext else {
             reportIssue("Can only call didSend inside a ModelTester assert", filePath: filePath, line: line)
             return false
@@ -129,12 +129,12 @@ public extension AssertBuilder {
     }
 
     @_disfavoredOverload
-    static func buildExpression(_ predicate: @autoclosure @escaping () -> Bool, file: StaticString = #file, line: UInt = #line) -> Result {
-        [Predicate(predicate: predicate, fileAndLine: .init(file: file, line: line))]
+    static func buildExpression(_ predicate: @autoclosure @escaping () -> Bool, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Result {
+        [Predicate(predicate: predicate, fileAndLine: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))]
     }
 
-    static func buildExpression(_ predicate: TestPredicate, file: StaticString = #file, line: UInt = #line) -> Result {
-        [Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: .init(file: file, line: line))]
+    static func buildExpression(_ predicate: TestPredicate, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Result {
+        [Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))]
     }
 }
 
@@ -154,28 +154,28 @@ public func == <T: Equatable>(lhs: @escaping @autoclosure () -> T, rhs: @escapin
 }
 
 public extension ModelTester {
-    func assert(timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, file: StaticString = #file, line: UInt = #line, @AssertBuilder _ builder: () -> AssertBuilder.Result) async {
-        await access.assert(timeoutNanoseconds: timeout, at: .init(file: file, line: line), predicates: builder())
+    func assert(timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: () -> AssertBuilder.Result) async {
+        await access.assert(timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
     }
 
     @_disfavoredOverload
-    func assert(_ predicate: @escaping @autoclosure () -> Bool, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, file: StaticString = #file, line: UInt = #line) async {
-        let fileAndLine = FileAndLine(file: file, line: line)
+    func assert(_ predicate: @escaping @autoclosure () -> Bool, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
+        let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
         await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
     }
 
-    func assert(_ predicate: TestPredicate, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, file: StaticString = #file, line: UInt = #line) async {
-        let fileAndLine = FileAndLine(file: file, line: line)
+    func assert(_ predicate: TestPredicate, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
+        let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
         await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
     }
 
-    func unwrap<T>(_ unwrap: @escaping @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, filePath: StaticString = #filePath, line: UInt = #line) async throws -> T  {
+    func unwrap<T>(_ unwrap: @escaping @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T  {
         let start = DispatchTime.now().uptimeNanoseconds
         while true {
             if let value = unwrap() {
-                let fileAndLine = FileAndLine(file: filePath, line: line)
+                let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
                 let predicate = AssertBuilder.Predicate(predicate: { unwrap() != nil }, fileAndLine: fileAndLine)
                 await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate], enableExhaustionTest: false)
                 return value

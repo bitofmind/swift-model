@@ -10,13 +10,13 @@ public extension ModelNode {
     /// - Parameter catch: Called if the task throws an error
     /// - Returns: A cancellable to optionally allow cancelling before deactivation.
     @discardableResult
-    func task(isDetached: Bool = false, priority: TaskPriority? = nil, file: StaticString = #file, line: UInt = #line, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async throws -> Void, `catch`: @escaping @Sendable (Error) -> Void) -> Cancellable {
+    func task(isDetached: Bool = false, priority: TaskPriority? = nil, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async throws -> Void, `catch`: @escaping @Sendable (Error) -> Void) -> Cancellable {
         guard let context = enforcedContext() else { return EmptyCancellable() }
 
         return cancellationContext {
             _ = TaskCancellable(
                 name: typeDescription,
-                fileAndLine: FileAndLine(file: file, line: line),
+                fileAndLine: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column),
                 context: context,
                 isDetached: isDetached,
                 priority: priority,
@@ -32,8 +32,8 @@ public extension ModelNode {
     /// - Parameter operation: The operation to perform.
     /// - Returns: A cancellable to optionally allow cancelling before deactivation.
     @discardableResult
-    func task(isDetached: Bool = false, priority: TaskPriority? = nil, file: StaticString = #file, line: UInt = #line, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async -> Void) -> Cancellable {
-        task(isDetached: isDetached, priority: priority, file: file, line: line, operation: operation, catch: { _ in })
+    func task(isDetached: Bool = false, priority: TaskPriority? = nil, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async -> Void) -> Cancellable {
+        task(isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column, operation: operation, catch: { _ in })
     }
 
     /// Iterate an async sequence for the life time of the model
@@ -47,11 +47,11 @@ public extension ModelNode {
     /// - Parameter catch: Called if the sequence throws an error or if operation throws and error and abortIfOperationThrows == true
     /// - Returns: A cancellable to optionally allow cancelling before deactivation.
     @discardableResult
-    func forEach<S: AsyncSequence&Sendable>(_ sequence: S, cancelPrevious: Bool = false, abortIfOperationThrows: Bool = false, isDetached: Bool = false, priority: TaskPriority? = nil, file: StaticString = #file, line: UInt = #line, @_inheritActorContext @_implicitSelfCapture perform operation: @escaping @Sendable (S.Element) async throws -> Void, `catch` onError: (@Sendable (Error) -> Void)? = nil) -> Cancellable where S.Element: Sendable {
+    func forEach<S: AsyncSequence&Sendable>(_ sequence: S, cancelPrevious: Bool = false, abortIfOperationThrows: Bool = false, isDetached: Bool = false, priority: TaskPriority? = nil, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @_inheritActorContext @_implicitSelfCapture perform operation: @escaping @Sendable (S.Element) async throws -> Void, `catch` onError: (@Sendable (Error) -> Void)? = nil) -> Cancellable where S.Element: Sendable {
         guard let context = enforcedContext() else { return EmptyCancellable() }
 
         guard cancelPrevious else {
-            return task(isDetached: isDetached, priority: priority, file: file, line: line, operation: {
+            return task(isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column, operation: {
                 for try await value in sequence {
                     guard !Task.isCancelled, !context.isDestructed else { return }
 
@@ -70,7 +70,7 @@ public extension ModelNode {
         let abortKey = UUID()
         let hasBeenAborted = LockIsolated(false)
 
-        let cancellable = task(priority: priority, file: file, line: line) {
+        let cancellable = task(priority: priority, fileID: fileID, filePath: filePath, line: line, column: column) {
             for try await value in sequence {
                 task(isDetached: isDetached, priority: priority) {
                     try await operation(value)
