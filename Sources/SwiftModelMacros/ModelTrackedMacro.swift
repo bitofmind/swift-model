@@ -56,6 +56,7 @@ public struct ModelTrackedMacro: AccessorMacro {
             """
             nonmutating set {
             let oldValue = _$modelContext[model: self, path: \\._\(identifier)]
+            _ = oldValue
             \(willSet?.trimmed ?? "")
             _$modelContext[model: self, path: \\._\(identifier)] = newValue
             \(didSet?.trimmed ?? "")

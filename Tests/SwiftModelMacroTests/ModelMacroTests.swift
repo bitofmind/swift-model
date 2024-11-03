@@ -247,6 +247,7 @@ final class ModelMacroTests: XCTestCase {
 
                     nonmutating set {
                         let oldValue = _$modelContext[model: self, path: \._count]
+                        _ = oldValue
                         print("willSet")
                         _$modelContext[model: self, path: \._count] = newValue
                         print("didSet")
