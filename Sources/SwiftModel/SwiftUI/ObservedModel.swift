@@ -172,8 +172,9 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
 
                 return {
                     if !finished {
+                        let newValue = context[path] as? any Equatable
                         let shouldUpdate = self.lock {
-                            if let oldValue = observer.accesses[path]?.0, let newValue = context[path] as? any Equatable {
+                            if let oldValue = observer.accesses[path]?.0, let newValue {
                                 if isEqual(oldValue, newValue) == true {
                                     return false
                                 } else {
