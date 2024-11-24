@@ -98,7 +98,7 @@ extension Model {
 
 @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
 extension Model where Self: Observable {
-    func access<M: Model, T>(path: KeyPath<M, T>, from context: Context<M>) {
+    func access<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
         context.observationRegistrar?.access(self, keyPath: path as! KeyPath<Self, T>)
     }
 
@@ -106,7 +106,7 @@ extension Model where Self: Observable {
         if Thread.isMainThread {
             context.observationRegistrar?.willSet(self, keyPath: path as! KeyPath<Self, T>)
         } else {
-            Task { @MainActor in
+            Task { @MainActor in // Make sure to call out on the next run loop so SwiftUI does not miss this update
                 context.observationRegistrar?.willSet(self, keyPath: path as! KeyPath<Self, T>)
             }
         }
@@ -116,7 +116,7 @@ extension Model where Self: Observable {
         if Thread.isMainThread {
             context.observationRegistrar?.didSet(self, keyPath: path as! KeyPath<Self, T>)
         } else {
-            Task { @MainActor in
+            Task { @MainActor in // Make sure to call out on the next run loop so SwiftUI does not miss this update
                 context.observationRegistrar?.didSet(self, keyPath: path as! KeyPath<Self, T>)
             }
         }

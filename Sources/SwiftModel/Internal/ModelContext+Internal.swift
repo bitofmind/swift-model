@@ -165,7 +165,6 @@ extension ModelNode {
     }
 
     func withMutation<Member, T>(of model: M, keyPath: WritableKeyPath<M, Member>&Sendable, _ mutation: () throws -> T) rethrows -> T {
-
         let postModify = _$modelContext.willModify(model, at: keyPath)
         defer {
             postModify?()

@@ -266,7 +266,7 @@ A model get access to its dependencies via its `node`.
 let fact = try await node[FactClient.self].fetch(count)
 ``` 
 
-> A model's `node` gives private access to many of model's functionality. 
+> A model's `node` gives access to many of model's functionality. 
 
 There is also a convenience macro for dependencies:
 
