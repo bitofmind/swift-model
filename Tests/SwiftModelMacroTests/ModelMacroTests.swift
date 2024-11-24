@@ -96,7 +96,7 @@ final class ModelMacroTests: XCTestCase {
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
 
-                private var node: ModelNode<Self> {
+                var node: ModelNode<Self> {
                     _node
                 }
             }
@@ -180,7 +180,7 @@ final class ModelMacroTests: XCTestCase {
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
 
-                private var node: ModelNode<Self> {
+                var node: ModelNode<Self> {
                     _node
                 }
             }
@@ -278,7 +278,7 @@ final class ModelMacroTests: XCTestCase {
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
 
-                private var node: ModelNode<Self> {
+                var node: ModelNode<Self> {
                     _node
                 }
             }
@@ -354,7 +354,7 @@ final class ModelMacroTests: XCTestCase {
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
 
-                private var node: ModelNode<Self> {
+                var node: ModelNode<Self> {
                     _node
                 }
             }
@@ -423,7 +423,7 @@ final class ModelMacroTests: XCTestCase {
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
 
-                private var node: ModelNode<Self> {
+                var node: ModelNode<Self> {
                     _node
                 }
             }
