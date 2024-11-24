@@ -48,11 +48,18 @@ class AnyContext: @unchecked Sendable {
     }
 
     typealias ModificationCounts = [ObjectIdentifier: Int]
+    private var _modificationCounts: ModificationCounts?
 
     var modificationCounts: ModificationCounts {
         lock {
+            if let counts = _modificationCounts {
+                return counts
+            }
+
             var counts = ModificationCounts()
             collectModificationCounts(&counts)
+            _modificationCounts = counts
+
             return counts
         }
     }
@@ -353,6 +360,7 @@ class AnyContext: @unchecked Sendable {
     }
 
     func didModify(callbacks: inout [() -> Void]) {
+        _modificationCounts = nil
         guard anyModificationActiveCount > 0 else { return }
 
         for callback in anyModificationCallbacks.values {
