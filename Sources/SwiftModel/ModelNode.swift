@@ -15,7 +15,9 @@ extension ModelNode: Sendable where M: Sendable {}
 public extension ModelNode {
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
         if let context {
-            return try context.transaction(callback)
+            return try ModelAccess.$isInModelTaskContext.withValue(true) {
+                try context.transaction(callback)
+            }
         } else {
             return try callback()
         }
