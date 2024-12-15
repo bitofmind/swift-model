@@ -105,21 +105,54 @@ extension Model where Self: Observable {
     func willSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
         if Thread.isMainThread {
             context.observationRegistrar?.willSet(self, keyPath: path as! KeyPath<Self, T>)
-        } else {
-            Task { @MainActor in // Make sure to call out on the next run loop so SwiftUI does not miss this update
-                context.observationRegistrar?.willSet(self, keyPath: path as! KeyPath<Self, T>)
-            }
         }
     }
 
     func didSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
         if Thread.isMainThread {
             context.observationRegistrar?.didSet(self, keyPath: path as! KeyPath<Self, T>)
-        } else {
-            Task { @MainActor in // Make sure to call out on the next run loop so SwiftUI does not miss this update
-                context.observationRegistrar?.didSet(self, keyPath: path as! KeyPath<Self, T>)
+        } else if let registrar = context.observationRegistrar {
+            mainCall { // Make sure to call out on main thread to not upset SwiftUI, as well call willSet after value has been sat to avoid data race where SwiftUI won't detect the change.
+                registrar.willSet(self, keyPath: path as! KeyPath<Self, T>)
+                registrar.didSet(self, keyPath: path as! KeyPath<Self, T>)
             }
         }
     }
 }
+
+// Coalesce calls to main thread.
+private struct MainCalls {
+    private let calls = LockIsolated<(task: Task<(), Never>, calls: [@Sendable () -> Void])?>(nil)
+    func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
+        calls.withValue {
+            if $0 == nil {
+                $0 = (Task { @MainActor in
+                    while !Task.isCancelled {
+                        let calls: [@Sendable () -> Void] = calls.withValue {
+                            if $0 == nil || $0?.calls.isEmpty == true {
+                                $0?.task.cancel()
+                                $0 = nil
+                                return []
+                            }
+
+                            let calls = $0?.calls ?? []
+                            $0?.calls.removeAll()
+                            return calls
+                        }
+
+                        for call in calls {
+                            call()
+                        }
+
+                        await Task.yield()
+                    }
+                }, calls: [])
+            }
+
+            $0?.calls.append(callback)
+        }
+    }
+}
+
+private let mainCall = MainCalls()
 
