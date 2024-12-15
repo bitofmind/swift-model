@@ -101,9 +101,12 @@ private extension Model {
             }
 
             @Sendable func reset() {
+                guard recursive else { return }
+
                 let value = context[path]
-                if recursive, value is any ModelContainer {
+                if value is any ModelContainer {
                     let cancels = anyCallbacks.withValue { anyCallbacks in
+                        anyCallbacks.removeAll(keepingCapacity: true)
                         let container = value as! any ModelContainer
                         defer {
                             container.forEachContext { subContext in
@@ -125,26 +128,28 @@ private extension Model {
 
             self.transaction {
                 let collector = AccessCollector { collector, modifiedValue in
-                    if modifiedValue is any ModelContainer {
-                        collector.reset()
-                        anyCallbacks.withValue { $0.removeAll(keepingCapacity: true) }
+                    reset()
 
-                        reset()
+                    collector.reset {
                         _ = withAccess(collector)[keyPath: path]
                     }
+
 
                     return yield()
                 }
 
                 reset()
-                let _ = withAccess(collector)[keyPath: path]
+
+                collector.reset {
+                    let _ = withAccess(collector)[keyPath: path]
+                }
 
                 if initial {
                     cont.yield(copy(context[path], shouldFreeze: freezeValues))
                 }
 
                 cont.onTermination = { _ in
-                    collector.reset()
+                    collector.reset { }
                 }
             }
         }
@@ -153,7 +158,7 @@ private extension Model {
 
 private final class AccessCollector: ModelAccess, @unchecked Sendable {
     let onModify: @Sendable (AccessCollector, Any) -> (() -> Void)?
-    let cancellables = LockIsolated<[Key: @Sendable () -> Void]>([:])
+    let active = LockIsolated<(active: [Key: @Sendable () -> Void], added: Set<Key>)>(([:], []))
 
     struct Key: Hashable, @unchecked Sendable {
         var id: ModelID
@@ -165,12 +170,23 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
         super.init(useWeakReference: false)
     }
 
-    func reset() {
-        let cancels = cancellables.withValue { cancels in
+    func reset(_ access: () -> Void) {
+        let keys = active.withValue {
+            $0.added.removeAll(keepingCapacity: true)
+            return Set($0.active.keys)
+        }
+
+        access()
+
+        let cancels = active.withValue { active in
+            let noLongerActive = keys.subtracting(active.added)
+            let cancels = active.active.filter { noLongerActive.contains($0.key) }.map(\.value)
             defer {
-                cancels.removeAll(keepingCapacity: true)
+                for key in noLongerActive {
+                    active.active.removeValue(forKey: key)
+                }
             }
-            return cancels.values
+            return cancels
         }
 
         for cancel in cancels {
@@ -182,11 +198,12 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
 
     override func willAccess<M: Model, T>(_ model: M, at path: WritableKeyPath<M, T>&Sendable) -> (() -> Void)? {
         if let context = model.context {
-            cancellables.withValue {
+            active.withValue {
                 let key = Key(id: model.modelID, path: path)
 
-                if $0[key] == nil {
-                    $0[key] = context.onModify(for: path, { finished in
+                $0.added.insert(key)
+                if $0.active[key] == nil {
+                    $0.active[key] = context.onModify(for: path, { finished in
                         if finished { return {} }
                         return self.onModify(self, context[path])
                     })
