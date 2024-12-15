@@ -162,7 +162,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         _read {
             lock.lock()
             if unprotectedIisDestructed {
-                if let last = reference._model {
+                if let last = reference.model {
                     yield last[keyPath: path]
                 } else {
                     yield readModel[keyPath: path]
@@ -183,7 +183,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         _read {
             lock.lock()
             if unprotectedIisDestructed {
-                if let last = reference._model {
+                if let last = reference.model {
                     yield last[keyPath: path]
                 } else {
                     yield readModel[keyPath: path]
@@ -201,7 +201,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         _modify {
             lock.lock()
             if unprotectedIisDestructed {
-                if var last = reference._model {
+                if var last = reference.model {
                     yield &last[keyPath: path]
                     reference.destruct(last)
                 } else {
@@ -235,7 +235,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     func transaction<Value, T>(at path: WritableKeyPath<M, Value>, callback: (() -> Void)? = nil, modify: (inout Value) throws -> T) rethrows -> T {
         lock.lock()
         let result: T
-        if var last = reference._model {
+        if var last = reference.model {
             result = try modify(&last[keyPath: path])
             reference.destruct(last)
             lock.unlock()
@@ -324,7 +324,7 @@ extension Context {
         let modelID: ModelID
         private let lock = NSRecursiveLock()
         private weak var _context: Context<M>?
-        fileprivate private(set) var _model: M?
+        private(set) var _model: M?
         private var _isDestructed = false
 
         init(modelID: ModelID) {
