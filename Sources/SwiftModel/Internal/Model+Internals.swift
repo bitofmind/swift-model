@@ -129,14 +129,16 @@ private struct MainCalls {
                 $0 = (Task { @MainActor in
                     while !Task.isCancelled {
                         let calls: [@Sendable () -> Void] = calls.withValue {
-                            if $0 == nil || $0?.calls.isEmpty == true {
-                                $0?.task.cancel()
+                            if $0 == nil {
+                                return []
+                            } else if $0!.calls.isEmpty == true {
+                                $0!.task.cancel()
                                 $0 = nil
                                 return []
                             }
 
-                            let calls = $0?.calls ?? []
-                            $0?.calls.removeAll()
+                            let calls = $0!.calls
+                            $0!.calls.removeAll()
                             return calls
                         }
 
@@ -146,10 +148,10 @@ private struct MainCalls {
 
                         await Task.yield()
                     }
-                }, calls: [])
+                }, calls: [callback])
+            } else {
+                $0!.calls.append(callback)
             }
-
-            $0?.calls.append(callback)
         }
     }
 }
