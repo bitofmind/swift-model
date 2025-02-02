@@ -118,6 +118,8 @@ class AnyContext: @unchecked Sendable {
 
     var selfPath: AnyKeyPath { fatalError() }
 
+    var anyModel: any Model { fatalError() }
+
     var rootPaths: [AnyKeyPath] {
         lock {
             if parents.isEmpty {
@@ -153,7 +155,7 @@ class AnyContext: @unchecked Sendable {
     init(lock: NSRecursiveLock, parent: AnyContext?) {
         self.lock = lock
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            _observationRegistrar = ObservationRegistrar() // There seem to be some issue with the Swift 6 compiler where updates or not always registered properly. We have to disable this for now.
+            _observationRegistrar = ObservationRegistrar()
         } else {
             _observationRegistrar = nil
         }
@@ -211,7 +213,7 @@ class AnyContext: @unchecked Sendable {
     }
 
     var allChildren: [AnyContext] {
-        children.values.flatMap { $0.values } + dependencyContexts.values
+        (children.values.flatMap { $0.values } + dependencyContexts.values).filter { $0 !== self }
     }
 
     func onActivate() -> Bool {
@@ -421,6 +423,10 @@ class AnyContext: @unchecked Sendable {
             return Dependencies.withDependencies(from: self, { _ in }) {
                 let value = Dependency(keyPath).wrappedValue
                 if var model = value as? any Model {
+                    if model.anyContext === self {
+                        reportIssue("Recursive dependency detected")
+                    }
+                    
                     withPostActions { postActions in
                         setupModelDependency(&model, cacheKey: keyPath, postSetups: &postActions)
                         dependencyCache[keyPath] = model
@@ -444,6 +450,10 @@ class AnyContext: @unchecked Sendable {
             return Dependencies.withDependencies(from: self, { _ in }) {
                 let value = Dependency(type).wrappedValue
                 if var model = value as? any Model {
+                    if model.anyContext === self {
+                        reportIssue("Recursive dependency detected")
+                    }
+
                     withPostActions { postActions in
                         setupModelDependency(&model, cacheKey: key, postSetups: &postActions)
                         dependencyCache[key] = model

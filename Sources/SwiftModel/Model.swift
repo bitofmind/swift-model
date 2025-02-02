@@ -58,7 +58,6 @@ public extension Model {
     func onActivate() { }
 }
 
-
 /// Model modifiers
 public extension Model {
     func withDependencies(_ dependencies: @escaping (inout ModelDependencies) -> Void) -> Self {

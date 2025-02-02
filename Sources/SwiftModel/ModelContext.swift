@@ -6,10 +6,12 @@ public struct ModelContext<M: Model> {
     var _access: ModelAccess.Reference?
 
     var access: ModelAccess? {
-        get { _access?.access ?? ModelAccess.current  }
-        set { _access = newValue?.reference }
+        get { _access?.access ?? ModelAccess.current }
+        set {
+            _access = newValue?.reference
+            reference?.updateAccess(newValue)
+        }
     }
-
 
     enum Source {
         case reference(Context<M>.Reference)

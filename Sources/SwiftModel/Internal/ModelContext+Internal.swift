@@ -122,6 +122,10 @@ extension Model {
         reference?.context
     }
 
+    var anyContext: AnyContext? {
+        reference?.context
+    }
+
     var isInitial: Bool {
         reference?.lifetime == .initial
     }

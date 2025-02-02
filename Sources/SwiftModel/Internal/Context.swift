@@ -136,6 +136,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         lock(readModel)
     }
 
+    override var anyModel: any Model {
+        model
+    }
+
     func updateContext<T: Model>(for model: inout T, at path: WritableKeyPath<M, T>){
         guard !isDestructed else { return }
         model.withContextAdded(context: self, containerPath: path, elementPath: \.self, includeSelf: true)
@@ -347,6 +351,12 @@ extension Context {
 
         var model: M? {
             lock { _model }
+        }
+
+        func updateAccess(_ access: ModelAccess?) {
+            lock {
+                _model?._$modelContext._access = access?.reference
+            }
         }
 
         var isDestructed: Bool {
