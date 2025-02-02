@@ -110,6 +110,22 @@ public extension ModelNode {
             }
         }.removeDuplicates().eraseToStream()
     }
+
+    func parents<Value>(ofType type: Value.Type = Value.self) -> [Value] {
+        context?.parents() ?? []
+    }
+
+    func parent<Value>(fallback: @autoclosure () -> Value) -> Value {
+        parents(ofType: Value.self).first ?? fallback()
+    }
+
+    func ancestors<Value>(ofType type: Value.Type = Value.self) -> [Value] {
+        context?.ancestors() ?? []
+    }
+
+    func ancestor<Value>(fallback: @autoclosure () -> Value) -> Value {
+        ancestors(ofType: Value.self).first ?? fallback()
+    }
 }
 
 extension ModelNode {

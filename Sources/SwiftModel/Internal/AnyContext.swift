@@ -106,9 +106,17 @@ class AnyContext: @unchecked Sendable {
         weakParents.compactMap(\.parent)
     }
 
-    func hasPredecessor(_ context: AnyContext) -> Bool {
+    func parents<Value>(ofType type: Value.Type = Value.self) -> [Value] {
+        parents.compactMap { $0.anyModel as? Value }
+    }
+
+    func ancestors<Value>(ofType type: Value.Type = Value.self) -> [Value] {
+        parents() + parents.flatMap { $0.ancestors() }
+    }
+
+    func hasAncestor(_ context: AnyContext) -> Bool {
         for parent in lock(parents) {
-            if parent === context || parent.hasPredecessor(context) {
+            if parent === context || parent.hasAncestor(context) {
                 return true
             }
         }

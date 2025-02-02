@@ -149,7 +149,7 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
                 return nil
             }
 
-            if !context.hasPredecessor(root), root !== context {
+            if !context.hasAncestor(root), root !== context {
                 lock {
                     observers[id] = nil
                 }
