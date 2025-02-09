@@ -57,4 +57,12 @@ extension Model {
         model._$modelContext.access = access
         return model
     }
+
+    func withAccessIfPropagateToChildren(_ access: ModelAccess?) -> Self {
+        var model = self
+        if let access, access.shouldPropagateToChildren {
+            model._$modelContext.access = access
+        }
+        return model
+    }
 }

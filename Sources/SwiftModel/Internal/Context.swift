@@ -102,10 +102,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    func sendEvent(_ event: Any, to receivers: EventReceivers, context: AnyContext) {
+    func sendEvent(_ event: Any, to relation: ModelRelation, context: AnyContext) {
         let eventInfo = EventInfo(event: event, context: context)
-        threadLocals.coalesceSends.removeAll()
-        sendEvent(eventInfo, to: receivers)
+        sendEvent(eventInfo, to: relation)
     }
 
     func onModify<T>(for path: KeyPath<M, T>&Sendable, _ callback: @Sendable @escaping (Bool) -> (() -> Void)?) -> @Sendable () -> Void {

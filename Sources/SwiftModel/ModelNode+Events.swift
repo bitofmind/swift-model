@@ -4,18 +4,18 @@ public extension ModelNode {
     /// Sends an event.
     /// - Parameter event: even to send.
     /// - Parameter receivers: Receivers of the event, default to self and ancestors.
-    func send(_ event: M.Event, to receivers: EventReceivers = [.self, .ancestors]) {
+    func send(_ event: M.Event, to relation: ModelRelation = [.self, .ancestors]) {
         guard let context = enforcedContext() else { return }
-        context.sendEvent(event, to: receivers, context: context)
+        context.sendEvent(event, to: relation, context: context)
         access?.didSend(event: event, from: context)
     }
 
     /// Sends an event.
     /// - Parameter event: even to send.
     /// - Parameter receivers: Receivers of the event, default to self and ancestors.
-    func send<E>(_ event: E, to receivers: EventReceivers = [.self, .ancestors]) {
+    func send<E>(_ event: E, to relation: ModelRelation = [.self, .ancestors]) {
         guard let context = enforcedContext() else { return }
-        context.sendEvent(event, to: receivers, context: context)
+        context.sendEvent(event, to: relation, context: context)
         access?.didSend(event: event, from: context)
     }
 }
@@ -96,16 +96,17 @@ public extension ModelNode {
     }
 }
 
-public struct EventReceivers: OptionSet, Sendable {
+public struct ModelRelation: OptionSet, Sendable {
     public let rawValue: Int
 
     public init(rawValue: Int) {
         self.rawValue = rawValue
     }
 
-    public static let `self` = EventReceivers(rawValue: 1 << 0)
-    public static let ancestors = EventReceivers(rawValue: 1 << 1)
-    public static let descendants = EventReceivers(rawValue: 1 << 2)
-    public static let parent = EventReceivers(rawValue: 1 << 3)
-    public static let children = EventReceivers(rawValue: 1 << 4)
+    public static let `self` = ModelRelation(rawValue: 1 << 0)
+    public static let ancestors = ModelRelation(rawValue: 1 << 1)
+    public static let descendants = ModelRelation(rawValue: 1 << 2)
+    public static let parent = ModelRelation(rawValue: 1 << 3)
+    public static let children = ModelRelation(rawValue: 1 << 4)
+    public static let dependencies = ModelRelation(rawValue: 1 << 5)
 }

@@ -50,15 +50,14 @@ public extension ModelNode {
         }
 
         let value = context.dependency(for: keyPath)
-        if let access = _$modelContext.access, access.shouldPropagateToChildren, let dependencyModel = value as? any Model {
-            return dependencyModel.withAccess(access) as! Value
+        if let dependencyModel = value as? any Model {
+            return dependencyModel.withAccessIfPropagateToChildren(access) as! Value
         } else {
             return value
         }
     }
 
     subscript<Value: DependencyKey>(type: Value.Type) -> Value where Value.Value == Value {
-
         if isDestructed {
             // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
             let key = ObjectIdentifier(type)
@@ -76,8 +75,8 @@ public extension ModelNode {
         }
 
         let value = context.dependency(for: type)
-        if let access = _$modelContext.access, access.shouldPropagateToChildren, let dependencyModel = value as? any Model {
-            return dependencyModel.withAccess(access) as! Value
+        if let dependencyModel = value as? any Model {
+            return dependencyModel.withAccessIfPropagateToChildren(access) as! Value
         } else {
             return value
         }
@@ -111,20 +110,16 @@ public extension ModelNode {
         }.removeDuplicates().eraseToStream()
     }
 
-    func parents<Value>(ofType type: Value.Type = Value.self) -> [Value] {
-        context?.parents() ?? []
+    func reduceHierarchy<Result, Element>(for relation: ModelRelation, transform: (any Model) throws -> Element?, into initialResult: Result, _ updateAccumulatingResult: (inout Result, Element) throws -> ()) rethrows -> Result {
+        try context?.reduceHierarchy(for: relation, transform: {
+            try transform($0.anyModel.withAccessIfPropagateToChildren(access))
+        }, into: initialResult, updateAccumulatingResult) ?? initialResult
     }
 
-    func parent<Value>(fallback: @autoclosure () -> Value) -> Value {
-        parents(ofType: Value.self).first ?? fallback()
-    }
-
-    func ancestors<Value>(ofType type: Value.Type = Value.self) -> [Value] {
-        context?.ancestors() ?? []
-    }
-
-    func ancestor<Value>(fallback: @autoclosure () -> Value) -> Value {
-        ancestors(ofType: Value.self).first ?? fallback()
+    func mapHierarchy<Element>(for relation: ModelRelation, transform: (any Model) throws -> Element?) rethrows -> [Element] {
+        try reduceHierarchy(for: relation, transform: transform, into: []) {
+            $0.append($1)
+        }
     }
 }
 

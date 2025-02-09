@@ -62,11 +62,7 @@ public extension ModelContext {
 
     subscript<T: Model>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
         _read {
-            if let access, access.shouldPropagateToChildren {
-                yield self[model, path].withAccess(access)
-            } else {
-                yield self[model, path]
-            }
+            yield self[model, path].withAccessIfPropagateToChildren(access)
         }
 
         nonmutating set {
@@ -177,11 +173,7 @@ public extension ModelContext {
     }
 
     func dependency<D: Model&DependencyKey>() -> D where D.Value == D {
-        if let access, access.shouldPropagateToChildren {
-            (_dependency() as D).withAccess(access)
-        } else {
-            _dependency()
-        }
+        (_dependency() as D).withAccessIfPropagateToChildren(access)
     }
 
     @_disfavoredOverload

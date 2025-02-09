@@ -274,32 +274,51 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    func sendEvent(_ eventInfo: EventInfo, to receivers: EventReceivers) {
+    func reduceHierarchy<Result, Element>(for relation: ModelRelation, transform: (AnyContext) throws -> Element?, into initialResult: Result, _ updateAccumulatingResult: (inout Result, Element) throws -> ()) rethrows -> Result {
+        var result = initialResult
+        var uniques = Set<ObjectIdentifier>()
+        try reduce(for: relation, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
+        return result
+    }
+
+    private func reduce<Result, Element>(for relation: ModelRelation, transform: (AnyContext) throws -> Element?, into result: inout Result, updateAccumulatingResult: (inout Result, Element) throws -> (), uniques: inout Set<ObjectIdentifier>) rethrows {
         let parents = lock(parents)
 
-        if receivers.contains(.self), !threadLocals.coalesceSends.contains(ObjectIdentifier(self)) {
-            for continuation in eventContinuations.values {
-                continuation.yield(eventInfo)
-            }
+        let dependencies: ModelRelation = relation.contains(.dependencies) ? .dependencies : []
 
-            threadLocals.coalesceSends.insert(ObjectIdentifier(self))
+        if relation.contains(.self), !uniques.contains(ObjectIdentifier(self)), let element = try transform(self) {
+            try updateAccumulatingResult(&result, element)
+
+            uniques.insert(ObjectIdentifier(self))
         }
 
         for parent in parents {
-            if receivers.contains(.ancestors) {
-                parent.sendEvent(eventInfo, to: [.self, .ancestors])
-            } else if receivers.contains(.parent) {
-                parent.sendEvent(eventInfo, to: .self)
+            if relation.contains(.ancestors) {
+                try parent.reduce(for: dependencies.union([.self, .ancestors]), transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
+            } else if relation.contains(.parent) {
+                try parent.reduce(for: dependencies.union(.self), transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
             }
         }
 
-        if receivers.contains(.descendants) {
-            for child in allChildren {
-                child.sendEvent(eventInfo, to: [.self, .descendants])
+        let children = lock {
+            self.children.values.flatMap { $0.values } + (relation.contains(.dependencies) ? Array(dependencyContexts.values) : [])
+        }
+
+        if relation.contains(.descendants) {
+            for child in children {
+                try child.reduce(for: dependencies.union([.self, .descendants]), transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
             }
-        } else if receivers.contains(.children) {
-            for child in allChildren {
-                child.sendEvent(eventInfo, to: .self)
+        } else if relation.contains(.children) {
+            for child in children {
+                try child.reduce(for: dependencies.union(.self), transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
+            }
+        }
+    }
+
+    func sendEvent(_ eventInfo: EventInfo, to relation: ModelRelation) {
+        reduceHierarchy(for: relation, transform: \.self, into: ()) { _, context in
+            for continuation in context.eventContinuations.values {
+                continuation.yield(eventInfo)
             }
         }
     }

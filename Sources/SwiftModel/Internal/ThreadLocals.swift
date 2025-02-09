@@ -5,7 +5,6 @@ final class ThreadLocals: @unchecked Sendable {
     var forceDirectAccess = false
     var didReplaceModelWithDestructedOrFrozenCopy: () -> Void = {}
     var includeInMirror = false
-    var coalesceSends: Set<ObjectIdentifier> = []
 
     fileprivate init() {}
 
