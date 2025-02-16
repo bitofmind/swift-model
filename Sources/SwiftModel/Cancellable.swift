@@ -1,7 +1,7 @@
 import Foundation
 
 /// A protocol indicating that an activity or action supports cancellation.
-public protocol Cancellable {
+public protocol Cancellable: Sendable {
     /// Cancel the activity.
     func cancel()
 
