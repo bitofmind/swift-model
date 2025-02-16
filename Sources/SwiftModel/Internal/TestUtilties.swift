@@ -52,6 +52,14 @@ func _XCTExpectFailure(failingBlock: () -> Void) {
 }
 
 
+func isEqual<T>(_ lhs: T, _ rhs: T) -> Bool? {
+    guard let lhs = lhs as? any Equatable else {
+        return nil
+    }
+
+    return lhs.isEqual(rhs as! any Equatable)
+}
+
 func isEqual<L, R>(_ lhs: L, _ rhs: R) -> Bool? {
     guard let lhs = lhs as? R, let lhs = lhs as? any Equatable, let rhs = rhs as? any Equatable else {
         return nil

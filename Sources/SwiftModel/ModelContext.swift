@@ -13,6 +13,16 @@ public struct ModelContext<M: Model> {
         }
     }
 
+    var deepAccess: ModelAccess? {
+        access.flatMap {
+            $0.shouldPropagateToChildren ? $0 : nil
+        }
+    }
+
+    var activeAccess: ModelAccess? {
+        ModelAccess.active ?? access
+    }
+
     enum Source {
         case reference(Context<M>.Reference)
         case frozenCopy(id: ModelID)
@@ -51,18 +61,29 @@ public extension ModelContext {
 }
 
 public extension ModelContext {
+    @_disfavoredOverload
     subscript<T>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
         _read {
-            yield self[model, path]
+            yield self[model, path, nil]
         }
         nonmutating _modify {
-            yield &self[model, path]
+            yield &self[model, path, nil]
+        }
+    }
+
+    @_disfavoredOverload
+    subscript<T: Equatable>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
+        _read {
+            yield self[model, path, nil]
+        }
+        nonmutating _modify {
+            yield &self[model, path, ==]
         }
     }
 
     subscript<T: Model>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
         _read {
-            yield self[model, path].withAccessIfPropagateToChildren(access)
+            yield self[model, path, nil].withAccessIfPropagateToChildren(access)
         }
 
         nonmutating set {
@@ -97,6 +118,8 @@ public extension ModelContext {
                 context.updateContext(for: &newChild, at: path)
 
                 child = newChild
+            } isSame: {
+                $0.modelID == $1.modelID
             }
 
             for callback in callbacks {
@@ -104,8 +127,8 @@ public extension ModelContext {
             }
 
             if let access, access.shouldPropagateToChildren {
-                ModelAccess.$current.withValue(access) {
-                    context[path].context?.onActivate()
+                usingAccess(access) {
+                    _ = context[path].context?.onActivate()
                 }
             } else {
                 _ = context[path].context?.onActivate()
@@ -115,10 +138,10 @@ public extension ModelContext {
 
     subscript<T: ModelContainer>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
         _read {
-            if let access, access.shouldPropagateToChildren {
-                yield self[model, path].withDeepAccess(access)
+            if let deepAccess {
+                yield self[model, path, nil].withDeepAccess(deepAccess)
             } else {
-                yield self[model, path]
+                yield self[model, path, nil]
             }
         }
         nonmutating set {
@@ -156,14 +179,17 @@ public extension ModelContext {
                 for oldContext in oldContexts {
                     context.removeChild(oldContext, callbacks: &postLockCallbacks)
                 }
+            } isSame: { _, _ in
+                false // Not sure how to best implement this
             }
+
 
             for callback in postLockCallbacks {
                 callback()
             }
 
             if let access, access.shouldPropagateToChildren {
-                ModelAccess.$current.withValue(access) {
+                usingAccess(access) {
                     context[path].activate()
                 }
             } else {

@@ -41,14 +41,16 @@ class AnyContext: @unchecked Sendable {
 
     private(set) var anyModificationActiveCount = 0
     private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] = [:]
-    private var modificationCount = 0
+    private var _modificationCount = 0
 
     func didModify() {
-        modificationCount &+= 1
+        _modificationCount &+= 1
     }
 
     typealias ModificationCounts = [ObjectIdentifier: Int]
     private var _modificationCounts: ModificationCounts?
+
+    var modificationCount: Int { lock { _modificationCount } }
 
     var modificationCounts: ModificationCounts {
         lock {
@@ -200,7 +202,7 @@ class AnyContext: @unchecked Sendable {
         lifetime == .destructed
     }
 
-    var unprotectedIisDestructed: Bool {
+    var unprotectedIsDestructed: Bool {
         modeLifeTime == .destructed
     }
 

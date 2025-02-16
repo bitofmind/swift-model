@@ -5,8 +5,8 @@ class ModelAccessReference: @unchecked Sendable {
 }
 
 class ModelAccess: ModelAccessReference, @unchecked Sendable {
-    func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>&Sendable) -> (() -> Void)? { nil }
-    func willModify<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>&Sendable) -> (() -> Void)? { nil }
+    func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? { nil }
+    func willModify<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? { nil }
 
     func didSend<M: Model, Event>(event: Event, from context: Context<M>) {}
 
@@ -14,6 +14,7 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
 
     @TaskLocal static var isInModelTaskContext = false
     @TaskLocal static var current: ModelAccess?
+    @TaskLocal static var active: ModelAccess?
 
     override var access: ModelAccess? {
         self
@@ -65,4 +66,12 @@ extension Model {
         }
         return model
     }
+}
+
+func usingAccess<T>(_ access: ModelAccess?, operation: () throws -> T) rethrows -> T {
+    try ModelAccess.$current.withValue(access, operation: operation)
+}
+
+func usingActiveAccess<T>(_ access: ModelAccess?, operation: () throws -> T) rethrows -> T {
+    try ModelAccess.$active.withValue(access, operation: operation)
 }

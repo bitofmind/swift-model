@@ -41,6 +41,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
 
         readModel.withContextAdded(context: self)
+        readModel._$modelContext.access = nil
         modifyModel = readModel
         reference.setContext(self)
 
@@ -164,7 +165,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     subscript<T>(path: KeyPath<M, T>, callback: (() -> Void)? = nil) -> T {
         _read {
             lock.lock()
-            if unprotectedIisDestructed {
+            if unprotectedIsDestructed {
                 if let last = reference.model {
                     yield last[keyPath: path]
                 } else {
@@ -182,10 +183,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    subscript<T>(path: WritableKeyPath<M, T>, callback: (() -> Void)? = nil) -> T {
+    subscript<T>(path: WritableKeyPath<M, T>, isSame: ((T, T) -> Bool)?, callback: (() -> Void)? = nil) -> T {
         _read {
             lock.lock()
-            if unprotectedIisDestructed {
+            if unprotectedIsDestructed {
                 if let last = reference.model {
                     yield last[keyPath: path]
                 } else {
@@ -203,7 +204,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
         _modify {
             lock.lock()
-            if unprotectedIisDestructed {
+            if unprotectedIsDestructed {
                 if var last = reference.model {
                     yield &last[keyPath: path]
                     reference.destruct(last)
@@ -214,6 +215,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 lock.unlock()
             } else {
                 yield &modifyModel[keyPath: path]
+
+                if let isSame, isSame(modifyModel[keyPath: path], readModel[keyPath: path]) {
+                    return lock.unlock()
+                }
+
                 didModify()
                 isMutating = true
                 readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
@@ -235,7 +241,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    func transaction<Value, T>(at path: WritableKeyPath<M, Value>, callback: (() -> Void)? = nil, modify: (inout Value) throws -> T) rethrows -> T {
+    func transaction<Value, T>(at path: WritableKeyPath<M, Value>, isSame: ((Value, Value) -> Bool)?, callback: (() -> Void)? = nil, modify: (inout Value) throws -> T) rethrows -> T {
         lock.lock()
         let result: T
         if var last = reference.model {
@@ -244,6 +250,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             lock.unlock()
         } else {
             result = try modify(&modifyModel[keyPath: path])
+
+            if let isSame, isSame(modifyModel[keyPath: path], readModel[keyPath: path]) {
+                lock.unlock()
+                return result
+            }
+
             didModify()
             isMutating = true
             readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls

@@ -147,18 +147,22 @@ extension ModelContext {
             observable.access(path: path, from: context)
         }
 
-        return access?.willAccess(model, at: path)
+        return activeAccess?.willAccess(model, at: path)
     }
 
     func willModify<T>(_ model: M, at path: WritableKeyPath<M, T>&Sendable) -> (() -> Void)? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, let observable = model as? any Observable&Model {
-            observable.willSet(path: path, from: context)
-            defer {
-                observable.didSet(path: path, from: context)
+            let willModify = activeAccess?.willModify(model, at: path)
+            return {
+                observable.willSet(path: path, from: context)
+                defer {
+                    observable.didSet(path: path, from: context)
+                }
+
+                willModify?()
             }
-            return access?.willModify(model, at: path)
         } else {
-            return access?.willModify(model, at: path)
+            return activeAccess?.willModify(model, at: path)
         }
     }
 }
@@ -178,7 +182,7 @@ extension ModelNode {
 }
 
 extension ModelContext {
-    subscript<T>(model: M, path: WritableKeyPath<M, T>&Sendable) -> T {
+    subscript<T>(model: M, path: WritableKeyPath<M, T>&Sendable, isSame: ((T, T) -> Bool)?) -> T {
         _read {
             if threadLocals.forceDirectAccess {
                 yield model[keyPath: path]
@@ -210,11 +214,11 @@ extension ModelContext {
                 return
             }
 
-            yield &context[path, willModify(model, at: path)]
+            yield &context[path, isSame, willModify(model, at: path)]
         }
     }
 
-    func transaction<Value, T>(with model: M, at path: WritableKeyPath<M, Value>&Sendable, modify: (inout Value) throws -> T) rethrows -> T {
+    func transaction<Value, T>(with model: M, at path: WritableKeyPath<M, Value>&Sendable, modify: (inout Value) throws -> T, isSame: ((Value, Value) -> Bool)?) rethrows -> T {
         guard let context = modifyContext else {
             if let reference, reference.lifetime == .initial {
                 return try modify(&reference[fallback: model][keyPath: path])
@@ -229,9 +233,9 @@ extension ModelContext {
             defer {
                 observable.didSet(path: path, from: context)
             }
-            return try context.transaction(at: path, callback: access?.willModify(model, at: path), modify: modify)
+            return try context.transaction(at: path, isSame: isSame, callback: activeAccess?.willModify(model, at: path), modify: modify)
         } else {
-            return try context.transaction(at: path, callback: access?.willModify(model, at: path), modify: modify)
+            return try context.transaction(at: path, isSame: isSame, callback: activeAccess?.willModify(model, at: path), modify: modify)
         }
     }
 

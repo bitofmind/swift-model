@@ -21,14 +21,17 @@ import Observation
 @MainActor
 public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
     @StateObject private var access = ViewAccess()
-    private var modificationCounts: AnyContext.ModificationCounts?
 
     public init(wrappedValue: M) {
         self.wrappedValue = wrappedValue
-        self.modificationCounts = wrappedValue.context?.modificationCounts
+    }
+
+    public init(projectedValue: Self) {
+        self.init(wrappedValue: projectedValue.wrappedValue)
     }
 
     public var wrappedValue: M
+    public var projectedValue: Self { self }
 
     public nonisolated mutating func update() {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *),
@@ -42,8 +45,6 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
             access.updateObserved(wrappedValue)
         }
     }
-
-    public var projectedValue: Self { self }
 
     public subscript<T>(dynamicMember path: WritableKeyPath<M, T>) -> Binding<T> {
         Binding {
@@ -60,12 +61,17 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
         } set: { _ in }
     }
 
-    public nonisolated static func == (lhs: ObservedModel, rhs: ObservedModel) -> Bool {
-        guard let lCounts = lhs.modificationCounts, let rCounts = rhs.modificationCounts else {
-            return false
-        }
+    public var binding: Binding<M> {
+        Binding {
+            wrappedValue
+        } set: { _ in }
+    }
 
-        return lCounts == rCounts
+    public nonisolated static func == (lhs: ObservedModel, rhs: ObservedModel) -> Bool {
+        if lhs.wrappedValue.modelID != rhs.wrappedValue.modelID {
+            print("observed models not equal", type(of: lhs.wrappedValue))
+        }
+        return lhs.wrappedValue.modelID == rhs.wrappedValue.modelID
     }
 }
 
@@ -95,7 +101,7 @@ private final class Observer<M: Model>: @unchecked Sendable {
     // Protected by ViewAccess's lock
     weak var context: Context<M>?
     weak var viewAccess: ViewAccess?
-    var accesses: [PartialKeyPath<M>: ((any Equatable)?, () -> Void)] = [:]
+    var accesses: [PartialKeyPath<M>: () -> Void] = [:]
 
     init(context: Context<M>, viewAccess: ViewAccess) {
         self.context = context
@@ -103,7 +109,7 @@ private final class Observer<M: Model>: @unchecked Sendable {
     }
 
     deinit {
-        for (_ , cancellable) in accesses.values {
+        for cancellable in accesses.values {
             cancellable()
         }
     }
@@ -127,7 +133,7 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
         }
     }
 
-    override func willAccess<M: Model, Value>(_ model: M, at path: WritableKeyPath<M, Value>&Sendable) -> (() -> Void)? {
+    override func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
         guard let context = model.context, !ModelAccess.isInModelTaskContext else {
             return nil
         }
@@ -172,22 +178,7 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
 
                 return {
                     if !finished {
-                        let newValue = context[path] as? any Equatable
-                        let shouldUpdate = self.lock {
-                            if let oldValue = observer.accesses[path]?.0, let newValue {
-                                if isEqual(oldValue, newValue) == true {
-                                    return false
-                                } else {
-                                    observer.accesses[path]?.0 = newValue
-                                }
-                            }
-
-                            return true
-                        }
-
-                        if shouldUpdate {
-                            self.didUpdate()
-                        }
+                        self.didUpdate()
                     } else {
                         self.lock {
                             observer.accesses[path] = nil
@@ -196,9 +187,8 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
                 }
             }
             
-            let initialValue = context[path] as? any Equatable
             lock.lock()
-            observer.accesses[path] = (initialValue, access)
+            observer.accesses[path] = access
         }
 
         observers[id] = observer

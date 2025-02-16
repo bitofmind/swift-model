@@ -86,71 +86,163 @@ public struct PrintTextOutputStream: TextOutputStream, Sendable {
     }
 }
 
-private extension Model {
-    func _update<T: Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
-        guard let context = enforcedContext() else { return .never }
-        return AsyncStream { cont in
-            let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])
+private extension Context {
+    func update<T: Sendable>(initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false, access: @Sendable @escaping (Context<M>) -> T, onUpdate: @Sendable @escaping (T) -> Void) -> Cancellable where Self: Sendable {
+        let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])
 
-            @Sendable func yield() -> () -> Void {
-                let copy = copy(context[path], shouldFreeze: freezeValues)
+        @Sendable func yield() -> () -> Void {
+            let copy = copy(access(self), shouldFreeze: freezeValues)
 
-                return { // Call out outside of held lock
-                    cont.yield(copy)
-                }
+            return { // Call out outside of held lock
+                onUpdate(copy)
             }
+        }
 
-            @Sendable func reset() {
-                guard recursive else { return }
+        @Sendable func reset() {
+            guard recursive else { return }
 
-                let value = context[path]
-                if value is any ModelContainer {
-                    let cancels = anyCallbacks.withValue { anyCallbacks in
-                        anyCallbacks.removeAll(keepingCapacity: true)
-                        let container = value as! any ModelContainer
-                        defer {
-                            container.forEachContext { subContext in
-                                let cancel = subContext.onAnyModification { didFinish in
-                                    if didFinish { return nil }
-                                    return yield()
-                                }
-                                anyCallbacks.append(cancel)
+            let value = access(self)
+            if value is any ModelContainer {
+                let cancels = anyCallbacks.withValue { anyCallbacks in
+                    anyCallbacks.removeAll(keepingCapacity: true)
+                    let container = value as! any ModelContainer
+                    defer {
+                        container.forEachContext { subContext in
+                            let cancel = subContext.onAnyModification { didFinish in
+                                if didFinish { return nil }
+                                return yield()
                             }
+                            anyCallbacks.append(cancel)
                         }
-                        return anyCallbacks
                     }
+                    return anyCallbacks
+                }
 
-                    for cancel in cancels {
-                        cancel()
-                    }
+                for cancel in cancels {
+                    cancel()
                 }
             }
+        }
 
-            self.transaction {
-                let collector = AccessCollector { collector, modifiedValue in
+        return transaction {
+            let collector = AccessCollector { collector, modifiedValue in
+                if modifiedValue is any ModelContainer {
                     reset()
 
                     collector.reset {
-                        _ = withAccess(collector)[keyPath: path]
+                        usingActiveAccess(collector) {
+                            _ = access(self)
+                        }
                     }
-
-
-                    return yield()
                 }
 
-                reset()
+                return yield()
+            }
 
-                collector.reset {
-                    let _ = withAccess(collector)[keyPath: path]
+            reset()
+
+            collector.reset {
+                usingActiveAccess(collector) {
+                    _ = access(self)
+                }
+            }
+
+            if initial {
+                onUpdate(copy(access(self), shouldFreeze: freezeValues))
+            }
+
+            return AnyCancellable(cancellations: cancellations) {
+                collector.reset { }
+            }
+        }
+    }
+
+    func update<T: Sendable>(of path: KeyPath<M, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false, onUpdate: @Sendable @escaping (T) -> Void) -> Cancellable where Self: Sendable {
+        update(initial: initial, recursive: recursive, freezeValues: freezeValues, access: { $0[path] }, onUpdate: onUpdate)
+    }
+
+    func __update<T: Sendable>(of path: KeyPath<M, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false, onUpdate: @Sendable @escaping (T) -> Void) -> Cancellable where Self: Sendable {
+        let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])
+
+        @Sendable func yield() -> () -> Void {
+            let copy = copy(self[path], shouldFreeze: freezeValues)
+
+            return { // Call out outside of held lock
+                onUpdate(copy)
+            }
+        }
+
+        @Sendable func reset() {
+            guard recursive else { return }
+
+            let value = self[path]
+            if value is any ModelContainer {
+                let cancels = anyCallbacks.withValue { anyCallbacks in
+                    anyCallbacks.removeAll(keepingCapacity: true)
+                    let container = value as! any ModelContainer
+                    defer {
+                        container.forEachContext { subContext in
+                            let cancel = subContext.onAnyModification { didFinish in
+                                if didFinish { return nil }
+                                return yield()
+                            }
+                            anyCallbacks.append(cancel)
+                        }
+                    }
+                    return anyCallbacks
                 }
 
-                if initial {
-                    cont.yield(copy(context[path], shouldFreeze: freezeValues))
+                for cancel in cancels {
+                    cancel()
+                }
+            }
+        }
+
+        return transaction {
+            let collector = AccessCollector { collector, modifiedValue in
+                if modifiedValue is any ModelContainer {
+                    reset()
+
+                    collector.reset {
+                        usingActiveAccess(collector) {
+                            _ = self.model[keyPath: path]
+                        }
+                    }
                 }
 
-                cont.onTermination = { _ in
-                    collector.reset { }
+                return yield()
+            }
+
+            reset()
+
+            collector.reset {
+                usingActiveAccess(collector) {
+                    _ = model[keyPath: path]
                 }
+            }
+
+            if initial {
+                onUpdate(copy(self[path], shouldFreeze: freezeValues))
+            }
+
+            return AnyCancellable(cancellations: cancellations) {
+                collector.reset { }
+            }
+        }
+    }
+}
+
+private extension Model {
+    func _update<T: Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
+        guard let context = enforcedContext() else { return .never }
+
+        return AsyncStream { cont in
+            let cancellable = context.update(of: path, initial: initial, recursive: recursive, freezeValues: freezeValues) {
+                cont.yield($0)
+            }
+
+            cont.onTermination = { _ in
+                cancellable.cancel()
             }
         }
     }
@@ -194,9 +286,9 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
         }
     }
 
-    override var shouldPropagateToChildren: Bool { true }
+    override var shouldPropagateToChildren: Bool { false }
 
-    override func willAccess<M: Model, T>(_ model: M, at path: WritableKeyPath<M, T>&Sendable) -> (() -> Void)? {
+    override func willAccess<M: Model, T>(_ model: M, at path: KeyPath<M, T>&Sendable) -> (() -> Void)? {
         if let context = model.context {
             active.withValue {
                 let key = Key(id: model.modelID, path: path)

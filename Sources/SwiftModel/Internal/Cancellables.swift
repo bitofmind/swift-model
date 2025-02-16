@@ -7,10 +7,10 @@ struct EmptyCancellable: Cancellable {
 }
 
 
-final class AnyCancellable: Cancellable, InternalCancellable {
+final class AnyCancellable: Cancellable, InternalCancellable, @unchecked Sendable {
     weak var cancellations: Cancellations?
-    var id: Int
-    private var _onCancel: @Sendable () -> Void
+    let id: Int
+    private let _onCancel: @Sendable () -> Void
 
     init(cancellations: Cancellations, onCancel: @escaping @Sendable () -> Void) {
         self.cancellations = cancellations
@@ -37,12 +37,12 @@ final class AnyCancellable: Cancellable, InternalCancellable {
     @TaskLocal static var inheritedContexts: [CancellableKey] = []
 }
 
-final class TaskCancellable: Cancellable, InternalCancellable {
-    var id: Int
+final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendable {
+    let id: Int
     weak var cancellations: Cancellations?
     var task: Task<Void, Error>!
-    var name: String
-    var fileAndLine: FileAndLine
+    let name: String
+    let fileAndLine: FileAndLine
     let lock = NSLock()
     var hasBeenCancelled = false
 
