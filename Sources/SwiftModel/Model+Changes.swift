@@ -86,6 +86,108 @@ public struct PrintTextOutputStream: TextOutputStream, Sendable {
     }
 }
 
+public extension ModelNode {
+    //    @discardableResult
+    //    func sync<T: Sendable>(_ path: WritableKeyPath<M, T>&Sendable, from: KeyPath<M, T>&Sendable) -> Cancellable {
+    //        guard let context = enforcedContext() else { return EmptyCancellable() }
+    //
+    //        return context.update(of: from) {
+    //            var model = context.model
+    //            model[keyPath: path] = $0
+    //        }
+    //    }
+    //
+    //    @discardableResult
+    //    func sync<T: Sendable&Equatable>(_ path: WritableKeyPath<M, T>&Sendable, from: KeyPath<M, T>&Sendable) -> Cancellable {
+    //        guard let context = enforcedContext() else { return EmptyCancellable() }
+    //
+    //        return context.update(of: from) {
+    //            var model = context.model
+    //            if model[keyPath: path] != $0 {
+    //                model[keyPath: path] = $0
+    //            }
+    //        }
+    //    }
+
+    func memoize<T: Sendable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, produce: @Sendable @escaping () -> T) -> T {
+        let key = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
+        return memoize(for: key, produce: produce, isSame: nil)
+    }
+
+    func memoize<T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, produce: @Sendable @escaping () -> T) -> T {
+        let key = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
+        return memoize(for: key, produce: produce, isSame: { $0 == $1 })
+    }
+}
+
+private extension ModelNode {
+    func memoize<T: Sendable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T, isSame: (@Sendable (T, T) -> Bool)?) -> T {
+        guard let context = enforcedContext() else { return produce() }
+
+        let key = AnyHashableSendable(key)
+        let path: KeyPath<M, T>&Sendable = \M[memoizeKey: key]
+        _$modelContext.willAccess(context.model, at: path)?()
+
+        return context.lock {
+            if let value = context._memoizeCache[key] as? T {
+                return value
+            }
+
+            _ = context.update { context in
+                produce()
+            } onUpdate: { value in
+                var postLockCallbacks: [() -> Void] = []
+
+                context.lock {
+                    let prevValue = context._memoizeCache[key] as? T
+                    if let isSame, let prevValue, isSame(value, prevValue) {
+                        return
+                    }
+
+                    context._memoizeCache[key] = value
+
+                    if prevValue != nil {
+                        context.onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
+                            for callback in (context.modifyCallbacks[path] ?? [:]).values {
+                                if let postCallback = callback(false) {
+                                    postCallbacks.append(postCallback)
+                                }
+                            }
+
+                            if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let model = context.model as? any Model&Observable {
+                                postCallbacks.append {
+                                    model.willSet(path: path, from: context)
+                                    model.didSet(path: path, from: context)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for plc in postLockCallbacks { plc() }
+            }
+
+            return context._memoizeCache[key] as! T
+        }
+    }
+
+    func memoize<T: Sendable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T) -> T {
+        memoize(for: key, produce: produce, isSame: nil)
+    }
+
+    func memoize<T: Sendable&Equatable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T) -> T {
+        memoize(for: key, produce: produce, isSame: { $0 == $1 })
+    }
+}
+
+private extension Model {
+    subscript<Value: Sendable>(memoizeKey key: some Hashable&Sendable) -> Value {
+        context!.lock {
+            context!._memoizeCache[AnyHashableSendable(key)] as! Value
+        }
+    }
+}
+
 private extension Context {
     func update<T: Sendable>(initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false, access: @Sendable @escaping (Context<M>) -> T, onUpdate: @Sendable @escaping (T) -> Void) -> Cancellable where Self: Sendable {
         let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])

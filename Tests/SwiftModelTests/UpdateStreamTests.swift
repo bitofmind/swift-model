@@ -292,6 +292,29 @@ struct UpdateStreamTests {
             model.squareds == [nil, 16, 25, 1, nil]
         }
     }
+
+    @Test func testMemoize() async throws {
+        let (model, tester) = ComputedModel().andTester()
+        tester.exhaustivity = .full.subtracting(.tasks)
+
+        #expect(model.memoizeComputed == 3)
+        #expect(model.memoizeSquared == 1)
+
+        model.count1 = 7
+        #expect(model.memoizeComputed == 9)
+        #expect(model.memoizeSquared == 49)
+
+        model.count2 = 4
+        #expect(model.memoizeComputed == 11)
+        #expect(model.memoizeSquared == 49)
+
+        await tester.assert {
+            model.computes == [3, 9, 11]
+            model.squareds == [1, 49]
+            model.count1 == 7
+            model.count2 == 4
+        }
+    }
 }
 
 @Model private struct ValuesModel {
