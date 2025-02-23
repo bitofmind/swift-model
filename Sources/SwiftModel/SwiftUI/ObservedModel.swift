@@ -68,10 +68,7 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
     }
 
     public nonisolated static func == (lhs: ObservedModel, rhs: ObservedModel) -> Bool {
-        if lhs.wrappedValue.modelID != rhs.wrappedValue.modelID {
-            print("observed models not equal", type(of: lhs.wrappedValue))
-        }
-        return lhs.wrappedValue.modelID == rhs.wrappedValue.modelID
+        lhs.wrappedValue.modelID == rhs.wrappedValue.modelID
     }
 }
 
@@ -147,20 +144,11 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
             return nil
         }
 
-        if let root {
-            if root.isDestructed {
-                lock {
-                    observers.removeAll(keepingCapacity: true)
-                }
-                return nil
+        if let root, root.isDestructed {
+            lock {
+                observers.removeAll(keepingCapacity: true)
             }
-
-            if !context.hasAncestor(root), root !== context {
-                lock {
-                    observers[id] = nil
-                }
-                return nil
-            }
+            return nil
         }
 
         lock.lock()
@@ -178,7 +166,9 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
 
                 return {
                     if !finished {
-                        self.didUpdate()
+                        mainCall {
+                            self.objectWillChange.send()
+                        }
                     } else {
                         self.lock {
                             observer.accesses[path] = nil
@@ -198,16 +188,6 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
     }
 
     override var shouldPropagateToChildren: Bool { true }
-
-    func didUpdate() {
-        if Thread.isMainThread {
-            objectWillChange.send()
-        } else {
-            Task { @MainActor in
-                objectWillChange.send()
-            }
-        }
-    }
 }
 
 #endif

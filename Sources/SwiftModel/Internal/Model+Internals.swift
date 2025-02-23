@@ -121,12 +121,43 @@ extension Model where Self: Observable {
 }
 
 // Coalesce calls to main thread.
-private struct MainCalls {
+struct MainCalls {
     private let calls = LockIsolated<(task: Task<(), Never>, calls: [@Sendable () -> Void])?>(nil)
+
+    func drain() {
+        let calls: [@Sendable () -> Void] = calls.withValue {
+            if $0 == nil {
+                return []
+            }
+
+            let calls = $0!.calls
+            $0!.calls.removeAll()
+            return calls
+        }
+
+        guard !calls.isEmpty else { return }
+
+        MainActor.assumeIsolated {
+            for call in calls {
+                call()
+            }
+        }
+    }
+
+    func drainIfOnMain() {
+        guard Thread.isMainThread else { return }
+        drain()
+    }
+
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
+        guard !Thread.isMainThread else {
+            callback()
+            return
+        }
+
         calls.withValue {
             if $0 == nil {
-                $0 = (Task { @MainActor in
+                $0 = (Task(priority: .userInitiated) { @MainActor in
                     while !Task.isCancelled {
                         let calls: [@Sendable () -> Void] = calls.withValue {
                             if $0 == nil {
@@ -148,6 +179,7 @@ private struct MainCalls {
 
                         await Task.yield()
                     }
+
                 }, calls: [callback])
             } else {
                 $0!.calls.append(callback)
@@ -156,5 +188,5 @@ private struct MainCalls {
     }
 }
 
-private let mainCall = MainCalls()
+let mainCall = MainCalls()
 

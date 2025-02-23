@@ -142,7 +142,7 @@ extension Model {
 }
 
 extension ModelContext {
-    func willAccess<T>(_ model: M, at path: WritableKeyPath<M, T>&Sendable) -> (() -> Void)? {
+    func willAccess<T>(_ model: M, at path: KeyPath<M, T>&Sendable) -> (() -> Void)? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, let observable = model as? any Observable&Model {
             observable.access(path: path, from: context)
         }
@@ -150,7 +150,8 @@ extension ModelContext {
         return activeAccess?.willAccess(model, at: path)
     }
 
-    func willModify<T>(_ model: M, at path: WritableKeyPath<M, T>&Sendable) -> (() -> Void)? {
+
+    func willModify<T>(_ model: M, at path: KeyPath<M, T>&Sendable) -> (() -> Void)? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, let observable = model as? any Observable&Model {
             let willModify = activeAccess?.willModify(model, at: path)
             return {
@@ -160,9 +161,16 @@ extension ModelContext {
                 }
 
                 willModify?()
+
+                mainCall.drainIfOnMain()
+            }
+        } else if let willModify = activeAccess?.willModify(model, at: path) {
+            return {
+                willModify()
+                mainCall.drainIfOnMain()
             }
         } else {
-            return activeAccess?.willModify(model, at: path)
+            return mainCall.drainIfOnMain
         }
     }
 }

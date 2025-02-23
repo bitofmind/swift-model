@@ -128,11 +128,11 @@ private extension Context {
             let collector = AccessCollector { collector, modifiedValue in
                 if modifiedValue is any ModelContainer {
                     reset()
+                }
 
-                    collector.reset {
-                        usingActiveAccess(collector) {
-                            _ = access(self)
-                        }
+                collector.reset {
+                    usingActiveAccess(collector) {
+                        _ = access(self)
                     }
                 }
 
@@ -141,14 +141,14 @@ private extension Context {
 
             reset()
 
-            collector.reset {
+            let value = collector.reset {
                 usingActiveAccess(collector) {
-                    _ = access(self)
+                    access(self)
                 }
             }
 
             if initial {
-                onUpdate(copy(access(self), shouldFreeze: freezeValues))
+                onUpdate(copy(value, shouldFreeze: freezeValues))
             }
 
             return AnyCancellable(cancellations: cancellations) {
@@ -262,13 +262,13 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
         super.init(useWeakReference: false)
     }
 
-    func reset(_ access: () -> Void) {
+    func reset<Value>(_ access: () -> Value) -> Value {
         let keys = active.withValue {
             $0.added.removeAll(keepingCapacity: true)
             return Set($0.active.keys)
         }
 
-        access()
+        let value = access()
 
         let cancels = active.withValue { active in
             let noLongerActive = keys.subtracting(active.added)
@@ -284,6 +284,8 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
         for cancel in cancels {
             cancel()
         }
+
+        return value
     }
 
     override var shouldPropagateToChildren: Bool { false }

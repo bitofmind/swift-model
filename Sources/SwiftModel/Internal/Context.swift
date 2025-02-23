@@ -5,7 +5,7 @@ import IssueReporting
 
 final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
-    private var modifyCallbacks: [PartialKeyPath<M>: [Int: (Bool) -> (() -> Void)?]] = [:]
+    private(set) var modifyCallbacks: [PartialKeyPath<M>: [Int: (Bool) -> (() -> Void)?]] = [:]
     let reference: Reference
     var readModel: M
     var modifyModel: M

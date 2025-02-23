@@ -43,6 +43,8 @@ class AnyContext: @unchecked Sendable {
     private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] = [:]
     private var _modificationCount = 0
 
+    var _memoizeCache: [AnyHashableSendable: Any&Sendable] = [:]
+
     func didModify() {
         _modificationCount &+= 1
     }
@@ -114,16 +116,6 @@ class AnyContext: @unchecked Sendable {
 
     func ancestors<Value>(ofType type: Value.Type = Value.self) -> [Value] {
         parents() + parents.flatMap { $0.ancestors() }
-    }
-
-    func hasAncestor(_ context: AnyContext) -> Bool {
-        for parent in lock(parents) {
-            if parent === context || parent.hasAncestor(context) {
-                return true
-            }
-        }
-
-        return false
     }
 
     var selfPath: AnyKeyPath { fatalError() }

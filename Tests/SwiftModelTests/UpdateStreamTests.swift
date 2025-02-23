@@ -358,6 +358,15 @@ struct UpdateStreamTests {
     var computed: Int { count1 + count2 }
     var squared: Int { count1 * count1 }
 
+
+    var memoizeComputed: Int {
+        node.memoize { computed }
+    }
+
+    var memoizeSquared: Int {
+        node.memoize { squared }
+    }
+
     var computes: [Int] = []
     var squareds: [Int] = []
 

@@ -20,8 +20,12 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
         self
     }
 
-    private final class Weak: ModelAccessReference, @unchecked Sendable {
+    final class Weak: ModelAccessReference, @unchecked Sendable {
         weak var _access: ModelAccess?
+
+        init(_ access: ModelAccess? = nil) {
+            self._access = access
+        }
 
         override var access: ModelAccess? {
             _access
