@@ -82,15 +82,27 @@ public extension Binding {
 
 public struct UsingModel<M: Model, Content: View>: View {
     @ObservedModel var model: M
-    var content: (M) -> Content
+    var content: (Binding<M>) -> Content
 
     public init(_ model: M, @ViewBuilder content: @escaping (M) -> Content) {
         self.model = model
+        self.content = {
+            content($0.wrappedValue)
+        }
+    }
+
+    public init(_ model: ObservedModel<M>, @ViewBuilder content: @escaping (Binding<M>) -> Content) {
+        self.model = model.wrappedValue
+        self.content = content
+    }
+
+    public init(_ model: Binding<M>, @ViewBuilder content: @escaping (Binding<M>) -> Content) {
+        self.model = model.wrappedValue
         self.content = content
     }
 
     public var body: some View {
-        content(model)
+        content($model.binding)
     }
 }
 
