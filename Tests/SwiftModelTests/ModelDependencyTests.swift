@@ -325,7 +325,7 @@ extension Dependency: DependencyKey {
 
     func onActivate() {
         node.testResult.add("(\(id):\(dependency.value))")
-        node.forEach(dependency.change(of: \.value, initial: false)) {
+        node.forEach(Observe(initial: false) { dependency.value }) {
             node.testResult.add("(->\($0))")
         }
     }

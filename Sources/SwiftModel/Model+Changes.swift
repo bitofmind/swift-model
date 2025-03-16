@@ -2,13 +2,58 @@ import Foundation
 import CustomDump
 import ConcurrencyExtras
 
-public extension Model {
+/// A stream for observing changes to model properties.
+///
+///     let countChanges = Observe { model.count }
+///     let sumChanges = Observe { model.counts.reduce(0, +) }
+///
+/// An observation can be to any number of properties or models, and the stream will re-calculated it's value if any of the observed values are changed.
+/// Observation are typically iterarated using the a model's node `forEach` helper, often set up in the `onActive()` callback:
+///
+///     func onActivate() {
+///       node.forEach(Observe { count }) {
+///         print("count did update to", $0)
+///       }
+///     }
+public struct Observe<Element: Sendable>: AsyncSequence, Sendable {
+    let stream: AsyncStream<Element>
+
+    /// Create as Observe stream observing updates of the values provided by  `access`
+    ///
+    /// - Parameter initial: Start by sending current initial value (defaults to true).
+    /// - Parameter access: closure providing the value to be observed
+    @_disfavoredOverload
+    public init(initial: Bool = true, _ access: @Sendable @escaping () -> Element) {
+        self.init(access: access, initial: initial, recursive: false, freezeValues: false)
+    }
+
+    public func makeAsyncIterator() -> AsyncStream<Element>.Iterator {
+        stream.makeAsyncIterator()
+    }
+}
+
+public extension Observe where Element: Equatable {
+    /// Create as Observe stream observing changes of the value provided by  `access`
+    ///
+    /// - Parameter initial: Start by sending current initial value (defaults to true).
+    /// - Parameter access: closure providing the value to be observed
+    init(initial: Bool = true, removeDuplicates: Bool = true, _ access: @Sendable @escaping () -> Element) {
+        if removeDuplicates {
+            stream = Observe(access: access, initial: initial, recursive: false, freezeValues: false).stream.removeDuplicates().eraseToStream()
+        } else {
+            stream = Observe(access: access, initial: initial, recursive: false, freezeValues: false).stream
+        }
+    }
+}
+
+public extension Model where Self: Sendable {
     /// Returns a stream observing changes (using equality checks) of the value at `path`
     ///
     /// - Parameter path: key path to value to be observed
     /// - Parameter initial: Start by sending current initial value (defaults to true).
-    func change<T: Equatable&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true) -> AsyncStream<T> where Self: Sendable {
-        update(of: path).removeDuplicates().dropFirst(initial ? 0 : 1).eraseToStream()
+    @available(*, deprecated, message: "Use `Observe { value }` instead")
+    func change<T: Equatable&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true) -> AsyncStream<T> {
+        Observe(initial: initial) { self[keyPath: path] }.stream
     }
 
     /// Returns a stream observing updates of the value at `path`
@@ -17,8 +62,9 @@ public extension Model {
     ///
     /// - Parameter path: KeyPath to value to be observed
     /// - Parameter initial: Start by sending current initial value (defaults to true)
-    func update<T: Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true) -> AsyncStream<T> where Self: Sendable {
-        _update(of: path, initial: initial, recursive: false, freezeValues: false)
+    @available(*, deprecated, message: "Use `Observe { value }` instead")
+    func update<T: Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true) -> AsyncStream<T> {
+        Observe(initial: initial) { self[keyPath: path] }.stream
     }
 
     /// Returns a stream observing changes (using equality checks) of the value at `path`
@@ -27,8 +73,9 @@ public extension Model {
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter recursive: Also trigger updates if any sub-value or there of is updated (default to false).
     /// - Parameter freezeValues: Returned frozen copies (snap-shots) of models (defaults to false).
-    func change<T: ModelContainer&Equatable&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
-        update(of: path, recursive: recursive, freezeValues: freezeValues).removeDuplicates().dropFirst(initial ? 0 : 1).eraseToStream()
+    @available(*, deprecated, message: "Use `Observe { value }` instead")
+    func change<T: ModelContainer&Equatable&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> {
+        Observe(access: { self[keyPath: path] }, initial: initial, recursive: recursive, freezeValues: freezeValues).stream
     }
 
     /// Returns a stream observing updates of the value at `path`
@@ -39,13 +86,34 @@ public extension Model {
     /// - Parameter initial: Start by sending current initial value (defaults to true)
     /// - Parameter recursive: Also trigger updates if any sub-value or there of is updated (default to false).
     /// - Parameter freezeValues: Returned frozen copies (snap-shots) of models (defaults to false).
-    func update<T: ModelContainer&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
-        _update(of: path, initial: initial, recursive: recursive, freezeValues: freezeValues)
+    @available(*, deprecated, message: "Use `Observe { value }` instead")
+    func update<T: ModelContainer&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> {
+        Observe(access: { self[keyPath: path] }, initial: initial, recursive: recursive, freezeValues: freezeValues).stream
+    }
+
+    /// Returns a stream observing any updates on self or any descendants
+    func observeAnyModification() -> AsyncStream<()> {
+        guard let context = enforcedContext() else { return .finished }
+
+        return AsyncStream { cont in
+            let cancel = context.onAnyModification { didFinish in
+                if didFinish {
+                    cont.finish()
+                } else {
+                    cont.yield(())
+                }
+                return nil
+            }
+
+            cont.onTermination = { _ in
+                cancel()
+            }
+        }
     }
 
     /// Will start to print state changes until cancelled, but only in `DEBUG` configurations.
     @discardableResult
-    func _printChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Cancellable where Self: Sendable {
+    func _printChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Cancellable {
 #if DEBUG
         guard let context = enforcedContext() else { return EmptyCancellable() }
         let previous = LockIsolated(context.model.frozenCopy)
@@ -87,28 +155,6 @@ public struct PrintTextOutputStream: TextOutputStream, Sendable {
 }
 
 public extension ModelNode {
-    //    @discardableResult
-    //    func sync<T: Sendable>(_ path: WritableKeyPath<M, T>&Sendable, from: KeyPath<M, T>&Sendable) -> Cancellable {
-    //        guard let context = enforcedContext() else { return EmptyCancellable() }
-    //
-    //        return context.update(of: from) {
-    //            var model = context.model
-    //            model[keyPath: path] = $0
-    //        }
-    //    }
-    //
-    //    @discardableResult
-    //    func sync<T: Sendable&Equatable>(_ path: WritableKeyPath<M, T>&Sendable, from: KeyPath<M, T>&Sendable) -> Cancellable {
-    //        guard let context = enforcedContext() else { return EmptyCancellable() }
-    //
-    //        return context.update(of: from) {
-    //            var model = context.model
-    //            if model[keyPath: path] != $0 {
-    //                model[keyPath: path] = $0
-    //            }
-    //        }
-    //    }
-
     func memoize<T: Sendable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, produce: @Sendable @escaping () -> T) -> T {
         let key = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         return memoize(for: key, produce: produce, isSame: nil)
@@ -117,6 +163,23 @@ public extension ModelNode {
     func memoize<T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, produce: @Sendable @escaping () -> T) -> T {
         let key = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         return memoize(for: key, produce: produce, isSame: { $0 == $1 })
+    }
+}
+
+
+private extension Observe {
+    init(access: @Sendable @escaping () -> Element, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) {
+        stream = AsyncStream { cont in
+            let cancellable = update(initial: initial, recursive: recursive, freezeValues: freezeValues) {
+                access()
+            } onUpdate: { value in
+                cont.yield(value)
+            }
+
+            cont.onTermination = { _ in
+                cancellable()
+            }
+        }
     }
 }
 
@@ -133,7 +196,7 @@ private extension ModelNode {
                 return value
             }
 
-            _ = context.update { context in
+            _ = update {
                 produce()
             } onUpdate: { value in
                 var postLockCallbacks: [() -> Void] = []
@@ -188,165 +251,71 @@ private extension Model {
     }
 }
 
-private extension Context {
-    func update<T: Sendable>(initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false, access: @Sendable @escaping (Context<M>) -> T, onUpdate: @Sendable @escaping (T) -> Void) -> Cancellable where Self: Sendable {
-        let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])
+private func update<T: Sendable>(initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
+    let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])
 
-        @Sendable func yield() -> () -> Void {
-            let copy = copy(access(self), shouldFreeze: freezeValues)
+    @Sendable func yield(_ value: T) -> () -> Void {
+        let copy = copy(value, shouldFreeze: freezeValues)
 
-            return { // Call out outside of held lock
-                onUpdate(copy)
-            }
+        return { // Call out outside of held lock
+            onUpdate(copy)
         }
+    }
 
-        @Sendable func reset() {
-            guard recursive else { return }
+    @Sendable func reset() {
+        guard recursive else { return }
 
-            let value = access(self)
-            if value is any ModelContainer {
-                let cancels = anyCallbacks.withValue { anyCallbacks in
-                    anyCallbacks.removeAll(keepingCapacity: true)
-                    let container = value as! any ModelContainer
-                    defer {
-                        container.forEachContext { subContext in
-                            let cancel = subContext.onAnyModification { didFinish in
-                                if didFinish { return nil }
-                                return yield()
-                            }
-                            anyCallbacks.append(cancel)
+        let value = access()
+        if value is any ModelContainer {
+            let cancels = anyCallbacks.withValue { anyCallbacks in
+                anyCallbacks.removeAll(keepingCapacity: true)
+                let container = value as! any ModelContainer
+                defer {
+                    container.forEachContext { subContext in
+                        let cancel = subContext.onAnyModification { didFinish in
+                            if didFinish { return nil }
+                            return yield(access())
                         }
+                        anyCallbacks.append(cancel)
                     }
-                    return anyCallbacks
                 }
+                return anyCallbacks
+            }
 
-                for cancel in cancels {
-                    cancel()
-                }
+            for cancel in cancels {
+                cancel()
             }
         }
+    }
 
-        return transaction {
-            let collector = AccessCollector { collector, modifiedValue in
-                if modifiedValue is any ModelContainer {
-                    reset()
-                }
-
-                collector.reset {
-                    usingActiveAccess(collector) {
-                        _ = access(self)
-                    }
-                }
-
-                return yield()
-            }
-
+    let collector = AccessCollector { collector, modifiedValue in
+        if modifiedValue is any ModelContainer {
             reset()
+        }
 
-            let value = collector.reset {
-                usingActiveAccess(collector) {
-                    access(self)
-                }
+        let value = collector.reset {
+            usingActiveAccess(collector) {
+                access()
             }
+        }
 
-            if initial {
-                onUpdate(copy(value, shouldFreeze: freezeValues))
-            }
+        return yield(value)
+    }
 
-            return AnyCancellable(cancellations: cancellations) {
-                collector.reset { }
-            }
+    reset()
+
+    let value = collector.reset {
+        usingActiveAccess(collector) {
+            access()
         }
     }
 
-    func update<T: Sendable>(of path: KeyPath<M, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false, onUpdate: @Sendable @escaping (T) -> Void) -> Cancellable where Self: Sendable {
-        update(initial: initial, recursive: recursive, freezeValues: freezeValues, access: { $0[path] }, onUpdate: onUpdate)
+    if initial {
+        onUpdate(copy(value, shouldFreeze: freezeValues))
     }
 
-    func __update<T: Sendable>(of path: KeyPath<M, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false, onUpdate: @Sendable @escaping (T) -> Void) -> Cancellable where Self: Sendable {
-        let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])
-
-        @Sendable func yield() -> () -> Void {
-            let copy = copy(self[path], shouldFreeze: freezeValues)
-
-            return { // Call out outside of held lock
-                onUpdate(copy)
-            }
-        }
-
-        @Sendable func reset() {
-            guard recursive else { return }
-
-            let value = self[path]
-            if value is any ModelContainer {
-                let cancels = anyCallbacks.withValue { anyCallbacks in
-                    anyCallbacks.removeAll(keepingCapacity: true)
-                    let container = value as! any ModelContainer
-                    defer {
-                        container.forEachContext { subContext in
-                            let cancel = subContext.onAnyModification { didFinish in
-                                if didFinish { return nil }
-                                return yield()
-                            }
-                            anyCallbacks.append(cancel)
-                        }
-                    }
-                    return anyCallbacks
-                }
-
-                for cancel in cancels {
-                    cancel()
-                }
-            }
-        }
-
-        return transaction {
-            let collector = AccessCollector { collector, modifiedValue in
-                if modifiedValue is any ModelContainer {
-                    reset()
-
-                    collector.reset {
-                        usingActiveAccess(collector) {
-                            _ = self.model[keyPath: path]
-                        }
-                    }
-                }
-
-                return yield()
-            }
-
-            reset()
-
-            collector.reset {
-                usingActiveAccess(collector) {
-                    _ = model[keyPath: path]
-                }
-            }
-
-            if initial {
-                onUpdate(copy(self[path], shouldFreeze: freezeValues))
-            }
-
-            return AnyCancellable(cancellations: cancellations) {
-                collector.reset { }
-            }
-        }
-    }
-}
-
-private extension Model {
-    func _update<T: Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> where Self: Sendable {
-        guard let context = enforcedContext() else { return .never }
-
-        return AsyncStream { cont in
-            let cancellable = context.update(of: path, initial: initial, recursive: recursive, freezeValues: freezeValues) {
-                cont.yield($0)
-            }
-
-            cont.onTermination = { _ in
-                cancellable.cancel()
-            }
-        }
+    return {
+        collector.reset { }
     }
 }
 

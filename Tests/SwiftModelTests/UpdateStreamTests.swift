@@ -332,29 +332,29 @@ struct UpdateStreamTests {
     let recursive: Bool
 
     func onActivate() {
-        node.forEach(update(of: \.count, initial: initial)) { count in
+        node.forEach(Observe(initial: initial) { count }) { count in
             counts.append(count)
         }
 
-        node.forEach(update(of: \.child.count, initial: initial)) { count in
+        node.forEach(Observe(initial: initial) { child.count }) { count in
             childCounts.append(count)
         }
 
         if recursive {
-            node.forEach(update(of: \.child, initial: initial, recursive: recursive)) { child in
-                childChanges.append(child.count)
+            node.forEach(Observe(initial: initial) { child.count }) { count in
+                childChanges.append(count)
             }
 
-            node.forEach(update(of: \.optChild, initial: initial, recursive: recursive)) { child in
-                opChildChanges.append(child?.count)
+            node.forEach(Observe(initial: initial) { optChild?.count }) { count in
+                opChildChanges.append(count)
             }
 
-            node.forEach(update(of: \.children, initial: initial, recursive: recursive)) { children in
-                childrenCounts.append(children.map(\.count))
+            node.forEach(Observe(initial: initial) { children.map(\.count) }) { counts in
+                childrenCounts.append(counts)
             }
         }
 
-        node.forEach(update(of: \.optChild?.count, initial: initial)) { count in
+        node.forEach(Observe(initial: initial) { optChild?.count }) { count in
             optChildCounts.append(count)
         }
     }
@@ -369,7 +369,7 @@ struct UpdateStreamTests {
     var counts: [Int] = []
 
     func collectCounts() {
-        node.forEach(update(of: \.count, initial: true)) { count in
+        node.forEach(Observe { count }) { count in
             counts.append(count)
         }
     }
@@ -394,11 +394,11 @@ struct UpdateStreamTests {
     var squareds: [Int] = []
 
     func onActivate() {
-        node.forEach(update(of: \.computed, initial: true)) {
+        node.forEach(Observe { computed }) {
             computes.append($0)
         }
 
-        node.forEach(update(of: \.squared, initial: true)) {
+        node.forEach(Observe { squared }) {
             squareds.append($0)
         }
     }
@@ -411,13 +411,11 @@ struct UpdateStreamTests {
     var squareds: [Int?] = []
 
     func onActivate() {
-        node.forEach(update(of: \.computed?.computed, initial: true)) {
+        node.forEach(Observe { computed?.computed }) {
             computes.append($0)
         }
-        node.forEach(update(of: \.computed?.squared, initial: true)) {
+        node.forEach(Observe { computed?.squared }) {
             squareds.append($0)
         }
     }
 }
-
-

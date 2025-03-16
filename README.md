@@ -364,12 +364,12 @@ To start some asynchronous work that is tied to the life time of your model you 
 
 ### Asynchronous Sequences
 
-For convenience, models also provide a `forEach` helper for consuming asynchronous stream such as `change(of:)` that will emit when the state changes. 
+For convenience, models also provide a `forEach` helper for consuming asynchronous stream such as `Observe` that will emit when the state changes. 
 
 ```swift
 func isPrime(_ value: Int) async throws -> Bool { ... }
 
-node.forEach(change(of: \.count)) { count in
+node.forEach(Observe { count }) { count in
   state.isPrime = nil // Show spinner
   state.isPrime = try await isPrime(count)
 }
@@ -378,7 +378,7 @@ node.forEach(change(of: \.count)) { count in
 `forEach` will by default complete its asynchronous work before handling the next value, but sometimes it is useful to cancel any previous work that might become outdated.
 
 ```swift
-node.forEach(change(of: \.count), cancelPrevious: true) { count in
+node.forEach(Observe { count }, cancelPrevious: true) { count in
   state.isPrime = nil // Show spinner
   state.isPrime = try await isPrime(count)
 }

@@ -115,7 +115,7 @@ struct SharedState {
   }
 
   func onActivate() {
-    node.forEach(change(of: \.currentTab, initial: false)) { _ in
+    node.forEach(Observe(initial: false) { currentTab }) { _ in
       stats.increment()
     }
   }

@@ -40,10 +40,7 @@ import ConcurrencyExtras
       }
     }
 
-    let standupUpdates = update(of: \.standupsList.standupDetails, recursive: true)
-      .map { $0.map(\.standup) }
-      .dropFirst()
-      .removeDuplicates()
+    let standupUpdates = Observe(initial: false) { standupsList.standupDetails.map(\.standup) }
       .debounce(for: .seconds(1), clock: AnyClock(node.continuousClock))
 
     node.forEach(standupUpdates) { standups in
