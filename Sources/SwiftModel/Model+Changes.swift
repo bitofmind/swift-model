@@ -4,21 +4,21 @@ import ConcurrencyExtras
 
 /// A stream for observing changes to model properties.
 ///
-///     let countChanges = Observe { model.count }
-///     let sumChanges = Observe { model.counts.reduce(0, +) }
+///     let countChanges = Observed { model.count }
+///     let sumChanges = Observed { model.counts.reduce(0, +) }
 ///
 /// An observation can be to any number of properties or models, and the stream will re-calculated it's value if any of the observed values are changed.
-/// Observation are typically iterarated using the a model's node `forEach` helper, often set up in the `onActive()` callback:
+/// Observation are typically iterated using the a model's node `forEach` helper, often set up in the `onActive()` callback:
 ///
 ///     func onActivate() {
-///       node.forEach(Observe { count }) {
+///       node.forEach(Observed { count }) {
 ///         print("count did update to", $0)
 ///       }
 ///     }
-public struct Observe<Element: Sendable>: AsyncSequence, Sendable {
+public struct Observed<Element: Sendable>: AsyncSequence, Sendable {
     let stream: AsyncStream<Element>
 
-    /// Create as Observe stream observing updates of the values provided by  `access`
+    /// Create as Observed stream observing updates of the values provided by  `access`
     ///
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter access: closure providing the value to be observed
@@ -32,16 +32,16 @@ public struct Observe<Element: Sendable>: AsyncSequence, Sendable {
     }
 }
 
-public extension Observe where Element: Equatable {
-    /// Create as Observe stream observing changes of the value provided by  `access`
+public extension Observed where Element: Equatable {
+    /// Create as Observed stream observing changes of the value provided by  `access`
     ///
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter access: closure providing the value to be observed
     init(initial: Bool = true, removeDuplicates: Bool = true, _ access: @Sendable @escaping () -> Element) {
         if removeDuplicates {
-            stream = Observe(access: access, initial: initial, recursive: false, freezeValues: false).stream.removeDuplicates().eraseToStream()
+            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream.removeDuplicates().eraseToStream()
         } else {
-            stream = Observe(access: access, initial: initial, recursive: false, freezeValues: false).stream
+            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream
         }
     }
 }
@@ -51,9 +51,9 @@ public extension Model where Self: Sendable {
     ///
     /// - Parameter path: key path to value to be observed
     /// - Parameter initial: Start by sending current initial value (defaults to true).
-    @available(*, deprecated, message: "Use `Observe { value }` instead")
+    @available(*, deprecated, message: "Use `Observed { value }` instead")
     func change<T: Equatable&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true) -> AsyncStream<T> {
-        Observe(initial: initial) { self[keyPath: path] }.stream
+        Observed(initial: initial) { self[keyPath: path] }.stream
     }
 
     /// Returns a stream observing updates of the value at `path`
@@ -62,9 +62,9 @@ public extension Model where Self: Sendable {
     ///
     /// - Parameter path: KeyPath to value to be observed
     /// - Parameter initial: Start by sending current initial value (defaults to true)
-    @available(*, deprecated, message: "Use `Observe { value }` instead")
+    @available(*, deprecated, message: "Use `Observed { value }` instead")
     func update<T: Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true) -> AsyncStream<T> {
-        Observe(initial: initial) { self[keyPath: path] }.stream
+        Observed(initial: initial) { self[keyPath: path] }.stream
     }
 
     /// Returns a stream observing changes (using equality checks) of the value at `path`
@@ -73,9 +73,9 @@ public extension Model where Self: Sendable {
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter recursive: Also trigger updates if any sub-value or there of is updated (default to false).
     /// - Parameter freezeValues: Returned frozen copies (snap-shots) of models (defaults to false).
-    @available(*, deprecated, message: "Use `Observe { value }` instead")
+    @available(*, deprecated, message: "Use `Observed { value }` instead")
     func change<T: ModelContainer&Equatable&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> {
-        Observe(access: { self[keyPath: path] }, initial: initial, recursive: recursive, freezeValues: freezeValues).stream
+        Observed(access: { self[keyPath: path] }, initial: initial, recursive: recursive, freezeValues: freezeValues).stream
     }
 
     /// Returns a stream observing updates of the value at `path`
@@ -86,9 +86,9 @@ public extension Model where Self: Sendable {
     /// - Parameter initial: Start by sending current initial value (defaults to true)
     /// - Parameter recursive: Also trigger updates if any sub-value or there of is updated (default to false).
     /// - Parameter freezeValues: Returned frozen copies (snap-shots) of models (defaults to false).
-    @available(*, deprecated, message: "Use `Observe { value }` instead")
+    @available(*, deprecated, message: "Use `Observed { value }` instead")
     func update<T: ModelContainer&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> {
-        Observe(access: { self[keyPath: path] }, initial: initial, recursive: recursive, freezeValues: freezeValues).stream
+        Observed(access: { self[keyPath: path] }, initial: initial, recursive: recursive, freezeValues: freezeValues).stream
     }
 
     /// Returns a stream observing any updates on self or any descendants
@@ -167,7 +167,7 @@ public extension ModelNode {
 }
 
 
-private extension Observe {
+private extension Observed {
     init(access: @Sendable @escaping () -> Element, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) {
         stream = AsyncStream { cont in
             let cancellable = update(initial: initial, recursive: recursive, freezeValues: freezeValues) {

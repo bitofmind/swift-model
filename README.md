@@ -369,7 +369,7 @@ For convenience, models also provide a `forEach` helper for consuming asynchrono
 ```swift
 func isPrime(_ value: Int) async throws -> Bool { ... }
 
-node.forEach(Observe { count }) { count in
+node.forEach(Observed { count }) { count in
   state.isPrime = nil // Show spinner
   state.isPrime = try await isPrime(count)
 }
@@ -378,7 +378,7 @@ node.forEach(Observe { count }) { count in
 `forEach` will by default complete its asynchronous work before handling the next value, but sometimes it is useful to cancel any previous work that might become outdated.
 
 ```swift
-node.forEach(Observe { count }, cancelPrevious: true) { count in
+node.forEach(Observed { count }, cancelPrevious: true) { count in
   state.isPrime = nil // Show spinner
   state.isPrime = try await isPrime(count)
 }
