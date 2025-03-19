@@ -363,15 +363,22 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
 
     override func willAccess<M: Model, T>(_ model: M, at path: KeyPath<M, T>&Sendable) -> (() -> Void)? {
         if let context = model.context {
-            active.withValue {
-                let key = Key(id: model.modelID, path: path)
+            let key = Key(id: model.modelID, path: path)
 
+            let isActive = active.withValue {
                 $0.added.insert(key)
-                if $0.active[key] == nil {
-                    $0.active[key] = context.onModify(for: path, { finished in
-                        if finished { return {} }
-                        return self.onModify(self, context[path])
-                    })
+                return $0.active[key] != nil
+            }
+
+            if !isActive {
+                // Make sure to call this outside active lock to avoid dead-locks with context lock.
+                let cancellation = context.onModify(for: path) { finished in
+                    if finished { return {} }
+                    return self.onModify(self, context[path])
+                }
+
+                active.withValue {
+                    $0.active[key] = cancellation
                 }
             }
         }
