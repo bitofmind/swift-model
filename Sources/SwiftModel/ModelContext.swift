@@ -179,10 +179,9 @@ public extension ModelContext {
                 for oldContext in oldContexts {
                     context.removeChild(oldContext, callbacks: &postLockCallbacks)
                 }
-            } isSame: { _, _ in
-                false // Not sure how to best implement this
+            } isSame: {
+                containerIsSame($0, $1)
             }
-
 
             for callback in postLockCallbacks {
                 callback()
@@ -208,3 +207,52 @@ public extension ModelContext {
     }
 }
 
+private func containerIsSame<T: ModelContainer>(_ lhs: T, _ rhs: T) -> Bool {
+    if let leftOptional = lhs as? any _Optional {
+        return optionalIsSame(leftOptional, rhs)
+    }
+
+    if let leftCollection = lhs as? any Collection {
+        return collectionIsSame(leftCollection, rhs)
+    }
+
+    return false
+}
+
+private func optionalIsSame<T: _Optional>(_ lhs: T, _ rhs: Any) -> Bool {
+    let rightOptional = rhs as! T
+    switch (lhs.wrappedValue, rightOptional.wrappedValue) {
+    case (nil, nil):
+        return true
+
+    case (nil, _?), (_?, nil):
+        return false
+        
+    case let (left?, right?):
+        return modelIsSame(left, right)
+    }
+}
+
+private func collectionIsSame<T: Collection>(_ lhs: T, _ rhs: Any) -> Bool {
+    let rightCollection = rhs as! T
+    if lhs.count != rightCollection.count {
+        return false
+    }
+
+    return zip(lhs, rightCollection).allSatisfy {
+        modelIsSame($0, $1)
+    }
+}
+
+private func modelIsSame(_ lhs: Any, _ rhs: Any) -> Bool {
+    if let l = lhs as? any Model {
+        return _modelIsSame(l, rhs)
+    } else {
+        return false
+    }
+}
+
+private func _modelIsSame<T: Model>(_ lhs: T, _ rhs: Any) -> Bool {
+    let rightOptional = rhs as! T
+    return lhs.id == rightOptional.id
+}

@@ -387,14 +387,22 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
     }
 }
 
-private protocol _Optional {
+protocol _Optional {
+    associatedtype Wrapped
     var isNil: Bool { get }
+
+    var wrappedValue: Wrapped? { get }
 }
 
 extension Optional: _Optional {
     var isNil: Bool { self == nil }
+
+    var wrappedValue: Wrapped? {
+        self
+    }
 }
 
 private func isNil<T>(_ value: T) -> Bool {
-    (value as? _Optional)?.isNil ?? false
+    (value as? any _Optional)?.isNil ?? false
 }
+
