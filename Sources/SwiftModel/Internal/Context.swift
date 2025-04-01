@@ -326,7 +326,6 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 return child
             } else {
                 let child = Context<Child>(model: childModel, lock: lock, dependencies: { _ in }, parent: self)
-                child.withModificationActiveCount { $0 = anyModificationActiveCount }
                 children[containerPath, default: [:]][modelRef] = child
                 return child
             }

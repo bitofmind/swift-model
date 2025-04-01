@@ -87,12 +87,15 @@ class AnyContext: @unchecked Sendable {
 
     func addParent(_ parent: AnyContext) {
         weakParents.append(WeakParent(parent: parent))
+        anyModificationActiveCount += parent.anyModificationActiveCount
     }
 
     func removeParent(_ parent: AnyContext, callbacks: inout [() -> Void]) {
         for i in weakParents.indices {
             if weakParents[i].parent === parent {
                 weakParents.remove(at: i)
+                anyModificationActiveCount -= parent.anyModificationActiveCount
+
                 break
             }
         }
@@ -234,7 +237,6 @@ class AnyContext: @unchecked Sendable {
 
         eventContinuations.removeAll()
         anyModificationCallbacks.removeAll()
-        anyModificationActiveCount = 0
         modeLifeTime = .destructed
         self.children.removeAll()
         dependencyContexts.removeAll()
@@ -254,6 +256,8 @@ class AnyContext: @unchecked Sendable {
         for child in children {
             child.removeParent(self, callbacks: &callbacks)
         }
+
+        anyModificationActiveCount = 0
     }
 
     func onRemoval() {
@@ -360,7 +364,6 @@ class AnyContext: @unchecked Sendable {
                 child.withModificationActiveCount(callback)
             }
         }
-
     }
 
     func onAnyModification(callback: @Sendable @escaping (Bool) -> (() -> Void)?) -> @Sendable () -> Void {
