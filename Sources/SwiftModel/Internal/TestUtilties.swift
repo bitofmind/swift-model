@@ -116,3 +116,28 @@ struct IndexVisitor<State, Child>: ModelVisitor {
     mutating func visit<T: Model>(path: WritableKeyPath<State, T>) { check(path) }
     mutating func visit<T: ModelContainer>(path: WritableKeyPath<State, T>) { check(path) }
 }
+
+func isSame<each T: Equatable>(_ lhs: (repeat each T), _ rhs: (repeat each T)) -> Bool {
+    for (left, right) in repeat (each lhs, each rhs) {
+        guard left == right else {
+            return false
+        }
+    }
+    return true
+}
+
+func isSame<each T: Equatable>(_ lhs: (repeat each T)?, _ rhs: (repeat each T)?) -> Bool {
+    switch (lhs, rhs) {
+    case let (lhs?, rhs?):
+        for (left, right) in repeat (each lhs, each rhs) {
+            guard left == right else {
+                return false
+            }
+        }
+        return true
+    case (nil, nil):
+        return true
+    default:
+        return false
+    }
+}

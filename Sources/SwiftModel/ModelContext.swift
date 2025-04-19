@@ -81,6 +81,16 @@ public extension ModelContext {
         }
     }
 
+    @_disfavoredOverload
+    subscript<each T: Equatable>(model model: M, path path: WritableKeyPath<M, (repeat each T)>&Sendable) -> (repeat each T) {
+        get {
+           self[model, path, nil]
+        }
+        nonmutating _modify {
+            yield &self[model, path, isSame]
+        }
+    }
+
     subscript<T: Model>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
         _read {
             yield self[model, path, nil].withAccessIfPropagateToChildren(access)

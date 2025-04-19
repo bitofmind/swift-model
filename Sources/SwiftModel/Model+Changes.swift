@@ -46,6 +46,32 @@ public extension Observed where Element: Equatable {
     }
 }
 
+public extension Observed {
+    /// Create as Observed stream observing changes of the value provided by  `access`
+    ///
+    /// - Parameter initial: Start by sending current initial value (defaults to true).
+    /// - Parameter access: closure providing the value to be observed
+    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, _ access: @Sendable @escaping () -> (repeat each T)) where Element == (repeat each T) {
+        if removeDuplicates {
+            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream.removeDuplicates(by: isSame).eraseToStream()
+        } else {
+            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream
+        }
+    }
+
+    /// Create as Observed stream observing changes of the value provided by  `access`
+    ///
+    /// - Parameter initial: Start by sending current initial value (defaults to true).
+    /// - Parameter access: closure providing the value to be observed
+    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, _ access: @Sendable @escaping () -> (repeat each T)?) where Element == (repeat each T)? {
+        if removeDuplicates {
+            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream.removeDuplicates(by: isSame).eraseToStream()
+        } else {
+            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream
+        }
+    }
+}
+
 public extension Model where Self: Sendable {
     /// Returns a stream observing changes (using equality checks) of the value at `path`
     ///
