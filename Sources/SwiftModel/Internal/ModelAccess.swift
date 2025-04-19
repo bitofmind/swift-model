@@ -6,7 +6,7 @@ class ModelAccessReference: @unchecked Sendable {
 
 class ModelAccess: ModelAccessReference, @unchecked Sendable {
     func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? { nil }
-    func willModify<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? { nil }
+    func didModify<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? { nil }
 
     func didSend<M: Model, Event>(event: Event, from context: Context<M>) {}
 

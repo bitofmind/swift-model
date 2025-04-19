@@ -151,26 +151,23 @@ extension ModelContext {
     }
 
 
-    func willModify<T>(_ model: M, at path: KeyPath<M, T>&Sendable) -> (() -> Void)? {
+    func didModify<T>(_ model: M, at path: KeyPath<M, T>&Sendable) -> (() -> Void)? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, let observable = model as? any Observable&Model {
-            let willModify = activeAccess?.willModify(model, at: path)
             return {
                 observable.willSet(path: path, from: context)
                 defer {
                     observable.didSet(path: path, from: context)
                 }
 
-                willModify?()
+                activeAccess?.didModify(model, at: path)?()
 
                 mainCall.drainIfOnMain()
             }
-        } else if let willModify = activeAccess?.willModify(model, at: path) {
+        } else {
             return {
-                willModify()
+                activeAccess?.didModify(model, at: path)?()
                 mainCall.drainIfOnMain()
             }
-        } else {
-            return mainCall.drainIfOnMain
         }
     }
 }
@@ -181,7 +178,7 @@ extension ModelNode {
     }
 
     func withMutation<Member, T>(of model: M, keyPath: WritableKeyPath<M, Member>&Sendable, _ mutation: () throws -> T) rethrows -> T {
-        let postModify = _$modelContext.willModify(model, at: keyPath)
+        let postModify = _$modelContext.didModify(model, at: keyPath)
         defer {
             postModify?()
         }
@@ -222,7 +219,7 @@ extension ModelContext {
                 return
             }
 
-            yield &context[path, isSame, willModify(model, at: path)]
+            yield &context[path, isSame, didModify(model, at: path)]
         }
     }
 
@@ -237,13 +234,13 @@ extension ModelContext {
         }
 
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let observable = model as? any Observable&Model {
-            observable.willSet(path: path, from: context)
-            defer {
+            return try context.transaction(at: path, isSame: isSame, postModify: {
+                observable.willSet(path: path, from: context)
                 observable.didSet(path: path, from: context)
-            }
-            return try context.transaction(at: path, isSame: isSame, callback: activeAccess?.willModify(model, at: path), modify: modify)
+                let _ = activeAccess?.didModify(model, at: path)?()
+            }, modify: modify)
         } else {
-            return try context.transaction(at: path, isSame: isSame, callback: activeAccess?.willModify(model, at: path), modify: modify)
+            return try context.transaction(at: path, isSame: isSame, postModify: activeAccess?.didModify(model, at: path), modify: modify)
         }
     }
 

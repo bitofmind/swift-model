@@ -183,24 +183,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    subscript<T>(path: WritableKeyPath<M, T>, isSame: ((T, T) -> Bool)?, callback: (() -> Void)? = nil) -> T {
+    subscript<T>(path: WritableKeyPath<M, T>, isSame: ((T, T) -> Bool)?, postModify: (() -> Void)?) -> T {
         _read {
-            lock.lock()
-            if unprotectedIsDestructed {
-                if let last = reference.model {
-                    yield last[keyPath: path]
-                } else {
-                    yield readModel[keyPath: path]
-                }
-            } else {
-                if isMutating { // Handle will and did set recursion
-                    yield modifyModel[keyPath: path]
-                } else {
-                    yield readModel[keyPath: path]
-                }
-                callback?()
-            }
-            lock.unlock()
+            fatalError()
         }
         _modify {
             lock.lock()
@@ -220,11 +205,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                     return lock.unlock()
                 }
 
-                didModify()
+
+                self.didModify()
                 isMutating = true
                 readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
                 isMutating = false
-                callback?()
+                postModify?()
                 var postLockCallbacks: [() -> Void] = []
                 onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
                     for callback in (self.modifyCallbacks[path] ?? [:]).values {
@@ -241,7 +227,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    func transaction<Value, T>(at path: WritableKeyPath<M, Value>, isSame: ((Value, Value) -> Bool)?, callback: (() -> Void)? = nil, modify: (inout Value) throws -> T) rethrows -> T {
+    func transaction<Value, T>(at path: WritableKeyPath<M, Value>, isSame: ((Value, Value) -> Bool)?, postModify: (() -> Void)?, modify: (inout Value) throws -> T) rethrows -> T {
         lock.lock()
         let result: T
         if var last = reference.model {
@@ -260,7 +246,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             isMutating = true
             readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
             isMutating = false
-            callback?()
+            postModify?()
 
             var postLockCallbacks: [() -> Void] = []
             onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
