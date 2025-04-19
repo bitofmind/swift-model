@@ -314,15 +314,15 @@ private func update<T: Sendable>(initial: Bool = true, recursive: Bool = false, 
         }
     }
 
-    let collector = AccessCollector { collector, modifiedValue in
-        if modifiedValue is any ModelContainer {
-            reset()
-        }
-
+    let collector = AccessCollector { collector in
         let value = collector.reset {
             usingActiveAccess(collector) {
                 access()
             }
+        }
+
+        if value is any ModelContainer {
+            reset()
         }
 
         return yield(value)
@@ -346,7 +346,7 @@ private func update<T: Sendable>(initial: Bool = true, recursive: Bool = false, 
 }
 
 private final class AccessCollector: ModelAccess, @unchecked Sendable {
-    let onModify: @Sendable (AccessCollector, Any) -> (() -> Void)?
+    let onModify: @Sendable (AccessCollector) -> (() -> Void)?
     let active = LockIsolated<(active: [Key: @Sendable () -> Void], added: Set<Key>)>(([:], []))
 
     struct Key: Hashable, @unchecked Sendable {
@@ -354,7 +354,7 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
         var path: AnyKeyPath
     }
 
-    init(onModify: @Sendable @escaping (AccessCollector, Any) -> (() -> Void)?) {
+    init(onModify: @Sendable @escaping (AccessCollector) -> (() -> Void)?) {
         self.onModify = onModify
         super.init(useWeakReference: false)
     }
@@ -400,7 +400,7 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
                 // Make sure to call this outside active lock to avoid dead-locks with context lock.
                 let cancellation = context.onModify(for: path) { finished in
                     if finished { return {} }
-                    return self.onModify(self, context[path])
+                    return self.onModify(self)
                 }
 
                 active.withValue {
