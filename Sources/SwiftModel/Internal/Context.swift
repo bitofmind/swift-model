@@ -2,6 +2,7 @@ import Foundation
 import Dependencies
 import OrderedCollections
 import IssueReporting
+import CustomDump
 
 final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
@@ -142,7 +143,8 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     func updateContext<T: Model>(for model: inout T, at path: WritableKeyPath<M, T>){
         guard !isDestructed else { return }
-        model.withContextAdded(context: self, containerPath: path, elementPath: \.self, includeSelf: true)
+        
+        model.withContextAdded(context: self, containerPath: \M.self, elementPath: path, includeSelf: true)
     }
 
     private var modelRefs: Set<ModelRef> = []

@@ -88,7 +88,6 @@ public extension ModelContainer {
     }
 
     func path<Value: Identifiable>(caseName: String, value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
-
         let cursor = ContainerCursor(id: CaseAndID(caseName: caseName, id: value.id), get: { get($0)! }, set: set)
         return \Self.[cursor: cursor]
     }

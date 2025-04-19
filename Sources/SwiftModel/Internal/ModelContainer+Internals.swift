@@ -147,7 +147,7 @@ class ContainerCursor<ID: Hashable, Root, Value>: Hashable, @unchecked Sendable 
 }
 
 extension ModelContainer {
-    subscript<ID: Hashable, Value> (cursor cursor: ContainerCursor<ID, Self, Value>) -> Value {
+    subscript<ID: Hashable, Value>(cursor cursor: ContainerCursor<ID, Self, Value>) -> Value {
         get {
             threadLocals.withValue(true, at: \.forceDirectAccess) {
                 cursor.get(self)

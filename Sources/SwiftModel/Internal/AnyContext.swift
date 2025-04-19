@@ -201,20 +201,17 @@ class AnyContext: @unchecked Sendable {
         modeLifeTime == .destructed
     }
 
-    func removeChild(_ context: AnyContext, callbacks: inout [() -> Void]) {
-        context.removeParent(self, callbacks: &callbacks)
-
-        for (containerPath, contexts) in children {
-            for (modelRef, child) in contexts {
-                if context === child {
-                    children[containerPath]?[modelRef] = nil
-                    if children[containerPath]?.isEmpty == true {
-                        children[containerPath] = nil
-                    }
-                    return
-                }
-            }
+    func removeChild(_ context: AnyContext, at path: AnyKeyPath, callbacks: inout [() -> Void]) {
+        guard let contexts = children[path], let (modelRef, _) = contexts.first(where: { $0.value === context }) else {
+            return assertionFailure()
         }
+
+        children[path]?[modelRef] = nil
+        if children[path]?.isEmpty == true {
+            children[path] = nil
+        }
+
+        context.removeParent(self, callbacks: &callbacks)
     }
 
     var allChildren: [AnyContext] {

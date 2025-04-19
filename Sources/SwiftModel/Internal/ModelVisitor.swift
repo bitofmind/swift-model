@@ -83,7 +83,8 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
 
     mutating func visit<T: Model>(path: WritableKeyPath<Value, T>) {
         let childModel = value[keyPath: path]
-        let isSelf = self.containerPath == \.self && path == \.self
+        
+        let isSelf = path == \Value.self && containerPath == \M.self && elementPath == \Container.self
         let modelElementPath = elementPath.appending(path: path)
 
         if childModel.lifetime.isDestructedOrFrozenCopy {

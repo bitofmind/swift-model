@@ -123,7 +123,7 @@ public extension ModelContext {
             transaction(with: model, at: path) { child in
                 var newChild = newValue
                 if let childContext = context[path].context {
-                    context.removeChild(childContext, callbacks: &callbacks)
+                    context.removeChild(childContext, at: \M.self, callbacks: &callbacks)
                 }
                 context.updateContext(for: &newChild, at: path)
 
@@ -187,7 +187,7 @@ public extension ModelContext {
                 container = newContainer
 
                 for oldContext in oldContexts {
-                    context.removeChild(oldContext, callbacks: &postLockCallbacks)
+                    context.removeChild(oldContext, at: path, callbacks: &postLockCallbacks)
                 }
             } isSame: {
                 containerIsSame($0, $1)
