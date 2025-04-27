@@ -24,7 +24,7 @@ public struct Observed<Element: Sendable>: AsyncSequence, Sendable {
     /// - Parameter access: closure providing the value to be observed
     @_disfavoredOverload
     public init(initial: Bool = true, _ access: @Sendable @escaping () -> Element) {
-        self.init(access: access, initial: initial, recursive: false, freezeValues: false)
+        self.init(access: access, initial: initial, isSame: nil, recursive: false, freezeValues: false)
     }
 
     public func makeAsyncIterator() -> AsyncStream<Element>.Iterator {
@@ -38,11 +38,7 @@ public extension Observed where Element: Equatable {
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter access: closure providing the value to be observed
     init(initial: Bool = true, removeDuplicates: Bool = true, _ access: @Sendable @escaping () -> Element) {
-        if removeDuplicates {
-            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream.removeDuplicates().eraseToStream()
-        } else {
-            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream
-        }
+        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? (==) : nil, recursive: false, freezeValues: false).stream
     }
 }
 
@@ -52,11 +48,7 @@ public extension Observed {
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter access: closure providing the value to be observed
     init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, _ access: @Sendable @escaping () -> (repeat each T)) where Element == (repeat each T) {
-        if removeDuplicates {
-            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream.removeDuplicates(by: isSame).eraseToStream()
-        } else {
-            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream
-        }
+        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, recursive: false, freezeValues: false).stream
     }
 
     /// Create as Observed stream observing changes of the value provided by  `access`
@@ -64,11 +56,7 @@ public extension Observed {
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter access: closure providing the value to be observed
     init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, _ access: @Sendable @escaping () -> (repeat each T)?) where Element == (repeat each T)? {
-        if removeDuplicates {
-            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream.removeDuplicates(by: isSame).eraseToStream()
-        } else {
-            stream = Observed(access: access, initial: initial, recursive: false, freezeValues: false).stream
-        }
+        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, recursive: false, freezeValues: false).stream
     }
 }
 
@@ -101,7 +89,7 @@ public extension Model where Self: Sendable {
     /// - Parameter freezeValues: Returned frozen copies (snap-shots) of models (defaults to false).
     @available(*, deprecated, message: "Use `Observed { value }` instead")
     func change<T: ModelContainer&Equatable&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> {
-        Observed(access: { self[keyPath: path] }, initial: initial, recursive: recursive, freezeValues: freezeValues).stream
+        Observed(access: { self[keyPath: path] }, initial: initial, isSame: ==, recursive: recursive, freezeValues: freezeValues).stream
     }
 
     /// Returns a stream observing updates of the value at `path`
@@ -114,7 +102,7 @@ public extension Model where Self: Sendable {
     /// - Parameter freezeValues: Returned frozen copies (snap-shots) of models (defaults to false).
     @available(*, deprecated, message: "Use `Observed { value }` instead")
     func update<T: ModelContainer&Sendable>(of path: KeyPath<Self, T>&Sendable, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) -> AsyncStream<T> {
-        Observed(access: { self[keyPath: path] }, initial: initial, recursive: recursive, freezeValues: freezeValues).stream
+        Observed(access: { self[keyPath: path] }, initial: initial, isSame: nil, recursive: recursive, freezeValues: freezeValues).stream
     }
 
     /// Returns a stream observing any updates on self or any descendants
@@ -194,9 +182,9 @@ public extension ModelNode {
 
 
 private extension Observed {
-    init(access: @Sendable @escaping () -> Element, initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false) {
+    init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, recursive: Bool = false, freezeValues: Bool = false) {
         stream = AsyncStream { cont in
-            let cancellable = update(initial: initial, recursive: recursive, freezeValues: freezeValues) {
+            let cancellable = update(initial: initial, isSame: isSame, recursive: recursive, freezeValues: freezeValues) {
                 access()
             } onUpdate: { value in
                 cont.yield(value)
@@ -218,42 +206,44 @@ private extension ModelNode {
         _$modelContext.willAccess(context.model, at: path)?()
 
         return context.lock {
-            if let value = context._memoizeCache[key] as? T {
+            if let value = context._memoizeCache[key].flatMap({ $0 as? T }) {
                 return value
             }
 
-            _ = update {
-                produce()
-            } onUpdate: { value in
-                var postLockCallbacks: [() -> Void] = []
+            context.transaction {
+                _ = update(isSame: nil) {
+                    produce()
+                } onUpdate: { value in
+                    var postLockCallbacks: [() -> Void] = []
 
-                context.lock {
-                    let prevValue = context._memoizeCache[key] as? T
-                    if let isSame, let prevValue, isSame(value, prevValue) {
-                        return
-                    }
+                    context.lock {
+                        let prevValue = context._memoizeCache[key].flatMap { $0 as? T }
+                        if let isSame, let prevValue, isSame(value, prevValue) {
+                            return
+                        }
 
-                    context._memoizeCache[key] = value
+                        context._memoizeCache[key] = value
 
-                    if prevValue != nil {
-                        context.onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
-                            for callback in (context.modifyCallbacks[path] ?? [:]).values {
-                                if let postCallback = callback(false) {
-                                    postCallbacks.append(postCallback)
+                        if prevValue != nil {
+                            context.onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
+                                for callback in (context.modifyCallbacks[path] ?? [:]).values {
+                                    if let postCallback = callback(false) {
+                                        postCallbacks.append(postCallback)
+                                    }
                                 }
-                            }
 
-                            if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let model = context.model as? any Model&Observable {
-                                postCallbacks.append {
-                                    model.willSet(path: path, from: context)
-                                    model.didSet(path: path, from: context)
+                                if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let model = context.model as? any Model&Observable {
+                                    postCallbacks.append {
+                                        model.willSet(path: path, from: context)
+                                        model.didSet(path: path, from: context)
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                for plc in postLockCallbacks { plc() }
+                    for plc in postLockCallbacks { plc() }
+                }
             }
 
             return context._memoizeCache[key] as! T
@@ -277,10 +267,10 @@ private extension Model {
     }
 }
 
-private func update<T: Sendable>(initial: Bool = true, recursive: Bool = false, freezeValues: Bool = false, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
+private func update<T: Sendable>(initial: Bool = true, isSame: (@Sendable (T, T) -> Bool)?, recursive: Bool = false, freezeValues: Bool = false, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
     let anyCallbacks = LockIsolated<[@Sendable () -> Void]>([])
 
-    @Sendable func yield(_ value: T) -> () -> Void {
+    @Sendable func yield(_ value: T) -> @Sendable () -> Void {
         let copy = copy(value, shouldFreeze: freezeValues)
 
         return { // Call out outside of held lock
@@ -314,10 +304,26 @@ private func update<T: Sendable>(initial: Bool = true, recursive: Bool = false, 
         }
     }
 
+    let lastValue = isSame == nil ? nil : LockIsolated<T?>(nil)
     let collector = AccessCollector { collector in
         let value = collector.reset {
             usingActiveAccess(collector) {
                 access()
+            }
+        }
+
+        if let isSame, let lastValue {
+            let wasSame = lastValue.withValue {
+                if let last = $0, isSame(last, value) {
+                    return true
+                }
+
+                $0 = value
+                return false
+            }
+
+            if wasSame {
+                return nil
             }
         }
 
@@ -336,7 +342,16 @@ private func update<T: Sendable>(initial: Bool = true, recursive: Bool = false, 
         }
     }
 
-    if initial {
+    if let lastValue {
+        lastValue.withValue {
+            if $0 == nil {
+                $0 = value
+                if initial {
+                    onUpdate(copy(value, shouldFreeze: freezeValues))
+                }
+            }
+        }
+    } else if initial {
         onUpdate(copy(value, shouldFreeze: freezeValues))
     }
 
@@ -357,6 +372,12 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
     init(onModify: @Sendable @escaping (AccessCollector) -> (() -> Void)?) {
         self.onModify = onModify
         super.init(useWeakReference: false)
+    }
+
+    deinit {
+        for cancel in active.value.active.values {
+            cancel()
+        }
     }
 
     func reset<Value>(_ access: () -> Value) -> Value {

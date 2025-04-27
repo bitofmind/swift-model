@@ -207,7 +207,6 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                     return lock.unlock()
                 }
 
-
                 self.didModify()
                 isMutating = true
                 readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls

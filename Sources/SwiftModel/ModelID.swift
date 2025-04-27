@@ -1,12 +1,16 @@
 import Foundation
 import ConcurrencyExtras
 
-public struct ModelID: Hashable, Sendable, CustomReflectable {
+public struct ModelID: Hashable, Sendable, CustomReflectable, CustomDebugStringConvertible {
     private var low: UInt32
     private var high: UInt16
 
     public var customMirror: Mirror {
         Mirror(self, children: [])
+    }
+
+    public var debugDescription: String {
+        String(UInt64(high)<<32 | UInt64(low))
     }
 }
 
