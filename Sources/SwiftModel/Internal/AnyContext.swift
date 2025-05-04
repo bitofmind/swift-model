@@ -43,7 +43,7 @@ class AnyContext: @unchecked Sendable {
     private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] = [:]
     private var _modificationCount = 0
 
-    var _memoizeCache: [AnyHashableSendable: Any&Sendable] = [:]
+    var _memoizeCache: [AnyHashableSendable: (value: Any&Sendable, cancellable: @Sendable () -> Void)] = [:]
 
     func didModify() {
         _modificationCount &+= 1
@@ -237,6 +237,12 @@ class AnyContext: @unchecked Sendable {
         modeLifeTime = .destructed
         self.children.removeAll()
         dependencyContexts.removeAll()
+
+        for cancellable in _memoizeCache.values.map(\.cancellable) {
+            cancellable()
+        }
+
+        _memoizeCache.removeAll()
 
         callbacks.append {
             self.cancellations.cancelAll()
