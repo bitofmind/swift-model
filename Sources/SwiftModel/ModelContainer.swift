@@ -76,6 +76,20 @@ extension IdentifiedArray: ModelContainer where Element: ModelContainer {
     }
 }
 
+extension Dictionary: ModelContainer where Value: ModelContainer {
+    public func visit(with visitor: inout ContainerVisitor<Self>) where Key: Sendable {
+        for key in keys {
+            let path = path(id: key) { collection in
+                collection[key]!
+            } set: { collection, value in
+                collection[key] = value
+            }
+
+            visitor.visitDynamically(with: self[key]!, at: path)
+        }
+    }
+}
+
 public extension ModelContainer {
     func path<ID: Hashable, Value>(id: ID, get: @escaping @Sendable (Self) -> Value, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
         let cursor = ContainerCursor(id: id, get: get, set: set)
