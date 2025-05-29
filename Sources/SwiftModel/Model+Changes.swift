@@ -285,9 +285,9 @@ private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Boo
                 }
             }
 
-            update(with: value)
-
-            return nil
+            return {
+                update(with: value)
+            }
         }
 
         let value = collector.reset {
