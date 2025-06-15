@@ -242,51 +242,60 @@ private extension Model {
 }
 
 private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Bool)?, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
-    let lastValue = isSame == nil ? nil : LockIsolated<T?>(nil)
-    @Sendable func update(with value: T) {
-        if let isSame, let lastValue {
-            let wasSame = lastValue.withValue {
-                if let last = $0, isSame(last, value) {
-                    return true
+    let last = LockIsolated((value: T?.none, index: 0))
+    let updateLock = NSRecursiveLock()
+    @Sendable func update(with value: T, index: Int) {
+        updateLock.withLock {
+            let shouldUpdate: Bool = last.withValue { last in
+                guard index == last.index else {
+                    return false
                 }
 
-                $0 = value
-                return false
+                if let isSame {
+                    if let last = last.value, isSame(last, value) {
+                        return false
+                    } else {
+                        last.value = value
+                    }
+                }
+
+                return true
             }
 
-            if wasSame {
-                return
+            if shouldUpdate {
+                onUpdate(value)
             }
         }
-
-        onUpdate(value)
     }
 
     @Sendable func updateInitial(with value: T) {
-        if let lastValue {
-            lastValue.withValue {
-                if $0 == nil {
-                    $0 = value
-                    if initial {
-                        onUpdate(value)
-                    }
-                }
+        last.withValue { last in
+            if last.value == nil {
+                last.value = value
             }
-        } else if initial {
+        }
+
+        if initial {
             onUpdate(value)
         }
     }
 
-    guard #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), false else { // Disabled for now, as SwiftUI forces willSet to be called on main thread, and hence all values will be delivered on main. 
+    guard #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), false else { // Disabled for now, as SwiftUI forces willSet to be called on main thread, and hence all values will be delivered on main.
         let collector = AccessCollector { collector in
-            let value = collector.reset {
-                usingActiveAccess(collector) {
-                    access()
+            let (value, index) = last.withValue { last in
+                last.index = last.index &+ 1
+
+                let value = collector.reset {
+                    usingActiveAccess(collector) {
+                        access()
+                    }
                 }
+
+                return (value, last.index)
             }
 
             return {
-                update(with: value)
+                update(with: value, index: index)
             }
         }
 
@@ -311,7 +320,12 @@ private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Boo
         } onChange: {
             if hasBeenCancelled.value { return }
 
-            update(with: observe())
+            let (value, index) = last.withValue { last in
+                last.index = last.index &+ 1
+                return (observe(), last.index)
+            }
+
+            update(with: value, index: index)
         }
     }
 
