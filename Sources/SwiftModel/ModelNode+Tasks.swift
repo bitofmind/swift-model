@@ -47,7 +47,7 @@ public extension ModelNode {
     /// - Parameter catch: Called if the sequence throws an error or if operation throws and error and abortIfOperationThrows == true
     /// - Returns: A cancellable to optionally allow cancelling before deactivation.
     @discardableResult
-    func forEach<S: AsyncSequence&Sendable>(_ sequence: S, cancelPrevious: Bool = false, abortIfOperationThrows: Bool = false, isDetached: Bool = false, priority: TaskPriority? = nil, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @_inheritActorContext @_implicitSelfCapture perform operation: @escaping @Sendable (S.Element) async throws -> Void, `catch` onError: (@Sendable (Error) -> Void)? = nil) -> Cancellable where S.Element: Sendable {
+    func forEach<S: AsyncSequence&Sendable>(_ sequence: S, cancelPrevious: Bool = false, abortIfOperationThrows: Bool = false, isDetached: Bool = false, priority: TaskPriority? = nil, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @_inheritActorContext @_implicitSelfCapture perform operation: @escaping @Sendable (S.Element) async throws -> Void, `catch` onError: (@Sendable (Error) -> Void)? = nil) -> Cancellable where S.AsyncIterator: SendableMetatype, S.Element: Sendable {
         guard let context = enforcedContext() else { return EmptyCancellable() }
 
         guard cancelPrevious else {

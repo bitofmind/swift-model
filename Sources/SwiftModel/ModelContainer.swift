@@ -10,7 +10,7 @@ import IdentifiedCollections
 ///         case authorized(UserModel)
 ///     }
 ///
-public protocol ModelContainer {
+public protocol ModelContainer: Sendable {
     func visit(with visitor: inout ContainerVisitor<Self>)
 }
 
@@ -29,7 +29,7 @@ extension Optional: ModelContainer where Wrapped: ModelContainer {
 
 extension Array: ModelContainer where Element: ModelContainer & Identifiable { }
 
-public extension MutableCollection where Self: ModelContainer, Element: Identifiable, Index: Sendable, Element.ID: Sendable {
+public extension MutableCollection where Self: ModelContainer, Element: Identifiable&Sendable, Index: Sendable, Element.ID: Sendable {
     func visit(with visitor: inout ContainerVisitor<Self>) {
         for index in indices {
             let element = self[index]
@@ -101,7 +101,7 @@ public extension ModelContainer {
         return \Self.[cursor: cursor]
     }
 
-    func path<Value: Identifiable>(caseName: String, value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
+    func path<Value: Identifiable&Sendable>(caseName: String, value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
         let cursor = ContainerCursor(id: CaseAndID(caseName: caseName, id: value.id), get: { get($0)! }, set: set)
         return \Self.[cursor: cursor]
     }
