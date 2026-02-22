@@ -156,7 +156,7 @@ final class ModelMacroTests: XCTestCase {
                     visitor.visitStatically(at: \._count)
                 }
 
-                public static func == (_ lhs: Self, _ rhs: Self) -> Bool {
+                public static func ==(_ lhs: Self, _ rhs: Self) -> Bool {
                     lhs.count == rhs.count
                 }
 
@@ -233,7 +233,7 @@ final class ModelMacroTests: XCTestCase {
             struct MyModel {
                 let id = 4711
 
-                var count = 0 {
+                var count {
                     willSet { print("willSet") }
                     didSet { print("didSet") }
                     @storageRestrictions(initializes: _count)
