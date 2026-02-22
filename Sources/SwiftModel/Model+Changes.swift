@@ -125,30 +125,198 @@ public struct PrintTextOutputStream: TextOutputStream, Sendable {
 }
 
 public extension ModelNode {
+    /// Caches the result of an expensive computation and automatically recomputes when dependencies change.
+    ///
+    /// Memoization is useful for computed properties that depend on model state and are expensive to calculate
+    /// (e.g., sorting, filtering, complex calculations). The memoized value is cached and only recomputed when
+    /// the properties accessed within `produce` change.
+    ///
+    /// - Parameters:
+    ///   - key: A unique key identifying this memoized computation. Must be unique within the model.
+    ///   - produce: A closure that computes the value. Any model properties accessed within this closure
+    ///              will be automatically tracked as dependencies.
+    ///
+    /// - Returns: The cached value, or the result of `produce()` if not yet cached or if dependencies changed.
+    ///
+    /// ## Basic Usage
+    ///
+    /// ```swift
+    /// @Model struct DataModel {
+    ///     var items: [Item] = []
+    ///
+    ///     var sortedItems: [Item] {
+    ///         node.memoize(for: "sorted") {
+    ///             items.sorted { $0.name < $1.name }
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// ## Automatic Dependency Tracking
+    ///
+    /// The `produce` closure is executed once on first access, and SwiftModel tracks which properties
+    /// are read during execution. When any of those properties change, the cached value is invalidated
+    /// and recomputed on the next access:
+    ///
+    /// ```swift
+    /// let sorted = model.sortedItems  // Computes and caches
+    /// let again = model.sortedItems   // Returns cached value (fast!)
+    ///
+    /// model.items.append(newItem)     // Invalidates cache
+    /// let updated = model.sortedItems // Recomputes with new item
+    /// ```
+    ///
+    /// ## Performance Characteristics
+    ///
+    /// - **First access**: O(n) where n is the complexity of `produce()`
+    /// - **Cache hit**: O(1) with lock acquisition overhead
+    /// - **After change**: Recomputes on next access (lazy evaluation)
+    ///
+    /// **Note**: Currently, each property mutation triggers an immediate recomputation. For bulk updates,
+    /// wrap modifications in `node.transaction { }` to batch changes (optimization in progress).
+    ///
+    /// ## When to Use Memoization
+    ///
+    /// **Good candidates:**
+    /// - Sorting/filtering large collections
+    /// - Complex calculations (aggregations, statistics)
+    /// - Expensive transformations (JSON parsing, formatting)
+    /// - Frequently accessed computed properties
+    ///
+    /// **Avoid for:**
+    /// - Trivial computations (simple arithmetic, property access)
+    /// - Rarely accessed values
+    /// - Computations with no dependencies on model state
+    ///
+    /// ## Manual Cache Control
+    ///
+    /// You can explicitly invalidate the cache using `resetMemoization(for:)`:
+    ///
+    /// ```swift
+    /// node.resetMemoization(for: "sorted")
+    /// ```
+    ///
+    /// ## Thread Safety
+    ///
+    /// Memoize is thread-safe and can be called from any thread. The cache is protected by locks
+    /// to ensure consistency across concurrent access.
+    ///
+    /// - Note: For `Equatable` types, use the overload that accepts `isSame` to avoid recomputing
+    ///         when the value hasn't actually changed.
     func memoize<T: Sendable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T) -> T {
         memoize(for: key, produce: produce, isSame: nil)
     }
 
+    /// Caches the result of an expensive computation with automatic duplicate detection.
+    ///
+    /// This overload is optimized for `Equatable` types and only triggers observer notifications
+    /// when the recomputed value differs from the cached value.
+    ///
+    /// - Parameters:
+    ///   - key: A unique key identifying this memoized computation.
+    ///   - produce: A closure that computes the value.
+    ///
+    /// - Returns: The cached value, or the result of `produce()` if not cached or dependencies changed.
+    ///
+    /// ## Example: Avoiding Unnecessary Updates
+    ///
+    /// ```swift
+    /// @Model struct SearchModel {
+    ///     var query: String = ""
+    ///     var items: [Item] = []
+    ///
+    ///     var hasResults: Bool {
+    ///         node.memoize(for: "hasResults") {
+    ///             !items.filter { $0.matches(query) }.isEmpty
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// // If query changes but results remain empty, observers are NOT notified
+    /// model.query = "abc"  // hasResults: false → false (no notification)
+    /// model.query = "xyz"  // hasResults: false → false (no notification)
+    /// model.items = [...]  // hasResults: false → true (notification sent!)
+    /// ```
     func memoize<T: Sendable&Equatable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T) -> T {
         memoize(for: key, produce: produce, isSame: { $0 == $1 })
     }
 
+    /// Caches a tuple computation with automatic duplicate detection for each element.
+    ///
+    /// - Parameters:
+    ///   - key: A unique key identifying this memoized computation.
+    ///   - produce: A closure that computes the tuple value.
+    ///
+    /// - Returns: The cached tuple, or the result of `produce()` if not cached or dependencies changed.
     func memoize<each T: Sendable&Equatable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> (repeat each T)) -> (repeat each T) {
         memoize(for: key, produce: produce, isSame: isSame)
     }
 
+    /// Caches a computation using source location as the cache key.
+    ///
+    /// This convenience overload automatically generates a unique key based on the call site's
+    /// file, line, and column. Useful when you don't want to manually specify keys:
+    ///
+    /// ```swift
+    /// var sortedItems: [Item] {
+    ///     node.memoize {  // Key is auto-generated from call site
+    ///         items.sorted()
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// **Warning**: If you have multiple memoize calls on the same line (e.g., in a multi-line
+    /// expression), they will share the same key and conflict. Use explicit keys in such cases.
+    ///
+    /// - Parameter produce: A closure that computes the value.
+    /// - Returns: The cached value, or the result of `produce()` if not cached or dependencies changed.
     func memoize<T: Sendable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, produce: @Sendable @escaping () -> T) -> T {
         memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), produce: produce)
     }
 
+    /// Caches an `Equatable` computation using source location as the cache key.
+    ///
+    /// Combines automatic key generation with duplicate value detection.
+    ///
+    /// - Parameter produce: A closure that computes the value.
+    /// - Returns: The cached value, or the result of `produce()` if not cached or dependencies changed.
     func memoize<T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, produce: @Sendable @escaping () -> T) -> T {
         memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), produce: produce)
     }
 
+    /// Caches a tuple computation using source location as the cache key.
+    ///
+    /// - Parameter produce: A closure that computes the tuple value.
+    /// - Returns: The cached tuple, or the result of `produce()` if not cached or dependencies changed.
     func memoize<each T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, produce: @Sendable @escaping () -> (repeat each T)) -> (repeat each T) {
         memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), produce: produce)
     }
 
+    /// Explicitly clears the cached value for a memoized computation.
+    ///
+    /// Use this to manually invalidate a cache when you know the value should be recomputed,
+    /// even if SwiftModel hasn't detected a change in dependencies.
+    ///
+    /// ```swift
+    /// @Model struct CacheModel {
+    ///     var data: [Item] = []
+    ///
+    ///     var processed: [ProcessedItem] {
+    ///         node.memoize(for: "processed") {
+    ///             expensiveProcessing(data)
+    ///         }
+    ///     }
+    ///
+    ///     func forceRefresh() {
+    ///         node.resetMemoization(for: "processed")
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// **Note**: This cancels the dependency tracking subscription and removes the cached value.
+    /// The next access will recompute and re-establish tracking.
+    ///
+    /// - Parameter key: The key used when creating the memoized computation.
     func resetMemoization(for key: some Hashable&Sendable) {
         guard let context = enforcedContext() else { return }
 
