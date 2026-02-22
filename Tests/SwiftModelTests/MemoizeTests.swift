@@ -175,6 +175,71 @@ struct MemoizeTests {
         #expect(model.conditional == 200)  // Should update
     }
 
+    // MARK: - Transaction Defer Block Issue
+
+    @Test func testMemoizeRecomputationDuringTransactionDefer() async throws {
+        let model = TransactionDeferModel().withAnchor()
+        
+        // Initial access to setup memoization
+        print("🟢 Initial access")
+        #expect(model.computed == 0)
+        #expect(model.computeCount == 1)
+        
+        // Bulk update in transaction
+        print("🟡 Starting transaction with 100 mutations")
+        model.transaction {
+            for i in 0..<100 {
+                model.values.append(i)
+            }
+        }
+        print("🟡 Transaction ended")
+        
+        // The defer block should have triggered recomputation
+        // Check how many times it recomputed
+        let computeCountAfterTransaction = model.computeCount
+        print("🔵 Computations after transaction: \(computeCountAfterTransaction - 1)")
+        Issue.record("Computed \(computeCountAfterTransaction - 1) times during transaction defer")
+        
+        // Access after transaction should use cached value
+        print("🟢 Accessing after transaction")
+        _ = model.computed
+        print("🔵 Final compute count: \(model.computeCount)")
+        #expect(model.computeCount == computeCountAfterTransaction)
+    }
+
+    @Test func testMemoizeAccessDuringMutation() async throws {
+        let model = AccessDuringMutationModel().withAnchor()
+        
+        // Initial access
+        #expect(model.computed == 0)
+        #expect(model.computeCount == 1)
+        model.accessLog.removeAll()
+        
+        // THIS REPRODUCES THE USER'S SCENARIO:
+        // Accessing the memoized value DURING mutations
+        model.transaction {
+            for i in 0..<100 {
+                model.values.append(i)
+                // Simulate what happens in production: 
+                // Some code reads snapTimes during the loop
+                if i % 10 == 0 {
+                    _ = model.computed  // ← This forces recomputation!
+                }
+            }
+        }
+        
+        let computesDuringTransaction = model.computeCount - 1
+        print("🔴 Computed \(computesDuringTransaction) times during mutation loop")
+        print("🔴 Access log length: \(model.accessLog.count)")
+        Issue.record("CURRENT: Computed \(computesDuringTransaction) times when accessed during mutations")
+        
+        // DESIRED BEHAVIOR (with transaction-scoped staleness):
+        // - Compute count: 1 (only at transaction end)
+        // - Access log: ["accessed" x 11, "computed" x 1]
+        // 
+        // This is the pathological case that needs optimization
+    }
+
     // MARK: - Thread Safety
 
     @Test func testConcurrentAccess() async throws {
@@ -320,6 +385,34 @@ struct MemoizeTests {
     var conditional: Int {
         node.memoize(for: "conditional") {
             useA ? valueA : valueB
+        }
+    }
+}
+
+@Model private struct TransactionDeferModel {
+    var values: [Int] = []
+    var computeCount = 0
+    
+    var computed: Int {
+        computeCount += 1
+        return node.memoize(for: "computed") {
+            print("🔴 RECOMPUTING (count: \(computeCount))")
+            return values.reduce(0, +)
+        }
+    }
+}
+
+@Model private struct AccessDuringMutationModel {
+    var values: [Int] = []
+    var computeCount = 0
+    var accessLog: [String] = []
+    
+    var computed: Int {
+        accessLog.append("accessed")
+        return node.memoize(for: "computed") {
+            computeCount += 1
+            accessLog.append("computed")
+            return values.reduce(0, +)
         }
     }
 }

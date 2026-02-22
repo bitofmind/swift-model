@@ -13,6 +13,188 @@ public struct ModelNode<M: Model> {
 extension ModelNode: Sendable where M: Sendable {}
 
 public extension ModelNode {
+    /// Batches multiple model mutations into a single atomic update with deferred notifications.
+    ///
+    /// Use transactions to maintain invariants and ensure external observers see consistent state.
+    /// All property changes within the transaction block appear as a single atomic update to observers.
+    ///
+    /// ## Basic Usage
+    ///
+    /// ```swift
+    /// @Model struct BankAccount {
+    ///     var balance = 0
+    /// }
+    ///
+    /// let account = BankAccount().withAnchor()
+    ///
+    /// // Without transaction: 3 separate notifications
+    /// account.balance = 100  // Notification 1
+    /// account.balance = 200  // Notification 2
+    /// account.balance = 300  // Notification 3
+    ///
+    /// // With transaction: 1 notification with final value
+    /// account.node.transaction {
+    ///     account.balance = 100
+    ///     account.balance = 200
+    ///     account.balance = 300
+    /// }  // Single notification: balance = 300
+    /// ```
+    ///
+    /// ## Maintaining Invariants
+    ///
+    /// Transactions ensure external observers never see intermediate inconsistent states:
+    ///
+    /// ```swift
+    /// @Model struct Rectangle {
+    ///     var width = 0
+    ///     var height = 0
+    ///     var area = 0  // Invariant: area == width * height
+    /// }
+    ///
+    /// // Without transaction: invariant can be violated
+    /// rect.width = 10   // width=10, area=0 ❌ INCONSISTENT
+    /// rect.height = 5   // width=10, height=5, area=0 ❌ INCONSISTENT
+    /// rect.area = 50    // ✅ Consistent again
+    ///
+    /// // With transaction: invariant always maintained for observers
+    /// rect.node.transaction {
+    ///     rect.width = 10
+    ///     rect.height = 5
+    ///     rect.area = 50
+    /// }  // Observers only see final consistent state
+    /// ```
+    ///
+    /// ## Transaction Semantics
+    ///
+    /// **Atomicity**: Multiple mutations appear as a single atomic update
+    /// ```swift
+    /// model.node.transaction {
+    ///     for i in 1...100 {
+    ///         model.items.append(i)  // 100 mutations
+    ///     }
+    /// }
+    /// // Observers receive exactly 1 notification with all 100 items
+    /// ```
+    ///
+    /// **Consistency**: Reads within the transaction see the latest values
+    /// ```swift
+    /// model.node.transaction {
+    ///     model.value = 10
+    ///     print(model.value)  // Prints: 10 ✅
+    ///
+    ///     model.value = 20
+    ///     print(model.value)  // Prints: 20 ✅
+    /// }
+    /// ```
+    ///
+    /// **Isolation**: Other threads block until transaction completes (lock-based)
+    /// ```swift
+    /// // Thread 1:
+    /// model.node.transaction {
+    ///     model.value = 100
+    ///     Thread.sleep(0.05)
+    ///     model.value = 200
+    /// }
+    ///
+    /// // Thread 2: Reads block until transaction completes
+    /// let val = model.value  // Either old value or 200, never 100
+    /// ```
+    ///
+    /// **Nested Transactions**: Automatically coalesced into the outermost transaction
+    /// ```swift
+    /// model.node.transaction {
+    ///     model.value = 10
+    ///
+    ///     model.node.transaction {
+    ///         model.value = 20  // Inner transaction
+    ///     }
+    ///
+    ///     model.value = 30
+    /// }
+    /// // Single notification at end of outermost transaction
+    /// ```
+    ///
+    /// ## Error Handling
+    ///
+    /// > Important: Transactions do **not** automatically rollback on error.
+    /// Mutations made before the error are retained.
+    ///
+    /// ```swift
+    /// model.value = 10
+    ///
+    /// do {
+    ///     try model.node.transaction {
+    ///         model.value = 20
+    ///         model.value = 30
+    ///         throw MyError()
+    ///     }
+    /// } catch {
+    ///     // model.value is now 30 (not rolled back to 10)
+    /// }
+    /// ```
+    ///
+    /// To handle errors safely:
+    /// ```swift
+    /// // Pattern 1: Pre-validate
+    /// guard isValid(newValue) else { return }
+    /// model.node.transaction {
+    ///     model.value = newValue
+    /// }
+    ///
+    /// // Pattern 2: Explicit reset on error
+    /// do {
+    ///     try model.node.transaction {
+    ///         model.update(data)
+    ///     }
+    /// } catch {
+    ///     model.reset()  // Explicit reset
+    /// }
+    /// ```
+    ///
+    /// ## Best Practices
+    ///
+    /// **Use transactions for:**
+    /// - Multi-property updates that must stay consistent
+    /// - Bulk mutations (loops that modify many items)
+    /// - Maintaining invariants between related properties
+    ///
+    /// **Don't use transactions for:**
+    /// - Single property updates (unnecessary overhead)
+    /// - Long-running operations (blocks other threads)
+    /// - Operations with async/await (hold lock across suspension points)
+    ///
+    /// ## Performance Considerations
+    ///
+    /// Transactions use a recursive lock for thread safety, which means:
+    /// - ✅ Efficient for synchronous bulk mutations
+    /// - ⚠️ Blocks concurrent reads from other threads
+    /// - ❌ Don't hold transaction across async boundaries
+    ///
+    /// ```swift
+    /// // ✅ Good: Synchronous bulk update
+    /// model.node.transaction {
+    ///     for item in items {
+    ///         model.add(item)
+    ///     }
+    /// }
+    ///
+    /// // ❌ Bad: Async work in transaction
+    /// model.node.transaction {
+    ///     let data = await fetchData()  // Holds lock during await!
+    ///     model.data = data
+    /// }
+    ///
+    /// // ✅ Good: Async work before transaction
+    /// let data = await fetchData()
+    /// model.node.transaction {
+    ///     model.data = data
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - callback: The closure containing mutations to execute atomically
+    /// - Returns: The value returned by the callback
+    /// - Throws: Rethrows any error thrown by the callback (without rollback)
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
         if let context {
             return try ModelAccess.$isInModelTaskContext.withValue(true) {
