@@ -361,10 +361,12 @@ private extension ModelNode {
                 update(initial: true, isSame: nil, context: context) {
                     produce()
                 } onUpdate: { value in
+                    DebugHook.record("[memoize] onUpdate fired for key=\(key), value=\(value), thread=\(Thread.isMainThread ? "main" : "background")")
                     var postLockCallbacks: [() -> Void] = []
 
                     context.lock {
                         let (prevValue, cancellable) = context._memoizeCache[key].flatMap { ($0.value as? T, $0.cancellable) } ?? (nil, nil)
+                        DebugHook.record("[memoize] prevValue=\(String(describing: prevValue)), updating cache")
                         if let isSame, let prevValue, isSame(value, prevValue) {
                             return
                         }
@@ -409,7 +411,38 @@ private extension Model {
     }
 }
 
+/// Internal update function for testing with explicit path control.
+///
+/// - Parameters:
+///   - initial: Whether to call onUpdate with the initial value
+///   - isSame: Optional equality check to skip duplicate updates
+///   - useWithObservationTracking: Explicit control over which observation path to use (for testing)
+///   - access: Closure that accesses the value and establishes dependencies
+///   - onUpdate: Callback when dependencies change
+/// - Returns: Cancellation function
+internal func update<T: Sendable>(
+    initial: Bool,
+    isSame: (@Sendable (T, T) -> Bool)?,
+    useWithObservationTracking: Bool,
+    access: @Sendable @escaping () -> T,
+    onUpdate: @Sendable @escaping (T) -> Void
+) -> @Sendable () -> Void {
+    updateImpl(initial: initial, isSame: isSame, context: nil, useWithObservationTracking: useWithObservationTracking, access: access, onUpdate: onUpdate)
+}
+
 private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Bool)?, context: AnyContext? = nil, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
+    let useWithObservationTracking = context?.options.contains(.useWithObservationTracking) ?? false
+    return updateImpl(initial: initial, isSame: isSame, context: context, useWithObservationTracking: useWithObservationTracking, access: access, onUpdate: onUpdate)
+}
+
+private func updateImpl<T: Sendable>(
+    initial: Bool,
+    isSame: (@Sendable (T, T) -> Bool)?,
+    context: AnyContext?,
+    useWithObservationTracking: Bool,
+    access: @Sendable @escaping () -> T,
+    onUpdate: @Sendable @escaping (T) -> Void
+) -> @Sendable () -> Void {
     let last = LockIsolated((value: T?.none, index: 0))
     let updateLock = NSRecursiveLock()
     @Sendable func update(with value: T, index: Int) {
@@ -448,16 +481,9 @@ private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Boo
         }
     }
 
-    // Determine which path to use
-    // DEFAULT: AccessCollector (historical behavior, works on all threads)
-    // OPT-IN: withObservationTracking (when explicitly requested via option)
-    //
-    // Background: withObservationTracking has threading issues with SwiftUI
-    // (requires main thread delivery), so AccessCollector remains the default.
-    let useWithObservationTracking = context?.options.contains(.useWithObservationTracking) ?? false
-    
     if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useWithObservationTracking {
-        // withObservationTracking path (opt-in, has threading issues)
+        // withObservationTracking path (opt-in)
+        // Uses Swift's native Observable tracking with main thread bridging for SwiftUI compatibility
         let hasBeenCancelled = LockIsolated(false)
 
         @Sendable func observe() -> T {
@@ -470,7 +496,6 @@ private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Boo
                     last.index = last.index &+ 1
                     return (observe(), last.index)
                 }
-
                 update(with: value, index: index)
             }
         }

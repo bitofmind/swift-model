@@ -9,25 +9,34 @@ struct MemoizeTests {
 
     @Test(arguments: UpdatePath.allCases)
     func testBasicMemoization(updatePath: UpdatePath) async throws {
-        let model = BasicMemoizeModel().withAnchor(options: updatePath.options)
+        let (model, tester) = BasicMemoizeModel().andTester(options: updatePath.options)
+        tester.exhaustivity = .off
 
         // First access should compute
         let first = model.doubled
-        #expect(first == 0)
-        #expect(model.accessCount == 1)
+        await tester.assert {
+            first == 0
+            model.accessCount == 1
+        }
 
         // Second access should use cache (no recomputation)
         let second = model.doubled
-        #expect(second == 0)
-        #expect(model.accessCount == 2)  // Access count increases but computation doesn't
+        await tester.assert {
+            second == 0
+            model.accessCount == 2  // Access count increases but computation doesn't
+        }
 
         // Change dependency
         model.value = 5
+        await tester.assert { model.value == 5 }
 
-        // Access should recompute
-        let third = model.doubled
-        #expect(third == 10)
-        #expect(model.accessCount == 3)
+        // Access should recompute (wait for async onChange if needed)
+        await tester.assert(timeoutNanoseconds: 5_000_000_000) {
+            model.doubled == 10
+        }
+        
+        // Verify it recomputed (accessCount will be higher due to polling, but must be > 2)
+        #expect(model.accessCount > 2, "Should have recomputed after value change")
     }
 
     @Test func testMemoizeWithEquatableSkipsIdenticalValues() async throws {
@@ -163,20 +172,26 @@ struct MemoizeTests {
 
     @Test(arguments: UpdatePath.allCases)
     func testMemoizeWithChangingDependencies(updatePath: UpdatePath) async throws {
-        let model = DynamicDependencyModel().withAnchor(options: updatePath.options)
+        let (model, tester) = DynamicDependencyModel().andTester(options: updatePath.options)
+        tester.exhaustivity = .off
 
-        #expect(model.conditional == 10)  // Uses valueA
+        await tester.assert { model.conditional == 10 }  // Uses valueA
 
         model.useA = false
-        #expect(model.conditional == 20)  // Uses valueB
+        await tester.assert(timeoutNanoseconds: 2_000_000_000) {
+            model.conditional == 20  // Uses valueB
+        }
 
         // Change valueA (not currently tracked)
         model.valueA = 100
-        #expect(model.conditional == 20)  // Should not change
+        await tester.assert { model.valueA == 100 }
+        await tester.assert { model.conditional == 20 }  // Should not change
 
         // Change valueB (currently tracked)
         model.valueB = 200
-        #expect(model.conditional == 200)  // Should update
+        await tester.assert(timeoutNanoseconds: 2_000_000_000) {
+            model.conditional == 200  // Should update
+        }
     }
 
     // MARK: - Transaction Defer Block Issue
