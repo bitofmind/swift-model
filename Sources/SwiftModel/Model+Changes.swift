@@ -427,18 +427,17 @@ internal func update<T: Sendable>(
     access: @Sendable @escaping () -> T,
     onUpdate: @Sendable @escaping (T) -> Void
 ) -> @Sendable () -> Void {
-    updateImpl(initial: initial, isSame: isSame, context: nil, useWithObservationTracking: useWithObservationTracking, access: access, onUpdate: onUpdate)
+    updateImpl(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, access: access, onUpdate: onUpdate)
 }
 
 private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Bool)?, context: AnyContext? = nil, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
     let useWithObservationTracking = context?.options.contains(.useWithObservationTracking) ?? false
-    return updateImpl(initial: initial, isSame: isSame, context: context, useWithObservationTracking: useWithObservationTracking, access: access, onUpdate: onUpdate)
+    return updateImpl(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, access: access, onUpdate: onUpdate)
 }
 
 private func updateImpl<T: Sendable>(
     initial: Bool,
     isSame: (@Sendable (T, T) -> Bool)?,
-    context: AnyContext?,
     useWithObservationTracking: Bool,
     access: @Sendable @escaping () -> T,
     onUpdate: @Sendable @escaping (T) -> Void

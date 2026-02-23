@@ -58,11 +58,12 @@ struct UpdateFunctionTests {
 
         DebugHook.record("\n========== TEST END ==========\n")
 
+        cancellable()
+        DebugHook.record = { _ in }  // Reset hook before accessing log
+        
         // Record final state as attachment  
         let finalLog = debugLog.value.joined(separator: "\n")
         _ = Attachment(finalLog)  // String conforms to Attachable
-
-        cancellable()
 
         // NOTE: This test documents that withObservationTracking doesn't track local variables
         // It only tracks Observable properties, so updateCount stays 1
@@ -110,10 +111,11 @@ struct UpdateFunctionTests {
         DebugHook.record("[TEST] After wait, updateCount=\(updateCount.value)")
         DebugHook.record("\n========== TEST END ==========\n")
 
+        cancellable()
+        DebugHook.record = { _ in }  // Reset hook before accessing log
+        
         let finalLog = debugLog.value.joined(separator: "\n")
         _ = Attachment(finalLog)
-
-        cancellable()
 
         // AccessCollector doesn't track external variables, so updateCount stays 1
         // This is expected - AccessCollector tracks Model properties, not local variables
@@ -168,10 +170,11 @@ struct UpdateFunctionTests {
 
         DebugHook.record("\n========== TEST END ==========\n")
 
+        cancellable()
+        DebugHook.record = { _ in }  // Reset hook before accessing log
+        
         let finalLog = debugLog.value.joined(separator: "\n")
         _ = Attachment(finalLog)
-
-        cancellable()
     }
 }
 

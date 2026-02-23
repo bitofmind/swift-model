@@ -31,14 +31,7 @@ struct DiagnosticMemoizeTest {
         model.value = 5
         await tester.assert { model.value == 5 }
         
-        print("\n3️⃣ Waiting 100ms for onChange → onUpdate chain to complete...")
-        try await Task.sleep(for: .milliseconds(100))
-        
-        print("\n4️⃣ Accessing doubled AFTER wait")
-        let result = model.doubled
-        print("   Result: \(result), accessCount: \(model.accessCount)")
-        print("   onUpdate log: \(onUpdateLog.value)")
-        
+        print("\n3️⃣ Waiting for onChange → onUpdate chain via tester.assert...")
         // Wait for cache to be invalidated and recomputed
         await tester.assert(timeoutNanoseconds: 5_000_000_000) {
             model.doubled == 10
@@ -81,11 +74,12 @@ struct DiagnosticMemoizeTest {
             print("   ❌ Got stale cache value!")
             print("   This proves: onChange fires async, we accessed before onUpdate ran")
             
-            // Wait a bit and check if onUpdate eventually fires
-            try await Task.sleep(for: .milliseconds(200))
-            print("\n4️⃣ After 200ms wait:")
+            // Wait for onChange to eventually fire using tester.assert
+            await tester.assert(timeoutNanoseconds: 1_000_000_000) {
+                model.doubled == 10
+            }
+            print("\n4️⃣ After onChange completes:")
             print("   doubled: \(model.doubled), accessCount: \(model.accessCount)")
-            print("   onUpdate log: \(onUpdateLog.value)")
         }
         
         // This test documents the race condition
