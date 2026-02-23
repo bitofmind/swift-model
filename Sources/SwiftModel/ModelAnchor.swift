@@ -18,9 +18,11 @@ public extension Model {
     ///        $0.locale = Locale(identifier: "en_US")
     ///     })
     ///
-    /// - Parameter dependencies: A closure for to overriding dependencies that will be accessed by the model
-    func withAnchor(function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> Self {
-        let (model, anchor) = andAnchor(function: function, andDependencies: dependencies)
+    /// - Parameters:
+    ///   - options: Configuration options for the model. Defaults to `[]`.
+    ///   - dependencies: A closure for to overriding dependencies that will be accessed by the model
+    func withAnchor(options: ModelOption = [], function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> Self {
+        let (model, anchor) = andAnchor(options: options, function: function, andDependencies: dependencies)
        
         // Hold on to anchor as long as model is alive.
         objc_setAssociatedObject(model.access!.reference, &anchorKey, anchor, .OBJC_ASSOCIATION_RETAIN)
@@ -45,11 +47,13 @@ public extension Model {
     ///        $0.locale = Locale(identifier: "en_US")
     ///     })
     ///
-    /// - Parameter dependencies: A closure for to overriding dependencies that will be accessed by the model
-    func andAnchor(function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
+    /// - Parameters:
+    ///   - options: Configuration options for the model. Defaults to `[]`.
+    ///   - dependencies: A closure for to overriding dependencies that will be accessed by the model
+    func andAnchor(options: ModelOption = [], function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
         assertInitialState(function: function)
 
-        let context = Context(model: self, lock: NSRecursiveLock(), dependencies: dependencies, parent: nil)
+        let context = Context(model: self, lock: NSRecursiveLock(), options: options, dependencies: dependencies, parent: nil)
 
         var model = self
         model.withContextAdded(context: context)

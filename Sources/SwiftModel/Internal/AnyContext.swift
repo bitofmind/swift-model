@@ -18,6 +18,7 @@ extension ModelLifetime {
 
 class AnyContext: @unchecked Sendable {
     let lock: NSRecursiveLock
+    internal let options: ModelOption
     private var nextKey = 0
 
     final class WeakParent {
@@ -157,9 +158,14 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    init(lock: NSRecursiveLock, parent: AnyContext?) {
+    init(lock: NSRecursiveLock, options: ModelOption, parent: AnyContext?) {
         self.lock = lock
-        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+        self.options = parent?.options ?? options
+        
+        // Use ObservationRegistrar unless disabled
+        let useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
+        
+        if useObservationRegistrar, #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
             _observationRegistrar = ObservationRegistrar()
         } else {
             _observationRegistrar = nil
@@ -427,7 +433,7 @@ class AnyContext: @unchecked Sendable {
                 } else {
                     model = model.initialCopy
                     assert(model.context == nil)
-                    let child = Context<D>(model: model, lock: lock, dependencies: { _ in }, parent: self)
+                    let child = Context<D>(model: model, lock: lock, options: self.options, dependencies: { _ in }, parent: self)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
                     dependencyContexts[ObjectIdentifier(D.self)] = child
                     model.withContextAdded(context: child)

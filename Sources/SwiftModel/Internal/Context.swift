@@ -14,7 +14,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     @Dependency(\.uuid) private var dependencies
 
-    init(model: M, lock: NSRecursiveLock, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
+    init(model: M, lock: NSRecursiveLock, options: ModelOption, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
         if model.lifetime != .initial {
             reportIssue("It is not allowed to add an already anchored or fozen model, instead create new instance.")
         }
@@ -25,7 +25,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let modelSetup = model.modelSetup
         self.activations = modelSetup?.activations ?? []
         reference = readModel.reference ?? Reference(modelID: model.modelID)
-        super.init(lock: lock, parent: parent)
+        super.init(lock: lock, options: options, parent: parent)
 
         var dependencyModels: [AnyHashable: any Model] = [:]
         Dependencies.withDependencies(from: parent ?? self) {
@@ -312,7 +312,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 children[containerPath, default: [:]][modelRef] = child
                 return child
             } else {
-                let child = Context<Child>(model: childModel, lock: lock, dependencies: { _ in }, parent: self)
+                let child = Context<Child>(model: childModel, lock: lock, options: self.options, dependencies: { _ in }, parent: self)
                 children[containerPath, default: [:]][modelRef] = child
                 return child
             }

@@ -25,11 +25,11 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         var context: AnyContext
     }
 
-    init(model: Root, dependencies: (inout ModelDependencies) -> Void, fileAndLine: FileAndLine) {
+    init(model: Root, options: ModelOption = [], dependencies: (inout ModelDependencies) -> Void, fileAndLine: FileAndLine) {
         expectedState = model.frozenCopy
         lastState = model.frozenCopy
         self.fileAndLine = fileAndLine
-        context = Context(model: model, lock: NSRecursiveLock(), dependencies: dependencies, parent: nil)
+        context = Context(model: model, lock: NSRecursiveLock(), options: options, dependencies: dependencies, parent: nil)
 
         super.init(useWeakReference: true)
 

@@ -102,3 +102,18 @@ extension DependencyValues {
         static let liveValue = TestResult()
     }
 }
+
+/// Test parameter for validating both observation mechanisms
+enum ObservationPath: String, CaseIterable {
+    case observationRegistrar
+    case accessCollector
+
+    var options: ModelOption {
+        switch self {
+        case .observationRegistrar:
+            return []
+        case .accessCollector:
+            return [.disableObservationRegistrar]
+        }
+    }
+}

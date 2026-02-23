@@ -3,8 +3,9 @@ import Testing
 import Observation
 
 struct UpdateStreamTests {
-    @Test func testChangeOf() async throws {
-        let (model, tester) = ValuesModel(initial: false, recursive: false).andTester()
+    @Test(arguments: ObservationPath.allCases)
+    func testChangeOf(observationPath: ObservationPath) async throws {
+        let (model, tester) = ValuesModel(initial: false, recursive: false).andTester(options: observationPath.options)
 
         model.count += 5
         await tester.assert {
@@ -19,8 +20,9 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test func testChangeOfConcurrency() async throws {
-        let (model, tester) = ValuesModel(initial: false, recursive: false).andTester()
+    @Test(arguments: ObservationPath.allCases)
+    func testChangeOfConcurrency(observationPath: ObservationPath) async throws {
+        let (model, tester) = ValuesModel(initial: false, recursive: false).andTester(options: observationPath.options)
 
         let range = 1...10
         Task.detached {

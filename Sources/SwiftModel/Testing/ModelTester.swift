@@ -16,13 +16,15 @@ public final class ModelTester<M: Model> {
     ///        $0.locale = Locale(identifier: "en_US")
     ///     }
     ///
-    /// - Parameter model: An un-anchored model to test.
-    /// - Parameter dependencies: A closure for to overriding dependencies that will be accessed by the model
+    /// - Parameters:
+    ///   - model: An un-anchored model to test.
+    ///   - options: Configuration options for the model. Defaults to `[]`.
+    ///   - dependencies: A closure for to overriding dependencies that will be accessed by the model
     ///
     ///  - Note: It is often more convenient to use the `andTester()` method on a model.
-    public init(_ model: M, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
+    public init(_ model: M, options: ModelOption = [], dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
         fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
-        access = TestAccess(model: model, dependencies: dependencies, fileAndLine: fileAndLine)
+        access = TestAccess(model: model, options: options, dependencies: dependencies, fileAndLine: fileAndLine)
     }
 
     public var model: M {
@@ -48,10 +50,12 @@ public extension Model {
     ///        $0.locale = Locale(identifier: "en_US")
     ///     }
     ///
-    /// - Parameter dependencies: A closure for to overriding dependencies that will be accessed by the model
-    func andTester(withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
+    /// - Parameters:
+    ///   - options: Configuration options for the model. Defaults to `[]`.
+    ///   - dependencies: A closure for to overriding dependencies that will be accessed by the model
+    func andTester(options: ModelOption = [], withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
         assertInitialState(function: function)
-        let tester = ModelTester(self, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
+        let tester = ModelTester(self, options: options, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
         return (tester.model, tester)
     }
 }
