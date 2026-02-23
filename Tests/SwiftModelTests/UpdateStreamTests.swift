@@ -43,8 +43,9 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test func testChangeOfChild() async throws {
-        let (model, tester) = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).andTester()
+    @Test(arguments: UpdatePath.allCases)
+    func testChangeOfChild(updatePath: UpdatePath) async throws {
+        let (model, tester) = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).andTester(options: updatePath.options)
 
         await tester.assert {
             model.child.count == 2
@@ -66,8 +67,9 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test func testChangeOfChildWhereChildIsUpdated() async throws {
-        let (model, tester) = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).andTester()
+    @Test(arguments: UpdatePath.allCases)
+    func testChangeOfChildWhereChildIsUpdated(updatePath: UpdatePath) async throws {
+        let (model, tester) = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).andTester(options: updatePath.options)
 
         await tester.assert {
             model.child.count == 2

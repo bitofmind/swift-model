@@ -117,3 +117,18 @@ enum ObservationPath: String, CaseIterable {
         }
     }
 }
+
+/// Test parameter for validating both update() implementation paths
+enum UpdatePath: String, CaseIterable {
+    case accessCollector
+    case withObservationTracking
+
+    var options: ModelOption {
+        switch self {
+        case .accessCollector:
+            return []  // Default behavior
+        case .withObservationTracking:
+            return [.useWithObservationTracking]  // Opt-in
+        }
+    }
+}

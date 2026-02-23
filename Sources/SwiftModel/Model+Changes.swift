@@ -329,9 +329,9 @@ public extension ModelNode {
 }
 
 private extension Observed {
-    init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?) {
+    init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, context: AnyContext? = nil) {
         stream = AsyncStream { cont in
-            let cancellable = update(initial: initial, isSame: isSame) {
+            let cancellable = update(initial: initial, isSame: isSame, context: context) {
                 access()
             } onUpdate: { value in
                 cont.yield(value)
@@ -358,7 +358,7 @@ private extension ModelNode {
             }
 
             let cancellable = context.transaction {
-                update(initial: true, isSame: nil) {
+                update(initial: true, isSame: nil, context: context) {
                     produce()
                 } onUpdate: { value in
                     var postLockCallbacks: [() -> Void] = []
@@ -409,7 +409,7 @@ private extension Model {
     }
 }
 
-private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Bool)?, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
+private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Bool)?, context: AnyContext? = nil, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
     let last = LockIsolated((value: T?.none, index: 0))
     let updateLock = NSRecursiveLock()
     @Sendable func update(with value: T, index: Int) {
@@ -448,7 +448,42 @@ private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Boo
         }
     }
 
-    guard #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), false else { // Disabled for now, as SwiftUI forces willSet to be called on main thread, and hence all values will be delivered on main.
+    // Determine which path to use
+    // DEFAULT: AccessCollector (historical behavior, works on all threads)
+    // OPT-IN: withObservationTracking (when explicitly requested via option)
+    //
+    // Background: withObservationTracking has threading issues with SwiftUI
+    // (requires main thread delivery), so AccessCollector remains the default.
+    let useWithObservationTracking = context?.options.contains(.useWithObservationTracking) ?? false
+    
+    if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useWithObservationTracking {
+        // withObservationTracking path (opt-in, has threading issues)
+        let hasBeenCancelled = LockIsolated(false)
+
+        @Sendable func observe() -> T {
+            withObservationTracking {
+                access()
+            } onChange: {
+                if hasBeenCancelled.value { return }
+
+                let (value, index) = last.withValue { last in
+                    last.index = last.index &+ 1
+                    return (observe(), last.index)
+                }
+
+                update(with: value, index: index)
+            }
+        }
+
+        updateInitial(with: observe())
+
+        return {
+            hasBeenCancelled.withValue {
+                $0 = true
+            }
+        }
+    } else {
+        // AccessCollector path (default, works on all OS versions and threads)
         let collector = AccessCollector { collector in
             let (value, index) = last.withValue { last in
                 last.index = last.index &+ 1
@@ -477,31 +512,6 @@ private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Boo
 
         return {
             collector.reset { }
-        }
-    }
-
-    let hasBeenCancelled = LockIsolated(false)
-
-    @Sendable func observe() -> T {
-        withObservationTracking {
-            access()
-        } onChange: {
-            if hasBeenCancelled.value { return }
-
-            let (value, index) = last.withValue { last in
-                last.index = last.index &+ 1
-                return (observe(), last.index)
-            }
-
-            update(with: value, index: index)
-        }
-    }
-
-    updateInitial(with: observe())
-
-    return {
-        hasBeenCancelled.withValue {
-            $0 = true
         }
     }
 }
