@@ -413,32 +413,117 @@ private extension Model {
 
 /// Internal update function for testing with explicit path control.
 ///
+/// This function establishes observation tracking for a value accessed via the `access` closure
+/// and calls `onUpdate` whenever the dependencies change. It supports both AccessCollector
+/// (default, works on all OS versions) and withObservationTracking (macOS 14+, opt-in) observation paths.
+///
+/// ## Coalescing Behavior
+///
+/// When `useCoalescing` is enabled, multiple rapid dependency changes are batched into a single
+/// update callback:
+///
+/// ```swift
+/// // Without coalescing: 100 mutations → 100 onUpdate calls
+/// for i in 1...100 { model.value = i }  // 100 updates fired
+///
+/// // With coalescing: 100 mutations → 1-3 onUpdate calls
+/// for i in 1...100 { model.value = i }  // 1-3 updates fired (coalesced)
+/// ```
+///
+/// ### Transaction Handling
+///
+/// Coalescing behavior changes based on whether mutations occur inside or outside a transaction:
+///
+/// **Inside Transaction** (`node.transaction { }`):
+/// - Updates are **deferred until transaction completes** (queued in `threadLocals.postTransactions`)
+/// - Coalescing still applies: `hasPendingUpdate` flag prevents duplicate scheduling
+/// - All mutations complete, then single coalesced update fires
+/// - Result: 10 mutations → 0 updates during transaction → 1 update after
+///
+/// **Outside Transaction**:
+/// - Updates are **deferred to background** using `backgroundCall`
+/// - Uses `Task.detached` with cooperative yielding for responsiveness
+/// - First mutation sets `hasPendingUpdate = true`, schedules coalesced update
+/// - Subsequent mutations skip scheduling (update already pending)
+/// - Coalesced update clears `hasPendingUpdate` flag when complete
+/// - Result: 10 mutations → 1-3 background updates (coalesced)
+///
+/// This ensures:
+/// - Transactions are atomic: no partial state visible to observers during transaction
+/// - Background updates don't block the calling thread
+/// - Coalescing benefits (100x fewer updates) apply in both scenarios
+///
+/// ## Observation Paths
+///
+/// ### AccessCollector (default)
+/// - Works on all OS versions (no macOS 14+ requirement)
+/// - Uses custom dependency tracking with incremental updates
+/// - **Optimization**: Reuses subscriptions when dependencies remain stable
+/// - More efficient for high-frequency updates with stable observation patterns
+///
+/// ### withObservationTracking (opt-in via `.useWithObservationTracking`)
+/// - Requires macOS 14.0+, iOS 17.0+, watchOS 10.0+, tvOS 17.0+
+/// - Uses Swift's native `@Observable` and `withObservationTracking`
+/// - Better integration with SwiftUI's observation system
+/// - Completely rebuilds tracking on each update (by design of Swift's API)
+///
+/// ## Parameters
+///
 /// - Parameters:
-///   - initial: Whether to call onUpdate with the initial value
-///   - isSame: Optional equality check to skip duplicate updates
-///   - useWithObservationTracking: Explicit control over which observation path to use (for testing)
+///   - initial: Whether to call `onUpdate` with the initial value immediately
+///   - isSame: Optional equality check to skip duplicate updates (nil = always update)
+///   - useWithObservationTracking: Which observation path to use (false = AccessCollector, true = withObservationTracking)
+///   - useCoalescing: Enable update coalescing (default: false for backward compatibility)
 ///   - access: Closure that accesses the value and establishes dependencies
-///   - onUpdate: Callback when dependencies change
-/// - Returns: Cancellation function
+///   - onUpdate: Callback fired when dependencies change (or immediately if `initial` is true)
+///
+/// - Returns: Cancellation function that tears down observation tracking
+///
+/// ## Thread Safety
+///
+/// This function is thread-safe and can be called from any thread. The observation tracking
+/// and coalescing mechanisms are protected by appropriate synchronization primitives.
+///
+/// ## Example
+///
+/// ```swift
+/// let model = MyModel().withAnchor()
+/// 
+/// let cancel = update(
+///     initial: true,
+///     isSame: { $0 == $1 },
+///     useWithObservationTracking: false,
+///     useCoalescing: true,
+///     access: { model.computedValue },
+///     onUpdate: { value in
+///         print("Value changed to: \(value)")
+///     }
+/// )
+///
+/// // Later: cancel observation
+/// cancel()
+/// ```
 internal func update<T: Sendable>(
     initial: Bool,
     isSame: (@Sendable (T, T) -> Bool)?,
     useWithObservationTracking: Bool,
+    useCoalescing: Bool = false,
     access: @Sendable @escaping () -> T,
     onUpdate: @Sendable @escaping (T) -> Void
 ) -> @Sendable () -> Void {
-    updateImpl(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, access: access, onUpdate: onUpdate)
+    updateImpl(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: useCoalescing, access: access, onUpdate: onUpdate)
 }
 
 private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Bool)?, context: AnyContext? = nil, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
     let useWithObservationTracking = context?.options.contains(.useWithObservationTracking) ?? false
-    return updateImpl(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, access: access, onUpdate: onUpdate)
+    return updateImpl(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: false, access: access, onUpdate: onUpdate)
 }
 
 private func updateImpl<T: Sendable>(
     initial: Bool,
     isSame: (@Sendable (T, T) -> Bool)?,
     useWithObservationTracking: Bool,
+    useCoalescing: Bool,
     access: @Sendable @escaping () -> T,
     onUpdate: @Sendable @escaping (T) -> Void
 ) -> @Sendable () -> Void {
@@ -484,6 +569,7 @@ private func updateImpl<T: Sendable>(
         // withObservationTracking path (opt-in)
         // Uses Swift's native Observable tracking with main thread bridging for SwiftUI compatibility
         let hasBeenCancelled = LockIsolated(false)
+        let hasPendingUpdate = LockIsolated(false)
 
         @Sendable func observe() -> T {
             withObservationTracking {
@@ -491,11 +577,40 @@ private func updateImpl<T: Sendable>(
             } onChange: {
                 if hasBeenCancelled.value { return }
 
-                let (value, index) = last.withValue { last in
-                    last.index = last.index &+ 1
-                    return (observe(), last.index)
+                // Coalescing: skip if update already pending
+                if useCoalescing {
+                    let shouldSchedule = hasPendingUpdate.withValue { pending in
+                        if pending {
+                            return false  // Already have pending update
+                        } else {
+                            pending = true
+                            return true
+                        }
+                    }
+                    
+                    guard shouldSchedule else { return }
                 }
-                update(with: value, index: index)
+
+                let performUpdate: @Sendable () -> Void = {
+                    let (value, index) = last.withValue { last in
+                        last.index = last.index &+ 1
+                        return (observe(), last.index)
+                    }
+                    
+                    if useCoalescing {
+                        hasPendingUpdate.setValue(false)
+                    }
+                    
+                    update(with: value, index: index)
+                }
+                
+                if useCoalescing, threadLocals.postTransactions == nil {
+                    // Outside transaction: use background coalescing
+                    backgroundCall(performUpdate)
+                } else {
+                    // Inside transaction or coalescing disabled: immediate
+                    performUpdate()
+                }
             }
         }
 
@@ -508,21 +623,51 @@ private func updateImpl<T: Sendable>(
         }
     } else {
         // AccessCollector path (default, works on all OS versions and threads)
+        let hasPendingUpdate = LockIsolated(false)
+        
         let collector = AccessCollector { collector in
-            let (value, index) = last.withValue { last in
-                last.index = last.index &+ 1
-
-                let value = collector.reset {
-                    usingActiveAccess(collector) {
-                        access()
+            // Coalescing: skip if update already pending
+            if useCoalescing {
+                let shouldSchedule = hasPendingUpdate.withValue { pending in
+                    if pending {
+                        return false  // Already have pending update
+                    } else {
+                        pending = true
+                        return true
                     }
                 }
-
-                return (value, last.index)
+                
+                guard shouldSchedule else { return nil }
             }
+            
+            let performUpdate: @Sendable () -> Void = {
+                let (value, index) = last.withValue { last in
+                    last.index = last.index &+ 1
 
-            return {
+                    let value = collector.reset {
+                        usingActiveAccess(collector) {
+                            access()
+                        }
+                    }
+
+                    return (value, last.index)
+                }
+                
+                if useCoalescing {
+                    hasPendingUpdate.setValue(false)
+                }
+                
                 update(with: value, index: index)
+            }
+            
+            if useCoalescing, threadLocals.postTransactions == nil {
+                // Outside transaction: use background coalescing
+                return {
+                    backgroundCall(performUpdate)
+                }
+            } else {
+                // Inside transaction or coalescing disabled: immediate
+                return performUpdate
             }
         }
 

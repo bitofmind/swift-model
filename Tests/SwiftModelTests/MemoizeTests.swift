@@ -466,6 +466,129 @@ struct MemoizeTests {
         // Should not crash and should have valid state
         #expect(model.computed >= 0)
     }
+    
+    // MARK: - Branching Dependency Tests
+    
+    /// Test memoize with branching dependencies that switch between paths
+    @Test(arguments: UpdatePath.allCases)
+    func testMemoizeWithBranchingDependencies(updatePath: UpdatePath) async throws {
+        let (model, tester) = DynamicDependencyModel().andTester(options: updatePath.options)
+        tester.exhaustivity = .off
+        
+        // Initial: useA=true, reads valueA (10)
+        await tester.assert {
+            model.conditional == 10
+            model.computeCount.value == 1
+        }
+        
+        // Mutate valueA (currently observed path)
+        model.valueA = 15
+        await tester.assert {
+            model.conditional == 15
+            model.computeCount.value == 2
+        }
+        
+        // Mutate valueB (NOT observed) - should NOT recompute
+        model.valueB = 25
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await tester.assert {
+            model.conditional == 15  // Still using valueA
+            model.computeCount.value == 2  // No recompute
+        }
+        
+        // Switch branch to valueB
+        model.useA = false
+        await tester.assert {
+            model.conditional == 25  // Now using valueB
+            model.computeCount.value == 3
+        }
+        
+        // Mutate valueB (now observed path)
+        model.valueB = 30
+        await tester.assert {
+            model.conditional == 30
+            model.computeCount.value == 4
+        }
+        
+        // Mutate valueA (NOT observed anymore) - should NOT recompute
+        model.valueA = 99
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await tester.assert {
+            model.conditional == 30  // Still using valueB
+            model.computeCount.value == 4  // No recompute
+        }
+    }
+    
+    /// Test memoize with branching dependencies using withAnchor
+    @Test(arguments: UpdatePath.allCases)
+    func testMemoizeWithBranchingDependencies_WithAnchor(updatePath: UpdatePath) async throws {
+        let model = DynamicDependencyModel().withAnchor(options: updatePath.options)
+        
+        // Initial: useA=true, reads valueA (10)
+        #expect(model.conditional == 10)
+        #expect(model.computeCount.value == 1)
+        
+        // Mutate valueA multiple times
+        model.valueA = 11
+        model.valueA = 12
+        model.valueA = 13
+        
+        try await Task.sleep(nanoseconds: 100_000_000)
+        
+        // Should see final value with some recomputations
+        #expect(model.conditional == 13)
+        #expect(model.computeCount.value >= 2, "Should have recomputed for valueA changes")
+        
+        let countBeforeSwitch = model.computeCount.value
+        
+        // Switch branch
+        model.useA = false
+        
+        try await Task.sleep(nanoseconds: 100_000_000)
+        
+        #expect(model.conditional == 20, "Should now use valueB")
+        #expect(model.computeCount.value > countBeforeSwitch, "Should recompute on branch switch")
+        
+        // Mutate valueB multiple times
+        let countBeforeValueB = model.computeCount.value
+        model.valueB = 21
+        model.valueB = 22
+        model.valueB = 23
+        
+        try await Task.sleep(nanoseconds: 100_000_000)
+        
+        #expect(model.conditional == 23)
+        #expect(model.computeCount.value > countBeforeValueB, "Should have recomputed for valueB changes")
+    }
+    
+    /// Test nested model mutations with memoize
+    @Test(arguments: UpdatePath.allCases)
+    func testMemoizeWithNestedModelMutations(updatePath: UpdatePath) async throws {
+        let model = BulkUpdateModel(itemCount: 5).withAnchor(options: updatePath.options)
+        
+        // Initial: all items have value 0, sorted is empty computation
+        #expect(model.sorted.count == 5)
+        #expect(model.sortComputeCount.value == 1, "Should compute once initially")
+        
+        let initialComputeCount = model.sortComputeCount.value
+        
+        // Mutate all items in sequence (like in the example)
+        for i in 0..<model.items.count {
+            model.items[i].value += 1
+        }
+        
+        // Wait for updates to propagate
+        try await Task.sleep(nanoseconds: 150_000_000)
+        
+        // Access sorted to trigger recomputation
+        let sorted = model.sorted
+        
+        #expect(sorted.allSatisfy { $0.value == 1 }, "All items should have value 1")
+        #expect(model.sortComputeCount.value > initialComputeCount, "Should have recomputed after mutations")
+        
+        // The exact count depends on coalescing behavior, but should be > initial
+        print("Nested mutations: \(model.items.count) mutations → \(model.sortComputeCount.value - initialComputeCount) recomputations")
+    }
 }
 
 // MARK: - Test Models

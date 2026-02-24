@@ -214,3 +214,42 @@ struct MainCalls {
 
 let mainCall = MainCalls()
 
+// Coalesce calls to background threads.
+struct BackgroundCalls {
+    private let calls = LockIsolated<(task: Task<(), Never>, calls: [@Sendable () -> Void])?>(nil)
+    func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
+        calls.withValue {
+            if $0 == nil {
+                $0 = (Task.detached(priority: .userInitiated) {
+                    while !Task.isCancelled {
+                        let calls: [@Sendable () -> Void] = calls.withValue {
+                            if $0 == nil {
+                                return []
+                            } else if $0!.calls.isEmpty {
+                                $0!.task.cancel()
+                                $0 = nil
+                                return []
+                            }
+
+                            let calls = $0!.calls
+                            $0!.calls.removeAll()
+                            return calls
+                        }
+
+                        for call in calls {
+                            call()
+                        }
+
+                        await Task.yield()
+                    }
+                }, calls: [callback])
+            } else {
+                $0!.calls.append(callback)
+            }
+        }
+    }
+}
+
+let backgroundCall = BackgroundCalls()
+
+
