@@ -138,7 +138,7 @@ struct ModelContextTests {
         }
 
         for await value in stream {
-            print(value)
+            _ = value
         }
     }
 
@@ -161,7 +161,6 @@ struct ModelContextTests {
     var child: ChildModel = ChildModel()
 
     func onActivate() {
-        print("test activate")
         activateCount += 1
         totalCount += 2*activateCount
 
@@ -170,7 +169,6 @@ struct ModelContextTests {
             for await count in values {
                 totalCount *= 3*count
             }
-            print("for loop ended")
         }
     }
 
@@ -179,7 +177,6 @@ struct ModelContextTests {
         var grandChild: GrandChildModel = GrandChildModel()
 
         func onActivate() {
-            print("child activate")
             activateCount += 2
         }
 
@@ -191,7 +188,6 @@ struct ModelContextTests {
             }
 
             func onActivate() {
-                print("grandchild activate")
                 activateCount += 10
             }
         }

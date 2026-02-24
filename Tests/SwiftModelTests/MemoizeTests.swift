@@ -110,8 +110,7 @@ struct MemoizeTests {
         _ = model.sorted
 
         // Document current behavior: each mutation may trigger update
-        let totalAccesses = model.sortAccessCount.value - initialAccess
-        print("Accesses without transaction: \(totalAccesses)")
+        _ = model.sortAccessCount.value - initialAccess
 
         // Verify correctness
         #expect(model.sorted.allSatisfy { $0.value == 1 })
@@ -134,12 +133,8 @@ struct MemoizeTests {
         _ = model.sorted
 
         // With dual registrar, observation is synchronous
-        let totalAccesses = model.sortAccessCount.value - initialAccess
-        let totalComputes = model.sortComputeCount.value - initialCompute
-        
-        print("📊 Bulk updates WITHOUT transaction (WithAnchor, \(updatePath)):")
-        print("   Accesses: \(totalAccesses)")
-        print("   Computes: \(totalComputes)")
+        _ = model.sortAccessCount.value - initialAccess
+        _ = model.sortComputeCount.value - initialCompute
         
         // Document current behavior for coalescing analysis
         // This will help track progress when we implement coalescing
@@ -164,8 +159,7 @@ struct MemoizeTests {
         // Access the sorted value
         _ = model.sorted
 
-        let totalAccesses = model.sortAccessCount.value - initialAccess
-        print("Accesses with transaction: \(totalAccesses)")
+        _ = model.sortAccessCount.value - initialAccess
 
         // Verify correctness
         #expect(model.sorted.allSatisfy { $0.value == 1 })
@@ -188,12 +182,8 @@ struct MemoizeTests {
         // Access the sorted value
         _ = model.sorted
 
-        let totalAccesses = model.sortAccessCount.value - initialAccess
-        let totalComputes = model.sortComputeCount.value - initialCompute
-        
-        print("📊 Bulk updates WITH transaction (WithAnchor, \(updatePath)):")
-        print("   Accesses: \(totalAccesses)")
-        print("   Computes: \(totalComputes)")
+        _ = model.sortAccessCount.value - initialAccess
+        _ = model.sortComputeCount.value - initialCompute
         
         // Document current behavior for coalescing analysis
         // Goal: With coalescing, we should see computeCount = 1 regardless of mutation count
@@ -314,31 +304,25 @@ struct MemoizeTests {
         let model = TransactionDeferModel().withAnchor(options: updatePath.options)
         
         // Initial access to setup memoization
-        print("🟢 Initial access")
         #expect(model.computed == 0)
         // Skip count check - just documenting behavior
         // #expect(model.computeCount == 1)
         
         // Bulk update in transaction
-        print("🟡 Starting transaction with 100 mutations")
         model.transaction {
             for i in 0..<100 {
                 model.values.append(i)
             }
         }
-        print("🟡 Transaction ended")
         
         // The defer block should have triggered recomputation
         // Check how many times it recomputed
-        let computeCountAfterTransaction = model.computeCount.value
-        print("🔵 Computations after transaction: \(computeCountAfterTransaction - 1)")
+        _ = model.computeCount.value
         // Documenting behavior - not an error
         // Issue.record("Computed \(computeCountAfterTransaction - 1) times during transaction defer")
         
         // Access after transaction should use cached value
-        print("🟢 Accessing after transaction")
         _ = model.computed
-        print("🔵 Final compute count: \(model.computeCount)")
         // Skip assertion - just documenting behavior via Issue.record above
         // #expect(model.computeCount == computeCountAfterTransaction)
     }
@@ -359,15 +343,11 @@ struct MemoizeTests {
         }
         
         // Document how many times it recomputed during/after transaction
-        let computesAfterTransaction = model.computeCount.value - 1
-        print("📊 Transaction defer recomputations (WithAnchor, \(updatePath)): \(computesAfterTransaction)")
-        print("   Goal with coalescing: 0 recomputations during transaction")
+        _ = model.computeCount.value - 1
         
         // Access after transaction
         _ = model.computed
-        let finalComputes = model.computeCount.value - 1
-        print("📊 After final access (WithAnchor, \(updatePath)): \(finalComputes) total computes")
-        print("   Goal: 1 compute total (initial access only, deferred until needed)")
+        _ = model.computeCount.value - 1
     }
 
     @Test(arguments: UpdatePath.allCases)
@@ -393,9 +373,7 @@ struct MemoizeTests {
             }
         }
         
-        let computesDuringTransaction = model.computeCount.value - 1
-        print("🔴 Computed \(computesDuringTransaction) times during mutation loop")
-        print("🔴 Access log length: \(model.accessLog.value.count)")
+        _ = model.computeCount.value - 1
         // Documenting behavior - not an error
         // Issue.record("CURRENT: Computed \(computesDuringTransaction) times when accessed during mutations")
         
@@ -426,12 +404,7 @@ struct MemoizeTests {
             }
         }
         
-        let computesDuringTransaction = model.computeCount.value - 1
-        print("📊 Access during mutation (WithAnchor, \(updatePath)):")
-        print("   Computed: \(computesDuringTransaction) times during transaction")
-        print("   Accessed: \(model.accessLog.value.count) times")
-        print("   Goal with coalescing: Compute 0 times during, return stale values")
-        print("   Then: 1 final recomputation after transaction completes")
+        _ = model.computeCount.value - 1
         
         // This is the pathological case that coalescing will optimize
         // Current: Many recomputations during transaction
@@ -533,7 +506,8 @@ struct MemoizeTests {
         model.valueA = 12
         model.valueA = 13
         
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // Wait for final value to propagate
+        try await waitUntil(model.conditional == 13)
         
         // Should see final value with some recomputations
         #expect(model.conditional == 13)
@@ -544,7 +518,8 @@ struct MemoizeTests {
         // Switch branch
         model.useA = false
         
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // Wait for branch switch to propagate
+        try await waitUntil(model.conditional == 20)
         
         #expect(model.conditional == 20, "Should now use valueB")
         #expect(model.computeCount.value > countBeforeSwitch, "Should recompute on branch switch")
@@ -555,7 +530,8 @@ struct MemoizeTests {
         model.valueB = 22
         model.valueB = 23
         
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // Wait for final value to propagate
+        try await waitUntil(model.conditional == 23)
         
         #expect(model.conditional == 23)
         #expect(model.computeCount.value > countBeforeValueB, "Should have recomputed for valueB changes")
@@ -577,17 +553,11 @@ struct MemoizeTests {
             model.items[i].value += 1
         }
         
-        // Wait for updates to propagate
-        try await Task.sleep(nanoseconds: 150_000_000)
-        
-        // Access sorted to trigger recomputation
+        // Access sorted to trigger recomputation (this will happen synchronously)
         let sorted = model.sorted
         
         #expect(sorted.allSatisfy { $0.value == 1 }, "All items should have value 1")
         #expect(model.sortComputeCount.value > initialComputeCount, "Should have recomputed after mutations")
-        
-        // The exact count depends on coalescing behavior, but should be > initial
-        print("Nested mutations: \(model.items.count) mutations → \(model.sortComputeCount.value - initialComputeCount) recomputations")
     }
 }
 
@@ -723,8 +693,7 @@ struct MemoizeTests {
     var computed: Int {
         computeCount.withValue { $0 += 1 }
         return node.memoize(for: "computed") {
-            print("🔴 RECOMPUTING (count: \(computeCount.value))")
-            return values.reduce(0, +)
+            values.reduce(0, +)
         }
     }
 }

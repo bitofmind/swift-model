@@ -56,7 +56,6 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     deinit {
-        //print("Context deinit: \(type(of: self))")
     }
 
     override func onActivate() -> Bool {
@@ -333,7 +332,6 @@ extension Context {
         }
 
         deinit {
-            //print("Context.Reference deinit: \(type(of: self))")
         }
 
         var lifetime: ModelLifetime {

@@ -103,6 +103,44 @@ extension DependencyValues {
     }
 }
 
+struct WaitTimeoutError: Error, CustomStringConvertible {
+    let file: StaticString
+    let line: UInt
+    let timeoutSeconds: Double
+    
+    var description: String {
+        "Timeout after \(timeoutSeconds)s waiting for condition at \(file):\(line)"
+    }
+}
+
+/// Poll until a condition becomes true
+/// - Parameters:
+///   - condition: The condition to check (autoclosure)
+///   - pollInterval: How often to check the condition in nanoseconds (default: 1ms)
+///   - timeout: Maximum time to wait in nanoseconds (default: 5s)
+/// - Throws: WaitTimeoutError if timeout is reached before condition becomes true
+func waitUntil(
+    _ condition: @autoclosure () -> Bool,
+    pollInterval: UInt64 = 1_000_000,  // 1ms
+    timeout: UInt64 = 5_000_000_000,   // 5s
+    file: StaticString = #file,
+    line: UInt = #line
+) async throws {
+    let start = ContinuousClock.now
+    while !condition() {
+        try await Task.sleep(nanoseconds: pollInterval)
+        let elapsed = ContinuousClock.now - start
+        let elapsedNanos = UInt64(elapsed.components.seconds) * 1_000_000_000 + UInt64(elapsed.components.attoseconds / 1_000_000_000)
+        if elapsedNanos > timeout {
+            throw WaitTimeoutError(
+                file: file,
+                line: line,
+                timeoutSeconds: Double(timeout) / 1_000_000_000.0
+            )
+        }
+    }
+}
+
 /// Test parameter for validating both observation mechanisms
 enum ObservationPath: String, CaseIterable {
     case observationRegistrar

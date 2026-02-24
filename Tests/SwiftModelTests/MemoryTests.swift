@@ -182,7 +182,6 @@ private struct Child {
 
 private final class Object: @unchecked Sendable {
     deinit {
-        print()
     }
 }
 

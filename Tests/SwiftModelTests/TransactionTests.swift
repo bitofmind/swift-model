@@ -24,14 +24,14 @@ struct TransactionTests {
         }
 
         // Wait for initial observation
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil(updateCount.value == 1)
         #expect(updateCount.value == 1)  // Initial value
 
         // Without transaction: multiple updates
         model.balance = 100
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil(updateCount.value == 2)
         model.balance = 200
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil(updateCount.value == 3)
         #expect(updateCount.value == 3)  // Initial + 2 updates
 
         // With transaction: single atomic update
@@ -41,7 +41,7 @@ struct TransactionTests {
             model.balance = 400
             model.balance = 500
         }
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil(updateCount.value == before + 1)
         #expect(updateCount.value == before + 1)  // Only 1 update for entire transaction
     }
 
@@ -58,16 +58,17 @@ struct TransactionTests {
         }
 
         // Wait for initial observation
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil(invariantViolations.value == 0)
         #expect(invariantViolations.value == 0)
 
         // Without transaction: invariant can be violated mid-update
         model.partA = 50
         // At this point, partA=50, partB=0, total=0 (INCONSISTENT)
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil(invariantViolations.value > 0)
         #expect(invariantViolations.value > 0)  // Invariant violated!
 
         model.total = 50  // Fix it
+        // Give time for fix to propagate
         try await Task.sleep(for: .milliseconds(10))
 
         // With transaction: invariant never violated
@@ -90,7 +91,7 @@ struct TransactionTests {
             updateCount.withValue { $0 += 1 }
         }
 
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil(updateCount.value == 1)
         #expect(updateCount.value == 1)  // Initial
 
         // Nested transactions should behave as single transaction
@@ -105,7 +106,7 @@ struct TransactionTests {
             model.value = 40
         }
 
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil(updateCount.value == 2)
         #expect(updateCount.value == 2)  // Initial + 1 (not 4)
         #expect(model.value == 40)
     }
@@ -173,8 +174,6 @@ struct TransactionTests {
 
         // External reads should see either old value (100) or final value (400)
         // But NEVER intermediate values (200, 300) due to lock
-        print("Observed values: \(observedValues.value)")
-
         for val in observedValues.value {
             #expect(val == 100 || val == 400)
         }
@@ -193,7 +192,7 @@ struct TransactionTests {
             notifiedValues.withValue { $0.append(value) }
         }
 
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil(notificationCount.value == 1)
 
         // Many mutations in transaction
         model.transaction {
@@ -202,7 +201,7 @@ struct TransactionTests {
             }
         }
 
-        try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil(notificationCount.value == 2)
 
         // Should receive exactly 2 notifications: initial + final
         #expect(notificationCount.value == 2)
