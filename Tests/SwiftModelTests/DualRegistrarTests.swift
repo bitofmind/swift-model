@@ -168,7 +168,7 @@ struct DualRegistrarTests {
         await observationTask.value
 
         // Initial access should have happened
-        await tester.assert { model.accessCount == 1 }
+        #expect(model.accessCount.value == 1, "Should have accessed once during setup")
 
         // Change underlying value
         model.value = 5
@@ -179,7 +179,7 @@ struct DualRegistrarTests {
         }
 
         #expect(changeDetected.value, "Background observer should have detected change")
-        #expect(model.accessCount >= 1, "Memoized property should have been accessed")
+        #expect(model.accessCount.value >= 1, "Memoized property should have been accessed")
     }
 
     /// Same test as above but using old .withAnchor() style
@@ -201,14 +201,17 @@ struct DualRegistrarTests {
         await observationTask.value
 
         // Initial access should have happened
-        #expect(model.accessCount == 1, "Should have accessed doubled once during setup")
+        #expect(model.accessCount.value == 1, "Should have accessed doubled once during setup")
+        #expect(model.computeCount.value == 1, "Should have computed once during setup")
 
         // Change underlying value
         model.value = 5
 
         // Background observer should detect change synchronously - no polling!
         #expect(changeDetected.value, "Background observer should have detected change synchronously")
-        #expect(model.accessCount >= 1, "Memoized property should have been accessed")
+        // Note: accessCount and computeCount may have increased due to change notification
+        #expect(model.accessCount.value >= 1, "Should have accessed at least once")
+        #expect(model.computeCount.value >= 1, "Should have computed at least once")
     }
 }
 
@@ -220,12 +223,14 @@ struct DualRegistrarTests {
 
 @Model private struct MemoizeModel {
     var value = 0
-    var accessCount = 0
+    let accessCount = LockIsolated(0)
+    let computeCount = LockIsolated(0)
 
     var doubled: Int {
-        accessCount += 1
+        accessCount.withValue { $0 += 1 }
         return node.memoize(for: "doubled") {
-            value * 2
+            computeCount.withValue { $0 += 1 }
+            return value * 2
         }
     }
 }

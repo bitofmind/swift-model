@@ -1,5 +1,6 @@
 import Testing
 import Observation
+import ConcurrencyExtras
 @testable import SwiftModel
 
 /// Comprehensive tests for memoization behavior, particularly around performance and correctness
@@ -16,15 +17,17 @@ struct MemoizeTests {
         let first = model.doubled
         await tester.assert {
             first == 0
-            model.accessCount == 1
         }
+        #expect(model.accessCount.value == 1, "First access")
+        #expect(model.computeCount.value == 1, "First computation")
 
         // Second access should use cache (no recomputation)
         let second = model.doubled
         await tester.assert {
             second == 0
-            model.accessCount == 2  // Access count increases but computation doesn't
         }
+        #expect(model.accessCount.value == 2, "Second access")
+        #expect(model.computeCount.value == 1, "No recomputation (cached)")
 
         // Change dependency
         model.value = 5
@@ -35,8 +38,9 @@ struct MemoizeTests {
             model.doubled == 10
         }
         
-        // Verify it recomputed (accessCount will be higher due to polling, but must be > 2)
-        #expect(model.accessCount > 2, "Should have recomputed after value change")
+        // Verify it recomputed (accessCount will be higher due to polling)
+        #expect(model.accessCount.value > 2, "Should have recomputed after value change")
+        #expect(model.computeCount.value == 2, "Should have computed twice total")
     }
 
     @Test(arguments: UpdatePath.allCases)
@@ -46,12 +50,14 @@ struct MemoizeTests {
         // First access should compute
         let first = model.doubled
         #expect(first == 0)
-        #expect(model.accessCount == 1)
+        #expect(model.accessCount.value == 1, "First access")
+        #expect(model.computeCount.value == 1, "First computation")
 
         // Second access should use cache (no recomputation)
         let second = model.doubled
         #expect(second == 0)
-        #expect(model.accessCount == 2)
+        #expect(model.accessCount.value == 2, "Second access")
+        #expect(model.computeCount.value == 1, "No recomputation (cached)")
 
         // Change dependency
         model.value = 5
@@ -59,32 +65,31 @@ struct MemoizeTests {
 
         // With dual registrar, observation is synchronous on background threads
         #expect(model.doubled == 10, "Should recompute synchronously")
-        #expect(model.accessCount > 2, "Should have recomputed after value change")
+        #expect(model.accessCount.value == 3, "Third access")
+        #expect(model.computeCount.value == 2, "Second computation after invalidation")
     }
 
     @Test func testMemoizeWithEquatableSkipsIdenticalValues() async throws {
-        let model = EquatableMemoizeModel().withAnchor()
+        let (model, tester) = EquatableMemoizeModel().andTester()
+        tester.exhaustivity = .off
 
         // Wait for initial observation
-        try await Task.sleep(for: .milliseconds(10))
-        #expect(model.updates == [0])
+        await tester.assert { model.updates == [0] }
 
         // Change dependencies - product changes from 0 to 1
         model.value = 1
-        try await Task.sleep(for: .milliseconds(10))
-        #expect(model.updates == [0, 1])
+        await tester.assert { model.updates == [0, 1] }
 
         // Change to same value (1 * 1 = 1, still 1)
         model.multiplier = 1
-        try await Task.sleep(for: .milliseconds(10))
-
-        // The Observed stream with removeDuplicates should filter this
-        #expect(model.updates == [0, 1])  // No update, value still 1
+        // The Observed stream with removeDuplicates should filter this synchronously
+        // Give async callbacks a chance to fire (if they incorrectly would)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(model.updates == [0, 1])  // No update, value still 1 (duplicate filtered)
 
         // Change to different value (1 * 2 = 2)
         model.multiplier = 2
-        try await Task.sleep(for: .milliseconds(10))
-        #expect(model.updates == [0, 1, 2])
+        await tester.assert { model.updates == [0, 1, 2] }
     }
 
     // MARK: - Bulk Update Performance (The Critical Issue)
@@ -94,7 +99,7 @@ struct MemoizeTests {
         let model = BulkUpdateModel(itemCount: 100).withAnchor(options: updatePath.options)
 
         // Track accesses
-        let initialAccess = model.sortAccessCount
+        let initialAccess = model.sortAccessCount.value
 
         // Modify all items without transaction
         for i in 0..<model.items.count {
@@ -105,7 +110,7 @@ struct MemoizeTests {
         _ = model.sorted
 
         // Document current behavior: each mutation may trigger update
-        let totalAccesses = model.sortAccessCount - initialAccess
+        let totalAccesses = model.sortAccessCount.value - initialAccess
         print("Accesses without transaction: \(totalAccesses)")
 
         // Verify correctness
@@ -116,8 +121,9 @@ struct MemoizeTests {
     func testBulkUpdatesWithoutTransaction_WithAnchor(updatePath: UpdatePath) async throws {
         let model = BulkUpdateModel(itemCount: 100).withAnchor(options: updatePath.options)
 
-        // Track accesses
-        let initialAccess = model.sortAccessCount
+        // Track accesses and computations
+        let initialAccess = model.sortAccessCount.value
+        let initialCompute = model.sortComputeCount.value
 
         // Modify all items without transaction
         for i in 0..<model.items.count {
@@ -127,9 +133,16 @@ struct MemoizeTests {
         // Access the sorted value
         _ = model.sorted
 
-        // Document current behavior: each mutation may trigger update
-        let totalAccesses = model.sortAccessCount - initialAccess
-        print("Accesses without transaction (WithAnchor): \(totalAccesses)")
+        // With dual registrar, observation is synchronous
+        let totalAccesses = model.sortAccessCount.value - initialAccess
+        let totalComputes = model.sortComputeCount.value - initialCompute
+        
+        print("📊 Bulk updates WITHOUT transaction (WithAnchor, \(updatePath)):")
+        print("   Accesses: \(totalAccesses)")
+        print("   Computes: \(totalComputes)")
+        
+        // Document current behavior for coalescing analysis
+        // This will help track progress when we implement coalescing
 
         // Verify correctness
         #expect(model.sorted.allSatisfy { $0.value == 1 })
@@ -139,7 +152,7 @@ struct MemoizeTests {
     func testBulkUpdatesWithTransaction(updatePath: UpdatePath) async throws {
         let model = BulkUpdateModel(itemCount: 100).withAnchor(options: updatePath.options)
 
-        let initialAccess = model.sortAccessCount
+        let initialAccess = model.sortAccessCount.value
 
         // Modify all items WITH transaction
         model.transaction {
@@ -151,7 +164,7 @@ struct MemoizeTests {
         // Access the sorted value
         _ = model.sorted
 
-        let totalAccesses = model.sortAccessCount - initialAccess
+        let totalAccesses = model.sortAccessCount.value - initialAccess
         print("Accesses with transaction: \(totalAccesses)")
 
         // Verify correctness
@@ -162,7 +175,8 @@ struct MemoizeTests {
     func testBulkUpdatesWithTransaction_WithAnchor(updatePath: UpdatePath) async throws {
         let model = BulkUpdateModel(itemCount: 100).withAnchor(options: updatePath.options)
 
-        let initialAccess = model.sortAccessCount
+        let initialAccess = model.sortAccessCount.value
+        let initialCompute = model.sortComputeCount.value
 
         // Modify all items WITH transaction
         model.transaction {
@@ -174,8 +188,15 @@ struct MemoizeTests {
         // Access the sorted value
         _ = model.sorted
 
-        let totalAccesses = model.sortAccessCount - initialAccess
-        print("Accesses with transaction (WithAnchor): \(totalAccesses)")
+        let totalAccesses = model.sortAccessCount.value - initialAccess
+        let totalComputes = model.sortComputeCount.value - initialCompute
+        
+        print("📊 Bulk updates WITH transaction (WithAnchor, \(updatePath)):")
+        print("   Accesses: \(totalAccesses)")
+        print("   Computes: \(totalComputes)")
+        
+        // Document current behavior for coalescing analysis
+        // Goal: With coalescing, we should see computeCount = 1 regardless of mutation count
 
         // Verify correctness
         #expect(model.sorted.allSatisfy { $0.value == 1 })
@@ -268,18 +289,22 @@ struct MemoizeTests {
         let model = DynamicDependencyModel().withAnchor(options: updatePath.options)
 
         #expect(model.conditional == 10)  // Uses valueA
+        #expect(model.computeCount.value == 1, "First computation")
 
         model.useA = false
         #expect(model.conditional == 20)  // Uses valueB, synchronous with dual registrar
+        #expect(model.computeCount.value == 2, "Recomputed due to useA change")
 
         // Change valueA (not currently tracked)
         model.valueA = 100
         #expect(model.valueA == 100)
         #expect(model.conditional == 20)  // Should not change
+        #expect(model.computeCount.value == 2, "No recomputation (valueA not tracked)")
 
         // Change valueB (currently tracked)
         model.valueB = 200
         #expect(model.conditional == 200)  // Should update synchronously
+        #expect(model.computeCount.value == 3, "Recomputed due to valueB change (tracked)")
     }
 
     // MARK: - Transaction Defer Block Issue
@@ -305,7 +330,7 @@ struct MemoizeTests {
         
         // The defer block should have triggered recomputation
         // Check how many times it recomputed
-        let computeCountAfterTransaction = model.computeCount
+        let computeCountAfterTransaction = model.computeCount.value
         print("🔵 Computations after transaction: \(computeCountAfterTransaction - 1)")
         // Documenting behavior - not an error
         // Issue.record("Computed \(computeCountAfterTransaction - 1) times during transaction defer")
@@ -323,26 +348,26 @@ struct MemoizeTests {
         let model = TransactionDeferModel().withAnchor(options: updatePath.options)
         
         // Initial access to setup memoization
-        print("🟢 Initial access (WithAnchor)")
         #expect(model.computed == 0)
+        #expect(model.computeCount.value == 1, "Initial computation")
         
         // Bulk update in transaction
-        print("🟡 Starting transaction with 100 mutations (WithAnchor)")
         model.transaction {
             for i in 0..<100 {
                 model.values.append(i)
             }
         }
-        print("🟡 Transaction ended (WithAnchor)")
         
-        // The defer block should have triggered recomputation
-        let computeCountAfterTransaction = model.computeCount
-        print("🔵 Computations after transaction (WithAnchor): \(computeCountAfterTransaction - 1)")
+        // Document how many times it recomputed during/after transaction
+        let computesAfterTransaction = model.computeCount.value - 1
+        print("📊 Transaction defer recomputations (WithAnchor, \(updatePath)): \(computesAfterTransaction)")
+        print("   Goal with coalescing: 0 recomputations during transaction")
         
-        // Access after transaction should use cached value
-        print("🟢 Accessing after transaction (WithAnchor)")
+        // Access after transaction
         _ = model.computed
-        print("🔵 Final compute count (WithAnchor): \(model.computeCount)")
+        let finalComputes = model.computeCount.value - 1
+        print("📊 After final access (WithAnchor, \(updatePath)): \(finalComputes) total computes")
+        print("   Goal: 1 compute total (initial access only, deferred until needed)")
     }
 
     @Test(arguments: UpdatePath.allCases)
@@ -352,8 +377,8 @@ struct MemoizeTests {
         // Initial access
         #expect(model.computed == 0)
         // Skip count check - just documenting behavior
-        // #expect(model.computeCount == 1)
-        model.accessLog.removeAll()
+        // #expect(model.computeCount.value == 1)
+        model.accessLog.withValue { $0.removeAll() }
         
         // THIS REPRODUCES THE USER'S SCENARIO:
         // Accessing the memoized value DURING mutations
@@ -368,9 +393,9 @@ struct MemoizeTests {
             }
         }
         
-        let computesDuringTransaction = model.computeCount - 1
+        let computesDuringTransaction = model.computeCount.value - 1
         print("🔴 Computed \(computesDuringTransaction) times during mutation loop")
-        print("🔴 Access log length: \(model.accessLog.count)")
+        print("🔴 Access log length: \(model.accessLog.value.count)")
         // Documenting behavior - not an error
         // Issue.record("CURRENT: Computed \(computesDuringTransaction) times when accessed during mutations")
         
@@ -387,7 +412,8 @@ struct MemoizeTests {
         
         // Initial access
         #expect(model.computed == 0)
-        model.accessLog.removeAll()
+        #expect(model.computeCount.value == 1, "Initial computation")
+        model.accessLog.withValue { $0.removeAll() }
         
         // THIS REPRODUCES THE USER'S SCENARIO:
         // Accessing the memoized value DURING mutations
@@ -400,15 +426,16 @@ struct MemoizeTests {
             }
         }
         
-        let computesDuringTransaction = model.computeCount - 1
-        print("🔴 Computed \(computesDuringTransaction) times during mutation loop (WithAnchor)")
-        print("🔴 Access log length (WithAnchor): \(model.accessLog.count)")
+        let computesDuringTransaction = model.computeCount.value - 1
+        print("📊 Access during mutation (WithAnchor, \(updatePath)):")
+        print("   Computed: \(computesDuringTransaction) times during transaction")
+        print("   Accessed: \(model.accessLog.value.count) times")
+        print("   Goal with coalescing: Compute 0 times during, return stale values")
+        print("   Then: 1 final recomputation after transaction completes")
         
-        // DESIRED BEHAVIOR (with transaction-scoped staleness):
-        // - Compute count: 1 (only at transaction end)
-        // - Access log: ["accessed" x 11, "computed" x 1]
-        // 
-        // This is the pathological case that needs optimization
+        // This is the pathological case that coalescing will optimize
+        // Current: Many recomputations during transaction
+        // Goal: Return stale/cached values during transaction, recompute once after
     }
 
     // MARK: - Thread Safety
@@ -445,12 +472,14 @@ struct MemoizeTests {
 
 @Model private struct BasicMemoizeModel {
     var value = 0
-    var accessCount = 0
+    let accessCount = LockIsolated(0)
+    let computeCount = LockIsolated(0)
 
     var doubled: Int {
-        accessCount += 1
+        accessCount.withValue { $0 += 1 }
         return node.memoize(for: "doubled") {
-            value * 2
+            computeCount.withValue { $0 += 1 }
+            return value * 2
         }
     }
 }
@@ -480,16 +509,18 @@ struct MemoizeTests {
     }
 
     var items: [Item] = []
-    var sortAccessCount = 0
+    let sortAccessCount = LockIsolated(0)
+    let sortComputeCount = LockIsolated(0)
 
     init(itemCount: Int) {
         self.items = (0..<itemCount).map { Item(id: $0, value: 0) }
     }
 
     var sorted: [Item] {
-        sortAccessCount += 1
+        sortAccessCount.withValue { $0 += 1 }
         return node.memoize(for: "sorted") {
-            items.sorted { $0.value < $1.value }
+            sortComputeCount.withValue { $0 += 1 }
+            return items.sorted { $0.value < $1.value }
         }
     }
 }
@@ -552,22 +583,24 @@ struct MemoizeTests {
     var useA = true
     var valueA = 10
     var valueB = 20
+    let computeCount = LockIsolated(0)
 
     var conditional: Int {
         node.memoize(for: "conditional") {
-            useA ? valueA : valueB
+            computeCount.withValue { $0 += 1 }
+            return useA ? valueA : valueB
         }
     }
 }
 
 @Model private struct TransactionDeferModel {
     var values: [Int] = []
-    var computeCount = 0
+    let computeCount = LockIsolated(0)
     
     var computed: Int {
-        computeCount += 1
+        computeCount.withValue { $0 += 1 }
         return node.memoize(for: "computed") {
-            print("🔴 RECOMPUTING (count: \(computeCount))")
+            print("🔴 RECOMPUTING (count: \(computeCount.value))")
             return values.reduce(0, +)
         }
     }
@@ -575,14 +608,14 @@ struct MemoizeTests {
 
 @Model private struct AccessDuringMutationModel {
     var values: [Int] = []
-    var computeCount = 0
-    var accessLog: [String] = []
+    let computeCount = LockIsolated(0)
+    let accessLog = LockIsolated<[String]>([])
     
     var computed: Int {
-        accessLog.append("accessed")
+        accessLog.withValue { $0.append("accessed") }
         return node.memoize(for: "computed") {
-            computeCount += 1
-            accessLog.append("computed")
+            computeCount.withValue { $0 += 1 }
+            accessLog.withValue { $0.append("computed") }
             return values.reduce(0, +)
         }
     }

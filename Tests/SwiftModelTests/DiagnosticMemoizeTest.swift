@@ -43,12 +43,15 @@ struct DiagnosticMemoizeTest {
     }
     
     /// Test WITHOUT sleep: Access immediately after mutation
+    ///
+    /// With dual registrar implementation, background registrar fires synchronously,
+    /// so we now get FRESH values immediately (no race condition!)
     @Test func testWithoutSleep() async throws {
         print("\n========== WITHOUT SLEEP ==========")
 
         let (model, tester) = BasicMemoizeModel().andTester(options: [.useWithObservationTracking])
         tester.exhaustivity = .off
-        
+
         let onUpdateLog = LockIsolated<[String]>([])
         DebugHook.record = { message in
             if message.contains("[memoize]") {
@@ -64,28 +67,24 @@ struct DiagnosticMemoizeTest {
         print("\n2️⃣ Changing value to 5")
         model.value = 5
         await tester.assert { model.value == 5 }
-        
+
         print("\n3️⃣ Accessing doubled IMMEDIATELY (no wait)")
         let result = model.doubled
         print("   Result: \(result), accessCount: \(model.accessCount)")
         print("   onUpdate log: \(onUpdateLog.value)")
-        
-        if result == 0 {
-            print("   ❌ Got stale cache value!")
-            print("   This proves: onChange fires async, we accessed before onUpdate ran")
-            
-            // Wait for onChange to eventually fire using tester.assert
-            await tester.assert(timeoutNanoseconds: 1_000_000_000) {
-                model.doubled == 10
-            }
-            print("\n4️⃣ After onChange completes:")
-            print("   doubled: \(model.doubled), accessCount: \(model.accessCount)")
+
+        if result == 10 {
+            print("   ✅ Got fresh value!")
+            print("   This proves: With dual registrar, onChange fires synchronously on background thread!")
+        } else {
+            print("   ❌ Got stale cache value: \(result)")
+            print("   This shouldn't happen with dual registrar implementation")
         }
-        
-        // This test documents the race condition
-        #expect(result == 0, "Expected stale value due to race condition")
-        
-        print("\n========== TEST PASSED (documented race) ==========\n")
+
+        // With dual registrar: background registrar fires synchronously, so we get fresh value!
+        #expect(result == 10, "Expected fresh value with dual registrar implementation")
+
+        print("\n========== TEST PASSED (synchronous updates!) ==========\n")
     }
 
     /// Test using ModelTester.assert polling
