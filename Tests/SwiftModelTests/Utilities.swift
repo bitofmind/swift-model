@@ -164,9 +164,11 @@ enum UpdatePath: String, CaseIterable {
     var options: ModelOption {
         switch self {
         case .accessCollector:
-            return [.disableObservationTracking]  // Opt-in to legacy path
+            // Opt-in to legacy path, disable coalescing for synchronous behavior in tests
+            return [.disableObservationTracking, .disableMemoizeCoalescing]
         case .withObservationTracking:
-            return []  // Default behavior
+            // Disable coalescing for synchronous behavior in tests
+            return [.disableMemoizeCoalescing]
         }
     }
 }

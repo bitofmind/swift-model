@@ -49,7 +49,7 @@ struct DiagnosticMemoizeTest {
     @Test func testWithoutSleep() async throws {
         print("\n========== WITHOUT SLEEP ==========")
 
-        let (model, tester) = BasicMemoizeModel().andTester()
+        let (model, tester) = BasicMemoizeModel().andTester(options: [.disableMemoizeCoalescing])
         tester.exhaustivity = .off
 
         let onUpdateLog = LockIsolated<[String]>([])

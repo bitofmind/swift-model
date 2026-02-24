@@ -329,8 +329,8 @@ public extension ModelNode {
 
         let key = AnyHashableSendable(key)
         context.lock {
-            context._memoizeCache[key]?.cancellable()
-            context._memoizeCache[key] = nil
+            context._memoizeCache[key]?.cancellable?()
+            context._memoizeCache.removeValue(forKey: key)
         }
     }
 }
@@ -364,14 +364,14 @@ private extension ModelNode {
         _$modelContext.willAccess(context.model, at: path)?()
 
         return context.lock {
-            if let value = context._memoizeCache[key].flatMap({ $0.value as? T }) {
+            if let value = context._memoizeCache[key]?.value as? T {
                 return value
             }
 
             let cancellable = context.transaction {
-                // For now, memoize coalescing is disabled by default (opt-in via enableMemoizeCoalescing)
-                // This maintains synchronous behavior until we implement proper dirty tracking
-                let useCoalescing = false // TODO: Implement proper memoize coalescing with dirty flags
+                // Enable coalescing by default to batch multiple dependency changes during transactions
+                // Can be disabled via ModelOption.disableMemoizeCoalescing for testing
+                let useCoalescing = !context.options.contains(.disableMemoizeCoalescing)
                 
                 // Determine which observation path to use based on context options
                 // Can't use withObservationTracking if ObservationRegistrar is disabled or if explicitly disabled
@@ -385,13 +385,19 @@ private extension ModelNode {
                     var postLockCallbacks: [() -> Void] = []
 
                     context.lock {
-                        let (prevValue, prevCancellable) = context._memoizeCache[key].flatMap { ($0.value as? T, $0.cancellable) } ?? (nil, nil)
+                        let entry = context._memoizeCache[key]
+                        let prevValue = entry?.value as? T
+                        let prevCancellable = entry?.cancellable
+                        
                         DebugHook.record("[memoize] prevValue=\(String(describing: prevValue)), updating cache")
                         if let isSame, let prevValue, isSame(value, prevValue) {
                             return
                         }
 
-                        context._memoizeCache[key] = (value: value, cancellable: prevCancellable ?? {})
+                        context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
+                            value: value,
+                            cancellable: prevCancellable ?? {}
+                        )
 
                         if prevValue != nil {
                             context.onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
@@ -415,8 +421,10 @@ private extension ModelNode {
                 }
             }
 
-            let value = context._memoizeCache[key]?.value as! T
-            context._memoizeCache[key] = (value: value, cancellable: cancellable)
+            let value = context._memoizeCache[key]!.value as! T
+            var entry = context._memoizeCache[key]!
+            entry.cancellable = cancellable
+            context._memoizeCache[key] = entry
 
             return value
         }
@@ -487,6 +495,29 @@ private extension Model {
 /// - **Optimization**: Reuses subscriptions when dependencies remain stable
 /// - More efficient for high-frequency updates with stable observation patterns
 ///
+/// ## Coalescing
+///
+/// When `useCoalescing` is enabled, the `update` mechanism uses two techniques to reduce redundant recomputations:
+///
+/// ### 1. hasPendingUpdate Flag (Both paths)
+/// - Tracks whether an update is already scheduled for this observer
+/// - When a dependency changes while an update is pending, skip scheduling another update
+/// - Result: Multiple rapid mutations are coalesced into a single recomputation
+///
+/// ### 2. BackgroundCalls Batching (Outside transactions only)
+/// - Outside transactions: Updates go through `backgroundCall()` which batches callbacks using `Task.yield()`
+/// - Inside transactions: Updates execute synchronously to ensure cache consistency before transaction returns
+/// - The transaction check (`threadLocals.postTransactions == nil`) ensures correctness:
+///   - If we used `backgroundCall` inside transactions, async updates could complete AFTER the transaction,
+///     causing stale values to be returned if the property is accessed immediately after the transaction
+///
+/// ### Performance Impact
+/// - Outside transactions: 100 mutations → ~3 recomputes (hasPendingUpdate + backgroundCall batching)
+/// - Inside transactions: 100 mutations to 100 different paths → 100 recomputes (synchronous, no batching)
+/// - Inside transactions with single mutation: 100 mutations to same path → 1 recompute (hasPendingUpdate works)
+///
+/// For optimal performance with bulk array mutations inside transactions, use **dirty tracking** (see COALESCING_DESIGN_FINAL.md)
+///
 /// ## Parameters
 ///
 /// - Parameters:
@@ -494,6 +525,7 @@ private extension Model {
 ///   - isSame: Optional equality check to skip duplicate updates (nil = always update)
 ///   - useWithObservationTracking: Which observation path to use (true = withObservationTracking [default], false = AccessCollector)
 ///   - useCoalescing: Enable update coalescing (default: false for backward compatibility)
+///   - didModify: Optional callback fired immediately when ANY dependency changes (before coalescing). Used by memoize for dirty tracking.
 ///   - access: Closure that accesses the value and establishes dependencies
 ///   - onUpdate: Callback fired when dependencies change (or immediately if `initial` is true)
 ///
@@ -528,23 +560,41 @@ internal func update<T: Sendable>(
     isSame: (@Sendable (T, T) -> Bool)?,
     useWithObservationTracking: Bool,
     useCoalescing: Bool = false,
+    didModify: (@Sendable () -> Void)? = nil,
     access: @Sendable @escaping () -> T,
     onUpdate: @Sendable @escaping (T) -> Void
 ) -> @Sendable () -> Void {
+    // Versioning for stale update detection
+    // `index` is incremented before each recomputation to invalidate in-flight updates
     let last = LockIsolated((value: T?.none, index: 0))
+    
+    // updateLock ensures only one update processes at a time, preventing race conditions
+    // when multiple threads trigger updates simultaneously
     let updateLock = NSRecursiveLock()
+    
+    /// Core update logic that:
+    /// 1. Checks if this update is stale (index mismatch) - prevents out-of-order updates
+    /// 2. Applies isSame check to skip duplicate values
+    /// 3. Calls onUpdate if the value actually changed
+    ///
+    /// This function is called AFTER recomputation, either:
+    /// - Immediately (when coalescing disabled or inside transaction)
+    /// - Asynchronously via backgroundCall (when coalescing enabled outside transaction)
     @Sendable func update(with value: T, index: Int) {
         updateLock.withLock {
             let shouldUpdate: Bool = last.withValue { last in
+                // Stale update check: if index doesn't match, this update is outdated
+                // A newer recomputation has started, so skip this one
                 guard index == last.index else {
                     return false
                 }
 
+                // isSame check: skip if value hasn't actually changed
                 if let isSame {
                     if let last = last.value, isSame(last, value) {
-                        return false
+                        return false  // Value unchanged, skip onUpdate
                     } else {
-                        last.value = value
+                        last.value = value  // Value changed, update cache
                     }
                 }
 
@@ -581,6 +631,9 @@ internal func update<T: Sendable>(
             } onChange: {
                 if hasBeenCancelled.value { return }
 
+                // Call didModify immediately when dependency changes (for dirty tracking)
+                didModify?()
+
                 // Coalescing: skip if update already pending
                 if useCoalescing {
                     let shouldSchedule = hasPendingUpdate.withValue { pending in
@@ -609,10 +662,14 @@ internal func update<T: Sendable>(
                 }
                 
                 if useCoalescing, threadLocals.postTransactions == nil {
-                    // Outside transaction: use background coalescing
+                    // Outside transaction: use background coalescing to batch rapid updates
+                    // This allows multiple quick mutations to be batched into a single update
                     backgroundCall(performUpdate)
                 } else {
-                    // Inside transaction or coalescing disabled: immediate
+                    // Inside transaction OR coalescing disabled: execute immediately
+                    // Inside transactions, we must execute synchronously to ensure the cache
+                    // is updated before the transaction returns. Otherwise, accessing the
+                    // memoized property after the transaction would return stale values.
                     performUpdate()
                 }
             }
@@ -630,6 +687,9 @@ internal func update<T: Sendable>(
         let hasPendingUpdate = LockIsolated(false)
         
         let collector = AccessCollector { collector in
+            // Call didModify immediately when dependency changes (for dirty tracking)
+            didModify?()
+            
             // Coalescing: skip if update already pending
             if useCoalescing {
                 let shouldSchedule = hasPendingUpdate.withValue { pending in
@@ -665,12 +725,16 @@ internal func update<T: Sendable>(
             }
             
             if useCoalescing, threadLocals.postTransactions == nil {
-                // Outside transaction: use background coalescing
+                // Outside transaction: use background coalescing to batch rapid updates
+                // This allows multiple quick mutations to be batched into a single update
                 return {
                     backgroundCall(performUpdate)
                 }
             } else {
-                // Inside transaction or coalescing disabled: immediate
+                // Inside transaction OR coalescing disabled: execute immediately
+                // Inside transactions, we must execute synchronously to ensure the cache
+                // is updated before the transaction returns. Otherwise, accessing the
+                // memoized property after the transaction would return stale values.
                 return performUpdate
             }
         }

@@ -45,7 +45,17 @@ class AnyContext: @unchecked Sendable {
     private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] = [:]
     private var _modificationCount = 0
 
-    var _memoizeCache: [AnyHashableSendable: (value: Any&Sendable, cancellable: @Sendable () -> Void)] = [:]
+    struct MemoizeCacheEntry: @unchecked Sendable {
+        var value: Any & Sendable
+        var cancellable: (@Sendable () -> Void)?
+        
+        init(value: Any & Sendable, cancellable: (@Sendable () -> Void)? = nil) {
+            self.value = value
+            self.cancellable = cancellable
+        }
+    }
+    
+    var _memoizeCache: [AnyHashableSendable: MemoizeCacheEntry] = [:]
 
     func didModify() {
         _modificationCount &+= 1
@@ -257,8 +267,8 @@ class AnyContext: @unchecked Sendable {
         self.children.removeAll()
         dependencyContexts.removeAll()
 
-        for cancellable in _memoizeCache.values.map(\.cancellable) {
-            cancellable()
+        for entry in _memoizeCache.values {
+            entry.cancellable?()
         }
 
         _memoizeCache.removeAll()

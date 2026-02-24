@@ -298,7 +298,7 @@ struct UpdateStreamTests {
     }
 
     @Test func testMemoize() async throws {
-        let (model, tester) = ComputedModel().andTester()
+        let (model, tester) = ComputedModel().andTester(options: [.disableMemoizeCoalescing])
         tester.exhaustivity = .full.subtracting(.tasks)
 
         #expect(model.memoizeComputed == 3)

@@ -195,7 +195,7 @@ struct MemoizeTests {
     // MARK: - Getter/Setter with Memoize
 
     @Test func testGetterSetterConsistency() async throws {
-        let model = GetterSetterModel().withAnchor()
+        let model = GetterSetterModel().withAnchor(options: [.disableMemoizeCoalescing])
 
         // Initial state
         #expect(model.processedValue == "INITIAL")
