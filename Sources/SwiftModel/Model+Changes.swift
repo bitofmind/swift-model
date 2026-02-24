@@ -336,9 +336,13 @@ public extension ModelNode {
 }
 
 private extension Observed {
-    init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false, context: AnyContext? = nil) {
+    init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false) {
         stream = AsyncStream { cont in
-            let cancellable = update(initial: initial, isSame: isSame, useCoalescing: coalesceUpdates, context: context) {
+            // Observed must use AccessCollector since it can't access model options
+            // to check for .disableObservationRegistrar. withObservationTracking
+            // would silently fail on models without an ObservationRegistrar.
+            // Note: memoize() respects model options and will use the appropriate path
+            let cancellable = update(initial: initial, isSame: isSame, useWithObservationTracking: false, useCoalescing: coalesceUpdates) {
                 access()
             } onUpdate: { value in
                 cont.yield(value)
@@ -369,7 +373,12 @@ private extension ModelNode {
                 // This maintains synchronous behavior until we implement proper dirty tracking
                 let useCoalescing = false // TODO: Implement proper memoize coalescing with dirty flags
                 
-                return update(initial: true, isSame: nil, useCoalescing: useCoalescing, context: context) {
+                // Determine which observation path to use based on context options
+                // Can't use withObservationTracking if ObservationRegistrar is disabled or if explicitly disabled
+                let useWithObservationTracking = !(context.options.contains(.disableObservationTracking)) && 
+                                                  !(context.options.contains(.disableObservationRegistrar))
+                
+                return update(initial: true, isSame: nil, useWithObservationTracking: useWithObservationTracking, useCoalescing: useCoalescing) {
                     produce()
                 } onUpdate: { value in
                     DebugHook.record("[memoize] onUpdate fired for key=\(key), value=\(value), thread=\(Thread.isMainThread ? "main" : "background")")
@@ -466,24 +475,24 @@ private extension Model {
 ///
 /// ## Observation Paths
 ///
-/// ### AccessCollector (default)
-/// - Works on all OS versions (no macOS 14+ requirement)
-/// - Uses custom dependency tracking with incremental updates
-/// - **Optimization**: Reuses subscriptions when dependencies remain stable
-/// - More efficient for high-frequency updates with stable observation patterns
-///
-/// ### withObservationTracking (opt-in via `.useWithObservationTracking`)
+/// ### withObservationTracking (default on supported platforms)
 /// - Requires macOS 14.0+, iOS 17.0+, watchOS 10.0+, tvOS 17.0+
 /// - Uses Swift's native `@Observable` and `withObservationTracking`
 /// - Better integration with SwiftUI's observation system
 /// - Completely rebuilds tracking on each update (by design of Swift's API)
+///
+/// ### AccessCollector (fallback and opt-in via `.disableObservationTracking`)
+/// - Works on all OS versions (no macOS 14+ requirement)
+/// - Uses custom dependency tracking with incremental updates
+/// - **Optimization**: Reuses subscriptions when dependencies remain stable
+/// - More efficient for high-frequency updates with stable observation patterns
 ///
 /// ## Parameters
 ///
 /// - Parameters:
 ///   - initial: Whether to call `onUpdate` with the initial value immediately
 ///   - isSame: Optional equality check to skip duplicate updates (nil = always update)
-///   - useWithObservationTracking: Which observation path to use (false = AccessCollector, true = withObservationTracking)
+///   - useWithObservationTracking: Which observation path to use (true = withObservationTracking [default], false = AccessCollector)
 ///   - useCoalescing: Enable update coalescing (default: false for backward compatibility)
 ///   - access: Closure that accesses the value and establishes dependencies
 ///   - onUpdate: Callback fired when dependencies change (or immediately if `initial` is true)
@@ -519,22 +528,6 @@ internal func update<T: Sendable>(
     isSame: (@Sendable (T, T) -> Bool)?,
     useWithObservationTracking: Bool,
     useCoalescing: Bool = false,
-    access: @Sendable @escaping () -> T,
-    onUpdate: @Sendable @escaping (T) -> Void
-) -> @Sendable () -> Void {
-    updateImpl(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: useCoalescing, access: access, onUpdate: onUpdate)
-}
-
-private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Bool)?, useCoalescing: Bool = false, context: AnyContext? = nil, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
-    let useWithObservationTracking = context?.options.contains(.useWithObservationTracking) ?? false
-    return updateImpl(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: useCoalescing, access: access, onUpdate: onUpdate)
-}
-
-private func updateImpl<T: Sendable>(
-    initial: Bool,
-    isSame: (@Sendable (T, T) -> Bool)?,
-    useWithObservationTracking: Bool,
-    useCoalescing: Bool,
     access: @Sendable @escaping () -> T,
     onUpdate: @Sendable @escaping (T) -> Void
 ) -> @Sendable () -> Void {

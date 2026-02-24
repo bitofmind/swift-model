@@ -25,15 +25,15 @@ public struct ModelOption: OptionSet, Sendable {
     /// This allows testing both observation mechanisms side-by-side.
     internal static let disableObservationRegistrar = ModelOption(rawValue: 1 << 0)
 
-    /// Use withObservationTracking path in update() function instead of AccessCollector.
+    /// Disable withObservationTracking path and use AccessCollector instead.
     ///
-    /// When enabled, the update() function uses Swift's withObservationTracking
-    /// instead of the AccessCollector-based implementation (AccessCollector is the default).
+    /// By default, the update() function uses Swift's withObservationTracking on supported platforms
+    /// (macOS 14+, iOS 17+). When this option is enabled, it falls back to the AccessCollector-based
+    /// implementation instead.
     ///
-    /// withObservationTracking has threading issues with SwiftUI (requires main thread delivery),
-    /// so AccessCollector is currently the default. This option allows testing the
-    /// withObservationTracking path.
-    internal static let useWithObservationTracking = ModelOption(rawValue: 1 << 1)
+    /// This option is primarily for testing backward compatibility with older OS versions
+    /// that don't support @Observable.
+    internal static let disableObservationTracking = ModelOption(rawValue: 1 << 1)
     
     /// Disable update coalescing for memoized properties.
     ///

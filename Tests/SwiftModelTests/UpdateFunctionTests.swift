@@ -132,7 +132,7 @@ struct UpdateFunctionTests {
 
         DebugHook.record("\n========== TEST START: testWithObservationTrackingWithModel ==========")
 
-        let (model, tester) = TestModel().andTester(options: [.useWithObservationTracking])
+        let (model, tester) = TestModel().andTester()
         tester.exhaustivity = .off
         let updateCount = LockIsolated(0)
 

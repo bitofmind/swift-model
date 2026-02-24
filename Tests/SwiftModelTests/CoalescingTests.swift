@@ -134,7 +134,7 @@ struct CoalescingTests {
     
     /// Test that without coalescing, N mutations trigger N update callbacks (withObservationTracking path)
     @Test func testWithoutCoalescing_WithObservationTracking() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         
         // Set up observer WITHOUT coalescing
@@ -167,7 +167,7 @@ struct CoalescingTests {
     
     /// Test that with coalescing, N mutations trigger only 1 update callback (withObservationTracking path)
     @Test func testWithCoalescing_WithObservationTracking() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         let lastValue = LockIsolated(0)
         
@@ -207,7 +207,7 @@ struct CoalescingTests {
     
     /// Test coalescing with multiple batches (withObservationTracking path)
     @Test func testCoalescingMultipleBatches_WithObservationTracking() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         
         let cancellable = update(
@@ -252,7 +252,7 @@ struct CoalescingTests {
     
     /// Test that coalescing still provides fresh values, not stale (AccessCollector)
     @Test func testCoalescingProvidesFreshValues_AccessCollector() async throws {
-        let model = TestModel().withAnchor()
+        let model = TestModel().withAnchor(options: [.disableObservationTracking])
         let observedValues = LockIsolated<[Int]>([])
         
         let cancellable = update(
@@ -285,7 +285,7 @@ struct CoalescingTests {
     
     /// Test that coalescing still provides fresh values, not stale (withObservationTracking)
     @Test func testCoalescingProvidesFreshValues_WithObservationTracking() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [])
         let observedValues = LockIsolated<[Int]>([])
         
         let cancellable = update(
@@ -380,7 +380,7 @@ struct CoalescingTests {
     
     /// Benchmark: withObservationTracking without coalescing
     @Test func benchmarkObservationTracking_NoCoalescing() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         let mutationCount = 100
         
@@ -409,7 +409,7 @@ struct CoalescingTests {
     
     /// Benchmark: withObservationTracking with coalescing
     @Test func benchmarkObservationTracking_WithCoalescing() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         let mutationCount = 100
         
@@ -541,7 +541,7 @@ struct CoalescingTests {
         
         // 3. ObservationTracking without coalescing
         for iteration in 0..<iterations {
-            let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+            let model = TestModel().withAnchor(options: [])
             let updateCount = LockIsolated(0)
             let totalWorkTime = LockIsolated(0.0)
             
@@ -580,7 +580,7 @@ struct CoalescingTests {
         
         // 4. ObservationTracking with coalescing
         for iteration in 0..<iterations {
-            let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+            let model = TestModel().withAnchor(options: [])
             let updateCount = LockIsolated(0)
             let totalWorkTime = LockIsolated(0.0)
             
@@ -745,7 +745,7 @@ struct CoalescingTests {
     
     /// Test that coalescing works correctly with rapid mutations using ObservationTracking
     @Test func testCoalescingWithRapidMutations_ObservationTracking() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         
         let cancellable = update(
@@ -899,7 +899,7 @@ struct CoalescingTests {
     
     /// Test coalescing with nested model mutations (withObservationTracking)
     @Test func testCoalescingWithNestedModels_WithObservationTracking() async throws {
-        let model = NestedModel().withAnchor(options: [.useWithObservationTracking])
+        let model = NestedModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         
         let cancellable = update(
@@ -1003,7 +1003,7 @@ struct CoalescingTests {
     /// than AccessCollector - it tracks based on what was accessed during the onChange
     /// callback execution, not during the access closure.
     @Test func testCoalescingWithBranchingDependencies_WithObservationTracking() async throws {
-        let model = BranchingModel().withAnchor(options: [.useWithObservationTracking])
+        let model = BranchingModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         let observedValues = LockIsolated<[Int]>([])
         

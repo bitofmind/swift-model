@@ -15,7 +15,7 @@ struct DualRegistrarTests {
 
     /// Test background thread modification → immediate background observer notification
     @Test func testBackgroundModificationImmediateBackgroundObserver() async throws {
-        let (model, tester) = TestModel().andTester(options: [.useWithObservationTracking])
+        let (model, tester) = TestModel().andTester(options: [.disableObservationTracking])
         tester.exhaustivity = .off
 
         let observerFired = LockIsolated(false)
@@ -45,7 +45,7 @@ struct DualRegistrarTests {
 
     /// Same test as above but using old .withAnchor() style (should also work now!)
     @Test func testBackgroundModificationImmediateBackgroundObserver_WithAnchor() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [.disableObservationTracking])
 
         let observerFired = LockIsolated(false)
 
@@ -71,7 +71,7 @@ struct DualRegistrarTests {
 
     /// Test main thread modification → both registrars notified immediately
     @Test func testMainThreadModificationBothRegistrars() async throws {
-        let (model, tester) = TestModel().andTester(options: [.useWithObservationTracking])
+        let (model, tester) = TestModel().andTester(options: [])
         tester.exhaustivity = .off
 
         let mainObserverFired = LockIsolated(false)
@@ -112,7 +112,7 @@ struct DualRegistrarTests {
 
     /// Same test as above but using old .withAnchor() style
     @Test func testMainThreadModificationBothRegistrars_WithAnchor() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [])
 
         let mainObserverFired = LockIsolated(false)
         let backgroundObserverFired = LockIsolated(false)
@@ -150,7 +150,7 @@ struct DualRegistrarTests {
 
     /// Test that memoize works correctly with background observers
     @Test func testMemoizeWithBackgroundObserver() async throws {
-        let (model, tester) = MemoizeModel().andTester(options: [.useWithObservationTracking])
+        let (model, tester) = MemoizeModel().andTester(options: [])
         tester.exhaustivity = .off
 
         let changeDetected = LockIsolated(false)
@@ -184,7 +184,7 @@ struct DualRegistrarTests {
 
     /// Same test as above but using old .withAnchor() style
     @Test func testMemoizeWithBackgroundObserver_WithAnchor() async throws {
-        let model = MemoizeModel().withAnchor(options: [.useWithObservationTracking])
+        let model = MemoizeModel().withAnchor(options: [])
 
         let changeDetected = LockIsolated(false)
 
@@ -223,7 +223,7 @@ struct DualRegistrarTests {
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
     @Test(.disabled("Timing-sensitive: Observations API doesn't emit initial value - test is flaky when run with full suite"))
     func testAppleObservationsWithModel() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [])
         
         let values = LockIsolated<[Int]>([])
         
@@ -256,7 +256,7 @@ struct DualRegistrarTests {
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
     @Test(.disabled("Timing-sensitive: Test is flaky when run with full suite"))
     func testAppleObservationsWithModelTransactions() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [])
         
         let transactionCount = LockIsolated(0)
         
@@ -329,7 +329,7 @@ struct DualRegistrarTests {
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
     @Test(.disabled("Observed API doesn't yet support pure @Observable types"))
     func testBidirectionalCompatibility() async throws {
-        let model = TestModel().withAnchor(options: [.useWithObservationTracking])
+        let model = TestModel().withAnchor(options: [])
         let observable = PureObservableModel()
         
         let modelValues = LockIsolated<[Int]>([])

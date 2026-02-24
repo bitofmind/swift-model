@@ -10,7 +10,7 @@ struct DiagnosticMemoizeTest {
     @Test func testWithSleepBeforeAccess() async throws {
         print("\n========== WITH SLEEP BEFORE ACCESS ==========")
 
-        let (model, tester) = BasicMemoizeModel().andTester(options: [.useWithObservationTracking])
+        let (model, tester) = BasicMemoizeModel().andTester()
         tester.exhaustivity = .off
         
         // Capture onUpdate calls
@@ -49,7 +49,7 @@ struct DiagnosticMemoizeTest {
     @Test func testWithoutSleep() async throws {
         print("\n========== WITHOUT SLEEP ==========")
 
-        let (model, tester) = BasicMemoizeModel().andTester(options: [.useWithObservationTracking])
+        let (model, tester) = BasicMemoizeModel().andTester()
         tester.exhaustivity = .off
 
         let onUpdateLog = LockIsolated<[String]>([])
@@ -91,7 +91,7 @@ struct DiagnosticMemoizeTest {
     @Test func testWithTesterAssertPolling() async throws {
         print("\n========== WITH TESTER.ASSERT POLLING ==========")
 
-        let (model, tester) = BasicMemoizeModel().andTester(options: [.useWithObservationTracking])
+        let (model, tester) = BasicMemoizeModel().andTester()
         tester.exhaustivity = .off
         
         let onUpdateLog = LockIsolated<[String]>([])
