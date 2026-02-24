@@ -39,6 +39,29 @@ struct MemoizeTests {
         #expect(model.accessCount > 2, "Should have recomputed after value change")
     }
 
+    @Test(arguments: UpdatePath.allCases)
+    func testBasicMemoization_WithAnchor(updatePath: UpdatePath) async throws {
+        let model = BasicMemoizeModel().withAnchor(options: updatePath.options)
+
+        // First access should compute
+        let first = model.doubled
+        #expect(first == 0)
+        #expect(model.accessCount == 1)
+
+        // Second access should use cache (no recomputation)
+        let second = model.doubled
+        #expect(second == 0)
+        #expect(model.accessCount == 2)
+
+        // Change dependency
+        model.value = 5
+        #expect(model.value == 5)
+
+        // With dual registrar, observation is synchronous on background threads
+        #expect(model.doubled == 10, "Should recompute synchronously")
+        #expect(model.accessCount > 2, "Should have recomputed after value change")
+    }
+
     @Test func testMemoizeWithEquatableSkipsIdenticalValues() async throws {
         let model = EquatableMemoizeModel().withAnchor()
 
@@ -90,6 +113,29 @@ struct MemoizeTests {
     }
 
     @Test(arguments: UpdatePath.allCases)
+    func testBulkUpdatesWithoutTransaction_WithAnchor(updatePath: UpdatePath) async throws {
+        let model = BulkUpdateModel(itemCount: 100).withAnchor(options: updatePath.options)
+
+        // Track accesses
+        let initialAccess = model.sortAccessCount
+
+        // Modify all items without transaction
+        for i in 0..<model.items.count {
+            model.items[i].value += 1
+        }
+
+        // Access the sorted value
+        _ = model.sorted
+
+        // Document current behavior: each mutation may trigger update
+        let totalAccesses = model.sortAccessCount - initialAccess
+        print("Accesses without transaction (WithAnchor): \(totalAccesses)")
+
+        // Verify correctness
+        #expect(model.sorted.allSatisfy { $0.value == 1 })
+    }
+
+    @Test(arguments: UpdatePath.allCases)
     func testBulkUpdatesWithTransaction(updatePath: UpdatePath) async throws {
         let model = BulkUpdateModel(itemCount: 100).withAnchor(options: updatePath.options)
 
@@ -107,6 +153,29 @@ struct MemoizeTests {
 
         let totalAccesses = model.sortAccessCount - initialAccess
         print("Accesses with transaction: \(totalAccesses)")
+
+        // Verify correctness
+        #expect(model.sorted.allSatisfy { $0.value == 1 })
+    }
+
+    @Test(arguments: UpdatePath.allCases)
+    func testBulkUpdatesWithTransaction_WithAnchor(updatePath: UpdatePath) async throws {
+        let model = BulkUpdateModel(itemCount: 100).withAnchor(options: updatePath.options)
+
+        let initialAccess = model.sortAccessCount
+
+        // Modify all items WITH transaction
+        model.transaction {
+            for i in 0..<model.items.count {
+                model.items[i].value += 1
+            }
+        }
+
+        // Access the sorted value
+        _ = model.sorted
+
+        let totalAccesses = model.sortAccessCount - initialAccess
+        print("Accesses with transaction (WithAnchor): \(totalAccesses)")
 
         // Verify correctness
         #expect(model.sorted.allSatisfy { $0.value == 1 })
@@ -194,6 +263,25 @@ struct MemoizeTests {
         }
     }
 
+    @Test(arguments: UpdatePath.allCases)
+    func testMemoizeWithChangingDependencies_WithAnchor(updatePath: UpdatePath) async throws {
+        let model = DynamicDependencyModel().withAnchor(options: updatePath.options)
+
+        #expect(model.conditional == 10)  // Uses valueA
+
+        model.useA = false
+        #expect(model.conditional == 20)  // Uses valueB, synchronous with dual registrar
+
+        // Change valueA (not currently tracked)
+        model.valueA = 100
+        #expect(model.valueA == 100)
+        #expect(model.conditional == 20)  // Should not change
+
+        // Change valueB (currently tracked)
+        model.valueB = 200
+        #expect(model.conditional == 200)  // Should update synchronously
+    }
+
     // MARK: - Transaction Defer Block Issue
 
     @Test(arguments: UpdatePath.allCases)
@@ -231,6 +319,33 @@ struct MemoizeTests {
     }
 
     @Test(arguments: UpdatePath.allCases)
+    func testMemoizeRecomputationDuringTransactionDefer_WithAnchor(updatePath: UpdatePath) async throws {
+        let model = TransactionDeferModel().withAnchor(options: updatePath.options)
+        
+        // Initial access to setup memoization
+        print("🟢 Initial access (WithAnchor)")
+        #expect(model.computed == 0)
+        
+        // Bulk update in transaction
+        print("🟡 Starting transaction with 100 mutations (WithAnchor)")
+        model.transaction {
+            for i in 0..<100 {
+                model.values.append(i)
+            }
+        }
+        print("🟡 Transaction ended (WithAnchor)")
+        
+        // The defer block should have triggered recomputation
+        let computeCountAfterTransaction = model.computeCount
+        print("🔵 Computations after transaction (WithAnchor): \(computeCountAfterTransaction - 1)")
+        
+        // Access after transaction should use cached value
+        print("🟢 Accessing after transaction (WithAnchor)")
+        _ = model.computed
+        print("🔵 Final compute count (WithAnchor): \(model.computeCount)")
+    }
+
+    @Test(arguments: UpdatePath.allCases)
     func testMemoizeAccessDuringMutation(updatePath: UpdatePath) async throws {
         let model = AccessDuringMutationModel().withAnchor(options: updatePath.options)
         
@@ -258,6 +373,36 @@ struct MemoizeTests {
         print("🔴 Access log length: \(model.accessLog.count)")
         // Documenting behavior - not an error
         // Issue.record("CURRENT: Computed \(computesDuringTransaction) times when accessed during mutations")
+        
+        // DESIRED BEHAVIOR (with transaction-scoped staleness):
+        // - Compute count: 1 (only at transaction end)
+        // - Access log: ["accessed" x 11, "computed" x 1]
+        // 
+        // This is the pathological case that needs optimization
+    }
+
+    @Test(arguments: UpdatePath.allCases)
+    func testMemoizeAccessDuringMutation_WithAnchor(updatePath: UpdatePath) async throws {
+        let model = AccessDuringMutationModel().withAnchor(options: updatePath.options)
+        
+        // Initial access
+        #expect(model.computed == 0)
+        model.accessLog.removeAll()
+        
+        // THIS REPRODUCES THE USER'S SCENARIO:
+        // Accessing the memoized value DURING mutations
+        model.transaction {
+            for i in 0..<100 {
+                model.values.append(i)
+                if i % 10 == 0 {
+                    _ = model.computed  // ← This forces recomputation!
+                }
+            }
+        }
+        
+        let computesDuringTransaction = model.computeCount - 1
+        print("🔴 Computed \(computesDuringTransaction) times during mutation loop (WithAnchor)")
+        print("🔴 Access log length (WithAnchor): \(model.accessLog.count)")
         
         // DESIRED BEHAVIOR (with transaction-scoped staleness):
         // - Compute count: 1 (only at transaction end)

@@ -37,7 +37,8 @@ class AnyContext: @unchecked Sendable {
     private var modeLifeTime: ModelLifetime = .anchored
 
     private var eventContinuations: [Int: AsyncStream<EventInfo>.Continuation] = [:]
-    private let _observationRegistrar: Any?
+    private let _mainObservationRegistrar: Any?
+    private let _backgroundObservationRegistrar: Any?
     let cancellations = Cancellations()
 
     private(set) var anyModificationActiveCount = 0
@@ -166,9 +167,11 @@ class AnyContext: @unchecked Sendable {
         let useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
         
         if useObservationRegistrar, #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            _observationRegistrar = ObservationRegistrar()
+            _mainObservationRegistrar = ObservationRegistrar()
+            _backgroundObservationRegistrar = ObservationRegistrar()
         } else {
-            _observationRegistrar = nil
+            _mainObservationRegistrar = nil
+            _backgroundObservationRegistrar = nil
         }
 
         if let parent {
@@ -187,12 +190,23 @@ class AnyContext: @unchecked Sendable {
     }
 
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    var mainObservationRegistrar: ObservationRegistrar? {
+        _mainObservationRegistrar as? ObservationRegistrar
+    }
+
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    var backgroundObservationRegistrar: ObservationRegistrar? {
+        _backgroundObservationRegistrar as? ObservationRegistrar
+    }
+
+    // Backward compatibility: return main registrar
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var observationRegistrar: ObservationRegistrar? {
-        _observationRegistrar as? ObservationRegistrar
+        mainObservationRegistrar
     }
 
     var hasObservationRegistrar: Bool {
-        _observationRegistrar != nil
+        _mainObservationRegistrar != nil
     }
 
     var lifetime: ModelLifetime {

@@ -99,22 +99,46 @@ extension Model {
 @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
 extension Model where Self: Observable {
     func access<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
-        context.observationRegistrar?.access(self, keyPath: path as! KeyPath<Self, T>)
+        let path = path as! KeyPath<Self, T>
+        
+        if Thread.isMainThread {
+            context.mainObservationRegistrar?.access(self, keyPath: path)
+        } else {
+            context.backgroundObservationRegistrar?.access(self, keyPath: path)
+        }
     }
 
     func willSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
+        let path = path as! KeyPath<Self, T>
+        
         if Thread.isMainThread {
-            context.observationRegistrar?.willSet(self, keyPath: path as! KeyPath<Self, T>)
+            // On main: call willSet on both registrars before mutation
+            context.mainObservationRegistrar?.willSet(self, keyPath: path)
+            context.backgroundObservationRegistrar?.willSet(self, keyPath: path)
+        } else {
+            // On background: only call willSet on background registrar
+            // Main registrar will get willSet+didSet together via mainCall (after mutation)
+            context.backgroundObservationRegistrar?.willSet(self, keyPath: path)
         }
     }
 
     func didSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
+        let path = path as! KeyPath<Self, T>&Sendable
+        
         if Thread.isMainThread {
-            context.observationRegistrar?.didSet(self, keyPath: path as! KeyPath<Self, T>)
-        } else if let registrar = context.observationRegistrar {
-            mainCall { // Make sure to call out on main thread to not upset SwiftUI, as well call willSet after value has been sat to avoid data race where SwiftUI won't detect the change.
-                registrar.willSet(self, keyPath: path as! KeyPath<Self, T>)
-                registrar.didSet(self, keyPath: path as! KeyPath<Self, T>)
+            // On main: call didSet on both registrars after mutation
+            context.mainObservationRegistrar?.didSet(self, keyPath: path)
+            context.backgroundObservationRegistrar?.didSet(self, keyPath: path)
+        } else {
+            // On background: call didSet on background registrar immediately
+            context.backgroundObservationRegistrar?.didSet(self, keyPath: path)
+            
+            // Dispatch willSet+didSet together to main registrar (for SwiftUI safety)
+            if let mainReg = context.mainObservationRegistrar {
+                mainCall {
+                    mainReg.willSet(self, keyPath: path)
+                    mainReg.didSet(self, keyPath: path)
+                }
             }
         }
     }
