@@ -21,10 +21,11 @@ public struct Observed<Element: Sendable>: AsyncSequence, Sendable {
     /// Create as Observed stream observing updates of the values provided by  `access`
     ///
     /// - Parameter initial: Start by sending current initial value (defaults to true).
+    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to false).
     /// - Parameter access: closure providing the value to be observed
     @_disfavoredOverload
-    public init(initial: Bool = true, _ access: @Sendable @escaping () -> Element) {
-        self.init(access: access, initial: initial, isSame: nil)
+    public init(initial: Bool = true, coalesceUpdates: Bool = false, _ access: @Sendable @escaping () -> Element) {
+        self.init(access: access, initial: initial, isSame: nil, coalesceUpdates: coalesceUpdates)
     }
 
     public func makeAsyncIterator() -> AsyncStream<Element>.Iterator {
@@ -36,9 +37,11 @@ public extension Observed where Element: Equatable {
     /// Create as Observed stream observing changes of the value provided by  `access`
     ///
     /// - Parameter initial: Start by sending current initial value (defaults to true).
+    /// - Parameter removeDuplicates: Whether to filter out duplicate values (defaults to true).
+    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to false).
     /// - Parameter access: closure providing the value to be observed
-    init(initial: Bool = true, removeDuplicates: Bool = true, _ access: @Sendable @escaping () -> Element) {
-        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? (==) : nil).stream
+    init(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = false, _ access: @Sendable @escaping () -> Element) {
+        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? (==) : nil, coalesceUpdates: coalesceUpdates).stream
     }
 }
 
@@ -46,17 +49,21 @@ public extension Observed {
     /// Create as Observed stream observing changes of the value provided by  `access`
     ///
     /// - Parameter initial: Start by sending current initial value (defaults to true).
+    /// - Parameter removeDuplicates: Whether to filter out duplicate values (defaults to true).
+    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to false).
     /// - Parameter access: closure providing the value to be observed
-    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, _ access: @Sendable @escaping () -> (repeat each T)) where Element == (repeat each T) {
-        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil).stream
+    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = false, _ access: @Sendable @escaping () -> (repeat each T)) where Element == (repeat each T) {
+        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, coalesceUpdates: coalesceUpdates).stream
     }
 
     /// Create as Observed stream observing changes of the value provided by  `access`
     ///
     /// - Parameter initial: Start by sending current initial value (defaults to true).
+    /// - Parameter removeDuplicates: Whether to filter out duplicate values (defaults to true).
+    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to false).
     /// - Parameter access: closure providing the value to be observed
-    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, _ access: @Sendable @escaping () -> (repeat each T)?) where Element == (repeat each T)? {
-        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil).stream
+    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = false, _ access: @Sendable @escaping () -> (repeat each T)?) where Element == (repeat each T)? {
+        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, coalesceUpdates: coalesceUpdates).stream
     }
 }
 
@@ -329,9 +336,9 @@ public extension ModelNode {
 }
 
 private extension Observed {
-    init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, context: AnyContext? = nil) {
+    init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false, context: AnyContext? = nil) {
         stream = AsyncStream { cont in
-            let cancellable = update(initial: initial, isSame: isSame, context: context) {
+            let cancellable = update(initial: initial, isSame: isSame, useCoalescing: coalesceUpdates, context: context) {
                 access()
             } onUpdate: { value in
                 cont.yield(value)
@@ -358,20 +365,24 @@ private extension ModelNode {
             }
 
             let cancellable = context.transaction {
-                update(initial: true, isSame: nil, context: context) {
+                // For now, memoize coalescing is disabled by default (opt-in via enableMemoizeCoalescing)
+                // This maintains synchronous behavior until we implement proper dirty tracking
+                let useCoalescing = false // TODO: Implement proper memoize coalescing with dirty flags
+                
+                return update(initial: true, isSame: nil, useCoalescing: useCoalescing, context: context) {
                     produce()
                 } onUpdate: { value in
                     DebugHook.record("[memoize] onUpdate fired for key=\(key), value=\(value), thread=\(Thread.isMainThread ? "main" : "background")")
                     var postLockCallbacks: [() -> Void] = []
 
                     context.lock {
-                        let (prevValue, cancellable) = context._memoizeCache[key].flatMap { ($0.value as? T, $0.cancellable) } ?? (nil, nil)
+                        let (prevValue, prevCancellable) = context._memoizeCache[key].flatMap { ($0.value as? T, $0.cancellable) } ?? (nil, nil)
                         DebugHook.record("[memoize] prevValue=\(String(describing: prevValue)), updating cache")
                         if let isSame, let prevValue, isSame(value, prevValue) {
                             return
                         }
 
-                        context._memoizeCache[key] = (value: value, cancellable: cancellable ?? {})
+                        context._memoizeCache[key] = (value: value, cancellable: prevCancellable ?? {})
 
                         if prevValue != nil {
                             context.onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
@@ -514,9 +525,9 @@ internal func update<T: Sendable>(
     updateImpl(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: useCoalescing, access: access, onUpdate: onUpdate)
 }
 
-private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Bool)?, context: AnyContext? = nil, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
+private func update<T: Sendable>(initial: Bool, isSame: (@Sendable (T, T) -> Bool)?, useCoalescing: Bool = false, context: AnyContext? = nil, access: @Sendable @escaping () -> T, onUpdate: @Sendable @escaping (T) -> Void) -> @Sendable () -> Void {
     let useWithObservationTracking = context?.options.contains(.useWithObservationTracking) ?? false
-    return updateImpl(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: false, access: access, onUpdate: onUpdate)
+    return updateImpl(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: useCoalescing, access: access, onUpdate: onUpdate)
 }
 
 private func updateImpl<T: Sendable>(

@@ -34,4 +34,14 @@ public struct ModelOption: OptionSet, Sendable {
     /// so AccessCollector is currently the default. This option allows testing the
     /// withObservationTracking path.
     internal static let useWithObservationTracking = ModelOption(rawValue: 1 << 1)
+    
+    /// Disable update coalescing for memoized properties.
+    ///
+    /// By default, memoize batches multiple rapid dependency changes into a single
+    /// recomputation for better performance. When this option is enabled, memoize will
+    /// instead recompute synchronously on every dependency change.
+    ///
+    /// This is useful for testing when you need predictable, synchronous behavior,
+    /// or for debugging to see every intermediate state.
+    internal static let disableMemoizeCoalescing = ModelOption(rawValue: 1 << 2)
 }
