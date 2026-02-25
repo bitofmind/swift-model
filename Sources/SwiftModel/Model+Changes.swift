@@ -21,10 +21,10 @@ public struct Observed<Element: Sendable>: AsyncSequence, Sendable {
     /// Create as Observed stream observing updates of the values provided by  `access`
     ///
     /// - Parameter initial: Start by sending current initial value (defaults to true).
-    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to false).
+    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to true).
     /// - Parameter access: closure providing the value to be observed
     @_disfavoredOverload
-    public init(initial: Bool = true, coalesceUpdates: Bool = false, _ access: @Sendable @escaping () -> Element) {
+    public init(initial: Bool = true, coalesceUpdates: Bool = true, _ access: @Sendable @escaping () -> Element) {
         self.init(access: access, initial: initial, isSame: nil, coalesceUpdates: coalesceUpdates)
     }
 
@@ -38,9 +38,9 @@ public extension Observed where Element: Equatable {
     ///
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter removeDuplicates: Whether to filter out duplicate values (defaults to true).
-    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to false).
+    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to true).
     /// - Parameter access: closure providing the value to be observed
-    init(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = false, _ access: @Sendable @escaping () -> Element) {
+    init(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, _ access: @Sendable @escaping () -> Element) {
         stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? (==) : nil, coalesceUpdates: coalesceUpdates).stream
     }
 }
@@ -50,9 +50,9 @@ public extension Observed {
     ///
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter removeDuplicates: Whether to filter out duplicate values (defaults to true).
-    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to false).
+    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to true).
     /// - Parameter access: closure providing the value to be observed
-    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = false, _ access: @Sendable @escaping () -> (repeat each T)) where Element == (repeat each T) {
+    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, _ access: @Sendable @escaping () -> (repeat each T)) where Element == (repeat each T) {
         stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, coalesceUpdates: coalesceUpdates).stream
     }
 
@@ -60,9 +60,9 @@ public extension Observed {
     ///
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter removeDuplicates: Whether to filter out duplicate values (defaults to true).
-    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to false).
+    /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to true).
     /// - Parameter access: closure providing the value to be observed
-    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = false, _ access: @Sendable @escaping () -> (repeat each T)?) where Element == (repeat each T)? {
+    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, _ access: @Sendable @escaping () -> (repeat each T)?) where Element == (repeat each T)? {
         stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, coalesceUpdates: coalesceUpdates).stream
     }
 }

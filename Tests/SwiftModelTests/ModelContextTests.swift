@@ -164,7 +164,7 @@ struct ModelContextTests {
         activateCount += 1
         totalCount += 2*activateCount
 
-        let values = Observed(initial: false) { child.activateCount }
+        let values = Observed(initial: false, coalesceUpdates: false) { child.activateCount }
         Task {
             for await count in values {
                 totalCount *= 3*count

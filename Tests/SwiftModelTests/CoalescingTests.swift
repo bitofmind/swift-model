@@ -1295,13 +1295,13 @@ struct CoalescingTests {
         task.cancel()
     }
     
-    /// Test Observed with coalesceUpdates disabled (default)
+    /// Test Observed with coalesceUpdates explicitly disabled
     @Test func testObservedWithoutCoalescing() async throws {
         let model = TestModel().withAnchor()
         let updateCount = LockIsolated(0)
         
-        // Create Observed stream WITHOUT coalescing (default behavior)
-        let observed = Observed { model.value }
+        // Create Observed stream WITHOUT coalescing (explicitly disabled)
+        let observed = Observed(coalesceUpdates: false) { model.value }
         
         let task = Task {
             for await _ in observed {
