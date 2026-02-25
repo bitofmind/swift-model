@@ -462,8 +462,14 @@ private extension ModelNode {
                 }
             }
 
-            let value = context._memoizeCache[key]!.value as! T
-            var entry = context._memoizeCache[key]!
+            // Get the cached value that should have been set by onUpdate
+            // In rare cases (e.g., if produce() calls resetMemoization), the entry might not exist
+            guard var entry = context._memoizeCache[key] else {
+                // Fallback: compute without tracking if cache wasn't set
+                return produce()
+            }
+            
+            let value = entry.value as! T
             entry.cancellable = cancellable
             context._memoizeCache[key] = entry
 

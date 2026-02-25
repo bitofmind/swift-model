@@ -559,6 +559,36 @@ struct MemoizeTests {
         #expect(sorted.allSatisfy { $0.value == 1 }, "All items should have value 1")
         #expect(model.sortComputeCount.value > initialComputeCount, "Should have recomputed after mutations")
     }
+    
+    /// Test nested memoize calls (memoize calling memoize)
+    @Test
+    func testNestedMemoizeCalls() async throws {
+        let model = NestedMemoizeModel().withAnchor()
+        
+        // First access to outer should work without crashing
+        let result = model.outer
+        #expect(result == 10, "Should compute outer correctly (0*2 + 10)")
+        
+        // Change value and access again
+        model.value = 5
+        
+        // Wait for changes to propagate
+        try await waitUntil(model.outer == 20)
+        
+        #expect(model.inner == 10, "Inner should be 5*2")
+        #expect(model.outer == 20, "Outer should be 10+10")
+    }
+    
+    /// Test deeply nested memoize with concurrent access
+    @Test
+    func testDeeplyNestedMemoizeFirstAccess() async throws {
+        let model = DeepMemoizeModel().withAnchor()
+        
+        // Access level1 which will trigger level2 which will trigger level3
+        // All three are being set up for the first time simultaneously
+        let result = model.level1
+        #expect(result == 8, "Should be 1*2*2*2 = 8")
+    }
 }
 
 // MARK: - Test Models
@@ -709,6 +739,45 @@ struct MemoizeTests {
             computeCount.withValue { $0 += 1 }
             accessLog.withValue { $0.append("computed") }
             return values.reduce(0, +)
+        }
+    }
+}
+
+@Model private struct NestedMemoizeModel {
+    var value = 0
+    
+    var inner: Int {
+        node.memoize(for: "inner") {
+            value * 2
+        }
+    }
+    
+    var outer: Int {
+        node.memoize(for: "outer") {
+            // Nested memoize call
+            inner + 10
+        }
+    }
+}
+
+@Model private struct DeepMemoizeModel {
+    var value = 1
+    
+    var level1: Int {
+        node.memoize(for: "level1") {
+            level2 * 2
+        }
+    }
+    
+    var level2: Int {
+        node.memoize(for: "level2") {
+            level3 * 2
+        }
+    }
+    
+    var level3: Int {
+        node.memoize(for: "level3") {
+            value * 2
         }
     }
 }
