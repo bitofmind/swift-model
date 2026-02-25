@@ -15,7 +15,7 @@ struct DualRegistrarTests {
 
     /// Test background thread modification → immediate background observer notification
     @Test func testBackgroundModificationImmediateBackgroundObserver() async throws {
-        let (model, tester) = TestModel().andTester(options: [.disableObservationTracking])
+        let (model, tester) = TestModel().andTester(options: [])
         tester.exhaustivity = .off
 
         let observerFired = LockIsolated(false)
@@ -45,7 +45,7 @@ struct DualRegistrarTests {
 
     /// Same test as above but using old .withAnchor() style (should also work now!)
     @Test func testBackgroundModificationImmediateBackgroundObserver_WithAnchor() async throws {
-        let model = TestModel().withAnchor(options: [.disableObservationTracking])
+        let model = TestModel().withAnchor(options: [])
 
         let observerFired = LockIsolated(false)
 

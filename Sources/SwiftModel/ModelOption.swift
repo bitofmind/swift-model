@@ -24,16 +24,6 @@ public struct ModelOption: OptionSet, Sendable {
     ///
     /// This allows testing both observation mechanisms side-by-side.
     internal static let disableObservationRegistrar = ModelOption(rawValue: 1 << 0)
-
-    /// Disable withObservationTracking path and use AccessCollector instead.
-    ///
-    /// By default, the update() function uses Swift's withObservationTracking on supported platforms
-    /// (macOS 14+, iOS 17+). When this option is enabled, it falls back to the AccessCollector-based
-    /// implementation instead.
-    ///
-    /// This option is primarily for testing backward compatibility with older OS versions
-    /// that don't support @Observable.
-    internal static let disableObservationTracking = ModelOption(rawValue: 1 << 1)
     
     /// Disable update coalescing for memoized properties.
     ///
@@ -43,5 +33,5 @@ public struct ModelOption: OptionSet, Sendable {
     ///
     /// This is useful for testing when you need predictable, synchronous behavior,
     /// or for debugging to see every intermediate state.
-    internal static let disableMemoizeCoalescing = ModelOption(rawValue: 1 << 2)
+    internal static let disableMemoizeCoalescing = ModelOption(rawValue: 1 << 1)
 }

@@ -30,9 +30,9 @@ struct MemoizeDirtyObservationTests {
                       useObservationTracking: true, useCoalescing: false),
 
             // AccessCollector path (pre-iOS 17 or forced) - dirty tracking always enabled
-            TestConfig(name: "AC+Coal", options: [.disableObservationTracking],
+            TestConfig(name: "AC+Coal", options: [.disableObservationRegistrar],
                       useObservationTracking: false, useCoalescing: true),
-            TestConfig(name: "AC+NoCoal", options: [.disableObservationTracking, .disableMemoizeCoalescing],
+            TestConfig(name: "AC+NoCoal", options: [.disableObservationRegistrar, .disableMemoizeCoalescing],
                       useObservationTracking: false, useCoalescing: false),
         ]
     }
@@ -218,8 +218,8 @@ struct MemoizeDirtyObservationTests {
     @Test
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testDirtyPathWithAccessCollector() async throws {
-        // Disable ObservationTracking to force AccessCollector path
-        let model = DirtyTrackingModel().withAnchor(options: [.disableObservationTracking])
+        // Disable ObservationRegistrar to force AccessCollector path
+        let model = DirtyTrackingModel().withAnchor(options: [.disableObservationRegistrar])
 
         let observationCount = LockIsolated(0)
         let observedValues = LockIsolated<[Int]>([])

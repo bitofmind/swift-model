@@ -15,7 +15,7 @@ struct TransactionTests {
     // MARK: - Basic Transaction Semantics
 
     @Test func testTransactionAtomicity() async throws {
-        let model = AtomicModel().withAnchor(options: [.disableObservationTracking])
+        let model = AtomicModel().withAnchor(options: [.disableObservationRegistrar])
 
         // Setup observer to track updates
         let updateCount = LockIsolated(0)
@@ -46,7 +46,7 @@ struct TransactionTests {
     }
 
     @Test func testTransactionConsistency() async throws {
-        let model = ConsistencyModel().withAnchor(options: [.disableObservationTracking])
+        let model = ConsistencyModel().withAnchor(options: [.disableObservationRegistrar])
 
         // Track invariant: total should always equal sum of parts
         let invariantViolations = LockIsolated(0)
@@ -84,7 +84,7 @@ struct TransactionTests {
     }
 
     @Test func testNestedTransactions() async throws {
-        let model = NestedTransactionModel().withAnchor(options: [.disableObservationTracking])
+        let model = NestedTransactionModel().withAnchor(options: [.disableObservationRegistrar])
 
         let updateCount = LockIsolated(0)
         model.node.forEach(Observed { model.value }) { _ in
@@ -114,7 +114,7 @@ struct TransactionTests {
     // MARK: - Transaction Read Semantics
 
     @Test func testReadDuringTransaction() async throws {
-        let model = ReadDuringTransactionModel().withAnchor(options: [.disableObservationTracking])
+        let model = ReadDuringTransactionModel().withAnchor(options: [.disableObservationRegistrar])
 
         model.transaction {
             model.value = 10
@@ -128,7 +128,7 @@ struct TransactionTests {
     }
 
     @Test func testComputedPropertyDuringTransaction() async throws {
-        let model = ComputedDuringTransactionModel().withAnchor(options: [.disableObservationTracking])
+        let model = ComputedDuringTransactionModel().withAnchor(options: [.disableObservationRegistrar])
 
         model.transaction {
             model.a = 10
@@ -145,7 +145,7 @@ struct TransactionTests {
     // MARK: - Transaction Isolation
 
     @Test func testConcurrentReadsDuringTransaction() async throws {
-        let model = IsolationModel().withAnchor(options: [.disableObservationTracking])
+        let model = IsolationModel().withAnchor(options: [.disableObservationRegistrar])
         model.value = 100
 
         let observedValues = LockIsolated<[Int]>([])
@@ -182,7 +182,7 @@ struct TransactionTests {
     // MARK: - Notification Batching
 
     @Test func testNotificationBatching() async throws {
-        let model = NotificationBatchingModel().withAnchor(options: [.disableObservationTracking])
+        let model = NotificationBatchingModel().withAnchor(options: [.disableObservationRegistrar])
 
         let notificationCount = LockIsolated(0)
         let notifiedValues = LockIsolated<[Int]>([])
@@ -211,7 +211,7 @@ struct TransactionTests {
     // MARK: - Error Handling
 
     @Test func testTransactionRollback() async throws {
-        let model = RollbackModel().withAnchor(options: [.disableObservationTracking])
+        let model = RollbackModel().withAnchor(options: [.disableObservationRegistrar])
         model.value = 10
 
         do {

@@ -157,6 +157,8 @@ enum ObservationPath: String, CaseIterable {
 }
 
 /// Test parameter for validating both update() implementation paths
+/// Note: This now maps to ObservationPath since disableObservationTracking was removed.
+/// The update() path is automatically determined by whether ObservationRegistrar exists.
 enum UpdatePath: String, CaseIterable {
     case accessCollector
     case withObservationTracking
@@ -164,10 +166,10 @@ enum UpdatePath: String, CaseIterable {
     var options: ModelOption {
         switch self {
         case .accessCollector:
-            // Opt-in to legacy path, disable coalescing for synchronous behavior in tests
-            return [.disableObservationTracking, .disableMemoizeCoalescing]
+            // Disable ObservationRegistrar to force AccessCollector path, disable coalescing for synchronous behavior
+            return [.disableObservationRegistrar, .disableMemoizeCoalescing]
         case .withObservationTracking:
-            // Disable coalescing for synchronous behavior in tests
+            // Use ObservationRegistrar (default), disable coalescing for synchronous behavior in tests
             return [.disableMemoizeCoalescing]
         }
     }

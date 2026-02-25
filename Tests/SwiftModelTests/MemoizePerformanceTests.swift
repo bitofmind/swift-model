@@ -235,10 +235,10 @@ struct MemoizePerformanceTests {
         
         let configurations: [(name: String, options: ModelOption, useTransaction: Bool)] = [
             // AccessCollector - dirty tracking always enabled
-            ("AC + NoCoal + NoTxn", [.disableObservationTracking, .disableMemoizeCoalescing], false),
-            ("AC + NoCoal + Txn", [.disableObservationTracking, .disableMemoizeCoalescing], true),
-            ("AC + Coal + NoTxn", [.disableObservationTracking], false),
-            ("AC + Coal + Txn", [.disableObservationTracking], true),
+            ("AC + NoCoal + NoTxn", [.disableObservationRegistrar, .disableMemoizeCoalescing], false),
+            ("AC + NoCoal + Txn", [.disableObservationRegistrar, .disableMemoizeCoalescing], true),
+            ("AC + Coal + NoTxn", [.disableObservationRegistrar], false),
+            ("AC + Coal + Txn", [.disableObservationRegistrar], true),
             
             // ObservationTracking - dirty tracking always enabled
             ("OT + NoCoal + NoTxn", [.disableMemoizeCoalescing], false),

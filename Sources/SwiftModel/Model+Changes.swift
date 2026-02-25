@@ -362,7 +362,7 @@ private extension ModelNode {
     /// - Uses `update()` function to track which properties the computation depends on (e.g., model.value)
     /// - When dependencies change, `update()`'s onChange fires → calls onUpdate callback
     /// - Can use either withObservationTracking (iOS 17+) or AccessCollector (pre-iOS 17)
-    /// - Controlled by ModelOption.disableObservationTracking and .disableObservationRegistrar
+    /// - Uses withObservationTracking if ObservationRegistrar exists, otherwise falls back to AccessCollector
     ///
     /// **External Tracking (memoize property tracking):**
     /// - Observers can track the memoized property itself via \Model[memoizeKey: key]
@@ -442,10 +442,9 @@ private extension ModelNode {
                 // Can be disabled via ModelOption.disableMemoizeCoalescing for testing
                 let useCoalescing = !context.options.contains(.disableMemoizeCoalescing)
                 
-                // Determine which observation path to use based on context options
-                // Can't use withObservationTracking if ObservationRegistrar is disabled or if explicitly disabled
-                let useWithObservationTracking = !(context.options.contains(.disableObservationTracking)) && 
-                                                  !(context.options.contains(.disableObservationRegistrar))
+                // Determine which observation path to use based on whether registrar exists
+                // Use withObservationTracking if we have an ObservationRegistrar, otherwise fall back to AccessCollector
+                let useWithObservationTracking = context.hasObservationRegistrar
                 
                 return update(
                     initial: true, 
@@ -620,7 +619,7 @@ private extension Model {
 /// - Better integration with SwiftUI's observation system
 /// - Completely rebuilds tracking on each update (by design of Swift's API)
 ///
-/// ### AccessCollector (fallback and opt-in via `.disableObservationTracking`)
+/// ### AccessCollector (fallback and opt-in via `.disableObservationRegistrar`)
 /// - Works on all OS versions (no macOS 14+ requirement)
 /// - Uses custom dependency tracking with incremental updates
 /// - **Optimization**: Reuses subscriptions when dependencies remain stable

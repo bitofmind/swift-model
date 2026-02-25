@@ -252,7 +252,7 @@ struct CoalescingTests {
     
     /// Test that coalescing still provides fresh values, not stale (AccessCollector)
     @Test func testCoalescingProvidesFreshValues_AccessCollector() async throws {
-        let model = TestModel().withAnchor(options: [.disableObservationTracking])
+        let model = TestModel().withAnchor(options: [.disableObservationRegistrar])
         let observedValues = LockIsolated<[Int]>([])
         
         let cancellable = update(
@@ -756,7 +756,7 @@ struct CoalescingTests {
         
         for config in configs {
             for _ in 0..<iterations {
-                let model = TestModel().withAnchor(options: config.useObservation ? [] : [.disableObservationTracking])
+                let model = TestModel().withAnchor(options: config.useObservation ? [] : [.disableObservationRegistrar])
                 let updateCount = LockIsolated(0)
                 let totalWorkTime = LockIsolated(0.0)
                 
@@ -1443,7 +1443,7 @@ struct CoalescingTests {
         // === UPDATE BENCHMARKS ===
         for config in configs {
             for _ in 0..<iterations {
-                let model = TestModel().withAnchor(options: config.useAC ? [.disableObservationTracking] : [])
+                let model = TestModel().withAnchor(options: config.useAC ? [.disableObservationRegistrar] : [])
                 let callbackCount = LockIsolated(0)
                 
                 let cancellable = update(
@@ -1495,7 +1495,7 @@ struct CoalescingTests {
         // === MEMOIZE BENCHMARKS ===
         for config in configs {
             for _ in 0..<iterations {
-                let options: ModelOption = config.useAC ? [.disableObservationTracking] : []
+                let options: ModelOption = config.useAC ? [.disableObservationRegistrar] : []
                 let coalescingOption: ModelOption = config.useCoalescing ? [] : [.disableMemoizeCoalescing]
                 var model = MemoizeTestModel(items: (0..<mutationCount).map { _ in ItemModel(value: 0) })
                 model = model.withAnchor(options: options.union(coalescingOption))
