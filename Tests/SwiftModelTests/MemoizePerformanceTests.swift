@@ -195,18 +195,18 @@ struct MemoizePerformanceTests {
         }
         print("===============================================================================================\n")
         
-        // Current coalescing behavior:
+        // Transaction-aware coalescing behavior (FIXED):
         // - OUTSIDE transactions: hasPendingUpdate + backgroundCall batching → ~3 recomputes ✅
-        // - INSIDE transactions: hasPendingUpdate works, but no backgroundCall batching → still ~100 recomputes
+        // - INSIDE transactions: Transaction batching now works → ~1-2 recomputes ✅
         //
-        // Why: Inside transactions, updates must be synchronous (no backgroundCall) to ensure
-        // cache consistency. If we used backgroundCall, async updates could complete AFTER the
-        // transaction, causing stale values when the property is accessed immediately after.
+        // Fix: ObservationTracking now checks threadLocals.postTransactions and defers
+        // callbacks until after transaction completes, matching AccessCollector behavior.
+        // This means transactions batch all observation callbacks, regardless of whether
+        // using AccessCollector or ObservationTracking.
         //
-        // Solution: Implement DIRTY TRACKING (see DIRTY_TRACKING_SIMPLIFIED.md):
-        // A single isDirty flag at the memoize cache level that prevents redundant recomputations
-        // during transactions, reducing 100 recomputes to 1-2.
-        #expect(avgWithout.updates >= 90, "Without coalescing should have ~100 recomputes, got \(avgWithout.updates)")
+        // With dirty tracking enabled by default, even the single callback at transaction
+        // end just marks the cache dirty, and recomputation only happens on next access.
+        #expect(avgWithout.updates <= 10, "Without coalescing in transaction should have ~1-2 recomputes due to transaction batching, got \(avgWithout.updates)")
         #expect(avgWith.updates <= 10, "With coalescing outside transaction should have ~1-3 recomputes, got \(avgWith.updates)")
         
         // Verify correctness

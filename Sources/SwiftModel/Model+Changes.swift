@@ -705,19 +705,35 @@ internal func update<T: Sendable>(
                     update(with: value, index: index)
                 }
                 
-                if useCoalescing {
-                    // Use background coalescing to batch rapid updates
-                    // With didModify callback and dirty tracking, this is safe even inside
-                    // transactions because:
-                    // 1. didModify marks cache dirty immediately
-                    // 2. Cache access checks dirty flag and recomputes on-demand
-                    // 3. backgroundCall batches the onUpdate notifications
-                    // This prevents redundant recomputations during bulk mutations.
-                    backgroundCall(performUpdate)
+                // Check if we're inside a transaction
+                if threadLocals.postTransactions != nil {
+                    // Inside transaction: defer callback until transaction completes
+                    // This matches AccessCollector behavior and prevents 100x callback spam
+                    threadLocals.postTransactions!.append { callbacks in
+                        if useCoalescing {
+                            // With coalescing: use backgroundCall to batch
+                            backgroundCall(performUpdate)
+                        } else {
+                            // Without coalescing: append to post-transaction callbacks
+                            callbacks.append(performUpdate)
+                        }
+                    }
                 } else {
-                    // Coalescing disabled: execute immediately
-                    // Without coalescing, every dependency change triggers an immediate update
-                    performUpdate()
+                    // Outside transaction: execute as before
+                    if useCoalescing {
+                        // Use background coalescing to batch rapid updates
+                        // With didModify callback and dirty tracking, this is safe even inside
+                        // transactions because:
+                        // 1. didModify marks cache dirty immediately
+                        // 2. Cache access checks dirty flag and recomputes on-demand
+                        // 3. backgroundCall batches the onUpdate notifications
+                        // This prevents redundant recomputations during bulk mutations.
+                        backgroundCall(performUpdate)
+                    } else {
+                        // Coalescing disabled: execute immediately
+                        // Without coalescing, every dependency change triggers an immediate update
+                        performUpdate()
+                    }
                 }
             }
         }
