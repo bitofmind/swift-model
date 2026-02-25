@@ -382,18 +382,15 @@ private extension ModelNode {
         // This allows SwiftUI's ViewAccess to register callbacks for view invalidation
         _$modelContext.willAccess(context.model, at: path)?()
 
-        // Check if dirty tracking is enabled
-        let useDirtyTracking = !context.options.contains(.disableMemoizeDirtyTracking)
-
         // Create didModify callback that marks cache as dirty (outside the main lock to avoid type inference issues)
-        let didModifyCallback: (@Sendable () -> Void)? = useDirtyTracking ? { @Sendable in
+        let didModifyCallback: @Sendable () -> Void = { @Sendable in
             context.lock {
                 if var entry = context._memoizeCache[key] {
                     entry.isDirty = true
                     context._memoizeCache[key] = entry
                 }
             }
-        } : nil
+        }
 
         // Check for cached value with dirty flag
         // ATOMICALLY check and clear isDirty to prevent race with backgroundCall
@@ -402,7 +399,7 @@ private extension ModelNode {
                 return (nil, false)
             }
             
-            let shouldRecompute = useDirtyTracking && entry.isDirty
+            let shouldRecompute = entry.isDirty
             
             if shouldRecompute {
                 // Clear isDirty flag immediately to prevent backgroundCall from also computing

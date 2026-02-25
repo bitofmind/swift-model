@@ -234,25 +234,17 @@ struct MemoizePerformanceTests {
         // - Transaction vs No Transaction
         
         let configurations: [(name: String, options: ModelOption, useTransaction: Bool)] = [
-            // AccessCollector
-            ("AC + NoCoal + NoDirty + NoTxn", [.disableObservationTracking, .disableMemoizeCoalescing, .disableMemoizeDirtyTracking], false),
-            ("AC + NoCoal + NoDirty + Txn", [.disableObservationTracking, .disableMemoizeCoalescing, .disableMemoizeDirtyTracking], true),
-            ("AC + Coal + NoDirty + NoTxn", [.disableObservationTracking, .disableMemoizeDirtyTracking], false),
-            ("AC + Coal + NoDirty + Txn", [.disableObservationTracking, .disableMemoizeDirtyTracking], true),
-            ("AC + NoCoal + Dirty + NoTxn", [.disableObservationTracking, .disableMemoizeCoalescing], false),
-            ("AC + NoCoal + Dirty + Txn", [.disableObservationTracking, .disableMemoizeCoalescing], true),
-            ("AC + Coal + Dirty + NoTxn", [.disableObservationTracking], false),
-            ("AC + Coal + Dirty + Txn", [.disableObservationTracking], true),
+            // AccessCollector - dirty tracking always enabled
+            ("AC + NoCoal + NoTxn", [.disableObservationTracking, .disableMemoizeCoalescing], false),
+            ("AC + NoCoal + Txn", [.disableObservationTracking, .disableMemoizeCoalescing], true),
+            ("AC + Coal + NoTxn", [.disableObservationTracking], false),
+            ("AC + Coal + Txn", [.disableObservationTracking], true),
             
-            // ObservationTracking
-            ("OT + NoCoal + NoDirty + NoTxn", [.disableMemoizeCoalescing, .disableMemoizeDirtyTracking], false),
-            ("OT + NoCoal + NoDirty + Txn", [.disableMemoizeCoalescing, .disableMemoizeDirtyTracking], true),
-            ("OT + Coal + NoDirty + NoTxn", [.disableMemoizeDirtyTracking], false),
-            ("OT + Coal + NoDirty + Txn", [.disableMemoizeDirtyTracking], true),
-            ("OT + NoCoal + Dirty + NoTxn", [.disableMemoizeCoalescing], false),
-            ("OT + NoCoal + Dirty + Txn", [.disableMemoizeCoalescing], true),
-            ("OT + Coal + Dirty + NoTxn", [], false),
-            ("OT + Coal + Dirty + Txn", [], true),
+            // ObservationTracking - dirty tracking always enabled
+            ("OT + NoCoal + NoTxn", [.disableMemoizeCoalescing], false),
+            ("OT + NoCoal + Txn", [.disableMemoizeCoalescing], true),
+            ("OT + Coal + NoTxn", [], false),
+            ("OT + Coal + Txn", [], true),
         ]
         
         for config in configurations {
@@ -313,28 +305,35 @@ struct MemoizePerformanceTests {
         // Analysis section
         print("\n📈 KEY INSIGHTS:")
         
-        // Compare dirty tracking impact
-        let acCoalNoTxnNoDirty = results.first { $0.name == "AC + Coal + NoDirty + NoTxn" }!
-        let acCoalNoTxnDirty = results.first { $0.name == "AC + Coal + Dirty + NoTxn" }!
-        print("  Dirty Tracking (outside txn, with coalescing):")
-        print("    Without: \(acCoalNoTxnNoDirty.computes) computes")
-        print("    With:    \(acCoalNoTxnDirty.computes) computes")
+        // Compare coalescing impact (dirty tracking is always enabled now)
+        let acNoCoalNoTxn = results.first { $0.name == "AC + NoCoal + NoTxn" }!
+        let acCoalNoTxn = results.first { $0.name == "AC + Coal + NoTxn" }!
+        print("  Coalescing Impact (outside txn):")
+        print("    Without: \(acNoCoalNoTxn.computes) computes")
+        print("    With:    \(acCoalNoTxn.computes) computes")
         
-        let acCoalTxnNoDirty = results.first { $0.name == "AC + Coal + NoDirty + Txn" }!
-        let acCoalTxnDirty = results.first { $0.name == "AC + Coal + Dirty + Txn" }!
-        print("  Dirty Tracking (inside txn, with coalescing):")
-        print("    Without: \(acCoalTxnNoDirty.computes) computes")
-        print("    With:    \(acCoalTxnDirty.computes) computes ← THIS IS THE BIG WIN!")
+        let acNoCoalTxn = results.first { $0.name == "AC + NoCoal + Txn" }!
+        let acCoalTxn = results.first { $0.name == "AC + Coal + Txn" }!
+        print("  Coalescing Impact (inside txn):")
+        print("    Without: \(acNoCoalTxn.computes) computes")
+        print("    With:    \(acCoalTxn.computes) computes ← DIRTY TRACKING SHINES HERE!")
         
-        if acCoalTxnDirty.computes < acCoalTxnNoDirty.computes {
-            let reduction = Double(acCoalTxnNoDirty.computes) / Double(acCoalTxnDirty.computes)
+        if acCoalTxn.computes < acNoCoalTxn.computes {
+            let reduction = Double(acNoCoalTxn.computes) / Double(acCoalTxn.computes)
             print("    🎯 Reduction: \(String(format: "%.1fx", reduction))")
         }
         
+        // Compare observation mechanisms
+        let otCoalTxn = results.first { $0.name == "OT + Coal + Txn" }!
+        print("\n  Observation Mechanism Comparison (Coal + Txn):")
+        print("    AccessCollector:       \(acCoalTxn.computes) computes")
+        print("    ObservationTracking:   \(otCoalTxn.computes) computes")
+        
         print("\n💡 SUMMARY:")
+        print("  - Dirty tracking (always enabled) prevents redundant recomputes in transactions")
         print("  - Coalescing works best OUTSIDE transactions (uses backgroundCall batching)")
-        print("  - Dirty tracking is CRITICAL INSIDE transactions (prevents redundant recomputes)")
-        print("  - Best configuration: AccessCollector + Coalescing + DirtyTracking (txn or no txn)")
+        print("  - INSIDE transactions, dirty tracking ensures only 1-2 computes regardless of mutations")
+        print("  - Best configuration: Coalescing + DirtyTracking (both now enabled by default)")
         print(String(repeating: "=", count: 100) + "\n")
         
         // Verify correctness
@@ -347,8 +346,8 @@ struct MemoizePerformanceTests {
         }
         #expect(testModel.sorted.allSatisfy { $0.value == 1 })
         
-        // Verify dirty tracking is effective in transactions
-        #expect(acCoalTxnDirty.computes <= 5, "With dirty tracking in txn, should have ≤5 computes, got \(acCoalTxnDirty.computes)")
+        // Verify dirty tracking is effective in transactions (should be ≤5 computes)
+        #expect(acCoalTxn.computes <= 5, "With dirty tracking in txn, should have ≤5 computes, got \(acCoalTxn.computes)")
     }
     
     private func removeOutliersAndAverage(_ results: [(updates: Int, time: Double)]) -> (updates: Int, time: Double) {
@@ -408,12 +407,12 @@ struct MemoizePerformanceTests {
         print("\n" + String(repeating: "=", count: 90))
         print("BENCHMARK: Dirty Tracking Lazy Evaluation")
         print("Scenario: \(mutationCount) mutations, then ONE access (tests lazy computation)")
+        print("Note: Dirty tracking is always enabled")
         print(String(repeating: "=", count: 90))
         
-        // Test both with and without dirty tracking
+        // Only one configuration now since dirty tracking is always enabled
         let configs: [(name: String, options: ModelOption)] = [
-            ("With Dirty Tracking", []),
-            ("Without Dirty Tracking", [.disableMemoizeDirtyTracking])
+            ("With Dirty Tracking", [])
         ]
         
         for config in configs {

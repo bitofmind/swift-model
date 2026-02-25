@@ -9,8 +9,8 @@ import ConcurrencyExtras
 /// Test Matrix:
 /// - Observation: ObservationTracking (iOS 17+) vs AccessCollector (pre-iOS 17)
 /// - Coalescing: Enabled (default) vs Disabled
-/// - Dirty Tracking: Enabled (default) vs Disabled
 ///
+/// Note: Dirty tracking is always enabled and cannot be disabled.
 /// The matrix helps us identify exactly which combinations have issues.
 struct MemoizeDirtyObservationTests {
 
@@ -21,28 +21,19 @@ struct MemoizeDirtyObservationTests {
         let options: ModelOption
         let useObservationTracking: Bool
         let useCoalescing: Bool
-        let useDirtyTracking: Bool
 
         static let allConfigurations: [TestConfig] = [
-            // ObservationTracking path (iOS 17+)
-            TestConfig(name: "OT+Coal+Dirty", options: [],
-                      useObservationTracking: true, useCoalescing: true, useDirtyTracking: true),
-            TestConfig(name: "OT+Coal+NoDirty", options: [.disableMemoizeDirtyTracking],
-                      useObservationTracking: true, useCoalescing: true, useDirtyTracking: false),
-            TestConfig(name: "OT+NoCoal+Dirty", options: [.disableMemoizeCoalescing],
-                      useObservationTracking: true, useCoalescing: false, useDirtyTracking: true),
-            TestConfig(name: "OT+NoCoal+NoDirty", options: [.disableMemoizeCoalescing, .disableMemoizeDirtyTracking],
-                      useObservationTracking: true, useCoalescing: false, useDirtyTracking: false),
+            // ObservationTracking path (iOS 17+) - dirty tracking always enabled
+            TestConfig(name: "OT+Coal", options: [],
+                      useObservationTracking: true, useCoalescing: true),
+            TestConfig(name: "OT+NoCoal", options: [.disableMemoizeCoalescing],
+                      useObservationTracking: true, useCoalescing: false),
 
-            // AccessCollector path (pre-iOS 17 or forced)
-            TestConfig(name: "AC+Coal+Dirty", options: [.disableObservationTracking],
-                      useObservationTracking: false, useCoalescing: true, useDirtyTracking: true),
-            TestConfig(name: "AC+Coal+NoDirty", options: [.disableObservationTracking, .disableMemoizeDirtyTracking],
-                      useObservationTracking: false, useCoalescing: true, useDirtyTracking: false),
-            TestConfig(name: "AC+NoCoal+Dirty", options: [.disableObservationTracking, .disableMemoizeCoalescing],
-                      useObservationTracking: false, useCoalescing: false, useDirtyTracking: true),
-            TestConfig(name: "AC+NoCoal+NoDirty", options: [.disableObservationTracking, .disableMemoizeCoalescing, .disableMemoizeDirtyTracking],
-                      useObservationTracking: false, useCoalescing: false, useDirtyTracking: false),
+            // AccessCollector path (pre-iOS 17 or forced) - dirty tracking always enabled
+            TestConfig(name: "AC+Coal", options: [.disableObservationTracking],
+                      useObservationTracking: false, useCoalescing: true),
+            TestConfig(name: "AC+NoCoal", options: [.disableObservationTracking, .disableMemoizeCoalescing],
+                      useObservationTracking: false, useCoalescing: false),
         ]
     }
 
