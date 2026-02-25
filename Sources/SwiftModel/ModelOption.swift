@@ -44,4 +44,13 @@ public struct ModelOption: OptionSet, Sendable {
     /// This is useful for testing when you need predictable, synchronous behavior,
     /// or for debugging to see every intermediate state.
     internal static let disableMemoizeCoalescing = ModelOption(rawValue: 1 << 2)
+    
+    /// Disable dirty tracking for memoized properties.
+    ///
+    /// By default, memoize uses dirty flags to avoid redundant recomputations
+    /// during transactions. When this option is enabled, memoize will recompute
+    /// on every dependency change (previous behavior).
+    ///
+    /// This is useful for testing and performance comparison.
+    internal static let disableMemoizeDirtyTracking = ModelOption(rawValue: 1 << 3)
 }

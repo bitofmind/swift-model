@@ -48,10 +48,12 @@ class AnyContext: @unchecked Sendable {
     struct MemoizeCacheEntry: @unchecked Sendable {
         var value: Any & Sendable
         var cancellable: (@Sendable () -> Void)?
+        var isDirty: Bool
         
-        init(value: Any & Sendable, cancellable: (@Sendable () -> Void)? = nil) {
+        init(value: Any & Sendable, cancellable: (@Sendable () -> Void)? = nil, isDirty: Bool = false) {
             self.value = value
             self.cancellable = cancellable
+            self.isDirty = isDirty
         }
     }
     

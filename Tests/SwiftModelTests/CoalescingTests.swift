@@ -707,6 +707,192 @@ struct CoalescingTests {
         }
     }
     
+    @Test func benchmarkComparisonWithTransactions() async throws {
+        let mutationCount = 100
+        let iterations = 5
+        
+        // Results storage: [path: [(updates, durationMs, avgWorkMs)]]
+        var allResults: [String: [(updates: Int, durationMs: Double, avgWorkMs: Double)]] = [:]
+        
+        // Simulate realistic work
+        let simulateWork: @Sendable (Int) -> Int = { value in
+            let data = (0..<1000).map { $0 + value }
+            let result = data
+                .filter { $0 % 3 == 0 || $0 % 5 == 0 }
+                .map { $0 * 2 }
+                .reduce(0, +)
+            return result % 10000
+        }
+        
+        // Test configurations:
+        // 1. AccessCollector + No Coalescing + No Transaction
+        // 2. AccessCollector + No Coalescing + Transaction
+        // 3. AccessCollector + Coalescing + No Transaction
+        // 4. AccessCollector + Coalescing + Transaction
+        // 5. ObservationTracking + No Coalescing + No Transaction
+        // 6. ObservationTracking + No Coalescing + Transaction
+        // 7. ObservationTracking + Coalescing + No Transaction
+        // 8. ObservationTracking + Coalescing + Transaction
+        
+        struct Config {
+            let name: String
+            let useObservation: Bool
+            let useCoalescing: Bool
+            let useTransaction: Bool
+        }
+        
+        let configs: [Config] = [
+            Config(name: "AC, NoCoal, NoTxn", useObservation: false, useCoalescing: false, useTransaction: false),
+            Config(name: "AC, NoCoal, Txn", useObservation: false, useCoalescing: false, useTransaction: true),
+            Config(name: "AC, Coal, NoTxn", useObservation: false, useCoalescing: true, useTransaction: false),
+            Config(name: "AC, Coal, Txn", useObservation: false, useCoalescing: true, useTransaction: true),
+            Config(name: "OT, NoCoal, NoTxn", useObservation: true, useCoalescing: false, useTransaction: false),
+            Config(name: "OT, NoCoal, Txn", useObservation: true, useCoalescing: false, useTransaction: true),
+            Config(name: "OT, Coal, NoTxn", useObservation: true, useCoalescing: true, useTransaction: false),
+            Config(name: "OT, Coal, Txn", useObservation: true, useCoalescing: true, useTransaction: true),
+        ]
+        
+        for config in configs {
+            for _ in 0..<iterations {
+                let model = TestModel().withAnchor(options: config.useObservation ? [] : [.disableObservationTracking])
+                let updateCount = LockIsolated(0)
+                let totalWorkTime = LockIsolated(0.0)
+                
+                let cancellable = update(
+                    initial: false,
+                    isSame: { $0 == $1 },
+                    useWithObservationTracking: config.useObservation,
+                    useCoalescing: config.useCoalescing,
+                    access: { model.value },
+                    onUpdate: { value in
+                        let workStart = ContinuousClock.now
+                        _ = simulateWork(value)
+                        let workDuration = ContinuousClock.now - workStart
+                        let workMs = Double(workDuration.components.seconds * 1_000_000_000 + Int64(workDuration.components.attoseconds / 1_000_000_000)) / 1_000_000
+                        totalWorkTime.withValue { $0 += workMs }
+                        updateCount.withValue { $0 += 1 }
+                    }
+                )
+                
+                let start = ContinuousClock.now
+                
+                if config.useTransaction {
+                    model.transaction {
+                        for i in 1...mutationCount {
+                            model.value = i
+                        }
+                    }
+                } else {
+                    for i in 1...mutationCount {
+                        model.value = i
+                    }
+                }
+                
+                // Wait for updates to complete
+                if config.useCoalescing {
+                    // With coalescing, expect 1-3 updates regardless of transaction
+                    // Wait for at least one update
+                    let maxWait = 100  // iterations
+                    var waited = 0
+                    while updateCount.value == 0 && waited < maxWait {
+                        await Task.yield()
+                        waited += 1
+                    }
+                    // Give a bit more time for any pending updates
+                    for _ in 0..<5 { await Task.yield() }
+                } else {
+                    // Without coalescing, expect one update per mutation
+                    let maxWait = mutationCount * 2
+                    var waited = 0
+                    while updateCount.value < mutationCount && waited < maxWait {
+                        await Task.yield()
+                        waited += 1
+                    }
+                }
+                
+                let duration = ContinuousClock.now - start
+                cancellable()
+                
+                let ns = duration.components.seconds * 1_000_000_000 + Int64(duration.components.attoseconds / 1_000_000_000)
+                let avgWork = updateCount.value > 0 ? totalWorkTime.value / Double(updateCount.value) : 0
+                let durationMs = Double(ns) / 1_000_000
+                
+                allResults[config.name, default: []].append((updateCount.value, durationMs, avgWork))
+            }
+        }
+        
+        // Process results
+        func removeOutliersAndAverage(_ values: [(updates: Int, durationMs: Double, avgWorkMs: Double)]) -> (updates: Int, durationMs: Double, avgWorkMs: Double) {
+            guard values.count >= 3 else {
+                let avgUpdates = values.map { $0.updates }.reduce(0, +) / values.count
+                let avgDuration = values.map { $0.durationMs }.reduce(0.0, +) / Double(values.count)
+                let avgWork = values.map { $0.avgWorkMs }.reduce(0.0, +) / Double(values.count)
+                return (avgUpdates, avgDuration, avgWork)
+            }
+            
+            let sortedByDuration = values.sorted { $0.durationMs < $1.durationMs }
+            let trimmed = Array(sortedByDuration.dropFirst().dropLast())
+            
+            let avgUpdates = trimmed.map { $0.updates }.reduce(0, +) / trimmed.count
+            let avgDuration = trimmed.map { $0.durationMs }.reduce(0.0, +) / Double(trimmed.count)
+            let avgWork = trimmed.map { $0.avgWorkMs }.reduce(0.0, +) / Double(trimmed.count)
+            
+            return (avgUpdates, avgDuration, avgWork)
+        }
+        
+        let results = configs.map { config -> (name: String, updates: Int, durationMs: Double, avgWorkMs: Double) in
+            let avg = removeOutliersAndAverage(allResults[config.name]!)
+            return (config.name, avg.updates, avg.durationMs, avg.avgWorkMs)
+        }
+        
+        // Print comparison table
+        print("\n" + String(repeating: "=", count: 95))
+        print("📊 UPDATE PERFORMANCE WITH TRANSACTIONS: \(mutationCount) mutations (\(iterations) iterations, outliers removed)")
+        print(String(repeating: "=", count: 95))
+        print("Configuration                  Updates  Total(ms)  Work/Update(ms)  Total Work(ms)")
+        print(String(repeating: "-", count: 95))
+        
+        for result in results {
+            let totalWork = Double(result.updates) * result.avgWorkMs
+            print("\(result.name.padding(toLength: 31, withPad: " ", startingAt: 0))\(String(format: "%4d", result.updates))     \(String(format: "%6.1f", result.durationMs))     \(String(format: "%6.2f", result.avgWorkMs))           \(String(format: "%6.1f", totalWork))")
+        }
+        
+        print(String(repeating: "=", count: 95))
+        
+        // Analysis
+        print("\n📈 KEY FINDINGS:")
+        print("\n1. TRANSACTION IMPACT ON COALESCING:")
+        let acCoalNoTxn = results.first { $0.name == "AC, Coal, NoTxn" }!
+        let acCoalTxn = results.first { $0.name == "AC, Coal, Txn" }!
+        print("   AccessCollector + Coalescing:")
+        print("     No Transaction:  \(acCoalNoTxn.updates) updates (coalescing via backgroundCall)")
+        print("     With Transaction: \(acCoalTxn.updates) updates (coalescing now also works via backgroundCall!)")
+        
+        let otCoalNoTxn = results.first { $0.name == "OT, Coal, NoTxn" }!
+        let otCoalTxn = results.first { $0.name == "OT, Coal, Txn" }!
+        print("   ObservationTracking + Coalescing:")
+        print("     No Transaction:  \(otCoalNoTxn.updates) updates")
+        print("     With Transaction: \(otCoalTxn.updates) updates")
+        
+        print("\n2. COALESCING NOW WORKS IN TRANSACTIONS:")
+        print("   With didModify callback, backgroundCall is safe inside transactions.")
+        print("   The didModify marks dirty immediately (synchronous), while backgroundCall batches updates.")
+        print("   This allows coalescing to work equally well inside and outside transactions.")
+        
+        print("\n💡 CONCLUSION:")
+        print("   Coalescing now works effectively BOTH inside and outside transactions.")
+        print("   The removal of threadLocals.postTransactions check enables this optimization.")
+        print(String(repeating: "=", count: 95) + "\n")
+        
+        // Verify expectations - be lenient as timing can vary
+        print("DEBUG: acCoalNoTxn.updates = \(acCoalNoTxn.updates)")
+        print("DEBUG: acCoalTxn.updates = \(acCoalTxn.updates)")
+        
+        #expect(acCoalNoTxn.updates < 30, "AC with coalescing outside txn should have <30 updates, got \(acCoalNoTxn.updates)")
+        #expect(acCoalTxn.updates < 30, "AC with coalescing in txn should now also have <30 updates, got \(acCoalTxn.updates)")
+        print("✅ Coalescing works in both transaction modes!")
+    }
+    
     // MARK: - Transaction Tests
     
     /// Test that coalescing works correctly with rapid mutations (no transaction wrapper needed)

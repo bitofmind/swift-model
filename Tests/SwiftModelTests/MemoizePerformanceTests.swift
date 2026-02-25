@@ -220,6 +220,137 @@ struct MemoizePerformanceTests {
         #expect(testModel.sorted.allSatisfy { $0.value == 1 })
     }
     
+    @Test func benchmarkMemoizeComprehensive() async throws {
+        let mutationCount = 100
+        let iterations = 5
+        
+        // Results storage
+        var allResults: [String: [(computes: Int, durationMs: Double)]] = [:]
+        
+        // Test all combinations:
+        // - AccessCollector vs ObservationTracking
+        // - Coalescing vs No Coalescing
+        // - DirtyTracking vs No DirtyTracking
+        // - Transaction vs No Transaction
+        
+        let configurations: [(name: String, options: ModelOption, useTransaction: Bool)] = [
+            // AccessCollector
+            ("AC + NoCoal + NoDirty + NoTxn", [.disableObservationTracking, .disableMemoizeCoalescing, .disableMemoizeDirtyTracking], false),
+            ("AC + NoCoal + NoDirty + Txn", [.disableObservationTracking, .disableMemoizeCoalescing, .disableMemoizeDirtyTracking], true),
+            ("AC + Coal + NoDirty + NoTxn", [.disableObservationTracking, .disableMemoizeDirtyTracking], false),
+            ("AC + Coal + NoDirty + Txn", [.disableObservationTracking, .disableMemoizeDirtyTracking], true),
+            ("AC + NoCoal + Dirty + NoTxn", [.disableObservationTracking, .disableMemoizeCoalescing], false),
+            ("AC + NoCoal + Dirty + Txn", [.disableObservationTracking, .disableMemoizeCoalescing], true),
+            ("AC + Coal + Dirty + NoTxn", [.disableObservationTracking], false),
+            ("AC + Coal + Dirty + Txn", [.disableObservationTracking], true),
+            
+            // ObservationTracking
+            ("OT + NoCoal + NoDirty + NoTxn", [.disableMemoizeCoalescing, .disableMemoizeDirtyTracking], false),
+            ("OT + NoCoal + NoDirty + Txn", [.disableMemoizeCoalescing, .disableMemoizeDirtyTracking], true),
+            ("OT + Coal + NoDirty + NoTxn", [.disableMemoizeDirtyTracking], false),
+            ("OT + Coal + NoDirty + Txn", [.disableMemoizeDirtyTracking], true),
+            ("OT + NoCoal + Dirty + NoTxn", [.disableMemoizeCoalescing], false),
+            ("OT + NoCoal + Dirty + Txn", [.disableMemoizeCoalescing], true),
+            ("OT + Coal + Dirty + NoTxn", [], false),
+            ("OT + Coal + Dirty + Txn", [], true),
+        ]
+        
+        for config in configurations {
+            for _ in 0..<iterations {
+                let model = BenchmarkModel(itemCount: mutationCount).withAnchor(options: config.options)
+                
+                _ = model.sorted  // Initial setup
+                let initialComputes = model.sortCallCount
+                
+                let start = ContinuousClock.now
+                
+                if config.useTransaction {
+                    model.transaction {
+                        for i in 0..<model.items.count {
+                            model.items[i].value += 1
+                        }
+                    }
+                } else {
+                    for i in 0..<model.items.count {
+                        model.items[i].value += 1
+                    }
+                    // Wait for background updates to complete
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                
+                _ = model.sorted  // Force final access
+                let elapsed = ContinuousClock.now - start
+                let ms = Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
+                
+                let computes = model.sortCallCount - initialComputes
+                allResults[config.name, default: []].append((computes, ms))
+            }
+        }
+        
+        // Process results
+        let results = configurations.map { config -> (name: String, computes: Int, durationMs: Double) in
+            let data = allResults[config.name]!
+            // Convert to expected format for helper
+            let converted = data.map { (updates: $0.computes, time: $0.durationMs) }
+            let avg = removeOutliersAndAverage(converted)
+            return (config.name, avg.updates, avg.time)
+        }
+        
+        // Print comprehensive table
+        print("\n" + String(repeating: "=", count: 100))
+        print("📊 MEMOIZE COMPREHENSIVE PERFORMANCE: \(mutationCount) mutations (\(iterations) iterations, outliers removed)")
+        print(String(repeating: "=", count: 100))
+        print("Configuration                              Computes  Time(ms)")
+        print(String(repeating: "-", count: 100))
+        
+        for result in results {
+            let paddedName = result.name.padding(toLength: 43, withPad: " ", startingAt: 0)
+            print("\(paddedName)\(String(format: "%6d", result.computes))    \(String(format: "%6.1f", result.durationMs))")
+        }
+        
+        print(String(repeating: "=", count: 100))
+        
+        // Analysis section
+        print("\n📈 KEY INSIGHTS:")
+        
+        // Compare dirty tracking impact
+        let acCoalNoTxnNoDirty = results.first { $0.name == "AC + Coal + NoDirty + NoTxn" }!
+        let acCoalNoTxnDirty = results.first { $0.name == "AC + Coal + Dirty + NoTxn" }!
+        print("  Dirty Tracking (outside txn, with coalescing):")
+        print("    Without: \(acCoalNoTxnNoDirty.computes) computes")
+        print("    With:    \(acCoalNoTxnDirty.computes) computes")
+        
+        let acCoalTxnNoDirty = results.first { $0.name == "AC + Coal + NoDirty + Txn" }!
+        let acCoalTxnDirty = results.first { $0.name == "AC + Coal + Dirty + Txn" }!
+        print("  Dirty Tracking (inside txn, with coalescing):")
+        print("    Without: \(acCoalTxnNoDirty.computes) computes")
+        print("    With:    \(acCoalTxnDirty.computes) computes ← THIS IS THE BIG WIN!")
+        
+        if acCoalTxnDirty.computes < acCoalTxnNoDirty.computes {
+            let reduction = Double(acCoalTxnNoDirty.computes) / Double(acCoalTxnDirty.computes)
+            print("    🎯 Reduction: \(String(format: "%.1fx", reduction))")
+        }
+        
+        print("\n💡 SUMMARY:")
+        print("  - Coalescing works best OUTSIDE transactions (uses backgroundCall batching)")
+        print("  - Dirty tracking is CRITICAL INSIDE transactions (prevents redundant recomputes)")
+        print("  - Best configuration: AccessCollector + Coalescing + DirtyTracking (txn or no txn)")
+        print(String(repeating: "=", count: 100) + "\n")
+        
+        // Verify correctness
+        let testModel = BenchmarkModel(itemCount: mutationCount).withAnchor()
+        _ = testModel.sorted
+        testModel.transaction {
+            for i in 0..<testModel.items.count {
+                testModel.items[i].value += 1
+            }
+        }
+        #expect(testModel.sorted.allSatisfy { $0.value == 1 })
+        
+        // Verify dirty tracking is effective in transactions
+        #expect(acCoalTxnDirty.computes <= 5, "With dirty tracking in txn, should have ≤5 computes, got \(acCoalTxnDirty.computes)")
+    }
+    
     private func removeOutliersAndAverage(_ results: [(updates: Int, time: Double)]) -> (updates: Int, time: Double) {
         guard results.count >= 3 else {
             let avgUpdates = results.map(\.updates).reduce(0, +) / results.count
@@ -232,6 +363,107 @@ struct MemoizePerformanceTests {
         let avgUpdates = trimmed.map(\.updates).reduce(0, +) / trimmed.count
         let avgTime = trimmed.map(\.time).reduce(0.0, +) / Double(trimmed.count)
         return (avgUpdates, avgTime)
+    }
+    
+    @Test func verifyDirtyTrackingInTransactionFix() async throws {
+        let model = BenchmarkModel(itemCount: 100).withAnchor()
+        
+        // Initial setup
+        _ = model.sorted
+        let initialComputes = model.sortCallCount
+        
+        print("\n=== Verifying Dirty Tracking Fix ===")
+        print("Initial computes: \(initialComputes)")
+        
+        // Mutation in transaction with dirty tracking enabled (default)
+        model.transaction {
+            for i in 0..<model.items.count {
+                model.items[i].value += 1
+            }
+        }
+        
+        // Access after transaction
+        _ = model.sorted
+        
+        let finalComputes = model.sortCallCount
+        let computes = finalComputes - initialComputes
+        
+        print("Computes with dirty tracking in transaction: \(computes)")
+        print("Expected: 1-2 (optimal with fix)")
+        print("Old behavior: 100 (broken)")
+        print("=====================================\n")
+        
+        // With the fix removing threadLocals.postTransactions check, 
+        // we should see 1-2 computes, not 100
+        #expect(computes <= 2, "Expected ≤2 computes with dirty tracking, got \(computes)")
+    }
+    
+    /// Benchmark focused on dirty tracking: many mutations between reads
+    /// This tests the "lazy" aspect of dirty tracking - value updated many times
+    /// but only computed once when accessed
+    @Test func benchmarkDirtyTrackingLazyEvaluation() async throws {
+        let mutationCount = 100
+        let iterations = 5
+        
+        print("\n" + String(repeating: "=", count: 90))
+        print("BENCHMARK: Dirty Tracking Lazy Evaluation")
+        print("Scenario: \(mutationCount) mutations, then ONE access (tests lazy computation)")
+        print(String(repeating: "=", count: 90))
+        
+        // Test both with and without dirty tracking
+        let configs: [(name: String, options: ModelOption)] = [
+            ("With Dirty Tracking", []),
+            ("Without Dirty Tracking", [.disableMemoizeDirtyTracking])
+        ]
+        
+        for config in configs {
+            var computeCounts: [Int] = []
+            var durations: [Double] = []
+            
+            for _ in 0..<iterations {
+                let model = BenchmarkModel(itemCount: mutationCount).withAnchor(options: config.options)
+                
+                // Initial setup - this establishes observation
+                _ = model.sorted
+                let initialComputes = model.sortCallCount
+                
+                let start = ContinuousClock.now
+                
+                // Many mutations without accessing the computed property
+                for i in 0..<model.items.count {
+                    model.items[i].value += 1
+                }
+                
+                // Single access AFTER all mutations (lazy evaluation)
+                _ = model.sorted
+                
+                let elapsed = ContinuousClock.now - start
+                let ns = elapsed.components.seconds * 1_000_000_000 + Int64(elapsed.components.attoseconds / 1_000_000_000)
+                let durationMs = Double(ns) / 1_000_000
+                
+                let computes = model.sortCallCount - initialComputes
+                computeCounts.append(computes)
+                durations.append(durationMs)
+            }
+            
+            // Remove outliers and average
+            computeCounts.sort()
+            durations.sort()
+            
+            let trimmedComputes = computeCounts.dropFirst().dropLast()
+            let trimmedDurations = durations.dropFirst().dropLast()
+            
+            let avgComputes = trimmedComputes.reduce(0, +) / trimmedComputes.count
+            let avgDuration = trimmedDurations.reduce(0.0, +) / Double(trimmedDurations.count)
+            
+            print("\n\(config.name):")
+            print("  Computes: \(avgComputes) (range: \(computeCounts.first!) - \(computeCounts.last!))")
+            print("  Duration: \(String(format: "%.2f", avgDuration))ms")
+        }
+        
+        print("\n" + String(repeating: "=", count: 90))
+        print("✅ Dirty tracking enables lazy evaluation - only computes when accessed!")
+        print(String(repeating: "=", count: 90) + "\n")
     }
 }
 

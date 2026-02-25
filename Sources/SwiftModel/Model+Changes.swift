@@ -363,11 +363,47 @@ private extension ModelNode {
         let path: KeyPath<M, T>&Sendable = \M[memoizeKey: key]
         _$modelContext.willAccess(context.model, at: path)?()
 
-        return context.lock {
-            if let value = context._memoizeCache[key]?.value as? T {
-                return value
-            }
+        // Check if dirty tracking is enabled
+        let useDirtyTracking = !context.options.contains(.disableMemoizeDirtyTracking)
 
+        // Create didModify callback that marks cache as dirty (outside the main lock to avoid type inference issues)
+        let didModifyCallback: (@Sendable () -> Void)? = useDirtyTracking ? { @Sendable in
+            context.lock {
+                if var entry = context._memoizeCache[key] {
+                    entry.isDirty = true
+                    context._memoizeCache[key] = entry
+                }
+            }
+        } : nil
+
+        // Check for cached value with dirty flag
+        let cachedEntry = context.lock { context._memoizeCache[key] }
+        
+        if let entry = cachedEntry {
+            // If dirty tracking enabled and cache is dirty
+            if useDirtyTracking && entry.isDirty {
+                // Compute fresh WITHOUT tracking (tracking will be set up by coalesced update)
+                let fresh: T = produce()
+                
+                // Update cache with fresh value and clear dirty flag
+                context.lock {
+                    var updatedEntry = entry
+                    updatedEntry.value = fresh
+                    updatedEntry.isDirty = false
+                    context._memoizeCache[key] = updatedEntry
+                }
+                
+                return fresh
+            }
+            
+            // Not dirty, use cached value
+            return entry.value as! T
+        }
+
+        // First access: set up tracking
+        return context.lock {
+
+            // First access: set up tracking with didModify callback
             let cancellable = context.transaction {
                 // Enable coalescing by default to batch multiple dependency changes during transactions
                 // Can be disabled via ModelOption.disableMemoizeCoalescing for testing
@@ -378,7 +414,13 @@ private extension ModelNode {
                 let useWithObservationTracking = !(context.options.contains(.disableObservationTracking)) && 
                                                   !(context.options.contains(.disableObservationRegistrar))
                 
-                return update(initial: true, isSame: nil, useWithObservationTracking: useWithObservationTracking, useCoalescing: useCoalescing) {
+                return update(
+                    initial: true, 
+                    isSame: nil, 
+                    useWithObservationTracking: useWithObservationTracking, 
+                    useCoalescing: useCoalescing,
+                    didModify: didModifyCallback
+                ) {
                     produce()
                 } onUpdate: { value in
                     DebugHook.record("[memoize] onUpdate fired for key=\(key), value=\(value), thread=\(Thread.isMainThread ? "main" : "background")")
@@ -396,7 +438,8 @@ private extension ModelNode {
 
                         context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
                             value: value,
-                            cancellable: prevCancellable ?? {}
+                            cancellable: prevCancellable ?? {},
+                            isDirty: false  // Fresh value from coalesced update
                         )
 
                         if prevValue != nil {
@@ -504,19 +547,20 @@ private extension Model {
 /// - When a dependency changes while an update is pending, skip scheduling another update
 /// - Result: Multiple rapid mutations are coalesced into a single recomputation
 ///
-/// ### 2. BackgroundCalls Batching (Outside transactions only)
-/// - Outside transactions: Updates go through `backgroundCall()` which batches callbacks using `Task.yield()`
-/// - Inside transactions: Updates execute synchronously to ensure cache consistency before transaction returns
-/// - The transaction check (`threadLocals.postTransactions == nil`) ensures correctness:
-///   - If we used `backgroundCall` inside transactions, async updates could complete AFTER the transaction,
-///     causing stale values to be returned if the property is accessed immediately after the transaction
+/// ### 2. BackgroundCalls Batching
+/// - Updates go through `backgroundCall()` which batches callbacks using `Task.yield()`
+/// - Works both inside and outside transactions
+/// - When used with `didModify` callback and dirty tracking:
+///   - `didModify` marks cache dirty immediately (synchronous)
+///   - Cache access checks dirty flag and recomputes on-demand if needed
+///   - `backgroundCall` batches the `onUpdate` notifications
+///   - This ensures fresh values are always available while reducing redundant recomputations
 ///
 /// ### Performance Impact
-/// - Outside transactions: 100 mutations → ~3 recomputes (hasPendingUpdate + backgroundCall batching)
-/// - Inside transactions: 100 mutations to 100 different paths → 100 recomputes (synchronous, no batching)
-/// - Inside transactions with single mutation: 100 mutations to same path → 1 recompute (hasPendingUpdate works)
-///
-/// For optimal performance with bulk array mutations inside transactions, use **dirty tracking** (see COALESCING_DESIGN_FINAL.md)
+/// - With coalescing + dirty tracking: 100 mutations → 1-2 recomputes (regardless of transaction)
+/// - Without coalescing: 100 mutations → 100 recomputes
+/// - The `didModify` callback enables coalescing to work safely inside transactions by providing
+///   immediate dirty flag updates, while `backgroundCall` batches the observation notifications
 ///
 /// ## Parameters
 ///
@@ -578,8 +622,8 @@ internal func update<T: Sendable>(
     /// 3. Calls onUpdate if the value actually changed
     ///
     /// This function is called AFTER recomputation, either:
-    /// - Immediately (when coalescing disabled or inside transaction)
-    /// - Asynchronously via backgroundCall (when coalescing enabled outside transaction)
+    /// - Immediately (when coalescing disabled)
+    /// - Asynchronously via backgroundCall (when coalescing enabled)
     @Sendable func update(with value: T, index: Int) {
         updateLock.withLock {
             let shouldUpdate: Bool = last.withValue { last in
@@ -661,15 +705,18 @@ internal func update<T: Sendable>(
                     update(with: value, index: index)
                 }
                 
-                if useCoalescing, threadLocals.postTransactions == nil {
-                    // Outside transaction: use background coalescing to batch rapid updates
-                    // This allows multiple quick mutations to be batched into a single update
+                if useCoalescing {
+                    // Use background coalescing to batch rapid updates
+                    // With didModify callback and dirty tracking, this is safe even inside
+                    // transactions because:
+                    // 1. didModify marks cache dirty immediately
+                    // 2. Cache access checks dirty flag and recomputes on-demand
+                    // 3. backgroundCall batches the onUpdate notifications
+                    // This prevents redundant recomputations during bulk mutations.
                     backgroundCall(performUpdate)
                 } else {
-                    // Inside transaction OR coalescing disabled: execute immediately
-                    // Inside transactions, we must execute synchronously to ensure the cache
-                    // is updated before the transaction returns. Otherwise, accessing the
-                    // memoized property after the transaction would return stale values.
+                    // Coalescing disabled: execute immediately
+                    // Without coalescing, every dependency change triggers an immediate update
                     performUpdate()
                 }
             }
@@ -724,17 +771,20 @@ internal func update<T: Sendable>(
                 update(with: value, index: index)
             }
             
-            if useCoalescing, threadLocals.postTransactions == nil {
-                // Outside transaction: use background coalescing to batch rapid updates
-                // This allows multiple quick mutations to be batched into a single update
+            if useCoalescing {
+                // Use background coalescing to batch rapid updates
+                // With didModify callback and dirty tracking, this is safe even inside
+                // transactions because:
+                // 1. didModify marks cache dirty immediately
+                // 2. Cache access checks dirty flag and recomputes on-demand
+                // 3. backgroundCall batches the onUpdate notifications
+                // This prevents redundant recomputations during bulk mutations.
                 return {
                     backgroundCall(performUpdate)
                 }
             } else {
-                // Inside transaction OR coalescing disabled: execute immediately
-                // Inside transactions, we must execute synchronously to ensure the cache
-                // is updated before the transaction returns. Otherwise, accessing the
-                // memoized property after the transaction would return stale values.
+                // Coalescing disabled: execute immediately
+                // Without coalescing, every dependency change triggers an immediate update
                 return performUpdate
             }
         }
