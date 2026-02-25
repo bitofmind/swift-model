@@ -356,11 +356,30 @@ private extension Observed {
 }
 
 private extension ModelNode {
+    /// Memoize implementation with two-layer observation tracking:
+    ///
+    /// **Internal Tracking (dependency tracking):**
+    /// - Uses `update()` function to track which properties the computation depends on (e.g., model.value)
+    /// - When dependencies change, `update()`'s onChange fires → calls onUpdate callback
+    /// - Can use either withObservationTracking (iOS 17+) or AccessCollector (pre-iOS 17)
+    /// - Controlled by ModelOption.disableObservationTracking and .disableObservationRegistrar
+    ///
+    /// **External Tracking (memoize property tracking):**
+    /// - Observers can track the memoized property itself via \Model[memoizeKey: key]
+    /// - willAccess() call allows ViewAccess (SwiftUI) to register onModify callbacks
+    /// - ObservationRegistrar willSet/didSet notify @Observable observers (iOS 17+)
+    /// - This is what SwiftUI uses to detect when to re-render views
+    ///
+    /// The dirty tracking optimization provides immediate fresh values when cache is dirty,
+    /// while still ensuring all external observers are notified via the onUpdate callback.
     func memoize<T: Sendable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T, isSame: (@Sendable (T, T) -> Bool)?) -> T {
         guard let context = enforcedContext() else { return produce() }
 
         let key = AnyHashableSendable(key)
         let path: KeyPath<M, T>&Sendable = \M[memoizeKey: key]
+        
+        // External tracking: notify observers that this property is being accessed
+        // This allows SwiftUI's ViewAccess to register callbacks for view invalidation
         _$modelContext.willAccess(context.model, at: path)?()
 
         // Check if dirty tracking is enabled
@@ -377,25 +396,42 @@ private extension ModelNode {
         } : nil
 
         // Check for cached value with dirty flag
-        let cachedEntry = context.lock { context._memoizeCache[key] }
-        
-        if let entry = cachedEntry {
-            // If dirty tracking enabled and cache is dirty
-            if useDirtyTracking && entry.isDirty {
-                // Compute fresh WITHOUT tracking (tracking will be set up by coalesced update)
-                let fresh: T = produce()
-                
-                // Update cache with fresh value and clear dirty flag
-                context.lock {
-                    var updatedEntry = entry
-                    updatedEntry.value = fresh
-                    updatedEntry.isDirty = false
-                    context._memoizeCache[key] = updatedEntry
-                }
-                
-                return fresh
+        // ATOMICALLY check and clear isDirty to prevent race with backgroundCall
+        let (cachedEntry, shouldRecompute): (AnyContext.MemoizeCacheEntry?, Bool) = context.lock {
+            guard let entry = context._memoizeCache[key] else {
+                return (nil, false)
             }
             
+            let shouldRecompute = useDirtyTracking && entry.isDirty
+            
+            if shouldRecompute {
+                // Clear isDirty flag immediately to prevent backgroundCall from also computing
+                var freshEntry = entry
+                freshEntry.isDirty = false
+                context._memoizeCache[key] = freshEntry
+            }
+            
+            return (entry, shouldRecompute)
+        }
+        
+        if let entry = cachedEntry {
+            // If dirty tracking enabled and cache WAS dirty, recompute and notify synchronously
+            if shouldRecompute {
+                // Compute fresh value
+                let fresh: T = produce()
+
+                // Call the stored onUpdate callback to trigger all observation notifications
+                // This ensures external observers (SwiftUI, @Observable, etc.) are notified
+                // The onUpdate callback handles:
+                // - isSame duplicate checking
+                // - Cache updating
+                // - modifyCallbacks (ViewAccess for pre-iOS 17)
+                // - willSet/didSet (ObservationRegistrar for iOS 17+)
+                entry.onUpdate?(fresh)
+
+                return fresh
+            }
+
             // Not dirty, use cached value
             return entry.value as! T
         }
@@ -421,8 +457,14 @@ private extension ModelNode {
                     useCoalescing: useCoalescing,
                     didModify: didModifyCallback
                 ) {
-                    produce()
-                } onUpdate: { value in
+                    // Check if cache has fresh value (from dirty path)
+                    // This prevents double computation when dirty path already updated the cache
+                    let entry = context.lock({ context._memoizeCache[key] })
+                    if let entry = entry, !entry.isDirty {
+                        return entry.value as! T
+                    }
+                    return produce()
+                } onUpdate: { @Sendable (value: T) in
                     var postLockCallbacks: [() -> Void] = []
 
                     context.lock {
@@ -434,10 +476,55 @@ private extension ModelNode {
                             return
                         }
 
+                        // Store wrapped onUpdate callback that can be called from dirty path
+                        let wrappedOnUpdate: @Sendable (Any) -> Void = { @Sendable anyValue in
+                            guard let typedValue = anyValue as? T else { return }
+                            var postCallbacks: [() -> Void] = []
+                            
+                            context.lock {
+                                let currentEntry = context._memoizeCache[key]
+                                let currentPrevValue = currentEntry?.value as? T
+                                let currentCancellable = currentEntry?.cancellable
+                                let currentOnUpdate = currentEntry?.onUpdate
+                                
+                                if let isSame, let currentPrevValue, isSame(typedValue, currentPrevValue) {
+                                    return
+                                }
+                                
+                                context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
+                                    value: typedValue,
+                                    cancellable: currentCancellable ?? {},
+                                    isDirty: false,
+                                    onUpdate: currentOnUpdate  // Preserve the same callback
+                                )
+                                
+                                if currentPrevValue != nil {
+                                    context.onPostTransaction(callbacks: &postCallbacks) { callbacks in
+                                        for callback in (context.modifyCallbacks[path] ?? [:]).values {
+                                            if let postCallback = callback(false) {
+                                                callbacks.append(postCallback)
+                                            }
+                                        }
+                                        
+                                        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), 
+                                           let model = context.model as? any Model&Observable {
+                                            callbacks.append {
+                                                model.willSet(path: path, from: context)
+                                                model.didSet(path: path, from: context)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            for callback in postCallbacks { callback() }
+                        }
+
                         context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
                             value: value,
                             cancellable: prevCancellable ?? {},
-                            isDirty: false  // Fresh value from coalesced update
+                            isDirty: false,
+                            onUpdate: wrappedOnUpdate
                         )
 
                         if prevValue != nil {

@@ -49,11 +49,13 @@ class AnyContext: @unchecked Sendable {
         var value: Any & Sendable
         var cancellable: (@Sendable () -> Void)?
         var isDirty: Bool
+        var onUpdate: (@Sendable (Any) -> Void)?  // Callback to trigger observation updates
         
-        init(value: Any & Sendable, cancellable: (@Sendable () -> Void)? = nil, isDirty: Bool = false) {
+        init(value: Any & Sendable, cancellable: (@Sendable () -> Void)? = nil, isDirty: Bool = false, onUpdate: (@Sendable (Any) -> Void)? = nil) {
             self.value = value
             self.cancellable = cancellable
             self.isDirty = isDirty
+            self.onUpdate = onUpdate
         }
     }
     
