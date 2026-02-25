@@ -521,13 +521,14 @@ struct CoalescingTests {
             
             let start = ContinuousClock.now
             for i in 1...mutationCount { model.value = i }
-            // Busy poll until coalesced update completes (expect 1-3 updates due to coalescing)
+            // Wait for coalesced update to complete (expect 1-3 updates due to coalescing)
             let previousCount = updateCount.value
-            while updateCount.value == previousCount {
-                await Task.yield()
+            for _ in 0..<100 {
+                if updateCount.value != previousCount { break }
+                try? await Task.sleep(for: .milliseconds(10))
             }
             // Give a bit more time for any trailing updates
-            for _ in 0..<10 { await Task.yield() }
+            try? await Task.sleep(for: .milliseconds(50))
             let duration = ContinuousClock.now - start
             
             cancellable()
@@ -602,13 +603,14 @@ struct CoalescingTests {
             
             let start = ContinuousClock.now
             for i in 1...mutationCount { model.value = i }
-            // Busy poll until coalesced update completes (expect 1-3 updates due to coalescing)
+            // Wait for coalesced update to complete (expect 1-3 updates due to coalescing)
             let previousCount = updateCount.value
-            while updateCount.value == previousCount {
-                await Task.yield()
+            for _ in 0..<100 {
+                if updateCount.value != previousCount { break }
+                try? await Task.sleep(for: .milliseconds(10))
             }
             // Give a bit more time for any trailing updates
-            for _ in 0..<10 { await Task.yield() }
+            try? await Task.sleep(for: .milliseconds(50))
             let duration = ContinuousClock.now - start
             
             cancellable()
@@ -1404,6 +1406,230 @@ struct CoalescingTests {
         
         task.cancel()
     }
+    
+    @Test func benchmarkUnifiedComparison() async throws {
+        let mutationCount = 100
+        let iterations = 5
+        
+        print("\n" + String(repeating: "=", count: 120))
+        print("📊 UNIFIED BENCHMARK: Memoize vs Update (100 mutations, 5 iterations, outliers removed)")
+        print(String(repeating: "=", count: 120))
+        
+        // Test configurations
+        struct Config {
+            let name: String
+            let useAC: Bool  // true = AccessCollector, false = ObservationTracking
+            let useCoalescing: Bool
+            let useTransaction: Bool
+        }
+        
+        let configs: [Config] = [
+            // AccessCollector
+            Config(name: "AC, NoCoal, NoTxn", useAC: true, useCoalescing: false, useTransaction: false),
+            Config(name: "AC, NoCoal, Txn", useAC: true, useCoalescing: false, useTransaction: true),
+            Config(name: "AC, Coal, NoTxn", useAC: true, useCoalescing: true, useTransaction: false),
+            Config(name: "AC, Coal, Txn", useAC: true, useCoalescing: true, useTransaction: true),
+            // ObservationTracking
+            Config(name: "OT, NoCoal, NoTxn", useAC: false, useCoalescing: false, useTransaction: false),
+            Config(name: "OT, NoCoal, Txn", useAC: false, useCoalescing: false, useTransaction: true),
+            Config(name: "OT, Coal, NoTxn", useAC: false, useCoalescing: true, useTransaction: false),
+            Config(name: "OT, Coal, Txn", useAC: false, useCoalescing: true, useTransaction: true),
+        ]
+        
+        // Results: [configName: [(updateCallbacks, memoizeComputes, durationMs)]]
+        var updateResults: [String: [(callbacks: Int, time: Double)]] = [:]
+        var memoizeResults: [String: [(computes: Int, time: Double)]] = [:]
+        
+        // === UPDATE BENCHMARKS ===
+        for config in configs {
+            for _ in 0..<iterations {
+                let model = TestModel().withAnchor(options: config.useAC ? [.disableObservationTracking] : [])
+                let callbackCount = LockIsolated(0)
+                
+                let cancellable = update(
+                    initial: false,
+                    isSame: { $0 == $1 },
+                    useWithObservationTracking: !config.useAC,
+                    useCoalescing: config.useCoalescing,
+                    access: { model.value },
+                    onUpdate: { _ in
+                        callbackCount.withValue { $0 += 1 }
+                    }
+                )
+                
+                let start = ContinuousClock.now
+                
+                if config.useTransaction {
+                    model.transaction {
+                        for i in 1...mutationCount {
+                            model.value = i
+                        }
+                    }
+                } else {
+                    for i in 1...mutationCount {
+                        model.value = i
+                    }
+                }
+                
+                // Wait for all updates to complete
+                let maxWait = config.useCoalescing ? 100 : mutationCount * 2
+                var waited = 0
+                let expectedMin = config.useCoalescing ? 0 : mutationCount
+                while callbackCount.value < expectedMin && waited < maxWait {
+                    await Task.yield()
+                    waited += 1
+                }
+                
+                // Give a bit more time for any pending updates
+                for _ in 0..<5 { await Task.yield() }
+                
+                let elapsed = ContinuousClock.now - start
+                let ms = Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
+                
+                cancellable()
+                
+                updateResults[config.name, default: []].append((callbackCount.value, ms))
+            }
+        }
+        
+        // === MEMOIZE BENCHMARKS ===
+        for config in configs {
+            for _ in 0..<iterations {
+                let options: ModelOption = config.useAC ? [.disableObservationTracking] : []
+                let coalescingOption: ModelOption = config.useCoalescing ? [] : [.disableMemoizeCoalescing]
+                var model = MemoizeTestModel(items: (0..<mutationCount).map { _ in ItemModel(value: 0) })
+                model = model.withAnchor(options: options.union(coalescingOption))
+                
+                _ = model.sorted  // Initial setup
+                let initialComputes = model.sortCallCount.value
+                
+                let start = ContinuousClock.now
+                
+                if config.useTransaction {
+                    model.transaction {
+                        for i in 0..<model.items.count {
+                            model.items[i].value += 1
+                        }
+                    }
+                } else {
+                    for i in 0..<model.items.count {
+                        model.items[i].value += 1
+                    }
+                }
+                
+                // Force final access to sync
+                _ = model.sorted
+                let elapsed = ContinuousClock.now - start
+                let ms = Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
+                
+                let computes = model.sortCallCount.value - initialComputes
+                memoizeResults[config.name, default: []].append((computes, ms))
+            }
+        }
+        
+        // Process results (remove outliers and average)
+        func removeOutliersAndAverage(_ values: [(count: Int, time: Double)]) -> (count: Int, time: Double) {
+            guard values.count >= 3 else {
+                let avgCount = values.map { $0.count }.reduce(0, +) / values.count
+                let avgTime = values.map { $0.time }.reduce(0.0, +) / Double(values.count)
+                return (avgCount, avgTime)
+            }
+            
+            let sortedByTime = values.sorted { $0.time < $1.time }
+            let trimmed = Array(sortedByTime.dropFirst().dropLast())
+            
+            let avgCount = trimmed.map { $0.count }.reduce(0, +) / trimmed.count
+            let avgTime = trimmed.map { $0.time }.reduce(0.0, +) / Double(trimmed.count)
+            
+            return (avgCount, avgTime)
+        }
+        
+        let processedUpdate = configs.map { config in
+            let data = updateResults[config.name]!.map { (count: $0.callbacks, time: $0.time) }
+            let avg = removeOutliersAndAverage(data)
+            return (name: config.name, callbacks: avg.count, time: avg.time)
+        }
+        
+        let processedMemoize = configs.map { config in
+            let data = memoizeResults[config.name]!.map { (count: $0.computes, time: $0.time) }
+            let avg = removeOutliersAndAverage(data)
+            return (name: config.name, computes: avg.count, time: avg.time)
+        }
+        
+        // Print comparison table
+        print("\n┌─ UPDATE STREAM (onUpdate callbacks) ─────────────────────────────────────────────────────────────┐")
+        print("│ Configuration                  Callbacks  Time(ms)  │")
+        print("├────────────────────────────────────────────────────│")
+        for result in processedUpdate {
+            let paddedName = result.name.padding(toLength: 30, withPad: " ", startingAt: 0)
+            let paddedCallbacks = String(format: "%8d", result.callbacks)
+            let paddedTime = String(format: "%7.1f", result.time)
+            print("│ \(paddedName) \(paddedCallbacks)  \(paddedTime)  │")
+        }
+        print("└────────────────────────────────────────────────────┘")
+        
+        print("\n┌─ MEMOIZE (recomputations) ───────────────────────────────────────────────────────────────────────┐")
+        print("│ Configuration                  Computes   Time(ms)  │")
+        print("├────────────────────────────────────────────────────│")
+        for result in processedMemoize {
+            let paddedName = result.name.padding(toLength: 30, withPad: " ", startingAt: 0)
+            let paddedComputes = String(format: "%8d", result.computes)
+            let paddedTime = String(format: "%7.1f", result.time)
+            print("│ \(paddedName) \(paddedComputes)  \(paddedTime)  │")
+        }
+        print("└────────────────────────────────────────────────────┘")
+        
+        // Analysis
+        print("\n📈 ANALYSIS:\n")
+        
+        print("1️⃣  AC vs OT WITHOUT Coalescing + Transaction:")
+        let acNoCoalTxnUpdate = processedUpdate.first { $0.name == "AC, NoCoal, Txn" }!
+        let otNoCoalTxnUpdate = processedUpdate.first { $0.name == "OT, NoCoal, Txn" }!
+        let acNoCoalTxnMemoize = processedMemoize.first { $0.name == "AC, NoCoal, Txn" }!
+        let otNoCoalTxnMemoize = processedMemoize.first { $0.name == "OT, NoCoal, Txn" }!
+        
+        print("   UPDATE:")
+        print("     AC:  \(acNoCoalTxnUpdate.callbacks) callbacks  ← Transaction batches via onPostTransaction")
+        print("     OT:  \(otNoCoalTxnUpdate.callbacks) callbacks  ← ⚠️  Bypasses transaction mechanism!")
+        if otNoCoalTxnUpdate.callbacks > acNoCoalTxnUpdate.callbacks * 10 {
+            print("     ❗ OT executes ~\(otNoCoalTxnUpdate.callbacks / acNoCoalTxnUpdate.callbacks)x more callbacks!")
+        }
+        
+        print("   MEMOIZE:")
+        print("     AC:  \(acNoCoalTxnMemoize.computes) computes")
+        print("     OT:  \(otNoCoalTxnMemoize.computes) computes")
+        if acNoCoalTxnMemoize.computes != otNoCoalTxnMemoize.computes {
+            print("     ℹ️  Difference due to underlying update() behavior")
+        }
+        
+        print("\n2️⃣  Coalescing Effect:")
+        let acNoCoalNoTxn = processedUpdate.first { $0.name == "AC, NoCoal, NoTxn" }!
+        let acCoalNoTxn = processedUpdate.first { $0.name == "AC, Coal, NoTxn" }!
+        print("   UPDATE (AC, NoTxn):")
+        print("     Without coalescing: \(acNoCoalNoTxn.callbacks) callbacks")
+        print("     With coalescing:    \(acCoalNoTxn.callbacks) callbacks")
+        if acNoCoalNoTxn.callbacks > acCoalNoTxn.callbacks * 10 {
+            let reduction = Double(acNoCoalNoTxn.callbacks) / Double(acCoalNoTxn.callbacks)
+            print("     🎯 Reduction: \(String(format: "%.0fx", reduction))")
+        }
+        
+        print("\n3️⃣  Why The Difference Matters:")
+        print("   • AccessCollector uses context.onModify() which respects transaction boundaries")
+        print("   • ObservationTracking uses Swift's onChange: which bypasses SwiftModel transactions")
+        print("   • With coalescing enabled, both eventually produce similar results")
+        print("   • Without coalescing in transactions, OT wastes CPU on redundant callbacks")
+        
+        print("\n💡 PRACTICAL IMPACT:")
+        if otNoCoalTxnUpdate.callbacks > 50 && acNoCoalTxnUpdate.callbacks < 10 {
+            print("   ⚠️  ObservationTracking + NoCoalescing + Transaction = \(otNoCoalTxnUpdate.callbacks) redundant callbacks")
+            print("   ✅ Solution: Always enable coalescing (now default)")
+            print("   ✅ With coalescing: OT and AC perform similarly")
+        } else {
+            print("   ✅ With coalescing enabled (default), the difference is minimal")
+        }
+        
+        print("\n" + String(repeating: "=", count: 120) + "\n")
+    }
 
 // MARK: - Test Models
 
@@ -1412,6 +1638,18 @@ struct CoalescingTests {
 }
 @Model private struct ItemModel {
     var value = 0
+}
+
+@Model private struct MemoizeTestModel {
+    var items: [ItemModel] = []
+    let sortCallCount = LockIsolated(0)
+    
+    var sorted: [ItemModel] {
+        node.memoize(for: "sorted") {
+            sortCallCount.withValue { $0 += 1 }
+            return items.sorted { $0.value < $1.value }
+        }
+    }
 }
 
 @Model private struct NestedModel {

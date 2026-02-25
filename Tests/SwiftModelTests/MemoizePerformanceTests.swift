@@ -274,11 +274,11 @@ struct MemoizePerformanceTests {
                     for i in 0..<model.items.count {
                         model.items[i].value += 1
                     }
-                    // Wait for background updates to complete
-                    try? await Task.sleep(for: .milliseconds(50))
                 }
                 
-                _ = model.sorted  // Force final access
+                // Force final access - this synchronizes with any pending background work
+                // by requiring the context lock, ensuring all computations complete
+                _ = model.sorted
                 let elapsed = ContinuousClock.now - start
                 let ms = Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
                 
