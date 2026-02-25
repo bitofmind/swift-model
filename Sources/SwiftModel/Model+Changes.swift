@@ -423,7 +423,6 @@ private extension ModelNode {
                 ) {
                     produce()
                 } onUpdate: { value in
-                    DebugHook.record("[memoize] onUpdate fired for key=\(key), value=\(value), thread=\(Thread.isMainThread ? "main" : "background")")
                     var postLockCallbacks: [() -> Void] = []
 
                     context.lock {
@@ -431,7 +430,6 @@ private extension ModelNode {
                         let prevValue = entry?.value as? T
                         let prevCancellable = entry?.cancellable
                         
-                        DebugHook.record("[memoize] prevValue=\(String(describing: prevValue)), updating cache")
                         if let isSame, let prevValue, isSame(value, prevValue) {
                             return
                         }
@@ -722,12 +720,8 @@ internal func update<T: Sendable>(
                     // Outside transaction: execute as before
                     if useCoalescing {
                         // Use background coalescing to batch rapid updates
-                        // With didModify callback and dirty tracking, this is safe even inside
-                        // transactions because:
-                        // 1. didModify marks cache dirty immediately
-                        // 2. Cache access checks dirty flag and recomputes on-demand
-                        // 3. backgroundCall batches the onUpdate notifications
-                        // This prevents redundant recomputations during bulk mutations.
+                        // backgroundCall schedules on next runloop iteration, allowing multiple
+                        // mutations to coalesce into a single update callback
                         backgroundCall(performUpdate)
                     } else {
                         // Coalescing disabled: execute immediately
@@ -789,18 +783,15 @@ internal func update<T: Sendable>(
             
             if useCoalescing {
                 // Use background coalescing to batch rapid updates
-                // With didModify callback and dirty tracking, this is safe even inside
-                // transactions because:
-                // 1. didModify marks cache dirty immediately
-                // 2. Cache access checks dirty flag and recomputes on-demand
-                // 3. backgroundCall batches the onUpdate notifications
-                // This prevents redundant recomputations during bulk mutations.
+                // backgroundCall schedules on next runloop iteration, allowing multiple
+                // mutations to coalesce into a single update callback
                 return {
                     backgroundCall(performUpdate)
                 }
             } else {
-                // Coalescing disabled: execute immediately
-                // Without coalescing, every dependency change triggers an immediate update
+                // Coalescing disabled: return callback to execute via context
+                // The callback will be deferred if inside a transaction, or executed
+                // immediately otherwise, based on context.onModify behavior
                 return performUpdate
             }
         }
