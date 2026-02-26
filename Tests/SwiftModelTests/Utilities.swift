@@ -122,7 +122,7 @@ struct WaitTimeoutError: Error, CustomStringConvertible {
 func waitUntil(
     _ condition: @autoclosure () -> Bool,
     pollInterval: UInt64 = 1_000_000,  // 1ms
-    timeout: UInt64 = 5_000_000_000,   // 5s
+    timeout: UInt64 = 1_000_000_000,   // 5s
     file: StaticString = #file,
     line: UInt = #line
 ) async throws {
@@ -156,9 +156,14 @@ enum ObservationPath: String, CaseIterable {
     }
 }
 
-/// Test parameter for validating both update() implementation paths
-/// Note: This now maps to ObservationPath since disableObservationTracking was removed.
-/// The update() path is automatically determined by whether ObservationRegistrar exists.
+/// Test parameter for validating both observation mechanisms (AccessCollector vs withObservationTracking)
+///
+/// IMPORTANT: withObservationTracking path ONLY works with coalescing enabled.
+/// Tests using `Observed(coalesceUpdates: false)` inside models will NOT work correctly
+/// with UpdatePath.withObservationTracking - they will fall back to AccessCollector.
+///
+/// If you need to test non-coalescing behavior, use AccessCollector directly:
+/// - `[.disableObservationRegistrar, .disableMemoizeCoalescing]`
 enum UpdatePath: String, CaseIterable {
     case accessCollector
     case withObservationTracking
@@ -166,11 +171,14 @@ enum UpdatePath: String, CaseIterable {
     var options: ModelOption {
         switch self {
         case .accessCollector:
-            // Disable ObservationRegistrar to force AccessCollector path, disable coalescing for synchronous behavior
-            return [.disableObservationRegistrar, .disableMemoizeCoalescing]
+            // Disable ObservationRegistrar to force AccessCollector path
+            // Note: Coalescing can still be controlled via .disableMemoizeCoalescing
+            return [.disableObservationRegistrar]
         case .withObservationTracking:
-            // Use ObservationRegistrar (default), disable coalescing for synchronous behavior in tests
-            return [.disableMemoizeCoalescing]
+            // Use ObservationRegistrar (default)
+            // WARNING: Tests using Observed(coalesceUpdates: false) will NOT use this path!
+            // They will fall back to AccessCollector because coalesceUpdates: false forces that path.
+            return []
         }
     }
 }

@@ -132,38 +132,10 @@ struct CoalescingTests {
     
     // MARK: - withObservationTracking Path Tests
     
-    /// Test that without coalescing, N mutations trigger N update callbacks (withObservationTracking path)
-    @Test func testWithoutCoalescing_WithObservationTracking() async throws {
-        let model = TestModel().withAnchor(options: [])
-        let updateCount = LockIsolated(0)
-        
-        // Set up observer WITHOUT coalescing
-        let cancellable = update(
-            initial: true,
-            isSame: { $0 == $1 },
-            useWithObservationTracking: true,  // Use withObservationTracking
-            useCoalescing: false,  // Disable coalescing
-            access: { model.value },
-            onUpdate: { _ in
-                updateCount.withValue { $0 += 1 }
-            }
-        )
-
-        defer { cancellable() }
-        
-        // Initial update should fire
-        #expect(updateCount.value == 1, "Should have initial update")
-        
-        // Make 5 mutations
-        for i in 1...5 {
-            model.value = i
-        }
-        
-        // Wait for all updates to complete
-        try await waitUntil(updateCount.value == 6)
-        
-        #expect(updateCount.value == 6, "Should have 1 initial + 5 mutation updates = 6 total")
-    }
+    // Note: Cannot test "without coalescing" with withObservationTracking
+    // withObservationTracking fundamentally requires async execution (via backgroundCall)
+    // to avoid synchronous recursion, which inherently batches updates.
+    // Non-coalescing mode is only available with AccessCollector.
     
     /// Test that with coalescing, N mutations trigger only 1 update callback (withObservationTracking path)
     @Test func testWithCoalescing_WithObservationTracking() async throws {
@@ -378,34 +350,9 @@ struct CoalescingTests {
         print("📊 AccessCollector (coalescing):    \(mutationCount) mutations → \(updateCount.value) updates in \(Double(nanoseconds) / 1_000_000)ms")
     }
     
-    /// Benchmark: withObservationTracking without coalescing
-    @Test func benchmarkObservationTracking_NoCoalescing() async throws {
-        let model = TestModel().withAnchor(options: [])
-        let updateCount = LockIsolated(0)
-        let mutationCount = 100
-        
-        let cancellable = update(
-            initial: false,
-            isSame: { $0 == $1 },
-            useWithObservationTracking: true,
-            useCoalescing: false,
-            access: { model.value },
-            onUpdate: { _ in updateCount.withValue { $0 += 1 } }
-        )
-        
-        defer { cancellable() }
-        
-        let start = ContinuousClock.now
-        for i in 1...mutationCount {
-            model.value = i
-        }
-        // Wait for all updates to complete
-        try await waitUntil(updateCount.value == mutationCount)
-        let duration = ContinuousClock.now - start
-        
-        let nanoseconds = duration.components.seconds * 1_000_000_000 + Int64(duration.components.attoseconds / 1_000_000_000)
-        print("📊 ObservationTracking (no coalescing): \(mutationCount) mutations → \(updateCount.value) updates in \(Double(nanoseconds) / 1_000_000)ms")
-    }
+    // Note: Cannot benchmark "ObservationTracking without coalescing"
+    // withObservationTracking fundamentally requires async execution which inherently batches updates.
+    // Non-coalescing benchmarks only available with AccessCollector.
     
     /// Benchmark: withObservationTracking with coalescing
     @Test func benchmarkObservationTracking_WithCoalescing() async throws {
@@ -540,46 +487,9 @@ struct CoalescingTests {
             allResults["AccessCollector (coalescing)", default: []].append((updateCount.value, durationMs, avgWork))
         }
         
-        // 3. ObservationTracking without coalescing
-        for iteration in 0..<iterations {
-            let model = TestModel().withAnchor(options: [])
-            let updateCount = LockIsolated(0)
-            let totalWorkTime = LockIsolated(0.0)
-            
-            let cancellable = update(
-                initial: false,
-                isSame: { $0 == $1 },
-                useWithObservationTracking: true,
-                useCoalescing: false,
-                access: { model.value },
-                onUpdate: { value in
-                    let workStart = ContinuousClock.now
-                    _ = simulateWork(value)
-                    let workDuration = ContinuousClock.now - workStart
-                    let workMs = Double(workDuration.components.seconds * 1_000_000_000 + Int64(workDuration.components.attoseconds / 1_000_000_000)) / 1_000_000
-                    totalWorkTime.withValue { $0 += workMs }
-                    updateCount.withValue { $0 += 1 }
-                }
-            )
-            
-            let start = ContinuousClock.now
-            for i in 1...mutationCount { model.value = i }
-            // Busy poll until all updates complete (without coalescing: expect mutationCount updates)
-            while updateCount.value < mutationCount {
-                await Task.yield()
-            }
-            let duration = ContinuousClock.now - start
-            
-            cancellable()
-            
-            let ns = duration.components.seconds * 1_000_000_000 + Int64(duration.components.attoseconds / 1_000_000_000)
-            let avgWork = updateCount.value > 0 ? totalWorkTime.value / Double(updateCount.value) : 0
-            let durationMs = Double(ns) / 1_000_000
-            
-            allResults["ObservationTracking (no coalescing)", default: []].append((updateCount.value, durationMs, avgWork))
-        }
-        
-        // 4. ObservationTracking with coalescing
+        // 3. ObservationTracking with coalescing
+        // Note: Cannot test "OT without coalescing" - withObservationTracking requires async execution
+        // which inherently batches updates via backgroundCall
         for iteration in 0..<iterations {
             let model = TestModel().withAnchor(options: [])
             let updateCount = LockIsolated(0)
@@ -647,7 +557,6 @@ struct CoalescingTests {
         let results: [(path: String, updates: Int, durationMs: Double, avgWorkMs: Double)] = [
             ("AccessCollector (no coalescing)", removeOutliersAndAverage(allResults["AccessCollector (no coalescing)"]!).updates, removeOutliersAndAverage(allResults["AccessCollector (no coalescing)"]!).durationMs, removeOutliersAndAverage(allResults["AccessCollector (no coalescing)"]!).avgWorkMs),
             ("AccessCollector (coalescing)", removeOutliersAndAverage(allResults["AccessCollector (coalescing)"]!).updates, removeOutliersAndAverage(allResults["AccessCollector (coalescing)"]!).durationMs, removeOutliersAndAverage(allResults["AccessCollector (coalescing)"]!).avgWorkMs),
-            ("ObservationTracking (no coalescing)", removeOutliersAndAverage(allResults["ObservationTracking (no coalescing)"]!).updates, removeOutliersAndAverage(allResults["ObservationTracking (no coalescing)"]!).durationMs, removeOutliersAndAverage(allResults["ObservationTracking (no coalescing)"]!).avgWorkMs),
             ("ObservationTracking (coalescing)", removeOutliersAndAverage(allResults["ObservationTracking (coalescing)"]!).updates, removeOutliersAndAverage(allResults["ObservationTracking (coalescing)"]!).durationMs, removeOutliersAndAverage(allResults["ObservationTracking (coalescing)"]!).avgWorkMs)
         ]
         
@@ -666,29 +575,26 @@ struct CoalescingTests {
         print(String(repeating: "=", count: 95))
         
         // Verify expected results
-        #expect(results.count == 4, "Should have 4 benchmark results")
+        #expect(results.count == 3, "Should have 3 benchmark results")
         
         // Without coalescing: should have mutationCount updates
         #expect(results[0].updates == mutationCount, "AccessCollector without coalescing should have \(mutationCount) updates")
-        #expect(results[2].updates == mutationCount, "ObservationTracking without coalescing should have \(mutationCount) updates")
         
         // With coalescing: should have significantly fewer updates (1-10 instead of 100)
         #expect(results[1].updates < 10, "AccessCollector with coalescing should have < 10 updates, got \(results[1].updates)")
-        #expect(results[3].updates < 30, "ObservationTracking with coalescing should have < 30 updates, got \(results[3].updates)")
+        #expect(results[2].updates < 30, "ObservationTracking with coalescing should have < 30 updates, got \(results[2].updates)")
         
         // Coalescing should be faster (less total work time)
         let accessWorkReduction = (Double(results[0].updates) * results[0].avgWorkMs) / (Double(results[1].updates) * results[1].avgWorkMs)
         #expect(accessWorkReduction > 5.0, "AccessCollector coalescing should reduce work by >5x, got \(String(format: "%.1f", accessWorkReduction))x")
         
         // Calculate improvements
-        if results.count == 4 {
+        if results.count == 3 {
             let accessNoCoal = results[0]
             let accessCoal = results[1]
-            let obsNoCoal = results[2]
-            let obsCoal = results[3]
+            let obsCoal = results[2]
             
             let accessWorkSaved = (Double(accessNoCoal.updates) * accessNoCoal.avgWorkMs) - (Double(accessCoal.updates) * accessCoal.avgWorkMs)
-            let obsWorkSaved = (Double(obsNoCoal.updates) * obsNoCoal.avgWorkMs) - (Double(obsCoal.updates) * obsCoal.avgWorkMs)
             
             print("\n📈 IMPROVEMENTS WITH COALESCING:")
             print("  AccessCollector:")
@@ -697,14 +603,13 @@ struct CoalescingTests {
             print("    Total time:   \(String(format: "%.1f", accessNoCoal.durationMs))ms → \(String(format: "%.1f", accessCoal.durationMs))ms")
             print("")
             print("  ObservationTracking:")
-            print("    Updates:      \(obsNoCoal.updates) → \(obsCoal.updates)  (\(obsNoCoal.updates / max(obsCoal.updates, 1))x reduction)")
-            print("    Work saved:   \(String(format: "%.1f", obsWorkSaved))ms  (\(String(format: "%.1f", (obsWorkSaved / (Double(obsNoCoal.updates) * obsNoCoal.avgWorkMs)) * 100))% less computation)")
-            print("    Total time:   \(String(format: "%.1f", obsNoCoal.durationMs))ms → \(String(format: "%.1f", obsCoal.durationMs))ms")
+            print("    With coalescing: \(obsCoal.updates) updates")
+            print("    Total time:      \(String(format: "%.1f", obsCoal.durationMs))ms")
             print("")
-            print("💡 Note: ObservationTracking with coalescing shows \(obsCoal.updates) updates instead of 1.")
-            print("   This is because withObservationTracking fires the onChange callback")
-            print("   asynchronously, and each callback re-establishes tracking, which can")
-            print("   catch intermediate mutations before coalescing completes.")
+            print("💡 Note: ObservationTracking REQUIRES coalescing (always uses backgroundCall).")
+            print("   It shows \(obsCoal.updates) updates instead of 1 because withObservationTracking")
+            print("   fires onChange asynchronously, and each callback re-establishes tracking,")
+            print("   which can catch intermediate mutations before coalescing completes.")
             print(String(repeating: "=", count: 95) + "\n")
         }
     }
@@ -727,14 +632,15 @@ struct CoalescingTests {
         }
         
         // Test configurations:
+        // Note: Cannot test "OT + NoCoal" - withObservationTracking requires async execution
+        // which inherently batches updates via backgroundCall (coalescing).
+        //
         // 1. AccessCollector + No Coalescing + No Transaction
         // 2. AccessCollector + No Coalescing + Transaction
         // 3. AccessCollector + Coalescing + No Transaction
         // 4. AccessCollector + Coalescing + Transaction
-        // 5. ObservationTracking + No Coalescing + No Transaction
-        // 6. ObservationTracking + No Coalescing + Transaction
-        // 7. ObservationTracking + Coalescing + No Transaction
-        // 8. ObservationTracking + Coalescing + Transaction
+        // 5. ObservationTracking + Coalescing + No Transaction
+        // 6. ObservationTracking + Coalescing + Transaction
         
         struct Config {
             let name: String
@@ -748,8 +654,6 @@ struct CoalescingTests {
             Config(name: "AC, NoCoal, Txn", useObservation: false, useCoalescing: false, useTransaction: true),
             Config(name: "AC, Coal, NoTxn", useObservation: false, useCoalescing: true, useTransaction: false),
             Config(name: "AC, Coal, Txn", useObservation: false, useCoalescing: true, useTransaction: true),
-            Config(name: "OT, NoCoal, NoTxn", useObservation: true, useCoalescing: false, useTransaction: false),
-            Config(name: "OT, NoCoal, Txn", useObservation: true, useCoalescing: false, useTransaction: true),
             Config(name: "OT, Coal, NoTxn", useObservation: true, useCoalescing: true, useTransaction: false),
             Config(name: "OT, Coal, Txn", useObservation: true, useCoalescing: true, useTransaction: true),
         ]

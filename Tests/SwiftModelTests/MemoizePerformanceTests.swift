@@ -234,15 +234,15 @@ struct MemoizePerformanceTests {
         // - Transaction vs No Transaction
         
         let configurations: [(name: String, options: ModelOption, useTransaction: Bool)] = [
-            // AccessCollector - dirty tracking always enabled
+            // AccessCollector - can run with or without coalescing
             ("AC + NoCoal + NoTxn", [.disableObservationRegistrar, .disableMemoizeCoalescing], false),
             ("AC + NoCoal + Txn", [.disableObservationRegistrar, .disableMemoizeCoalescing], true),
             ("AC + Coal + NoTxn", [.disableObservationRegistrar], false),
             ("AC + Coal + Txn", [.disableObservationRegistrar], true),
             
-            // ObservationTracking - dirty tracking always enabled
-            ("OT + NoCoal + NoTxn", [.disableMemoizeCoalescing], false),
-            ("OT + NoCoal + Txn", [.disableMemoizeCoalescing], true),
+            // ObservationTracking - always uses coalescing (async execution required to avoid recursion)
+            // Note: Cannot test "OT + NoCoal" - withObservationTracking fundamentally requires
+            // async execution via backgroundCall, which inherently batches updates
             ("OT + Coal + NoTxn", [], false),
             ("OT + Coal + Txn", [], true),
         ]

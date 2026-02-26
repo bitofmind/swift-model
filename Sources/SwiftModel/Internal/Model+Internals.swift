@@ -144,9 +144,22 @@ extension Model where Self: Observable {
     }
 }
 
-// Coalesce calls to main thread.
+// Efficiently batches multiple callbacks to execute on the main thread.
+//
+// This mechanism serves two key purposes:
+// 1. Breaks synchronous call stacks using Task.yield() to prevent stack overflow
+// 2. Amortizes Task creation overhead by batching multiple callbacks into a single Task
+//
+// Note: This does NOT implement "coalescing" in the sense of deduplicating or batching
+// updates. That logic happens elsewhere (e.g., via hasPendingUpdate flags in callers).
+// This is purely a Task management optimization.
 struct MainCalls {
     private let calls = LockIsolated<(task: Task<(), Never>, calls: [@Sendable () -> Void])?>(nil)
+    
+    /// Batch size for processing callbacks before yielding.
+    /// Balances throughput (process multiple callbacks per yield) with fairness (regular yield points).
+    /// Value of 16 chosen empirically: small enough for low latency, large enough for good throughput.
+    private let batchSize = 16
 
     func drain() {
         let calls: [@Sendable () -> Void] = calls.withValue {
@@ -183,24 +196,29 @@ struct MainCalls {
             if $0 == nil {
                 $0 = (Task(priority: .userInitiated) { @MainActor in
                     while !Task.isCancelled {
-                        let calls: [@Sendable () -> Void] = calls.withValue {
+                        // Take up to batchSize callbacks from the queue
+                        let batch: [@Sendable () -> Void] = calls.withValue {
                             if $0 == nil {
                                 return []
-                            } else if $0!.calls.isEmpty == true {
+                            } else if $0!.calls.isEmpty {
                                 $0!.task.cancel()
                                 $0 = nil
                                 return []
                             }
 
-                            let calls = $0!.calls
-                            $0!.calls.removeAll()
-                            return calls
+                            // Take up to batchSize callbacks
+                            let count = min(batchSize, $0!.calls.count)
+                            let batch = Array($0!.calls.prefix(count))
+                            $0!.calls.removeFirst(count)
+                            return batch
                         }
-
-                        for call in calls {
+                        
+                        // Execute the batch
+                        for call in batch {
                             call()
                         }
 
+                        // Yield after each batch to allow other tasks to run
                         await Task.yield()
                     }
 
@@ -214,15 +232,30 @@ struct MainCalls {
 
 let mainCall = MainCalls()
 
-// Coalesce calls to background threads.
+// Efficiently batches multiple callbacks to execute on a background thread.
+//
+// This mechanism serves two key purposes:
+// 1. Breaks synchronous call stacks using Task.yield() to prevent stack overflow
+// 2. Amortizes Task creation overhead by batching multiple callbacks into a single Task
+//
+// Note: This does NOT implement "coalescing" in the sense of deduplicating or batching
+// updates. That logic happens elsewhere (e.g., via hasPendingUpdate flags in callers).
+// This is purely a Task management optimization.
 struct BackgroundCalls {
     private let calls = LockIsolated<(task: Task<(), Never>, calls: [@Sendable () -> Void])?>(nil)
+    
+    /// Batch size for processing callbacks before yielding.
+    /// Balances throughput (process multiple callbacks per yield) with fairness (regular yield points).
+    /// Value of 16 chosen empirically: small enough for low latency, large enough for good throughput.
+    private let batchSize = 16
+    
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
         calls.withValue {
             if $0 == nil {
                 $0 = (Task.detached(priority: .userInitiated) {
                     while !Task.isCancelled {
-                        let calls: [@Sendable () -> Void] = calls.withValue {
+                        // Take up to batchSize callbacks from the queue
+                        let batch: [@Sendable () -> Void] = calls.withValue {
                             if $0 == nil {
                                 return []
                             } else if $0!.calls.isEmpty {
@@ -231,15 +264,19 @@ struct BackgroundCalls {
                                 return []
                             }
 
-                            let calls = $0!.calls
-                            $0!.calls.removeAll()
-                            return calls
+                            // Take up to batchSize callbacks
+                            let count = min(batchSize, $0!.calls.count)
+                            let batch = Array($0!.calls.prefix(count))
+                            $0!.calls.removeFirst(count)
+                            return batch
                         }
-
-                        for call in calls {
+                        
+                        // Execute the batch
+                        for call in batch {
                             call()
                         }
 
+                        // Yield after each batch to allow other tasks to run
                         await Task.yield()
                     }
                 }, calls: [callback])

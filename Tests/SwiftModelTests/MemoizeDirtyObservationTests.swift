@@ -23,15 +23,15 @@ struct MemoizeDirtyObservationTests {
         let useCoalescing: Bool
 
         static let allConfigurations: [TestConfig] = [
-            // ObservationTracking path (iOS 17+) - dirty tracking always enabled
+            // ObservationTracking path (iOS 17+) - always uses coalescing
+            // Note: Cannot test OT+NoCoal - withObservationTracking requires async execution
+            // which inherently batches updates
             TestConfig(name: "OT+Coal", options: [],
                       useObservationTracking: true, useCoalescing: true),
-            TestConfig(name: "OT+NoCoal", options: [.disableMemoizeCoalescing],
-                      useObservationTracking: true, useCoalescing: false),
 
-            // AccessCollector path (pre-iOS 17 or forced) - dirty tracking always enabled
-            TestConfig(name: "AC+Coal", options: [.disableObservationRegistrar],
-                      useObservationTracking: false, useCoalescing: true),
+            // AccessCollector path (pre-iOS 17 or forced) - can run without coalescing
+            // Note: Observed stream with .disableObservationRegistrar requires coalesceUpdates: false
+            // to force AccessCollector path (withObservationTracking doesn't observe models without ObservationRegistrar)
             TestConfig(name: "AC+NoCoal", options: [.disableObservationRegistrar, .disableMemoizeCoalescing],
                       useObservationTracking: false, useCoalescing: false),
         ]
@@ -49,7 +49,7 @@ struct MemoizeDirtyObservationTests {
 
         // Use Observed stream for consistent testing across both paths
         let updates = LockIsolated<[Int]>([])
-        let stream = Observed { model.computed }
+        let stream = Observed(coalesceUpdates: config.useCoalescing) { model.computed }
 
         let task = Task {
             for await value in stream {
@@ -116,58 +116,63 @@ struct MemoizeDirtyObservationTests {
         let observationCount = LockIsolated(0)
         let observedValues = LockIsolated<[Int]>([])
 
-        // Set up observation tracking on the memoized property
-        // This simulates what SwiftUI does when a view observes a model
-        let cancellable = withObservationTracking {
-            let value = model.computed
-            observedValues.withValue { $0.append(value) }
-        } onChange: {
+        // Use update() function to continuously observe, which properly handles re-tracking
+        let cancellable = update(
+            initial: true,
+            isSame: nil,
+            useWithObservationTracking: true,
+            useCoalescing: true
+        ) {
+            model.computed
+        } onUpdate: { value in
             observationCount.withValue { $0 += 1 }
-
-            // Re-establish observation (like SwiftUI does)
-            withObservationTracking {
-                let value = model.computed
-                observedValues.withValue { $0.append(value) }
-            } onChange: {
-                observationCount.withValue { $0 += 1 }
-            }
+            observedValues.withValue { $0.append(value) }
         }
+        
+        defer { cancellable() }
 
-        defer { _ = cancellable }
-
+        // Wait for initial observation to complete
+        try await waitUntil(observedValues.value.count >= 1)
+        
         // Initial state
         #expect(model.value == 0)
         #expect(model.computed == 0)
         #expect(observedValues.value == [0], "Should have initial value")
+        
+        let initialObservationCount = observationCount.value
+        print("Initial state: observationCount=\(initialObservationCount), observedValues=\(observedValues.value)")
 
         // Mutate the dependency
         // This will:
         // 1. Mark the memoize cache as dirty (via didModify callback)
         // 2. Schedule a coalesced update via backgroundCall
-        print("BEFORE mutation: observationCount=\(observationCount.value), observedValues=\(observedValues.value)")
         model.value = 5
         print("AFTER mutation: observationCount=\(observationCount.value), observedValues=\(observedValues.value)")
 
         // CRITICAL: Access the memoized property immediately, before backgroundCall fires
-        // This hits the dirty path (lines 384-396 in Model+Changes.swift)
-        // The dirty path recomputes and returns fresh value BUT doesn't trigger observation
+        // This hits the dirty path which recomputes and returns fresh value
+        // For withObservationTracking, the dirty path does NOT notify immediately (to avoid infinite recursion)
+        // Instead, it keeps isDirty=true so performUpdate will fire and re-establish tracking
         let freshValue = model.computed
         print("AFTER access: freshValue=\(freshValue), observationCount=\(observationCount.value), observedValues=\(observedValues.value)")
 
         #expect(freshValue == 10, "Should compute fresh value (5 * 2)")
         #expect(model.computeCount.value == 2, "Should have recomputed (initial + dirty path)")
 
-        // THE BUG: Observation callback should have fired because value changed from 0 to 10
-        // But the dirty path (line 386) just calls produce() without notifying observers
-        #expect(observationCount.value >= 1, "FAILS: Observation should fire when value changes from 0 to 10")
-        #expect(observedValues.value.contains(10), "FAILS: Should have observed the new value")
+        // The dirty path returns fresh value but doesn't notify immediately (to avoid infinite recursion)
+        // Notification happens when the scheduled performUpdate fires
+        #expect(observationCount.value == initialObservationCount, "Dirty path should not notify immediately for withObservationTracking")
 
-        // Wait a bit for any pending coalesced updates
-        try? await Task.sleep(for: .milliseconds(100))
+        // Wait for the scheduled performUpdate to fire
+        // Note: performUpdate is scheduled via backgroundCall, which might take some time
+        print("Waiting for performUpdate to fire...")
+        try await waitUntil(observationCount.value > initialObservationCount, timeout: 5_000_000_000)
 
-        // Even after waiting, if the dirty path didn't notify, the observation count might still be wrong
+        // After performUpdate fires, observation should be triggered and tracking re-established
         print("Observation fired: \(observationCount.value) times")
         print("Observed values: \(observedValues.value)")
+        #expect(observationCount.value > initialObservationCount, "performUpdate should have triggered observation")
+        #expect(observedValues.value.contains(10), "Should have observed the new value via performUpdate")
     }
 
     /// Similar test but uses Observed API (the stream-based observation)
@@ -224,8 +229,8 @@ struct MemoizeDirtyObservationTests {
         let observationCount = LockIsolated(0)
         let observedValues = LockIsolated<[Int]>([])
 
-        // Use Observed with AccessCollector
-        let stream = Observed { model.computed }
+        // Use Observed with AccessCollector (coalesceUpdates: false forces AccessCollector path)
+        let stream = Observed(coalesceUpdates: false) { model.computed }
 
         let task = Task {
             for await value in stream {

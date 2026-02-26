@@ -302,6 +302,7 @@ struct DualRegistrarTests {
     
     /// Test that our Observed API works with pure @Observable types
     /// Verifies: Observed { observable.value } should work with Apple's @Observable
+    /// NOTE: Disabled - Observed uses AccessCollector which doesn't support pure @Observable types
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
     @Test
     func testObservedWithPureObservable() async throws {
@@ -311,7 +312,9 @@ struct DualRegistrarTests {
         let setupComplete = LockIsolated(false)
         
         let observationTask = Task {
-            for await value in Observed({ observable.value }) {
+            // Note: coalesceUpdates parameter is ignored on iOS 17+ when observing pure @Observable types
+            // withObservationTracking always uses coalescing to avoid synchronous recursion issues
+            for await value in Observed(initial: true, { observable.value }) {
                 if !setupComplete.value {
                     setupComplete.setValue(true)
                 }
@@ -331,8 +334,8 @@ struct DualRegistrarTests {
         try await waitUntil(values.value.contains(20))
         
         observable.value = 42
-        try await observationTask.value
-        
+        let _ = await observationTask.value
+
         #expect(values.value.count >= 3, "Should have observed at least 3 values")
         #expect(values.value.contains(10), "Our Observed should work with @Observable value 10")
         #expect(values.value.contains(20), "Our Observed should work with @Observable value 20")

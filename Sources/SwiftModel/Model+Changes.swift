@@ -338,30 +338,17 @@ public extension ModelNode {
 private extension Observed {
     init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false) {
         stream = AsyncStream { cont in
-            // Try withObservationTracking first (works with pure @Observable types on macOS 14+)
-            // If that's not available, fall back to AccessCollector (works with @Model types)
-            // This allows Observed to work with both @Model and @Observable types
-            if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-                let cancellable = update(initial: initial, isSame: isSame, useWithObservationTracking: true, useCoalescing: coalesceUpdates) {
-                    access()
-                } onUpdate: { value in
-                    cont.yield(value)
-                }
+            // Use withObservationTracking when coalescing is enabled (required for async execution)
+            // This enables Observed to work with pure @Observable types when coalescing
+            // Fall back to AccessCollector when coalesceUpdates: false (for synchronous updates)
+            let cancellable = update(initial: initial, isSame: isSame, useWithObservationTracking: coalesceUpdates, useCoalescing: coalesceUpdates) {
+                access()
+            } onUpdate: { value in
+                cont.yield(value)
+            }
 
-                cont.onTermination = { _ in
-                    cancellable()
-                }
-            } else {
-                // Pre-iOS 17: must use AccessCollector (only works with @Model types)
-                let cancellable = update(initial: initial, isSame: isSame, useWithObservationTracking: false, useCoalescing: coalesceUpdates) {
-                    access()
-                } onUpdate: { value in
-                    cont.yield(value)
-                }
-
-                cont.onTermination = { _ in
-                    cancellable()
-                }
+            cont.onTermination = { _ in
+                cancellable()
             }
         }
     }
@@ -410,33 +397,49 @@ private extension ModelNode {
             guard let entry = context._memoizeCache[key] else {
                 return (nil, false)
             }
-            
+
             let shouldRecompute = entry.isDirty
-            
+
             if shouldRecompute {
-                // Clear isDirty flag immediately to prevent backgroundCall from also computing
-                var freshEntry = entry
-                freshEntry.isDirty = false
-                context._memoizeCache[key] = freshEntry
+                // For sync tracking (AccessCollector): clear isDirty to prevent double computation
+                // For async tracking (withObservationTracking): keep isDirty so performUpdate can re-track
+                if !entry.usesAsyncTracking {
+                    var freshEntry = entry
+                    freshEntry.isDirty = false
+                    context._memoizeCache[key] = freshEntry
+                }
             }
-            
+
             return (entry, shouldRecompute)
         }
-        
+
         if let entry = cachedEntry {
-            // If dirty tracking enabled and cache WAS dirty, recompute and notify synchronously
+            // If dirty tracking enabled and cache WAS dirty, recompute and return fresh value
             if shouldRecompute {
-                // Compute fresh value
+                // Compute fresh value (needed for immediate return)
                 let fresh: T = produce()
 
-                // Call the stored onUpdate callback to trigger all observation notifications
-                // This ensures external observers (SwiftUI, @Observable, etc.) are notified
-                // The onUpdate callback handles:
-                // - isSame duplicate checking
-                // - Cache updating
-                // - modifyCallbacks (ViewAccess for pre-iOS 17)
-                // - willSet/didSet (ObservationRegistrar for iOS 17+)
-                entry.onUpdate?(fresh)
+                // For synchronous tracking (AccessCollector), update cache and notify
+                // This works because AccessCollector tracks via willAccess() callbacks
+                if !entry.usesAsyncTracking {
+                    // Call the stored onUpdate callback to trigger all observation notifications
+                    // This ensures external observers (SwiftUI, @Observable, etc.) are notified
+                    // The onUpdate callback handles:
+                    // - isSame duplicate checking
+                    // - Cache updating (sets isDirty: false)
+                    // - modifyCallbacks (ViewAccess for pre-iOS 17)
+                    // - willSet/didSet (ObservationRegistrar for iOS 17+)
+                    entry.onUpdate?(fresh)
+                }
+                // For async tracking (withObservationTracking):
+                // DO NOT notify here - let the scheduled performUpdate handle it.
+                // Notifying here would trigger the onChange callback, which would re-access the property,
+                // hitting the dirty path again (infinite loop).
+                // The performUpdate will:
+                // 1. See isDirty: true
+                // 2. Call observe() -> withObservationTracking {} -> access() -> produce()
+                // 3. Recompute and re-establish tracking
+                // 4. Call onUpdate to notify observers
 
                 return fresh
             }
@@ -454,14 +457,16 @@ private extension ModelNode {
                 // Can be disabled via ModelOption.disableMemoizeCoalescing for testing
                 let useCoalescing = !context.options.contains(.disableMemoizeCoalescing)
                 
-                // Determine which observation path to use based on whether registrar exists
-                // Use withObservationTracking if we have an ObservationRegistrar, otherwise fall back to AccessCollector
-                let useWithObservationTracking = context.hasObservationRegistrar
-                
+                // Determine which observation path to use:
+                // - withObservationTracking requires coalescing (async execution via backgroundCall)
+                // - When coalescing is disabled, must use AccessCollector for synchronous observation
+                let useWithObservationTracking = context.hasObservationRegistrar && useCoalescing
+                let usesAsyncTracking = useWithObservationTracking  // Capture for cache entry
+
                 return update(
-                    initial: true, 
-                    isSame: nil, 
-                    useWithObservationTracking: useWithObservationTracking, 
+                    initial: true,
+                    isSame: nil,
+                    useWithObservationTracking: useWithObservationTracking,
                     useCoalescing: useCoalescing,
                     didModify: didModifyCallback
                 ) {
@@ -488,22 +493,23 @@ private extension ModelNode {
                         let wrappedOnUpdate: @Sendable (Any) -> Void = { @Sendable anyValue in
                             guard let typedValue = anyValue as? T else { return }
                             var postCallbacks: [() -> Void] = []
-                            
+
                             context.lock {
                                 let currentEntry = context._memoizeCache[key]
                                 let currentPrevValue = currentEntry?.value as? T
                                 let currentCancellable = currentEntry?.cancellable
                                 let currentOnUpdate = currentEntry?.onUpdate
-                                
+
                                 if let isSame, let currentPrevValue, isSame(typedValue, currentPrevValue) {
                                     return
                                 }
-                                
+
                                 context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
                                     value: typedValue,
                                     cancellable: currentCancellable ?? {},
                                     isDirty: false,
-                                    onUpdate: currentOnUpdate  // Preserve the same callback
+                                    onUpdate: currentOnUpdate,  // Preserve the same callback
+                                    usesAsyncTracking: usesAsyncTracking
                                 )
                                 
                                 if currentPrevValue != nil {
@@ -532,7 +538,8 @@ private extension ModelNode {
                             value: value,
                             cancellable: prevCancellable ?? {},
                             isDirty: false,
-                            onUpdate: wrappedOnUpdate
+                            onUpdate: wrappedOnUpdate,
+                            usesAsyncTracking: usesAsyncTracking
                         )
 
                         if prevValue != nil {
@@ -778,18 +785,16 @@ internal func update<T: Sendable>(
                 didModify?()
 
                 // Coalescing: skip if update already pending
-                if useCoalescing {
-                    let shouldSchedule = hasPendingUpdate.withValue { pending in
-                        if pending {
-                            return false  // Already have pending update
-                        } else {
-                            pending = true
-                            return true
-                        }
+                let shouldSchedule = hasPendingUpdate.withValue { pending in
+                    if pending {
+                        return false  // Already have pending update
+                    } else {
+                        pending = true
+                        return true
                     }
-                    
-                    guard shouldSchedule else { return }
                 }
+                
+                guard shouldSchedule else { return }
 
                 let performUpdate: @Sendable () -> Void = {
                     let (value, index) = last.withValue { last in
@@ -797,10 +802,10 @@ internal func update<T: Sendable>(
                         return (observe(), last.index)
                     }
                     
-                    if useCoalescing {
-                        hasPendingUpdate.setValue(false)
-                    }
+                    hasPendingUpdate.setValue(false)
                     
+                    // update() compares value to last.value using isSame, which catches
+                    // any changes that happened during the gap between observations
                     update(with: value, index: index)
                 }
                 
@@ -809,26 +814,14 @@ internal func update<T: Sendable>(
                     // Inside transaction: defer callback until transaction completes
                     // This matches AccessCollector behavior and prevents 100x callback spam
                     threadLocals.postTransactions!.append { callbacks in
-                        if useCoalescing {
-                            // With coalescing: use backgroundCall to batch
-                            backgroundCall(performUpdate)
-                        } else {
-                            // Without coalescing: append to post-transaction callbacks
-                            callbacks.append(performUpdate)
-                        }
+                        // Always use backgroundCall to avoid synchronous recursion with withObservationTracking
+                        backgroundCall(performUpdate)
                     }
                 } else {
-                    // Outside transaction: execute as before
-                    if useCoalescing {
-                        // Use background coalescing to batch rapid updates
-                        // backgroundCall schedules on next runloop iteration, allowing multiple
-                        // mutations to coalesce into a single update callback
-                        backgroundCall(performUpdate)
-                    } else {
-                        // Coalescing disabled: execute immediately
-                        // Without coalescing, every dependency change triggers an immediate update
-                        performUpdate()
-                    }
+                    // Outside transaction: always use backgroundCall to avoid synchronous recursion
+                    // backgroundCall efficiently batches callbacks into a single Task using Task.yield()
+                    // to break the call stack. The hasPendingUpdate flag prevents excessive scheduling.
+                    backgroundCall(performUpdate)
                 }
             }
         }

@@ -17,9 +17,9 @@ struct TransactionTests {
     @Test func testTransactionAtomicity() async throws {
         let model = AtomicModel().withAnchor(options: [.disableObservationRegistrar])
 
-        // Setup observer to track updates
+        // Setup observer to track updates (coalesceUpdates: false uses AccessCollector for .disableObservationRegistrar)
         let updateCount = LockIsolated(0)
-        model.node.forEach(Observed { model.balance }) { _ in
+        model.node.forEach(Observed(coalesceUpdates: false) { model.balance }) { _ in
             updateCount.withValue { $0 += 1 }
         }
 
@@ -48,9 +48,9 @@ struct TransactionTests {
     @Test func testTransactionConsistency() async throws {
         let model = ConsistencyModel().withAnchor(options: [.disableObservationRegistrar])
 
-        // Track invariant: total should always equal sum of parts
+        // Track invariant: total should always equal sum of parts (coalesceUpdates: false uses AccessCollector)
         let invariantViolations = LockIsolated(0)
-        model.node.forEach(Observed { (model.partA, model.partB, model.total) }) { tuple in
+        model.node.forEach(Observed(coalesceUpdates: false) { (model.partA, model.partB, model.total) }) { tuple in
             let (a, b, total) = tuple
             if a + b != total {
                 invariantViolations.withValue { $0 += 1 }
@@ -87,7 +87,7 @@ struct TransactionTests {
         let model = NestedTransactionModel().withAnchor(options: [.disableObservationRegistrar])
 
         let updateCount = LockIsolated(0)
-        model.node.forEach(Observed { model.value }) { _ in
+        model.node.forEach(Observed(coalesceUpdates: false) { model.value }) { _ in
             updateCount.withValue { $0 += 1 }
         }
 
@@ -187,7 +187,7 @@ struct TransactionTests {
         let notificationCount = LockIsolated(0)
         let notifiedValues = LockIsolated<[Int]>([])
 
-        model.node.forEach(Observed { model.value }) { value in
+        model.node.forEach(Observed(coalesceUpdates: false) { model.value }) { value in
             notificationCount.withValue { $0 += 1 }
             notifiedValues.withValue { $0.append(value) }
         }
