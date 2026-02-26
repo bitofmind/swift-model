@@ -293,7 +293,8 @@ struct CoalescingTests {
     // MARK: - Performance Benchmarks
     
     /// Benchmark: AccessCollector without coalescing
-    @Test func benchmarkAccessCollector_NoCoalescing() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkAccessCollector_NoCoalescing() async throws {
         let model = TestModel().withAnchor()
         let updateCount = LockIsolated(0)
         let mutationCount = 100
@@ -322,7 +323,8 @@ struct CoalescingTests {
     }
     
     /// Benchmark: AccessCollector with coalescing
-    @Test func benchmarkAccessCollector_WithCoalescing() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkAccessCollector_WithCoalescing() async throws {
         let model = TestModel().withAnchor()
         let updateCount = LockIsolated(0)
         let mutationCount = 100
@@ -355,7 +357,8 @@ struct CoalescingTests {
     // Non-coalescing benchmarks only available with AccessCollector.
     
     /// Benchmark: withObservationTracking with coalescing
-    @Test func benchmarkObservationTracking_WithCoalescing() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkObservationTracking_WithCoalescing() async throws {
         let model = TestModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         let mutationCount = 100
@@ -384,7 +387,8 @@ struct CoalescingTests {
     }
     
     /// Performance comparison across all 4 paths with realistic computational work
-    @Test func benchmarkComparison() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkComparison() async throws {
         let mutationCount = 100
         let iterations = 5  // Run each benchmark 5 times
         
@@ -614,7 +618,8 @@ struct CoalescingTests {
         }
     }
     
-    @Test func benchmarkComparisonWithTransactions() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkComparisonWithTransactions() async throws {
         let mutationCount = 100
         let iterations = 5
         
@@ -1311,7 +1316,8 @@ struct CoalescingTests {
         task.cancel()
     }
     
-    @Test func benchmarkUnifiedComparison() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkUnifiedComparison() async throws {
         let mutationCount = 100
         let iterations = 5
         

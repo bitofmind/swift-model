@@ -5,7 +5,8 @@ import Observation
 /// Performance benchmarks for memoization optimization
 struct MemoizePerformanceTests {
 
-    @Test func benchmarkBulkUpdatesCurrentBehavior() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkBulkUpdatesCurrentBehavior() async throws {
         let model = BenchmarkModel(itemCount: 1000).withAnchor()
 
         let startTime = ContinuousClock.now
@@ -29,7 +30,8 @@ struct MemoizePerformanceTests {
         #expect(model.sorted.allSatisfy { $0.value == 1 })
     }
 
-    @Test func benchmarkBulkUpdatesWithTransaction() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkBulkUpdatesWithTransaction() async throws {
         let model = BenchmarkModel(itemCount: 1000).withAnchor()
 
         let startTime = ContinuousClock.now
@@ -54,7 +56,8 @@ struct MemoizePerformanceTests {
         #expect(model.sorted.allSatisfy { $0.value == 1 })
     }
 
-    @Test func benchmarkRepeatedAccess() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkRepeatedAccess() async throws {
         let model = BenchmarkModel(itemCount: 100).withAnchor()
 
         let startTime = ContinuousClock.now
@@ -75,7 +78,8 @@ struct MemoizePerformanceTests {
         #expect(model.sortCallCount == 1)
     }
 
-    @Test func benchmarkBulkUpdatesWithNestedModels() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkBulkUpdatesWithNestedModels() async throws {
         let model = NestedModelBenchmark(itemCount: 1000).withAnchor()
 
         let startTime = ContinuousClock.now
@@ -99,7 +103,8 @@ struct MemoizePerformanceTests {
         #expect(model.sorted.allSatisfy { $0.value == 1 })
     }
 
-    @Test func benchmarkBulkUpdatesWithNestedModelsAndTransaction() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkBulkUpdatesWithNestedModelsAndTransaction() async throws {
         let model = NestedModelBenchmark(itemCount: 1000).withAnchor()
 
         let startTime = ContinuousClock.now
@@ -124,7 +129,8 @@ struct MemoizePerformanceTests {
         #expect(model.sorted.allSatisfy { $0.value == 1 })
     }
 
-    @Test func benchmarkMemoizeCoalescingComparison() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkMemoizeCoalescingComparison() async throws {
         print("\n===============================================================================================")
         print("📊 MEMOIZE PERFORMANCE: 100 mutations in transaction (5 iterations, outliers removed)")
         print("===============================================================================================")
@@ -220,7 +226,8 @@ struct MemoizePerformanceTests {
         #expect(testModel.sorted.allSatisfy { $0.value == 1 })
     }
     
-    @Test func benchmarkMemoizeComprehensive() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkMemoizeComprehensive() async throws {
         let mutationCount = 100
         let iterations = 5
         
@@ -400,7 +407,8 @@ struct MemoizePerformanceTests {
     /// Benchmark focused on dirty tracking: many mutations between reads
     /// This tests the "lazy" aspect of dirty tracking - value updated many times
     /// but only computed once when accessed
-    @Test func benchmarkDirtyTrackingLazyEvaluation() async throws {
+    @Test(.tags(.benchmark), .serialized)
+    func benchmarkDirtyTrackingLazyEvaluation() async throws {
         let mutationCount = 100
         let iterations = 5
         
