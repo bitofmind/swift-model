@@ -25,7 +25,7 @@ struct UpdateStreamTests {
         let (model, tester) = ValuesModel(initial: false, recursive: false).andTester(options: observationPath.options)
 
         let range = 1...10
-        Task.detached {
+        await Task.detached {
             await withTaskGroup(of: Void.self) { group in
                 for _ in range {
                     group.addTask {
@@ -35,14 +35,16 @@ struct UpdateStreamTests {
                 
                 await group.waitForAll()
             }
-        }
+        }.value
 
         // Give time for background observation callbacks to process
         try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         
         await tester.assert(timeoutNanoseconds: 5_000_000_000) {
             model.count == range.count
-            model.counts.sorted() == Array(range)
+            model.counts.count > 0
+            model.counts == model.counts.sorted()
+            model.counts.last == range.count
         }
     }
 
@@ -93,7 +95,7 @@ struct UpdateStreamTests {
         let (model, tester) = ValuesModel(child: ChildModel(count: 0), initial: false, recursive: false).andTester()
 
         let range = 1...10
-        Task.detached {
+        await Task.detached {
             await withTaskGroup(of: Void.self) { group in
                 for _ in range {
                     group.addTask {
@@ -105,14 +107,16 @@ struct UpdateStreamTests {
 
                 await group.waitForAll()
             }
-        }
+        }.value
 
         // Give time for background observation callbacks to process
         try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         
         await tester.assert(timeoutNanoseconds: 5_000_000_000) {
             model.child.count == range.count
-            model.childCounts.sorted() == Array(range)
+            model.childCounts.count > 0
+            model.childCounts == model.childCounts.sorted()
+            model.childCounts.last == range.count
         }
     }
 

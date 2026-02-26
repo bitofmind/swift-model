@@ -75,8 +75,14 @@ struct MemoizeDirtyObservationTests {
         let freshValue = model.computed
         #expect(freshValue == 10, "[\(config.name)] Should compute fresh value")
 
-        // Wait for any async updates
-        try await Task.sleep(for: .milliseconds(150))
+        // Wait for the observation update with proper timeout for heavy load
+        let startTime = ContinuousClock.now
+        while !updates.value.contains(10) {
+            if ContinuousClock.now - startTime > .seconds(5) {
+                break // Timeout after 5 seconds
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
 
         // THE KEY QUESTION: Did we get an observation update?
         let hasUpdate = updates.value.contains(10)
@@ -404,8 +410,14 @@ struct MemoizeDirtyObservationTests {
         
         #expect(freshValue == 10, "Should compute fresh value")
         
-        // Wait for any pending async updates
-        try await Task.sleep(for: .milliseconds(150))
+        // Wait for the onModify callback to fire and observe the new value
+        let startTime = ContinuousClock.now
+        while !observedValues.value.contains(10) {
+            if ContinuousClock.now - startTime > .seconds(5) {
+                break // Timeout after 5 seconds
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         
         print("FINAL: updateCount=\(updateCount.value), observedValues=\(observedValues.value)")
         

@@ -89,7 +89,7 @@ struct CancellationTests {
         #expect(count == 5)
     }
 
-    @Test func testCancelInFlight() async {
+    @Test func testCancelInFlight() async throws {
         @Locked var count = 0
         let channel = AsyncChannel<(Int)>()
 
@@ -101,7 +101,7 @@ struct CancellationTests {
             model.task {
                 await channel.send(1)
                 try await withTaskCancellationHandler {
-                    try await Task.sleep(nanoseconds: NSEC_PER_MSEC*10)
+                    try await Task.sleep(nanoseconds: NSEC_PER_SEC*1)  // Use 1 second to ensure task is running when cancelled
                 } onCancel: {
                     $count.wrappedValue += 1
                 }
@@ -117,10 +117,14 @@ struct CancellationTests {
                 $count.wrappedValue += 3
             }
             .cancel(for: CancelKey.one, cancelInFlight: true)
-            #expect(count == 1)
+            
+            // Wait for the cancellation to take effect
+            try await waitUntil(count == 1, timeout: 5_000_000_000)
 
             model.cancelAll(for: CancelKey.one)
-            #expect(count == 4)
+            
+            // Wait for the final cancellation handler to complete
+            try await waitUntil(count == 4, timeout: 5_000_000_000)
         }
 
         #expect(count == 4)
@@ -135,7 +139,7 @@ struct CancellationTests {
             for _ in 1...5 {
                 model.task {
                     try await withTaskCancellationHandler {
-                        try await Task.sleep(nanoseconds: NSEC_PER_MSEC*100)
+                        try await Task.sleep(nanoseconds: NSEC_PER_MSEC*500)  // Increased from 100ms to 500ms
                     } onCancel: {
                         $count.wrappedValue += 1
                     }
@@ -143,12 +147,16 @@ struct CancellationTests {
                 } catch: { _ in }
                 .cancel(for: CancelKey.one, cancelInFlight: true)
 
-                try await Task.sleep(nanoseconds: NSEC_PER_MSEC*10)
+                try await Task.sleep(nanoseconds: NSEC_PER_MSEC*50)  // Increased from 10ms to 50ms
             }
 
-            #expect(count == 4)
+            // Wait for all cancellations to complete
+            try await waitUntil(count == 4, timeout: 5_000_000_000)
 
             model.cancelAll(for: CancelKey.one)
+            
+            // Wait for final cancellation
+            try await waitUntil(count == 5, timeout: 5_000_000_000)
         }
 
         #expect(count == 5)
