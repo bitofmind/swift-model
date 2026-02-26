@@ -72,7 +72,7 @@ struct MemoizeEdgeCaseTests {
         defer { task.cancel() }
 
         // Wait for initial value
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil(updates.value.count >= 1)
         updates.setValue([])
 
         // Rapid mutations followed by immediate read each time
@@ -113,7 +113,7 @@ struct MemoizeEdgeCaseTests {
         defer { task.cancel() }
 
         // Wait for initial value
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil(updates.value.count >= 1)
         let initialCount = updates.value.count
         updates.setValue([])
 
@@ -214,7 +214,7 @@ struct MemoizeEdgeCaseTests {
             }
         }
 
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil(updates1.value.count >= 1)
 
         // Mutate while first observer is active
         model.value = 5
@@ -227,7 +227,7 @@ struct MemoizeEdgeCaseTests {
             }
         }
 
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil(updates1.value.contains(10) && updates2.value.contains(10))
 
         // Both observers should see the value
         #expect(updates1.value.contains(10), "Observer 1 should see value 10")
@@ -254,7 +254,7 @@ struct MemoizeEdgeCaseTests {
             }
         }
 
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil(updates.value.count >= 1)
         updates.setValue([])
 
         // Mutate (marks dirty)
@@ -289,7 +289,7 @@ struct MemoizeEdgeCaseTests {
 
         defer { task.cancel() }
 
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil(updates.value.count >= 1)
         updates.setValue([])
 
         // Mutate base value
@@ -299,7 +299,7 @@ struct MemoizeEdgeCaseTests {
         let finalValue = model.final
         #expect(finalValue == 40, "final should be 40 (5 * 2 * 4)")
 
-        try await Task.sleep(for: .milliseconds(150))
+        try await waitUntil(updates.value.contains(40))
 
         // Should observe update
         #expect(updates.value.contains(40), "Should observe final value 40")
@@ -389,7 +389,7 @@ struct MemoizeEdgeCaseTests {
 
         defer { task.cancel() }
 
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil(updates.value.count >= 1)
         updates.setValue([])
 
         // Change value but normalized result is same

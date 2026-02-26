@@ -18,8 +18,6 @@ struct EventTests {
 
         await tester.assert(model.count == 3)
 
-        try await Task.sleep(nanoseconds: NSEC_PER_MSEC*1)
-
         model.testNode.send(.empty)
         model.increment()
         model.increment()

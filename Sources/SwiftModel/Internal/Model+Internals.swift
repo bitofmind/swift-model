@@ -155,11 +155,6 @@ extension Model where Self: Observable {
 // This is purely a Task management optimization.
 struct MainCalls {
     private let calls = LockIsolated<(task: Task<(), Never>, calls: [@Sendable () -> Void])?>(nil)
-    
-    /// Batch size for processing callbacks before yielding.
-    /// Balances throughput (process multiple callbacks per yield) with fairness (regular yield points).
-    /// Value of 16 chosen empirically: small enough for low latency, large enough for good throughput.
-    private let batchSize = 16
 
     func drain() {
         let calls: [@Sendable () -> Void] = calls.withValue {
@@ -196,29 +191,22 @@ struct MainCalls {
             if $0 == nil {
                 $0 = (Task(priority: .userInitiated) { @MainActor in
                     while !Task.isCancelled {
-                        // Take up to batchSize callbacks from the queue
-                        let batch: [@Sendable () -> Void] = calls.withValue {
+                        let call: (@Sendable () -> Void)? = calls.withValue {
                             if $0 == nil {
-                                return []
+                                return nil
                             } else if $0!.calls.isEmpty {
                                 $0!.task.cancel()
                                 $0 = nil
-                                return []
+                                return nil
                             }
 
-                            // Take up to batchSize callbacks
-                            let count = min(batchSize, $0!.calls.count)
-                            let batch = Array($0!.calls.prefix(count))
-                            $0!.calls.removeFirst(count)
-                            return batch
+                            return $0!.calls.removeFirst()
                         }
-                        
-                        // Execute the batch
-                        for call in batch {
+
+                        if let call {
                             call()
                         }
 
-                        // Yield after each batch to allow other tasks to run
                         await Task.yield()
                     }
 
@@ -244,39 +232,27 @@ let mainCall = MainCalls()
 struct BackgroundCalls {
     private let calls = LockIsolated<(task: Task<(), Never>, calls: [@Sendable () -> Void])?>(nil)
     
-    /// Batch size for processing callbacks before yielding.
-    /// Balances throughput (process multiple callbacks per yield) with fairness (regular yield points).
-    /// Value of 16 chosen empirically: small enough for low latency, large enough for good throughput.
-    private let batchSize = 16
-    
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
         calls.withValue {
             if $0 == nil {
                 $0 = (Task.detached(priority: .userInitiated) {
                     while !Task.isCancelled {
-                        // Take up to batchSize callbacks from the queue
-                        let batch: [@Sendable () -> Void] = calls.withValue {
+                        let call: (@Sendable () -> Void)? = calls.withValue {
                             if $0 == nil {
-                                return []
+                                return nil
                             } else if $0!.calls.isEmpty {
                                 $0!.task.cancel()
                                 $0 = nil
-                                return []
+                                return nil
                             }
 
-                            // Take up to batchSize callbacks
-                            let count = min(batchSize, $0!.calls.count)
-                            let batch = Array($0!.calls.prefix(count))
-                            $0!.calls.removeFirst(count)
-                            return batch
+                            return $0!.calls.removeFirst()
                         }
-                        
-                        // Execute the batch
-                        for call in batch {
+
+                        if let call {
                             call()
                         }
 
-                        // Yield after each batch to allow other tasks to run
                         await Task.yield()
                     }
                 }, calls: [callback])

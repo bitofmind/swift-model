@@ -419,7 +419,7 @@ struct DualRegistrarTests {
         observable.value = 5
         
         // Wait for observation to propagate
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil(changeDetected.value)
         
         // The model should observe changes to the @Observable object
         #expect(model.doubledObservableValue == 10, "Model should read updated Observable value")
@@ -457,7 +457,7 @@ struct DualRegistrarTests {
         observable.value = 42
         
         // Wait for observation to propagate
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil(changeDetected.value)
         
         // The model should observe changes to the @Observable dependency
         #expect(model.dependencyValue == 42, "Model should read updated Observable dependency")
@@ -483,12 +483,12 @@ struct DualRegistrarTests {
         }
         
         // Wait for initial value
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil(values.value.contains(0))
         #expect(values.value.contains(0), "Should have initial value 0")
         
         // Change observable
         observable.value = 5
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil(values.value.contains(10))
         
         #expect(values.value.contains(10), "Observed should track @Observable changes via @Model")
         

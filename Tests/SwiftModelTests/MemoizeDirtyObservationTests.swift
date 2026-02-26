@@ -60,7 +60,7 @@ struct MemoizeDirtyObservationTests {
         defer { task.cancel() }
 
         // Wait for initial value
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil(updates.value.count >= 1)
         let initialCount = updates.value.count
         #expect(initialCount >= 1, "[\(config.name)] Should have initial value, got \(updates.value)")
 
@@ -197,7 +197,7 @@ struct MemoizeDirtyObservationTests {
         defer { task.cancel() }
 
         // Wait for initial value
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil(updates.value.count >= 1)
         #expect(updates.value.count >= 1, "Should have initial value")
         #expect(updates.value.first == 0, "Initial value should be 0")
 
@@ -209,7 +209,7 @@ struct MemoizeDirtyObservationTests {
         let _ = model.computed  // Access dirty property
 
         // Wait for observation to propagate
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil(updates.value.count >= 1)
 
         // THE BUG: Stream should receive update because computed changed
         #expect(updates.value.count >= 1, "FAILS: Stream should receive update for value change")
@@ -242,7 +242,7 @@ struct MemoizeDirtyObservationTests {
         defer { task.cancel() }
 
         // Wait for initial
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil(observedValues.value.count >= 1)
         #expect(observedValues.value == [0], "Should have initial value")
 
         // Mutate and immediately access
@@ -250,7 +250,7 @@ struct MemoizeDirtyObservationTests {
         let _ = model.computed  // Dirty path access
 
         // Wait for update
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil(observationCount.value >= 2)
 
         // Check if AccessCollector path has the same issue
         #expect(observationCount.value >= 2, "Should have received update")
@@ -299,7 +299,7 @@ struct MemoizeDirtyObservationTests {
         #expect(freshValue == 10, "Should see fresh value")
 
         // Wait for any pending updates and onChange to fire
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil(changeCount.value >= 1)
 
         // SwiftUI should have been notified that computed changed from 0 to 10
         // The onChange should fire, indicating a re-render would be scheduled

@@ -69,7 +69,9 @@ struct TransactionTests {
 
         model.total = 50  // Fix it
         // Give time for fix to propagate
-        try await Task.sleep(for: .milliseconds(10))
+        for _ in 0..<5 {
+            await Task.yield()
+        }
 
         // With transaction: invariant never violated
         let beforeViolations = invariantViolations.value
@@ -79,7 +81,9 @@ struct TransactionTests {
             model.total = 300
         }
         // Observer only sees final consistent state
-        try await Task.sleep(for: .milliseconds(10))
+        for _ in 0..<5 {
+            await Task.yield()
+        }
         #expect(invariantViolations.value == beforeViolations)  // No new violations
     }
 
