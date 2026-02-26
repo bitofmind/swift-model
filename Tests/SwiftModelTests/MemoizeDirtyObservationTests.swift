@@ -343,7 +343,7 @@ struct MemoizeDirtyObservationTests {
     
     /// Test that simulates SwiftUI's ObservedModel behavior (via onModify callbacks)
     /// This is the REAL test for production SwiftUI usage
-    @Test
+    @Test()
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testDirtyPathWithOnModifyCallback() async throws {
         let model = DirtyTrackingModel().withAnchor()
@@ -352,7 +352,7 @@ struct MemoizeDirtyObservationTests {
         let observedValues = LockIsolated<[Int]>([])
         
         // Create a custom ModelAccess to intercept willAccess calls (like ViewAccess does)
-        final class TestAccess: ModelAccess {
+        final class TestAccess: ModelAccess, @unchecked Sendable {
             let updateCount: LockIsolated<Int>
             let observedValues: LockIsolated<[Int]>
             let model: DirtyTrackingModel

@@ -114,7 +114,7 @@ struct MemoizeEdgeCaseTests {
 
         // Wait for initial value
         try await waitUntil(updates.value.count >= 1)
-        let initialCount = updates.value.count
+        _ = updates.value.count
         updates.setValue([])
 
         // Nested transactions

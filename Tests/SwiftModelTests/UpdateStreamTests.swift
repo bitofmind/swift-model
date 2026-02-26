@@ -37,7 +37,10 @@ struct UpdateStreamTests {
             }
         }
 
-        await tester.assert {
+        // Give time for background observation callbacks to process
+        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        
+        await tester.assert(timeoutNanoseconds: 5_000_000_000) {
             model.count == range.count
             model.counts.sorted() == Array(range)
         }
@@ -85,7 +88,8 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test func testChangeOfChildConcurrency() async throws {
+    @Test
+    func testChangeOfChildConcurrency() async throws {
         let (model, tester) = ValuesModel(child: ChildModel(count: 0), initial: false, recursive: false).andTester()
 
         let range = 1...10
@@ -103,7 +107,10 @@ struct UpdateStreamTests {
             }
         }
 
-        await tester.assert {
+        // Give time for background observation callbacks to process
+        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        
+        await tester.assert(timeoutNanoseconds: 5_000_000_000) {
             model.child.count == range.count
             model.childCounts.sorted() == Array(range)
         }

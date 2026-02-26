@@ -410,7 +410,7 @@ struct CoalescingTests {
         }
         
         // 1. AccessCollector without coalescing
-        for iteration in 0..<iterations {
+        for _ in 0..<iterations {
             let model = TestModel().withAnchor()
             let updateCount = LockIsolated(0)
             let totalWorkTime = LockIsolated(0.0)
@@ -449,7 +449,7 @@ struct CoalescingTests {
         }
         
         // 2. AccessCollector with coalescing
-        for iteration in 0..<iterations {
+        for _ in 0..<iterations {
             let model = TestModel().withAnchor()
             let updateCount = LockIsolated(0)
             let totalWorkTime = LockIsolated(0.0)
@@ -494,7 +494,7 @@ struct CoalescingTests {
         // 3. ObservationTracking with coalescing
         // Note: Cannot test "OT without coalescing" - withObservationTracking requires async execution
         // which inherently batches updates via backgroundCall
-        for iteration in 0..<iterations {
+        for _ in 0..<iterations {
             let model = TestModel().withAnchor(options: [])
             let updateCount = LockIsolated(0)
             let totalWorkTime = LockIsolated(0.0)

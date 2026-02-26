@@ -273,7 +273,7 @@ struct DualRegistrarTests {
         
         let observationTask = Task {
             // Observations only emits when values change, not initially
-            for try await value in Observations<Int, Never>({ 
+            for try await _ in Observations<Int, Never>({ 
                 observationStarted.setValue(true)
                 return model.value 
             }) {
@@ -383,7 +383,7 @@ struct DualRegistrarTests {
         observable.value = 20
         
         try await modelTask.value
-        try await observableTask.value
+        await observableTask.value
         
         #expect(modelValues.value.contains(10), "Observations should work with @Model")
         #expect(observableValues.value.contains(20), "Observed should work with @Observable")
@@ -493,7 +493,7 @@ struct DualRegistrarTests {
         #expect(values.value.contains(10), "Observed should track @Observable changes via @Model")
         
         observable.value = 10
-        try await task.value
+        await task.value
         
         #expect(values.value.contains(20), "Should continue tracking @Observable changes")
     }
