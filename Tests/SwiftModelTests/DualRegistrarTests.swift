@@ -222,15 +222,19 @@ struct DualRegistrarTests {
     /// Test that Apple's Observations API works with @Model types
     /// Verifies: Observations { model.value } should track changes to @Model properties
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
-    @Test(.disabled("Timing-sensitive: Observations API doesn't emit initial value - test is flaky when run with full suite"))
+    @Test
     func testAppleObservationsWithModel() async throws {
-        let model = TestModel().withAnchor(options: [])
+        let model = TestModel().withAnchor(options: [.disableMemoizeCoalescing])
         
         let values = LockIsolated<[Int]>([])
+        let observationStarted = LockIsolated(false)
         
         let observationTask = Task {
             // Observations only emits when values change, not initially
-            for try await value in Observations<Int, Never>({ model.value }) {
+            for try await value in Observations<Int, Never>({ 
+                observationStarted.setValue(true)
+                return model.value 
+            }) {
                 values.withValue { $0.append(value) }
                 if value == 42 {
                     break
@@ -238,11 +242,16 @@ struct DualRegistrarTests {
             }
         }
         
-        // Small delay to let observation task start
-        try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+        // Wait for observation to actually start
+        try await waitUntil(observationStarted.value)
         
+        // Add small delays between changes to ensure they're observed separately
         model.value = 10
+        try await waitUntil(values.value.contains(10))
+        
         model.value = 20
+        try await waitUntil(values.value.contains(20))
+        
         model.value = 42
         
         try await observationTask.value
@@ -255,15 +264,19 @@ struct DualRegistrarTests {
     
     /// Test that Apple's Observations respects @Model transactions
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
-    @Test(.disabled("Timing-sensitive: Test is flaky when run with full suite"))
+    @Test
     func testAppleObservationsWithModelTransactions() async throws {
         let model = TestModel().withAnchor(options: [])
         
         let transactionCount = LockIsolated(0)
+        let observationStarted = LockIsolated(false)
         
         let observationTask = Task {
             // Observations only emits when values change, not initially
-            for try await value in Observations<Int, Never>({ model.value }) {
+            for try await value in Observations<Int, Never>({ 
+                observationStarted.setValue(true)
+                return model.value 
+            }) {
                 transactionCount.withValue { $0 += 1 }
                 if transactionCount.value >= 2 {
                     break
@@ -271,8 +284,8 @@ struct DualRegistrarTests {
             }
         }
         
-        // Small delay to let observation task start
-        try await Task.sleep(nanoseconds: 10_000_000) // 10ms
+        // Wait for observation to actually start
+        try await waitUntil(observationStarted.value)
         
         model.node.transaction {
             model.value = 10
@@ -290,7 +303,7 @@ struct DualRegistrarTests {
     /// Test that our Observed API works with pure @Observable types
     /// Verifies: Observed { observable.value } should work with Apple's @Observable
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
-    @Test(.disabled("Observed API doesn't yet support pure @Observable types"))
+    @Test
     func testObservedWithPureObservable() async throws {
         let observable = PureObservableModel()
         
@@ -328,7 +341,7 @@ struct DualRegistrarTests {
     
     /// Test bidirectional compatibility: both APIs work with both types
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
-    @Test(.disabled("Observed API doesn't yet support pure @Observable types"))
+    @Test
     func testBidirectionalCompatibility() async throws {
         let model = TestModel().withAnchor(options: [])
         let observable = PureObservableModel()

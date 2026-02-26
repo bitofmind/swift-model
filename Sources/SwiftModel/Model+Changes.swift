@@ -338,18 +338,30 @@ public extension ModelNode {
 private extension Observed {
     init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false) {
         stream = AsyncStream { cont in
-            // Observed must use AccessCollector since it can't access model options
-            // to check for .disableObservationRegistrar. withObservationTracking
-            // would silently fail on models without an ObservationRegistrar.
-            // Note: memoize() respects model options and will use the appropriate path
-            let cancellable = update(initial: initial, isSame: isSame, useWithObservationTracking: false, useCoalescing: coalesceUpdates) {
-                access()
-            } onUpdate: { value in
-                cont.yield(value)
-            }
+            // Try withObservationTracking first (works with pure @Observable types on macOS 14+)
+            // If that's not available, fall back to AccessCollector (works with @Model types)
+            // This allows Observed to work with both @Model and @Observable types
+            if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+                let cancellable = update(initial: initial, isSame: isSame, useWithObservationTracking: true, useCoalescing: coalesceUpdates) {
+                    access()
+                } onUpdate: { value in
+                    cont.yield(value)
+                }
 
-            cont.onTermination = { _ in
-                cancellable()
+                cont.onTermination = { _ in
+                    cancellable()
+                }
+            } else {
+                // Pre-iOS 17: must use AccessCollector (only works with @Model types)
+                let cancellable = update(initial: initial, isSame: isSame, useWithObservationTracking: false, useCoalescing: coalesceUpdates) {
+                    access()
+                } onUpdate: { value in
+                    cont.yield(value)
+                }
+
+                cont.onTermination = { _ in
+                    cancellable()
+                }
             }
         }
     }
