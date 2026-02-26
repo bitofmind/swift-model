@@ -2,6 +2,7 @@ import Testing
 import Observation
 import ConcurrencyExtras
 import Foundation
+import Dependencies
 @testable import SwiftModel
 
 /// Tests for dual ObservationRegistrar pattern
@@ -371,6 +372,115 @@ struct DualRegistrarTests {
         #expect(modelValues.value.contains(10), "Observations should work with @Model")
         #expect(observableValues.value.contains(20), "Observed should work with @Observable")
     }
+    
+    // MARK: - @Model + @Observable Interoperability Tests
+    
+    /// Test that @Model can hold an @Observable object as a property and observe its changes
+    /// This proves the claim: "@Model can hold an @Observable object and they work together"
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    @Test
+    func testModelHoldingObservableObject() async throws {
+        let observable = PureObservableModel()
+        let model = ModelHoldingObservable(observable: observable).withAnchor(options: [])
+        
+        let changeDetected = LockIsolated(false)
+        
+        // Set up observation tracking on model's computed property that accesses observable
+        let observationTask = Task {
+            withObservationTracking {
+                _ = model.doubledObservableValue
+            } onChange: {
+                changeDetected.setValue(true)
+            }
+        }
+        
+        await observationTask.value
+        
+        // Initial value should be accessible
+        #expect(model.doubledObservableValue == 0, "Initial doubled value should be 0")
+        
+        // Change the observable object
+        observable.value = 5
+        
+        // Wait for observation to propagate
+        try await Task.sleep(for: .milliseconds(100))
+        
+        // The model should observe changes to the @Observable object
+        #expect(model.doubledObservableValue == 10, "Model should read updated Observable value")
+        #expect(changeDetected.value, "withObservationTracking should detect changes to @Observable via @Model")
+    }
+    
+    /// Test that @Model can have an @Observable dependency (via Dependencies framework) and observe it
+    /// This proves the claim: "A @Model can have a dependency that is @Observable and observe it via @Model"
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    @Test
+    func testModelWithObservableDependency() async throws {
+        let observable = PureObservableModel()
+        
+        let model = ModelWithObservableDependency().withAnchor(options: []) {
+            $0[PureObservableModel.self] = observable
+        }
+        
+        let changeDetected = LockIsolated(false)
+        
+        // Set up observation tracking on model's computed property that accesses dependency
+        let observationTask = Task {
+            withObservationTracking {
+                _ = model.dependencyValue
+            } onChange: {
+                changeDetected.setValue(true)
+            }
+        }
+        
+        await observationTask.value
+        
+        // Initial dependency value should be accessible
+        #expect(model.dependencyValue == 0, "Initial dependency value should be 0")
+        
+        // Change the observable dependency
+        observable.value = 42
+        
+        // Wait for observation to propagate
+        try await Task.sleep(for: .milliseconds(100))
+        
+        // The model should observe changes to the @Observable dependency
+        #expect(model.dependencyValue == 42, "Model should read updated Observable dependency")
+        #expect(changeDetected.value, "withObservationTracking should detect changes to @Observable dependency via @Model")
+    }
+    
+    /// Test that Observed stream works with @Model accessing @Observable
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    @Test
+    func testObservedStreamWithModelAccessingObservable() async throws {
+        let observable = PureObservableModel()
+        let model = ModelHoldingObservable(observable: observable).withAnchor(options: [])
+        
+        let values = LockIsolated<[Int]>([])
+        
+        let task = Task {
+            for await value in Observed({ model.doubledObservableValue }) {
+                values.withValue { $0.append(value) }
+                if value >= 20 {
+                    break
+                }
+            }
+        }
+        
+        // Wait for initial value
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(values.value.contains(0), "Should have initial value 0")
+        
+        // Change observable
+        observable.value = 5
+        try await Task.sleep(for: .milliseconds(100))
+        
+        #expect(values.value.contains(10), "Observed should track @Observable changes via @Model")
+        
+        observable.value = 10
+        try await task.value
+        
+        #expect(values.value.contains(20), "Should continue tracking @Observable changes")
+    }
 }
 
 // MARK: - Test Models
@@ -396,5 +506,32 @@ struct DualRegistrarTests {
 @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
 @Observable private class PureObservableModel: @unchecked Sendable {
     var value = 0
+}
+
+/// @Model that holds an @Observable object as a property
+@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+@Model private struct ModelHoldingObservable {
+    var observable: PureObservableModel
+    
+    var doubledObservableValue: Int {
+        observable.value * 2
+    }
+}
+
+/// Dependency key for @Observable object
+@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+extension PureObservableModel: DependencyKey {
+    static let liveValue = PureObservableModel()
+    static let testValue = PureObservableModel()
+}
+
+/// @Model that accesses @Observable via dependency injection
+@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+@Model private struct ModelWithObservableDependency {
+    @ModelDependency var observable: PureObservableModel
+    
+    var dependencyValue: Int {
+        observable.value
+    }
 }
 

@@ -225,6 +225,20 @@ struct AppView: View {
 
 > `@ObservedModel` has been carefully crafted to only trigger view updates when properties you are accessing from your view is updated. In comparison, `@ObservedObject` will trigger a view update no matter what `@Published` property is updated in your `ObservableObject` model object.
 
+### iOS 17+ Observation Compatibility
+
+On iOS 17+, macOS 14+, tvOS 17+, and watchOS 10+, SwiftModel provides enhanced compatibility with Swift's native observation infrastructure. The `@Model` macro works seamlessly with types that conform to the `Observable` protocol (typically via the `@Observable` macro). Models automatically integrate with the platform's `ObservationRegistrar` when available, providing seamless observation support.
+
+**When you need `@ObservedModel`:**
+- **Always needed** if you require bindings to your model's properties (e.g., for forms, text fields, steppers)
+- **Optional** on iOS 17+ for observation-only use cases (reading properties without creating bindings)
+
+**Why Apple's `@Bindable` doesn't work with Models:**
+
+Apple's `@Bindable` property wrapper (introduced in iOS 17+) is designed to work with reference types (classes) that conform to the `Observable` protocol. However, SwiftModel's `@Model` types are value types (structs) with reference semantics. While the `Observable` protocol itself doesn't require reference types, Apple chose to restrict `@Bindable`'s initializers to only accept classes. This design decision means you cannot use `@Bindable` with Models.
+
+For bindings with Models, continue to use `@ObservedModel` on all iOS versions, which provides the same binding capabilities as `@Bindable` while also supporting SwiftModel's value-type architecture.
+
 ### Bindings
 
 The `@ObservedModel` also expose bindings to a model's properties:
@@ -362,9 +376,9 @@ To start some asynchronous work that is tied to the life time of your model you 
 }  
 ```
 
-### Asynchronous Sequences
+### Observing State Changes
 
-For convenience, models also provide a `forEach` helper for consuming asynchronous stream such as `Observe` that will emit when the state changes. 
+SwiftModel provides the `Observed` API for creating asynchronous streams that emit whenever observed model properties change. This is useful for reacting to state changes within your model logic.
 
 ```swift
 func isPrime(_ value: Int) async throws -> Bool { ... }
@@ -375,6 +389,8 @@ node.forEach(Observed { count }) { count in
 }
 ```
 
+The `Observed` stream automatically tracks which properties are accessed in its closure and will emit a new value whenever any of those properties change. For `Equatable` types, duplicate values are filtered out by default.
+
 `forEach` will by default complete its asynchronous work before handling the next value, but sometimes it is useful to cancel any previous work that might become outdated.
 
 ```swift
@@ -383,6 +399,53 @@ node.forEach(Observed { count }, cancelPrevious: true) { count in
   state.isPrime = try await isPrime(count)
 }
 ```
+
+You can also use `Observed` directly as an `AsyncSequence`:
+
+```swift
+let countStream = Observed { model.count }
+for await count in countStream {
+  print("Count changed to: \(count)")
+}
+```
+
+### Memoized Computed Properties
+
+SwiftModel provides `node.memoize()` for creating cached computed properties that automatically invalidate and recompute when their dependencies change. This is particularly useful for expensive computations.
+
+```swift
+@Model struct DataModel {
+  var items: [Item] = []
+  
+  var processedData: [ProcessedItem] {
+    node.memoize(for: "processedData") {
+      // Expensive computation only runs when items changes
+      items.map { processItem($0) }
+    }
+  }
+}
+```
+
+Memoize automatically:
+- **Caches the result** of the computation
+- **Tracks dependencies** accessed during the computation
+- **Invalidates the cache** when any dependency changes
+- **Recomputes** only when the cached value is accessed after invalidation
+- **Notifies observers** (like SwiftUI views) when the value changes
+
+For `Equatable` types, you can enable deduplication to prevent unnecessary recomputations when the result would be the same:
+
+```swift
+var normalized: String {
+  node.memoize(for: "normalized") {
+    name.lowercased().trimmingCharacters(in: .whitespaces)
+  }
+}
+```
+
+The `Equatable` overload automatically compares the new result with the cached value and only triggers updates if they differ, even if dependencies changed.
+
+> Memoize works seamlessly with SwiftUI's observation system on iOS 17+ and with the AccessCollector mechanism on earlier versions, ensuring views update correctly when memoized values change.
 
 ### Cancellation
 
