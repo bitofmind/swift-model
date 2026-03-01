@@ -58,9 +58,13 @@ import SwiftModel
 }
 ``` 
 
-> Note, that your model types is required to be a struct, even though its behavior is more like a reference type such as class. This is required to unlock some of the powerful state update tracking that is used in testing and debugging as well as to avoid issues with retain cycles that are common with reference types. 
+> Note, that your model types is required to be a struct, even though its behavior is more like a reference type such as class. This is required to unlock some of the powerful state update tracking that is used in testing and debugging as well as to avoid issues with retain cycles that are common with reference types.
 
-### Composition 
+### @ModelIgnored and @ModelTracked
+
+`@ModelIgnored` and `@ModelTracked` are implementation details used internally by the `@Model` macro. You should not use them directly in your own models.
+
+### Composition
 
 A model can be composed by other models where the most common composition is to have either an inline model, an optional model, or a collection of models.
 
@@ -159,7 +163,7 @@ If the model is later on removed from the parent’s anchored model, it will loo
 The `Model` protocol provides an `onActivate()` extension point that is called by SwiftModel once the model becomes part of anchored model hierarchy. This is a perfect place to populate a model's state from its dependencies and to set up listeners on child events and state changes.
 
 > Any parent will always be activated before its children to allow the parent to set up listener on child events and value changes. Once a parent is deactivated it will cancel it own activities before deactivating its children.
-    
+
 ```swift
 func onActivate() {
   if standup.attendees.isEmpty {
@@ -167,6 +171,16 @@ func onActivate() {
   }
 }
 ```
+
+You can also compose activation logic from the outside using the `withActivation(_:)` modifier. This is useful when you want to attach behavior to a model without modifying its source, or when building test setups and previews:
+
+```swift
+let model = StandupModel()
+    .withActivation { $0.loadFromDisk() }
+    .withAnchor()
+```
+
+Multiple `withActivation` calls are additive — each closure runs in order when the model activates.
 
 ### Sharing of Models
 
@@ -476,6 +490,10 @@ node.forEach(Observed { count }, cancelPrevious: true) { count in
 }
 ```
 
+> **`cancelPrevious` vs `cancelInFlight()`**: these solve similar but distinct problems.
+> - `cancelPrevious: true` on `forEach` controls **per-element parallelism** — each new value from the sequence cancels the async work for the *previous* value. It's about keeping the handler up-to-date as values stream in.
+> - `cancelInFlight()` on a `Cancellable` controls **call-site deduplication** — calling the same function again cancels the task started by the *previous call*. It's about ensuring only one instance of a task runs at a time, regardless of any input stream.
+
 You can also use `Observed` directly as an `AsyncSequence`:
 
 ```swift
@@ -611,14 +629,18 @@ func startOperation() {
 
 ### Transactions
 
-As SwiftModel fully embraces swift concurrency tools, it means that your model is often accessed from several different threads at once. This is safe to do, but sometimes it is important that model state modifications are group together to not break invariants. For this SwiftModel provides the `node.transaction { ... }` helper.
+As SwiftModel fully embraces swift concurrency tools, it means that your model is often accessed from several different threads at once. This is safe to do, but sometimes it is important that model state modifications are grouped together to not break invariants. For this SwiftModel provides the `node.transaction { ... }` helper.
 
-```
+```swift
 node.transaction {
   counts.append(count)
   sum = counts.reduce(0, +)
 }
 ```
+
+All mutations inside the block appear atomically to other threads. Observation callbacks (and `observeAnyModification()` emissions) are deferred until the transaction completes, so observers see only the final consistent state.
+
+> **No rollback on error**: if the closure throws, any mutations already applied inside the block are **not** rolled back. Wrap the transaction in a `do`/`catch` and handle partial-state recovery manually if needed.
 
 ### Observing Any Modification
 

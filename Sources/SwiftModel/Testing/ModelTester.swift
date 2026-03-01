@@ -82,16 +82,41 @@ public extension Model {
 }
 
 public extension ModelTester {
+    /// Controls which categories of side effects must be explicitly asserted before the tester
+    /// is deallocated.
+    ///
+    /// By default `exhaustivity` is `.full`, meaning any state change, sent event, completed task,
+    /// or probe value that has not been asserted causes a test failure. Lower it to skip categories
+    /// you don't care about in a particular test:
+    ///
+    /// ```swift
+    /// tester.exhaustivity = [.state, .events] // ignore tasks and probes
+    /// tester.exhaustivity = .off              // skip all exhaustion checks
+    /// ```
     var exhaustivity: Exhaustivity {
         get { access.lock { access.exhaustivity } }
         set { access.lock { access.exhaustivity = newValue } }
     }
 
+    /// When `true`, prints each assertion that was skipped due to `exhaustivity` settings rather
+    /// than silently discarding it.
+    ///
+    /// Useful when debugging flaky tests or tightening exhaustivity on an existing test suite:
+    ///
+    /// ```swift
+    /// tester.showSkippedAssertions = true
+    /// tester.exhaustivity = [.state]  // state is checked; events/tasks/probes are skipped but printed
+    /// ```
     var showSkippedAssertions: Bool {
         get { access.lock { access.showSkippedAssertions } }
         set { access.lock { access.showSkippedAssertions = newValue } }
     }
 
+    /// Installs one or more `TestProbe` instances into the tester.
+    ///
+    /// Probes intercept specific async signals (e.g. a particular `Observed` stream or event type)
+    /// so you can assert on them in `assert` blocks. Installed probes participate in exhaustion
+    /// checking when `exhaustivity` includes `.probes`.
     func install(_ probes: TestProbe...) {
         for probe in probes {
             access.install(probe)
@@ -99,6 +124,22 @@ public extension ModelTester {
     }
 }
 
+/// An option set that controls which categories of side effects the `ModelTester` checks for exhaustion.
+///
+/// The tester fails a test if any effect in an enabled category is not consumed by an `assert` call
+/// before the tester is deallocated (or before the next `assert`).
+///
+/// - `state`: model state changes must be asserted.
+/// - `events`: events sent via `node.send()` must be asserted with `model.didSend(_:)`.
+/// - `tasks`: async tasks launched by the model must complete or be cancelled within the test.
+/// - `probes`: values emitted by installed `TestProbe` instances must be asserted.
+///
+/// Use `.off` to disable all checks, or compose individual members:
+///
+/// ```swift
+/// tester.exhaustivity = [.state, .events]  // only check state and events
+/// tester.exhaustivity = .off               // don't check anything
+/// ```
 public struct Exhaustivity: OptionSet, Equatable, Sendable {
     public let rawValue: Int
 
@@ -108,12 +149,18 @@ public struct Exhaustivity: OptionSet, Equatable, Sendable {
 }
 
 public extension Exhaustivity {
+    /// Require all model state changes to be consumed by `assert` blocks.
     static let state = Self(rawValue: 1 << 0)
+    /// Require all events sent via `node.send()` to be observed inside `assert` blocks.
     static let events = Self(rawValue: 1 << 1)
+    /// Require all async tasks started by the model to complete or be cancelled before the tester deallocates.
     static let tasks = Self(rawValue: 1 << 2)
+    /// Require all values emitted by installed `TestProbe` instances to be consumed.
     static let probes = Self(rawValue: 1 << 3)
 
+    /// Exhaustivity is completely disabled — no side effects need to be asserted.
     static let off: Self = []
+    /// All categories are checked. This is the default.
     static let full: Self = [.state, .events, .tasks, .probes]
 }
 
@@ -158,6 +205,19 @@ public func == <T: Equatable>(lhs: @escaping @autoclosure () -> T, rhs: @escapin
 }
 
 public extension ModelTester {
+    /// Waits for all pending model updates to propagate, then verifies that every predicate in
+    /// the builder body is `true` and that no unasserted side-effects remain (subject to `exhaustivity`).
+    ///
+    /// ```swift
+    /// await tester.assert {
+    ///     model.count == 1
+    ///     model.didSend(.increment)
+    /// }
+    /// ```
+    ///
+    /// - Parameter timeout: Maximum nanoseconds to wait for the predicates to become true (default 1 s).
+    /// - Parameter builder: A result-builder block of Boolean predicates. Use the `==` operator for
+    ///   pretty-printed diff output on failure.
     func assert(timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: () -> AssertBuilder.Result) async {
         await access.assert(timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
     }
@@ -175,6 +235,18 @@ public extension ModelTester {
         await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
     }
 
+    /// Waits for an optional expression to become non-`nil`, then returns the unwrapped value.
+    ///
+    /// Fails and throws if the expression is still `nil` after `timeout` nanoseconds. Unlike
+    /// `assert`, exhaustion checking is **not** triggered by a successful unwrap — use a
+    /// subsequent `assert` to consume any pending side effects.
+    ///
+    /// ```swift
+    /// let detail = try await tester.unwrap(model.selectedItem)
+    /// await tester.assert {
+    ///     detail.name == "Expected"
+    /// }
+    /// ```
     func unwrap<T>(_ unwrap: @escaping @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T  {
         let start = DispatchTime.now().uptimeNanoseconds
         while true {

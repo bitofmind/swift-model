@@ -60,24 +60,77 @@ public extension Model {
 
 /// Model modifiers
 public extension Model {
+    /// Override dependencies for this model and its descendants.
+    ///
+    /// Use this to inject test doubles or configure dependencies before anchoring:
+    ///
+    /// ```swift
+    /// AppModel()
+    ///     .withDependencies {
+    ///         $0.apiClient = .mock
+    ///         $0.clock = .immediate
+    ///     }
+    ///     .withAnchor()
+    /// ```
+    ///
+    /// Multiple `withDependencies` calls are additive — each closure is applied in order.
     func withDependencies(_ dependencies: @escaping (inout ModelDependencies) -> Void) -> Self {
         withSetupAccess {
             $0.dependencies.append(dependencies)
         }
     }
 
+    /// Attach an activation closure to this model without modifying its source.
+    ///
+    /// The closure is called with the model instance immediately after `onActivate()` runs.
+    /// This is useful for attaching side-effects or additional setup in previews, tests, or
+    /// composition sites without subclassing or modifying the model's own `onActivate()`:
+    ///
+    /// ```swift
+    /// let model = StandupModel()
+    ///     .withActivation { $0.loadFromDisk() }
+    ///     .withAnchor()
+    /// ```
+    ///
+    /// Multiple `withActivation` calls are additive — closures run in declaration order.
     func withActivation(_ onActivate: @escaping (Self) -> Void, function: String = #function) -> Self {
         withSetupAccess(modify:  {
             $0.activations.append(onActivate)
         }, function: function)
     }
 
+    /// Enables printing of state diffs for the entire lifetime of this model.
+    ///
+    /// Equivalent to calling `model._printChanges()` in `onActivate()`, but applied as a
+    /// modifier before anchoring. Only active in `DEBUG` builds.
+    ///
+    /// ```swift
+    /// AppModel()._withPrintChanges(name: "App").withAnchor()
+    /// ```
+    ///
+    /// To enable printing only temporarily, use `_printChanges()` on the live model node instead,
+    /// which returns a `Cancellable` you can cancel when you're done:
+    ///
+    /// ```swift
+    /// let printer = model._printChanges()
+    /// // ... do work ...
+    /// printer.cancel()
+    /// ```
     func _withPrintChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Self where Self: Sendable {
         withActivation {
             $0._printChanges(name: name, to: printer)
         }
     }
 
+    /// Prints a message each time this model is activated or deactivated.
+    ///
+    /// Useful during development to understand model lifecycle — for example, to confirm that
+    /// a child model is being properly removed when navigating away.
+    ///
+    /// ```swift
+    /// RecordMeetingModel(standup: standup)
+    ///     .withPrintingActivationEvents(name: "RecordMeeting")
+    /// ```
     func withPrintingActivationEvents(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Self {
         let name = name ?? typeDescription
         return withActivation { model in

@@ -28,15 +28,24 @@ public extension ModelNode {
 }
 
 public extension ModelNode {
-    /// Activities created while the context is active will be cancellable via the provided `key`.
-    /// Any nested tasks or forEach won't be affected
+    /// Groups activities under a named key so they can all be cancelled at once via `cancelAll(for:)`.
     ///
-    ///     withCancellationContext(for: key) {
-    ///         task { }
-    ///         forEach { }
-    ///         onCancel { }
-    ///     }
+    /// Every `task`, `forEach`, and `onCancel` call made *inside* the `perform` closure is
+    /// registered under `key`. Calling `node.cancelAll(for: key)` later cancels all of them
+    /// together, without affecting work registered outside this block:
     ///
+    /// ```swift
+    /// node.cancellationContext(for: "saveFlow") {
+    ///     node.task { await validate() }
+    ///     node.task { await upload() }
+    /// }
+    ///
+    /// // Cancel both tasks at once:
+    /// node.cancelAll(for: "saveFlow")
+    /// ```
+    ///
+    /// Use the keyless `cancellationContext(perform:)` variant when you don't need to cancel
+    /// from outside — it returns a `Cancellable` you hold directly.
     func cancellationContext<T>(for key: some Hashable&Sendable, perform: () throws -> T) rethrows -> T {
         guard let cancellations = enforcedContext()?.cancellations else { return try perform() }
 
@@ -49,15 +58,10 @@ public extension ModelNode {
         }
     }
     
-    /// Activities created while the context is active will be cancellable via the provided `key`.
-    /// Any nested tasks or forEach won't be affected
+    /// Async variant of `cancellationContext(for:perform:)`.
     ///
-    ///     withCancellationContext(for: key) {
-    ///         task { }
-    ///         forEach { }
-    ///         onCancel { }
-    ///     }
-    ///
+    /// Identical semantics to the synchronous overload but accepts an `async` closure. Use this
+    /// when the setup work inside the context itself is asynchronous.
     func cancellationContext<T>(for key: some Hashable&Sendable, perform: () async throws -> T) async rethrows -> T {
         guard let cancellations = enforcedContext()?.cancellations else { return try await perform() }
 
@@ -73,15 +77,23 @@ public extension ModelNode {
 }
 
 public extension ModelNode {
-    /// Activities created while the context is active will be cancellable via the returned `Cancellable`.
-    /// Any nested tasks or forEach won't be affected
+    /// Groups activities under an anonymous key and returns a `Cancellable` that cancels all of them.
     ///
-    ///     withCancellationContext {
-    ///         task { }
-    ///         forEach { }
-    ///         onCancel { }
+    /// Use this when you want to hold the cancellation handle directly rather than using a named key.
+    /// A common pattern is to combine it with `cancelInFlight()` to ensure only one group of tasks
+    /// runs at a time:
+    ///
+    /// ```swift
+    /// func onReload() {
+    ///     node.cancellationContext {
+    ///         node.task { await fetchData() }
+    ///         node.task { await fetchMetadata() }
     ///     }.cancelInFlight()
+    /// }
+    /// ```
     ///
+    /// Use `cancellationContext(for:perform:)` instead when you need to trigger cancellation from
+    /// a different call site (e.g. a "Cancel" button).
     func cancellationContext(perform: () throws -> Void) rethrows -> Cancellable {
         guard let cancellations = enforcedContext()?.cancellations else { return EmptyCancellable() }
 
@@ -95,15 +107,9 @@ public extension ModelNode {
         }
     }
 
-    /// Activities created while the context is active will be cancellable via the return `Cancellable`.
-    /// Any nested tasks or forEach won't be affected
+    /// Async variant of the keyless `cancellationContext(perform:)`.
     ///
-    ///     withCancellationContext {
-    ///         task { }
-    ///         forEach { }
-    ///         onCancel { }
-    ///     }.cancelInFlight()
-    ///
+    /// Identical semantics to the synchronous overload but accepts an `async` closure.
     func cancellationContext(perform: () async throws -> Void) async rethrows -> Cancellable {
         guard let cancellations = enforcedContext()?.cancellations else { return EmptyCancellable() }
 
