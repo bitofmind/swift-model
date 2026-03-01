@@ -588,6 +588,23 @@ private extension Model {
     }
 }
 
+/// Sentinel type used as the subscript index for the parents observation key path.
+/// Using a dedicated type (rather than Void or Int) guarantees no collision with
+/// user-defined subscripts on Model types.
+struct _ParentsObservationKey: Hashable, Sendable {}
+
+extension Model {
+    // Synthetic key path used to make the `parents` relationship observable.
+    // The obscure name and subscript form guarantee no collision with user-defined properties.
+    // Never called directly — it exists solely so that `\M[_parentsObservationKey:]` is a valid
+    // typed KeyPath<M, [ModelID]> that can be passed to willAccess / willSet / didSet.
+    subscript(_parentsObservationKey _: _ParentsObservationKey) -> [ModelID] {
+        context!.lock {
+            context!.parents.map { $0.anyModel.modelID }
+        }
+    }
+}
+
 /// Internal update function for testing with explicit path control.
 ///
 /// This function establishes observation tracking for a value accessed via the `access` closure

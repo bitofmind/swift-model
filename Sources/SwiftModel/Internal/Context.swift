@@ -108,6 +108,42 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         sendEvent(eventInfo, to: relation)
     }
 
+    // MARK: - Parents observation
+
+    // The key path used to represent the parents relationship in the observation system.
+    // Using a subscript guarantees no collision with any user-defined property on M.
+    private var parentsObservationPath: KeyPath<M, [ModelID]>&Sendable { \M[_parentsObservationKey: _ParentsObservationKey()] }
+
+    // A ModelContext wrapping this context, used to delegate to the shared
+    // willAccess/didModify helpers which handle all observation paths uniformly.
+    private var modelContext: ModelContext<M> { ModelContext(context: self) }
+
+    override func willAccessParents() {
+        modelContext.willAccess(readModel, at: parentsObservationPath)?()
+    }
+
+    override func willModifyParents() {
+        // willSet is called as part of the didModify closure returned by ModelContext.didModify.
+        // Nothing needed here — the modify closure captures willSet/didSet together.
+    }
+
+    override func didModifyParents(callbacks: inout [() -> Void]) {
+        let path = parentsObservationPath
+        didModify()
+        // Use ModelContext.didModify to get a closure that handles ObservationRegistrar
+        // willSet/didSet, activeAccess.didModify, and mainCall.drainIfOnMain — identical
+        // to how any other @Model property change is broadcast.
+        let postModify = modelContext.didModify(readModel, at: path)
+        let modifyCallbacksForPath = (modifyCallbacks[path] ?? [:]).values.compactMap { $0(false) }
+        callbacks.append {
+            postModify?()
+            for c in modifyCallbacksForPath { c() }
+        }
+        var didModifyCallbacks: [() -> Void] = []
+        didModify(callbacks: &didModifyCallbacks)
+        callbacks.append(contentsOf: didModifyCallbacks)
+    }
+
     func onModify<T>(for path: KeyPath<M, T>&Sendable, _ callback: @Sendable @escaping (Bool) -> (() -> Void)?) -> @Sendable () -> Void {
         guard !isDestructed else {
             return {}
@@ -296,7 +332,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     func childContext<C: ModelContainer, Child: Model>(containerPath: WritableKeyPath<M, C>, elementPath: WritableKeyPath<C, Child>, childModel: Child) -> Context<Child> {
-        lock {
+        var postLockCallbacks: [() -> Void] = []
+        defer {
+            for c in postLockCallbacks { c() }
+        }
+        return lock {
             let modelRef = ModelRef(elementPath: elementPath, id: childModel.id)
             modelRefs.insert(modelRef)
 
@@ -307,7 +347,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             assert(children[containerPath]?[modelRef] == nil)
 
             if let child = childModel.context {
-                child.addParent(self)
+                child.addParent(self, callbacks: &postLockCallbacks)
                 children[containerPath, default: [:]][modelRef] = child
                 return child
             } else {

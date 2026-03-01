@@ -292,12 +292,86 @@ public extension ModelNode {
         }.removeDuplicates().eraseToStream()
     }
 
+    /// Traverses the model hierarchy and accumulates a result by applying a transform to each visited model.
+    ///
+    /// This is the primary API for accessing structured information across the model hierarchy.
+    /// SwiftModel maintains full knowledge of parent-child relationships, and `reduceHierarchy`
+    /// exposes this for custom queries such as collecting values, finding ancestors of a type,
+    /// or aggregating data across a subtree.
+    ///
+    /// The traversal visits each model at most once, even if a model appears in multiple positions
+    /// (e.g. shared models, or models reachable via multiple ancestor paths).
+    ///
+    /// ## Basic Usage
+    ///
+    /// Collect counts from all descendants:
+    ///
+    /// ```swift
+    /// let total = node.reduceHierarchy(for: .descendants, transform: { ($0 as? CounterModel)?.count }, into: 0) { $0 += $1 }
+    /// ```
+    ///
+    /// Find the nearest ancestor of a specific type:
+    ///
+    /// ```swift
+    /// let appModel = node.mapHierarchy(for: .ancestors) { $0 as? AppModel }.first
+    /// ```
+    ///
+    /// ## Relation Options
+    ///
+    /// The `relation` parameter is an `OptionSet` controlling which models are visited:
+    ///
+    /// - `.self` — visits only the model itself
+    /// - `.parent` — visits the model's direct parents
+    /// - `.ancestors` — visits all ancestors recursively (parents, grandparents, etc.)
+    /// - `.children` — visits only direct children
+    /// - `.descendants` — visits all descendants recursively
+    /// - `.dependencies` — additionally includes dependency models at each visited node
+    ///
+    /// Options can be combined: `[.self, .ancestors]` visits the model and all of its ancestors.
+    ///
+    /// ## Observation
+    ///
+    /// When called from inside an `Observed` closure or a `withObservationTracking` block,
+    /// all property accesses made inside `transform` are tracked — including properties on
+    /// **ancestor models** (parents, grandparents). The stream re-evaluates whenever any tracked
+    /// property on any visited model changes.
+    ///
+    /// **Structural changes** (adding/removing children) also trigger re-evaluation because
+    /// the containing property (e.g. an array) is itself tracked. Newly added models have
+    /// their properties tracked starting from the next re-evaluation.
+    ///
+    /// - Parameters:
+    ///   - relation: Which models relative to this node to visit.
+    ///   - transform: A closure applied to each visited model. Return `nil` to skip a model.
+    ///   - initialResult: The starting accumulator value.
+    ///   - updateAccumulatingResult: A closure that folds an element into the accumulator.
+    /// - Returns: The final accumulated result.
     func reduceHierarchy<Result, Element>(for relation: ModelRelation, transform: (any Model) throws -> Element?, into initialResult: Result, _ updateAccumulatingResult: (inout Result, Element) throws -> ()) rethrows -> Result {
         try context?.reduceHierarchy(for: relation, transform: {
             try transform($0.anyModel.withAccessIfPropagateToChildren(access))
         }, into: initialResult, updateAccumulatingResult) ?? initialResult
     }
 
+    /// Traverses the model hierarchy and returns all non-nil transform results as an array.
+    ///
+    /// This is a convenience wrapper around `reduceHierarchy` that collects results into an array.
+    ///
+    /// ```swift
+    /// // Find all active tasks across the whole hierarchy
+    /// let activeModels = node.mapHierarchy(for: [.self, .descendants]) { $0 as? TaskModel }
+    ///
+    /// // Collect all ancestor types for debugging
+    /// let ancestorNames = node.mapHierarchy(for: .ancestors) { String(describing: type(of: $0)) }
+    /// ```
+    ///
+    /// The order of results follows the traversal order:
+    /// - For `.ancestors` / `.parent`: from direct parent towards the root
+    /// - For `.children` / `.descendants`: depth-first, children before their children
+    ///
+    /// - Parameters:
+    ///   - relation: Which models relative to this node to visit.
+    ///   - transform: A closure applied to each visited model. Return `nil` to exclude a model.
+    /// - Returns: An array of all non-nil transformed values, in traversal order.
     func mapHierarchy<Element>(for relation: ModelRelation, transform: (any Model) throws -> Element?) rethrows -> [Element] {
         try reduceHierarchy(for: relation, transform: transform, into: []) {
             $0.append($1)

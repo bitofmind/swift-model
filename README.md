@@ -517,6 +517,65 @@ node.transaction {
 }
 ```
 
+## Traversing the Hierarchy
+
+SwiftModel maintains full knowledge of the parent-child relationships between all models in your application. The `node.reduceHierarchy` and `node.mapHierarchy` helpers expose this information so you can query or aggregate data across any portion of the hierarchy.
+
+### ModelRelation
+
+Both helpers accept a `ModelRelation` option set that controls which models are visited:
+
+| Relation | Description |
+|---|---|
+| `.self` | Only the model itself |
+| `.parent` | Direct parents (one hop up) |
+| `.ancestors` | All ancestors recursively (parents, grandparents, …) |
+| `.children` | Direct children (one hop down) |
+| `.descendants` | All descendants recursively |
+| `.dependencies` | Also include dependency models at each visited node |
+
+Relations can be combined freely: `[.self, .descendants]` visits the model and its entire subtree.
+
+### mapHierarchy
+
+`mapHierarchy` applies a transform closure to each visited model and collects the non-nil results into an array:
+
+```swift
+// Find the nearest ancestor AppModel
+let appModel = node.mapHierarchy(for: .ancestors) { $0 as? AppModel }.first
+
+// Collect all descendant models of a specific type
+let counters = node.mapHierarchy(for: [.self, .descendants]) { $0 as? CounterModel }
+```
+
+### reduceHierarchy
+
+`reduceHierarchy` is the general form. It lets you fold results into an accumulator, which is useful when building up non-array results:
+
+```swift
+// Sum all counts across the descendant subtree
+let total = node.reduceHierarchy(
+    for: [.self, .descendants],
+    transform: { ($0 as? CounterModel)?.count },
+    into: 0
+) { $0 += $1 }
+```
+
+### Observation
+
+When `reduceHierarchy` or `mapHierarchy` is used inside an `Observed` closure or SwiftUI view body, all property accesses made inside `transform` are fully tracked. The stream re-evaluates whenever any tracked property — on any visited model — changes:
+
+```swift
+func onActivate() {
+    // Re-evaluates when count changes on any CounterModel in the hierarchy.
+    node.forEach(Observed { node.mapHierarchy(for: [.self, .ancestors]) { ($0 as? CounterModel)?.count } }) { counts in
+        print("Counts in hierarchy:", counts)
+    }
+}
+```
+
+**Structural changes** (adding or removing child models) also trigger re-evaluation, so the result always reflects the current shape of the hierarchy.
+
 ## Events
 
 It is common that models needs to communicate up or down the model hierarchy. Often it is most natural to set up a callback closure for children to communicate back to parents, or for parents to call method directly on children. But for more complicated setups, SwiftModel also support sending events up and down the model hierarchy. 

@@ -103,12 +103,38 @@ class AnyContext: @unchecked Sendable {
         var id: AnyHashable
     }
 
-    func addParent(_ parent: AnyContext) {
+    // MARK: - Parents observation hooks
+    //
+    // `weakParents` is an internal relationship that is now treated as an observable
+    // "property" of the context, using the same willAccess/willSet/didSet discipline
+    // as any @Model property. This makes the parent relationship observable for free
+    // across all observation paths (AccessCollector, withObservationTracking, ViewAccess)
+    // for any code that walks parents (e.g. reduceHierarchy).
+    //
+    // The concrete implementations live in Context<M>, which has access to the typed
+    // model and modifyCallbacks infrastructure needed to fire observation notifications.
+
+    /// Called when the parents array is about to be read for observation purposes.
+    /// Implementations should register the read with any active observation tracking.
+    func willAccessParents() {}
+
+    /// Called inside the lock just before weakParents is mutated.
+    /// Implementations should call willSet on the ObservationRegistrar.
+    func willModifyParents() {}
+
+    /// Called after weakParents has been mutated (post-lock via callbacks).
+    /// Implementations should fire modifyCallbacks and didSet on the ObservationRegistrar.
+    func didModifyParents(callbacks: inout [() -> Void]) {}
+
+    func addParent(_ parent: AnyContext, callbacks: inout [() -> Void]) {
+        willModifyParents()
         weakParents.append(WeakParent(parent: parent))
         anyModificationActiveCount += parent.anyModificationActiveCount
+        didModifyParents(callbacks: &callbacks)
     }
 
     func removeParent(_ parent: AnyContext, callbacks: inout [() -> Void]) {
+        willModifyParents()
         for i in weakParents.indices {
             if weakParents[i].parent === parent {
                 weakParents.remove(at: i)
@@ -117,6 +143,8 @@ class AnyContext: @unchecked Sendable {
                 break
             }
         }
+
+        didModifyParents(callbacks: &callbacks)
 
         if parents.isEmpty {
             onRemoval(callbacks: &callbacks)
@@ -127,8 +155,16 @@ class AnyContext: @unchecked Sendable {
         parents.first?.rootParent ?? self
     }
 
+    /// The current live parents. Calling this from observation-tracked code will register
+    /// a dependency on the parents relationship via `willAccessParents()`.
     var parents: [AnyContext] {
         weakParents.compactMap(\.parent)
+    }
+
+    /// Observed access to parents — registers observation tracking before reading.
+    var observedParents: [AnyContext] {
+        willAccessParents()
+        return weakParents.compactMap(\.parent)
     }
 
     func parents<Value>(ofType type: Value.Type = Value.self) -> [Value] {
@@ -191,7 +227,9 @@ class AnyContext: @unchecked Sendable {
         }
 
         if let parent {
-            addParent(parent)
+            // During init, no observers exist yet, so callbacks can be discarded.
+            var callbacks: [() -> Void] = []
+            addParent(parent, callbacks: &callbacks)
         }
     }
 
@@ -310,6 +348,10 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
+    // Entry point for hierarchy traversal. Sets up deduplication state and delegates to
+    // the recursive `reduce` helper. Deduplication prevents processing a context twice
+    // in cases where a model is reachable via multiple paths (e.g. shared models, or a
+    // model that is both a dependency and a child).
     func reduceHierarchy<Result, Element>(for relation: ModelRelation, transform: (AnyContext) throws -> Element?, into initialResult: Result, _ updateAccumulatingResult: (inout Result, Element) throws -> ()) rethrows -> Result {
         var result = initialResult
         var uniques = Set<ObjectIdentifier>()
@@ -317,29 +359,57 @@ class AnyContext: @unchecked Sendable {
         return result
     }
 
+    // Recursive core of the hierarchy traversal.
+    //
+    // Design notes:
+    // - `relation` is narrowed at each level of recursion. When moving upward to ancestors,
+    //   the relation passed down keeps `.ancestors` so the walk continues to the root.
+    //   Similarly, `.descendants` keeps propagating downward. By contrast, `.parent` and
+    //   `.children` are one-hop relations: after processing the direct parent/child, only
+    //   `.self` (and optionally `.dependencies`) is passed so the walk stops.
+    // - `.dependencies` is preserved at every level so that dependency models attached to
+    //   each visited context are also included.
+    // - `uniques` prevents visiting the same context more than once across the entire
+    //   traversal (important for shared models and multi-parent scenarios).
+    // - When a relation includes `.parent` or `.ancestors`, `observedParents` is used instead
+    //   of `parents` so that any active observation tracking (AccessCollector, ObservationRegistrar,
+    //   ViewAccess) registers a dependency on the parents relationship itself. This means that
+    //   adding or removing a parent will trigger re-evaluation in observers.
     private func reduce<Result, Element>(for relation: ModelRelation, transform: (AnyContext) throws -> Element?, into result: inout Result, updateAccumulatingResult: (inout Result, Element) throws -> (), uniques: inout Set<ObjectIdentifier>) rethrows {
-        let parents = lock(parents)
+        // Read parents under lock to avoid data races on the weakParents array.
+        // Use observedParents (instead of plain `parents`) when the traversal needs to walk
+        // upward — this registers the read with any active observation tracking so that
+        // adding/removing a parent triggers re-evaluation.
+        let parents = lock(relation.contains(.parent) || relation.contains(.ancestors) ? observedParents : parents)
 
+        // Preserve the dependencies flag so it propagates to all levels of the traversal.
         let dependencies: ModelRelation = relation.contains(.dependencies) ? .dependencies : []
 
+        // Process the current context if .self is requested and we haven't visited it yet.
         if relation.contains(.self), !uniques.contains(ObjectIdentifier(self)), let element = try transform(self) {
             try updateAccumulatingResult(&result, element)
-
+            // Mark visited after transform succeeds to prevent double-processing in cycles.
             uniques.insert(ObjectIdentifier(self))
         }
 
+        // Walk upward: ancestors (all levels) or parent (one hop).
         for parent in parents {
             if relation.contains(.ancestors) {
+                // Continue upward traversal: pass [.self, .ancestors] so each ancestor is
+                // processed and the walk keeps going towards the root.
                 try parent.reduce(for: dependencies.union([.self, .ancestors]), transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
             } else if relation.contains(.parent) {
+                // One-hop upward: pass .self only so the parent is processed but no further.
                 try parent.reduce(for: dependencies.union(.self), transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
             }
         }
 
+        // Collect children (and dependency contexts if requested) under lock.
         let children = lock {
             self.children.values.flatMap { $0.values } + (relation.contains(.dependencies) ? Array(dependencyContexts.values) : [])
         }
 
+        // Walk downward: descendants (all levels) or children (one hop).
         if relation.contains(.descendants) {
             for child in children {
                 try child.reduce(for: dependencies.union([.self, .descendants]), transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
@@ -446,7 +516,7 @@ class AnyContext: @unchecked Sendable {
             if let child = reference.context, child.rootParent === rootParent {
                 if dependencyContexts[ObjectIdentifier(D.self)] == nil {
                     dependencyContexts[ObjectIdentifier(D.self)] = child
-                    child.addParent(self)
+                    child.addParent(self, callbacks: &postSetups)
                 }
                 return
             } else if dependencyContexts[ObjectIdentifier(D.self)] == nil || reference.lifetime == .destructed {
