@@ -264,10 +264,29 @@ public extension ModelNode {
         }
     }
 
+    /// Returns `true` if this model has at most one parent in the hierarchy (i.e. it is not shared).
     var isUniquelyReferenced: Bool {
         context.map { $0.parents.count <= 1 } ?? true
     }
 
+    /// Returns a stream that emits `true` when the model has a single owner, `false` when it is shared.
+    ///
+    /// A model is *shared* when the same instance appears in more than one place in the model hierarchy
+    /// (multiple parents). This stream emits the current sharing status immediately and then re-emits
+    /// whenever the sharing count changes. Consecutive equal values are deduplicated.
+    ///
+    /// This is useful for building "exclusive editing" UX — for example, disabling an edit button
+    /// when a model is referenced from multiple places:
+    ///
+    /// ```swift
+    /// func onActivate() {
+    ///     node.forEach(node.uniquelyReferenced()) { isExclusive in
+    ///         isEditable = isExclusive
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// The stream finishes when the model is deactivated.
     func uniquelyReferenced() -> AsyncStream<Bool> {
         guard let rootParent = enforcedContext()?.rootParent else {
             return .never

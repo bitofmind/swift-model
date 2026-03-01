@@ -95,6 +95,22 @@ For SwiftModel to be able to detect a composition of models, any container holdi
 }
 ```
 
+`@ModelContainer` works equally well on structs, which makes it useful for reusable wrapper types. For example, a generic paginated list that holds a model alongside metadata:
+
+```swift
+@ModelContainer struct Paginated<Item: Model> {
+    var items: [Item]
+    var currentPage: Int
+    var hasMore: Bool
+}
+
+@Model struct FeedModel {
+    var posts: Paginated<PostModel> = Paginated(items: [], currentPage: 0, hasMore: true)
+}
+```
+
+SwiftModel will correctly traverse into `Paginated.items` for activation, observation, and event propagation — the wrapper is transparent to the model hierarchy.
+
 ### Model Anchor
 
 A model is backed by a behind the scenes context that holds a model's shared state, its relation to other models, overridden dependencies etc.
@@ -542,6 +558,33 @@ node.cancellationContext(for: operationID) {
 }
 ```
 
+This is particularly useful for multi-step operations where you want to cancel the entire flow as a unit. For example, a "save flow" that spawns a validation task and an upload task can be cancelled atomically:
+
+```swift
+let saveFlowID = "saveFlow"
+
+func startSave() {
+    node.cancellationContext(for: saveFlowID) {
+        node.task { await validate() }
+        node.task { await upload() }
+    }
+}
+
+func cancelSave() {
+    node.cancelAll(for: saveFlowID)  // cancels both tasks at once
+}
+```
+
+When a task itself spawns nested work, use `.inheritCancellationContext()` so the nested work is also cancelled when the parent context is cancelled:
+
+```swift
+node.task {
+    node.forEach(updates) { update in
+        processUpdate(update)
+    }.inheritCancellationContext()  // cancelled when the outer task's context is cancelled
+}
+```
+
 You can also call `node.onCancel { ... }` to execute work upon cancellation.
 
 ### Cancel in Flight
@@ -576,6 +619,47 @@ node.transaction {
   sum = counts.reduce(0, +)
 }
 ```
+
+### Observing Any Modification
+
+`observeAnyModification()` returns a stream that emits whenever *any* state in a model or its descendants changes, without needing to specify which property. This is useful for cross-cutting concerns:
+
+```swift
+func onActivate() {
+    // Show unsaved-changes indicator whenever anything in the form changes
+    node.forEach(observeAnyModification()) { [weak self] _ in
+        hasUnsavedChanges = true
+    }
+}
+```
+
+Multiple mutations inside a `node.transaction { }` produce a single emission, so rapid batched changes don't cause redundant work. Combined with `AsyncAlgorithms` you can build debounced autosave:
+
+```swift
+func onActivate() {
+    node.task {
+        for await _ in observeAnyModification().debounce(for: .seconds(2)) {
+            await autosave()
+        }
+    }
+}
+```
+
+> `observeAnyModification()` is on `Model` directly (not `node`), so you call it as `observeAnyModification()` from within a model, or `childModel.observeAnyModification()` from a parent model.
+
+### Shared Models and Unique Ownership
+
+`node.uniquelyReferenced()` returns a stream that emits `true` when a model has exactly one owner in the hierarchy and `false` when it is shared across multiple parents. This enables "exclusive editing" UX patterns — for example, disabling an edit button while a model is referenced from multiple places:
+
+```swift
+func onActivate() {
+    node.forEach(node.uniquelyReferenced()) { isExclusive in
+        isEditable = isExclusive
+    }
+}
+```
+
+The stream emits the current value immediately and deduplicates consecutive equal values.
 
 ## Traversing the Hierarchy
 
@@ -621,20 +705,40 @@ let total = node.reduceHierarchy(
 ) { $0 += $1 }
 ```
 
-### Observation
+### Observation with Hierarchy Traversal
 
-When `reduceHierarchy` or `mapHierarchy` is used inside an `Observed` closure or SwiftUI view body, all property accesses made inside `transform` are fully tracked. The stream re-evaluates whenever any tracked property — on any visited model — changes:
+Combining `Observed` with `mapHierarchy` or `reduceHierarchy` creates a stream that automatically tracks *both* property changes and structural changes across an entire subtree. This is a uniquely powerful pattern that most architectures cannot express without manual subscriptions.
 
 ```swift
 func onActivate() {
-    // Re-evaluates when count changes on any CounterModel in the hierarchy.
-    node.forEach(Observed { node.mapHierarchy(for: [.self, .ancestors]) { ($0 as? CounterModel)?.count } }) { counts in
-        print("Counts in hierarchy:", counts)
+    // Re-evaluates when count changes on any CounterModel in the hierarchy,
+    // AND when counters are added or removed.
+    node.forEach(Observed { node.mapHierarchy(for: [.self, .descendants]) { ($0 as? CounterModel)?.count } }) { counts in
+        total = counts.reduce(0, +)
     }
 }
 ```
 
-**Structural changes** (adding or removing child models) also trigger re-evaluation, so the result always reflects the current shape of the hierarchy.
+The stream re-evaluates in two situations:
+- **Property change**: any `count` on any visited `CounterModel` changes
+- **Structural change**: a child model is added or removed from the hierarchy
+
+A practical real-world example — a document model that tracks whether any sub-editor has unsaved changes:
+
+```swift
+@Model struct DocumentModel {
+    var editors: [EditorModel] = []
+    var hasUnsavedChanges = false
+
+    func onActivate() {
+        node.forEach(Observed { node.mapHierarchy(for: [.self, .descendants]) { ($0 as? EditorModel)?.isDirty } }) { dirtyFlags in
+            hasUnsavedChanges = dirtyFlags.contains(true)
+        }
+    }
+}
+```
+
+When a new `EditorModel` is added to `editors`, the stream immediately includes its `isDirty` property in the tracking set — no manual subscription needed.
 
 ## Events
 

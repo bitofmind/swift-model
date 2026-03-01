@@ -68,7 +68,37 @@ public extension Observed {
 }
 
 public extension Model where Self: Sendable {
-    /// Returns a stream observing any updates on self or any descendants
+    /// Returns a stream that emits whenever any state in the model or any of its descendants changes.
+    ///
+    /// This is useful for cross-cutting concerns that need to react to *any* change in a subtree
+    /// without caring about which specific property changed. Common use cases include:
+    ///
+    /// - **Dirty tracking**: detect unsaved changes to show a "modified" indicator
+    /// - **Debounced autosave**: debounce rapid changes before persisting to disk
+    /// - **Undo/redo stacks**: capture a snapshot before each logical change
+    ///
+    /// ```swift
+    /// func onActivate() {
+    ///     // Show unsaved-changes indicator whenever anything in the form changes
+    ///     node.forEach(observeAnyModification()) { [weak self] _ in
+    ///         self?.hasUnsavedChanges = true
+    ///     }
+    ///
+    ///     // Debounced autosave
+    ///     node.task {
+    ///         for await _ in observeAnyModification().debounce(for: .seconds(2)) {
+    ///             await save()
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// The stream emits once per transaction (multiple mutations inside a `node.transaction { }`
+    /// produce a single emission). It finishes when the model is deactivated.
+    ///
+    /// > Note: This method is on `Model` directly (not `node`), so you call it as
+    /// > `observeAnyModification()` from within the model, or `model.observeAnyModification()`
+    /// > from a parent.
     func observeAnyModification() -> AsyncStream<()> {
         guard let context = enforcedContext() else { return .finished }
 
