@@ -60,6 +60,34 @@ import SwiftModel
 
 > Note, that your model types is required to be a struct, even though its behavior is more like a reference type such as class. This is required to unlock some of the powerful state update tracking that is used in testing and debugging as well as to avoid issues with retain cycles that are common with reference types.
 
+### No Retain Cycles
+
+Because models are structs (value types), SwiftModel eliminates the retain-cycle problem that affects class-based architectures. You never need `[weak self]` capture lists — the compiler won't even accept them since you cannot take a weak reference to a struct. More practically, you can freely store callback closures directly as `let` properties and capture `self` in any closure without risk of a memory leak:
+
+```swift
+@Model struct RecordMeetingModel {
+    let onSave: @Sendable (String) -> Void
+    let onDiscard: @Sendable () -> Void
+}
+
+@Model struct AppModel {
+    var recording: RecordMeetingModel? = nil
+
+    func startRecording() {
+        recording = RecordMeetingModel(
+            onSave: { transcript in
+                self.saveTranscript(transcript)  // safe — no retain cycle
+            },
+            onDiscard: {
+                self.recording = nil             // safe — no retain cycle
+            }
+        )
+    }
+}
+```
+
+This works because each `@Model` struct holds only a weak reference to its underlying context. The strong ownership lives in the model hierarchy (parent → child), so closures that capture `self` cannot create cycles.
+
 ### @ModelIgnored and @ModelTracked
 
 `@ModelIgnored` and `@ModelTracked` are implementation details used internally by the `@Model` macro. You should not use them directly in your own models.

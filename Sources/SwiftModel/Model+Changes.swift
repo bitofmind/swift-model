@@ -80,8 +80,8 @@ public extension Model where Self: Sendable {
     /// ```swift
     /// func onActivate() {
     ///     // Show unsaved-changes indicator whenever anything in the form changes
-    ///     node.forEach(observeAnyModification()) { [weak self] _ in
-    ///         self?.hasUnsavedChanges = true
+    ///     node.forEach(observeAnyModification()) { _ in
+    ///         hasUnsavedChanges = true
     ///     }
     ///
     ///     // Debounced autosave
