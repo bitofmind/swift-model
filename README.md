@@ -332,13 +332,13 @@ extension FactClient: DependencyKey {
 }
 ```
 
-A model get access to its dependencies via its `node`.
+A model accesses its dependencies via its `node`.
 
 ```swift
 let fact = try await node[FactClient.self].fetch(count)
 ``` 
 
-> A model's `node` gives access to many of model's functionality. 
+> `node` is the model implementor's interface to the SwiftModel runtime. It provides access to dependencies, async tasks, events, cancellations, memoization, and hierarchy queries. It is intended to be used from within a model's own implementation — in `onActivate()`, in methods, and in extensions — not by external consumers of the model.
 
 There is also a convenience macro for dependencies:
 

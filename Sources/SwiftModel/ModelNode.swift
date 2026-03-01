@@ -1,6 +1,63 @@
 import Foundation
 import Dependencies
 
+/// The implementation interface for a model, providing access to async tasks, events,
+/// cancellations, dependencies, and memoization.
+///
+/// `ModelNode` is the *implementor's* tool. It is available via the `node` property that the
+/// `@Model` macro generates on every model, and is intended to be used from within the model's
+/// own implementation — in `onActivate()`, in methods, and in extensions of the model type.
+///
+/// ## Why `node` exists
+///
+/// Rather than placing all runtime APIs directly on the model type, SwiftModel separates them
+/// onto `node` for two reasons:
+///
+/// **Namespace clarity** — `self.count` is model state. `node.task { }` is runtime wiring.
+/// The `node.` prefix makes it immediately clear when you are setting up async behavior versus
+/// reading or writing data.
+///
+/// **Dependency access via dynamic member lookup** — Dependencies are accessed as
+/// `node.myDependency` rather than `self.myDependency`, which avoids polluting the model's
+/// property namespace and makes it clear the value comes from the dependency system rather
+/// than the model's own state.
+///
+/// ## Implementor vs. consumer
+///
+/// `node` is public so it can be used freely in multi-file model implementations and generic
+/// extensions. However, it is intended for use by the *model implementor*, not by *consumers*
+/// of a model.
+///
+/// A consumer (a view, a parent model, a test) should interact with a model through the
+/// properties and methods the model explicitly exposes. Using `node` from outside the model's
+/// own implementation — to start tasks on its behalf, send events in its name, or manage its
+/// cancellations — bypasses the model's intended API boundary.
+///
+/// There is no hard enforcement of this: Swift's access control cannot express
+/// "accessible to implementors regardless of file, but not to consumers." The convention is
+/// enforced by code review and understanding of the design, not by the compiler.
+///
+/// ## Typical usage
+///
+/// ```swift
+/// @Model struct TimerModel {
+///     var elapsed = 0
+///
+///     func onActivate() {
+///         // Start a task tied to the model's lifetime
+///         node.forEach(node.continuousClock.timer(interval: .seconds(1))) { _ in
+///             elapsed += 1
+///         }
+///     }
+///
+///     func reset() {
+///         // Batch mutations into a single notification
+///         node.transaction {
+///             elapsed = 0
+///         }
+///     }
+/// }
+/// ```
 @dynamicMemberLookup
 public struct ModelNode<M: Model> {
     public let _$modelContext: ModelContext<M>

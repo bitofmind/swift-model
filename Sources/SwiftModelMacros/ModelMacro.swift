@@ -196,7 +196,7 @@ extension ModelMacro: MemberMacro {
 
         result.append(
         """
-        var node: ModelNode<Self> { _node }
+        public var node: ModelNode<Self> { _node }
         """)
 
         return result

@@ -91,7 +91,7 @@ struct ModelMacroTests {
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
 
-                var node: ModelNode<Self> {
+                public var node: ModelNode<Self> {
                     _node
                 }
             }
@@ -175,7 +175,7 @@ struct ModelMacroTests {
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
 
-                var node: ModelNode<Self> {
+                public var node: ModelNode<Self> {
                     _node
                 }
             }
@@ -273,7 +273,7 @@ struct ModelMacroTests {
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
 
-                var node: ModelNode<Self> {
+                public var node: ModelNode<Self> {
                     _node
                 }
             }
@@ -349,7 +349,7 @@ struct ModelMacroTests {
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
 
-                var node: ModelNode<Self> {
+                public var node: ModelNode<Self> {
                     _node
                 }
             }
@@ -418,7 +418,7 @@ struct ModelMacroTests {
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
 
-                var node: ModelNode<Self> {
+                public var node: ModelNode<Self> {
                     _node
                 }
             }
