@@ -844,85 +844,107 @@ node.forEach(node.event(fromType: StandupDetail.self)) { event, standupDetail in
 
 ## Testing
 
-Because SwiftModel manages your model's state and knows when events are being sent as well if any asynchronous works is ongoing, it can help tests to be more exhaustive.
+Because SwiftModel owns and tracks all of a model's state, events, and async tasks, it can make tests exhaustive by default: any side effect you didn't explicitly assert causes the test to fail. This catches regressions that are invisible to ordinary unit tests.
 
-For your tests you will set up your root model with a tester instead of an anchor, to get access to testing facilities. This is typically done by using the `andTester()` modifier, where you can conveniently override your dependencies as well.
+### Setup
+
+Replace `withAnchor()` with `andTester()` to get a `ModelTester` alongside the live model. You can override dependencies in the same call:
 
 ```swift
-class CounterFactTests: XCTestCase {
-  func testExample() async throws {
-    let (appModel, tester) = AppModel().andTester {
+@Test func testAddCounter() async {
+    let (model, tester) = AppModel().andTester {
         $0.factClient.fetch = { "\($0) is a good number." }
     }
 
-    appModel.addButtonTapped()
-    await tester.assert(appModel.counters.count == 1)
+    model.addButtonTapped()
+
+    await tester.assert {
+        model.counters.count == 1
+    }
+}
 ```
 
-> Assertions are required to await results, due to the asynchronous nature of state and event propagation.
+> Assertions must `await` because state and event propagation is asynchronous.
 
-You can further drill down to access child models once they become available:
+The `assert` builder block accepts any number of predicates. Using `==` gives you a pretty-printed diff on failure; any other `Bool` expression also works:
 
 ```swift
-    let counterRowModel = try await tester.unwrap(appModel.counters.first)
-    let counterModel = counterRowModel.counter
+await tester.assert {
+    model.count == 42          // diff on failure
+    model.isLoading == false   // diff on failure
+    model.title.hasPrefix("A") // plain bool — no diff
+}
+```
 
-    counterModel.incrementTapped()
-    await tester.assert(counterModel.count == 1)
+Use `unwrap` to wait for an optional child model to appear before interacting with it:
+
+```swift
+let row = try await tester.unwrap(model.counters.first)
+row.counter.incrementTapped()
+await tester.assert {
+    row.counter.count == 1
+}
 ```
 
 ### Asserting Callbacks
 
-To verify that a callback has been called you can set up a `TestProbe`:
+Pass a `TestProbe` wherever the model expects a callback closure. Call `tester.install(probe)` to opt into exhaustion checking for it:
 
 ```swift
-func testFactButtonTapped() async throws {
-  let onFact = TestProbe()
-  let (model, tester) = CounterModel(count: 2, onFact: onFact.call).andTester {
-    $0.factClient.fetch = { "\($0) is a good number." }
-  }
+@Test func testFactButtonTapped() async {
+    let onFact = TestProbe()
+    let (model, tester) = CounterModel(count: 2, onFact: onFact.call).andTester {
+        $0.factClient.fetch = { "\($0) is a good number." }
+    }
+    tester.install(onFact)
 
-  model.factButtonTapped()
+    model.factButtonTapped()
 
-  await tester.assert {
-    onFact.wasCalled(with: 2, "2 is a good number.")
-  }
+    await tester.assert {
+        onFact.wasCalled(with: 2, "2 is a good number.")
+    }
 }
 ```
 
-> To make sure your probes are tested for exhaustivity (see below), make sure to install them on your tester `tester.install(onFact)`.
+`TestProbe` also supports `callAsFunction`, so you can write `onFact: probe` directly instead of `onFact: probe.call`.
 
 ### Asserting Events
 
-Events are asserted by checking that a model has sent them as expected:
+Assert that a model sent an event using `didSend(_:)` inside an `assert` block:
 
 ```swift
-  func testContinueWithoutRecording() async throws {
-    let (standupDetail, tester) = StandupDetail(standup: .mock).andTester() {
-      $0.speechClient.authorizationStatus = { .denied }
+@Test func testContinueWithoutRecording() async throws {
+    let (model, tester) = StandupDetail(standup: .mock).andTester {
+        $0.speechClient.authorizationStatus = { .denied }
     }
 
-    standupDetail.startMeetingButtonTapped()
-    try await tester.unwrap(standupDetail.destination?.speechRecognitionDenied).continue()
+    model.startMeetingButtonTapped()
+    try await tester.unwrap(model.destination?.speechRecognitionDenied).continue()
 
     await tester.assert {
-      standupDetail.destination?.speechRecognitionDenied != nil
-      standupDetail.didSend(.startMeeting)
+        model.destination?.speechRecognitionDenied != nil
+        model.didSend(.startMeeting)
     }
-  }
+}
 ```
 
 ### Exhaustivity
 
-Besides checking your explicit asserts, SwiftModel will verify that nothing else in your model's state was changed and that any probes or events was not asserted. It will also verify that there are no remaining asynchronous work still running.
+By default the tester enforces exhaustivity across four categories — any unasserted effect in any category fails the test when the tester is deallocated at the end of the test function:
 
-To relax this exhaustive testing you can limit what areas to check (`state`, `probes`, `events` and `tasks`):
+- **`.state`** — every state change must be consumed by an `assert` block
+- **`.events`** — every event sent via `node.send()` must be observed with `didSend(_:)`
+- **`.tasks`** — all async tasks must complete or be cancelled before the tester deallocates
+- **`.probes`** — every installed `TestProbe` invocation must be consumed by `wasCalled`
+
+To focus a test on only some categories, assign a subset:
 
 ```swift
-tester.exhaustivity = [.state, .events]
+tester.exhaustivity = [.state, .events]  // ignore tasks and probes
+tester.exhaustivity = .off               // skip all exhaustion checks
 ```
 
-As well as optionally print out any skipped exhaustivity assertions without failing the tests.
+When debugging, you can print skipped assertions without failing the test:
 
 ```swift
 tester.showSkippedAssertions = true

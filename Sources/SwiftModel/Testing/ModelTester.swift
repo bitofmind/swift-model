@@ -4,7 +4,25 @@ import Dependencies
 import IssueReporting
 import CustomDump
 
-/// An model tester is used when testing models
+/// Drives a model through a test, providing exhaustive checking of state, events, tasks, and callbacks.
+///
+/// Create a tester using `andTester()` on an unanchored model. The tester anchors the model,
+/// activates it, and then tracks every side effect it produces:
+///
+/// ```swift
+/// @Test func testIncrement() async {
+///     let (model, tester) = CounterModel().andTester()
+///     model.incrementTapped()
+///     await tester.assert {
+///         model.count == 1
+///     }
+/// }
+/// ```
+///
+/// When the tester is deallocated at the end of the test, it verifies that every state change,
+/// event, async task, and probe invocation has been explicitly asserted — so unexpected side
+/// effects cause an immediate test failure. Use `exhaustivity` to relax individual categories
+/// when needed.
 public final class ModelTester<M: Model> {
     let access: TestAccess<M>
     let fileAndLine: FileAndLine
@@ -19,7 +37,7 @@ public final class ModelTester<M: Model> {
     /// - Parameters:
     ///   - model: An un-anchored model to test.
     ///   - options: Configuration options for the model. Defaults to `[]`.
-    ///   - dependencies: A closure for to overriding dependencies that will be accessed by the model
+    ///   - dependencies: A closure for overriding dependencies that will be accessed by the model
     ///
     ///  - Note: It is often more convenient to use the `andTester()` method on a model.
     public init(_ model: M, options: ModelOption = [], dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
@@ -27,6 +45,7 @@ public final class ModelTester<M: Model> {
         access = TestAccess(model: model, options: options, dependencies: dependencies, fileAndLine: fileAndLine)
     }
 
+    /// The live model being tested. Use this to read state and invoke actions.
     public var model: M {
         access.context.model
     }
@@ -52,7 +71,7 @@ public extension Model {
     ///
     /// - Parameters:
     ///   - options: Configuration options for the model. Defaults to `[]`.
-    ///   - dependencies: A closure for to overriding dependencies that will be accessed by the model
+    ///   - dependencies: A closure for overriding dependencies that will be accessed by the model
     func andTester(options: ModelOption = [], withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
         assertInitialState(function: function)
         let tester = ModelTester(self, options: options, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
@@ -61,10 +80,25 @@ public extension Model {
 }
 
 public extension Model {
+    /// Asserts — inside a `tester.assert { }` block — that this model sent the given typed event.
+    ///
+    /// Use this inside an `assert` block to consume an expected event and verify it was sent:
+    ///
+    /// ```swift
+    /// await tester.assert {
+    ///     model.didSend(.startMeeting)
+    /// }
+    /// ```
+    ///
+    /// > Important: Must be called inside a `ModelTester.assert` builder block. Calling it
+    ///   outside will report an issue and return `false`.
     func didSend(_ event: Event, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Bool {
         didSend(event as Any, filePath: filePath, line: line)
     }
 
+    /// Asserts — inside a `tester.assert { }` block — that this model sent an event matching
+    /// the given value. Use the typed overload (`didSend(_ event: Event)`) when the model has
+    /// an associated `Event` type.
     func didSend(_ event: Any, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Bool {
         guard let assertContext = TesterAssertContextBase.assertContext else {
             reportIssue("Can only call didSend inside a ModelTester assert", filePath: filePath, line: line)

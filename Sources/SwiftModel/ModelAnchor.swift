@@ -20,7 +20,7 @@ public extension Model {
     ///
     /// - Parameters:
     ///   - options: Configuration options for the model. Defaults to `[]`.
-    ///   - dependencies: A closure for to overriding dependencies that will be accessed by the model
+    ///   - dependencies: A closure for overriding dependencies that will be accessed by the model
     func withAnchor(options: ModelOption = [], function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> Self {
         let (model, anchor) = andAnchor(options: options, function: function, andDependencies: dependencies)
        

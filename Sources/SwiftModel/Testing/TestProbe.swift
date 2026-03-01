@@ -2,29 +2,57 @@ import Foundation
 import IssueReporting
 import CustomDump
 
+/// A recorder for callback invocations, used to assert that closures are called with the
+/// expected arguments inside a `ModelTester` test.
+///
+/// Create a probe, pass it (or `probe.call`) as the callback closure, then assert inside
+/// `tester.assert` that it was called with the expected values:
+///
+/// ```swift
+/// @Test func testFactButtonTapped() async {
+///     let onFact = TestProbe()
+///     let (model, tester) = CounterModel(count: 2, onFact: onFact.call).andTester {
+///         $0.factClient.fetch = { "\($0) is a good number." }
+///     }
+///     tester.install(onFact)   // opt into exhaustion checking
+///
+///     model.factButtonTapped()
+///
+///     await tester.assert {
+///         onFact.wasCalled(with: 2, "2 is a good number.")
+///     }
+/// }
+/// ```
+///
+/// `TestProbe` is `@Sendable`-safe and can be passed into model closures without capture-list concerns.
 public final class TestProbe: @unchecked Sendable {
     let name: String?
     private let lock = NSRecursiveLock()
     private var _values: [Any] = []
 
+    /// Creates a probe, optionally named for clearer failure messages.
     public init(_ name: String? = nil) {
         self.name = name
     }
 }
 
 public extension TestProbe {
+    /// Records a call with no arguments.
     @Sendable func call() {
         _call()
     }
 
+    /// Records a call with one argument.
     @Sendable func call<T>(_ value: T) {
         _call(value)
     }
 
+    /// Records a call with two arguments.
     @Sendable func call<T1, T2>(_ value1: T1, _ value2: T2) {
         _call(value1, value2)
     }
 
+    /// Records a call with any number of arguments.
     @Sendable func call<each S>(_ value: repeat each S) {
         _call(repeat each value)
     }
@@ -35,15 +63,25 @@ public extension TestProbe {
         }
     }
 
+    /// Allows the probe to be used directly as a closure (e.g. `onSave: probe`).
+    /// Equivalent to calling `probe.call(value)`.
     @Sendable func callAsFunction<each S>(_ value: repeat each S) {
         lock {
             _values.append((repeat each value))
         }
     }
 
+    /// The number of times the probe has been called.
     var count: Int { values.count }
+
+    /// `true` if the probe has never been called.
     var isEmpty: Bool { values.isEmpty }
 
+    /// Asserts — inside a `tester.assert { }` block — that the probe was called with the
+    /// given arguments. Matching uses `customDump` equality, so you get a readable diff on failure.
+    ///
+    /// > Important: This method must be called inside a `ModelTester.assert` builder block.
+    ///   Calling it outside will report an issue and return `false`.
     func wasCalled<each S>(with value: repeat each S, filePath: StaticString = #filePath, line: UInt = #line) -> Bool {
         guard let context = TesterAssertContextBase.assertContext else {
             reportIssue("Can only call wasCalled inside a ModelTester assert", filePath: filePath, line: line)
