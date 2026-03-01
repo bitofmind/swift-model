@@ -1,3 +1,4 @@
+import Foundation
 import SwiftModel
 import Testing
 import Dependencies

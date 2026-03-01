@@ -87,7 +87,7 @@ struct StandupsListView: View {
       }
     }
     .navigationTitle("Daily Standups")
-    .sheet(unwrapping: $model.destination.add) { $item in
+    .sheet(item: $model.destination.add, id: \.form.standup.id) { item in
       NavigationStack {
         StandupFormView(model: item.form)
           .navigationTitle("New standup")
@@ -103,9 +103,9 @@ struct StandupsListView: View {
           }
       }
     }
-    .alert(title: { _ in
+    .alert(item: $model.destination.dataFailedToLoad) { _ in
       Text("Data failed to load")
-    }, unwrapping: $model.destination.dataFailedToLoad) { confirmLoadMockData in
+    } actions: { confirmLoadMockData in
       Button("Yes", action: confirmLoadMockData)
       Button("No", role: .cancel) { }
     } message: { _ in

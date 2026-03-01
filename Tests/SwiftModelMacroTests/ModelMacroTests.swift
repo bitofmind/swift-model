@@ -5,12 +5,12 @@ import SwiftModelMacros
 import Dependencies
 import MacroTesting
 
-@Suite(.macros(record: .never, macros: [
+@Suite(.macros([
     "Model": ModelMacro.self,
     "ModelTracked": ModelTrackedMacro.self,
     "ModelIgnored": ModelIgnoredMacro.self,
     "ModelDependency": ModelDependencyMacro.self,
-]))
+], record: .never))
 struct ModelMacroTests {
     @Test func testClass() {
         assertMacro {

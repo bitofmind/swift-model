@@ -141,7 +141,7 @@ struct StandupDetailView: View {
         model.editButtonTapped()
       }
     }
-    .sheet(unwrapping: $model.destination.edit) { $edit in
+    .sheet(item: $model.destination.edit, id: \.form.standup.id) { edit in
       NavigationStack {
         StandupFormView(model: edit.form)
           .navigationTitle(model.standup.title)
@@ -157,25 +157,25 @@ struct StandupDetailView: View {
           }
       }
     }
-    .alert(title: { _ in
+    .alert(item: $model.destination.speechRecognitionRestricted) { _ in
       Text("Speech recognition restricted")
-    }, unwrapping: $model.destination.speechRecognitionRestricted) { onContinue in
+    } actions: { onContinue in
       Button("Continue without recording", action: onContinue)
       Button("Cancel", role: .cancel) { }
     } message: { _ in
       Text("Your device does not support speech recognition and so your meeting will not be recorded.")
     }
-    .alert(title: { _ in
+    .alert(item: $model.destination.deleteStandup) { _ in
       Text("Delete?")
-    }, unwrapping: $model.destination.deleteStandup) { onConfirm in
+    } actions: { onConfirm in
       Button("Yes", action: onConfirm)
       Button("Nevermind", role: .cancel) { }
     } message: { _ in
       Text("Are you sure you want to delete this meeting?")
     }
-    .alert(title: { _ in
+    .alert(item: $model.destination.speechRecognitionDenied) { _ in
       Text("Speech recognition denied")
-    }, unwrapping: $model.destination.speechRecognitionDenied) { onContinue, onOpenSettings in
+    } actions: { onContinue, onOpenSettings in
       Button("Continue without recording", action: onContinue)
       Button("Open settings", action: onOpenSettings)
       Button("Cancel", role: .cancel) { }

@@ -5,9 +5,9 @@ import SwiftModelMacros
 import Dependencies
 import MacroTesting
 
-@Suite(.macros(record: .never, macros: [
+@Suite(.macros([
     "ModelContainer": ModelContainerMacro.self,
-]))
+], record: .never))
 struct ModelContainerMacroTests {
     @Test func testStructModelContainer() {
         assertMacro {

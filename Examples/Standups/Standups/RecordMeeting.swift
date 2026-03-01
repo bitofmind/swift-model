@@ -121,9 +121,9 @@ struct RecordMeetingView: View {
     #if os(iOS)
     .navigationBarBackButtonHidden(true)
     #endif
-    .alert(title: { _ in
+    .alert(item: $model.destination.endMeeting) { _ in
       Text("End meeting?")
-    }, unwrapping: $model.destination.endMeeting) { confirmSave, discard in
+    } actions: { confirmSave, discard in
       Button("Save and end", action: confirmSave)
       if let discard {
         Button("Discard", role: .destructive, action: discard)
@@ -132,9 +132,9 @@ struct RecordMeetingView: View {
     } message: { _ in
       Text("You are ending the meeting early. What would you like to do?")
     }
-    .alert(title: { _ in
+    .alert(item: $model.destination.speechRecognizerFailed) { _ in
       Text("Speech recognition failure")
-    }, unwrapping: $model.destination.speechRecognizerFailed) { discard in
+    } actions: { discard in
       Button("Continue meeting", role: .cancel) { }
       Button("Discard meeting", role: .destructive, action: discard)
     } message: { _ in
