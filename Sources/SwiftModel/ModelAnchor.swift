@@ -37,19 +37,21 @@ public extension Model {
     /// Any new models added to the hierarchy will activated, and any models removed
     /// will be deactivated.
     ///
-    ///     struct MyApp: App {
-    ///     AppView(model: )
+    /// Use `andAnchor()` when you need to hold on to the anchor separately:
+    ///
+    ///     let (model, anchor) = AppModel().andAnchor()
+    ///     AppView(model: model)
     ///
     /// Or if you need to override some dependencies:
     ///
-    ///     AppView(model: AppModel().withAnchor {
+    ///     let (model, anchor) = AppModel().andAnchor {
     ///        $0.uuid = .incrementing
     ///        $0.locale = Locale(identifier: "en_US")
-    ///     })
+    ///     }
     ///
     /// - Parameters:
     ///   - options: Configuration options for the model. Defaults to `[]`.
-    ///   - dependencies: A closure for to overriding dependencies that will be accessed by the model
+    ///   - dependencies: A closure for overriding dependencies that will be accessed by the model.
     func andAnchor(options: ModelOption = [], function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
         assertInitialState(function: function)
 

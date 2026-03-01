@@ -2,8 +2,8 @@ import Foundation
 
 public extension ModelNode {
     /// Sends an event.
-    /// - Parameter event: even to send.
-    /// - Parameter receivers: Receivers of the event, default to self and ancestors.
+    /// - Parameter event: event to send.
+    /// - Parameter relation: Relation describing which models receive the event, default to self and ancestors.
     func send(_ event: M.Event, to relation: ModelRelation = [.self, .ancestors]) {
         guard let context = enforcedContext() else { return }
         context.sendEvent(event, to: relation, context: context)
@@ -11,8 +11,8 @@ public extension ModelNode {
     }
 
     /// Sends an event.
-    /// - Parameter event: even to send.
-    /// - Parameter receivers: Receivers of the event, default to self and ancestors.
+    /// - Parameter event: event to send.
+    /// - Parameter relation: Relation describing which models receive the event, default to self and ancestors.
     func send<E>(_ event: E, to relation: ModelRelation = [.self, .ancestors]) {
         guard let context = enforcedContext() else { return }
         context.sendEvent(event, to: relation, context: context)

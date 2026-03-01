@@ -329,21 +329,81 @@ appModel.factPrompt = FactPromptModel(...).withDependencies {
 
 ### Model Dependency
 
-Models can also be shared via dependencies if it conforms to `DependencyKey` where the model will behave as a shared model and participate as it was added to the model hierarchy.
+A `@Model` type can also be used as a dependency by conforming to `DependencyKey`. When accessed via `@ModelDependency` (or `node[Dep.self]`), SwiftModel integrates it into the context hierarchy as a shared model — one instance, shared across all consumers.
 
 ```swift
-@Model struct SharedModel { ... }
+@Model struct AnalyticsService {
+    var isEnabled: Bool = true
 
-extension SharedModel: DependencyKey {
-    static let liveValue = SharedModel()
+    func track(_ event: String) { ... }
 }
 
+extension AnalyticsService: DependencyKey {
+    static let liveValue = AnalyticsService()
+    static let testValue = AnalyticsService()  // used automatically in tests
+}
+
+@Model struct FeatureModel {
+    @ModelDependency var analytics: AnalyticsService
+}
+```
+
+Alternatively — and in practice the most convenient approach — extend `DependencyValues` just like you would for a plain dependency:
+
+```swift
+extension DependencyValues {
+    var analyticsService: AnalyticsService {
+        get { self[AnalyticsService.self] }
+        set { self[AnalyticsService.self] = newValue }
+    }
+}
+```
+
+This lets every model access the dependency directly via `node`, with no `@ModelDependency` property needed:
+
+```swift
+func onActivate() {
+    node.analyticsService.track("app_launched")
+    node.forEach(Observed { node.analyticsService.isEnabled }) { isEnabled in
+        // react to changes
+    }
+}
+```
+
+Overriding works the same way, using either the key path or the subscript form:
+
+```swift
 let model = AppModel().withAnchor {
-    $0[SharedModel.self] = SharedModel()
+    $0.analyticsService = AnalyticsService(isEnabled: false)  // key path
+    // or: $0[AnalyticsService.self] = AnalyticsService(isEnabled: false)
 }
+```
 
-@Model struct ChildModel {
-  @ModelDependency var shared: SharedModel
+**Lifecycle.** The dependency model's `onActivate()` is called when it is first accessed by any model in the hierarchy. It is deactivated when the last host model is removed. Multiple models that access the same dependency type receive the same shared context — `onActivate()` runs once and `onCancel` fires once.
+
+**Observation.** A host model can observe properties of the dependency model via `Observed`, exactly as it would observe any child model's properties:
+
+```swift
+func onActivate() {
+    node.forEach(Observed { analytics.isEnabled }) { isEnabled in
+        // fires whenever analytics.isEnabled changes
+    }
+}
+```
+
+**Events from the dependency.** Events sent by the dependency model with the default `to: [.self, .ancestors]` travel up to the host model's event listeners, because the dependency context has the host as a parent.
+
+**Events to the dependency.** The default `node.send(event)` relation `[.self, .ancestors]` does **not** reach dependency models. To deliver an event to a dependency, you must include both `.children` and `.dependencies` in the relation:
+
+```swift
+node.send(MyEvent.refresh, to: [.self, .children, .dependencies])
+```
+
+**Hierarchy traversal.** `reduceHierarchy` and `mapHierarchy` do not visit dependency models by default. Include `.dependencies` alongside `.descendants` or `.children` to traverse them:
+
+```swift
+let services = node.mapHierarchy(for: [.self, .descendants, .dependencies]) {
+    $0 as? AnalyticsService
 }
 ```
 
