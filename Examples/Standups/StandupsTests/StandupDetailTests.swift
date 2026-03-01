@@ -1,11 +1,11 @@
 import SwiftModel
-import XCTest
+import Testing
 import Dependencies
 
 @testable import Standups
 
-final class StandupDetailTests: XCTestCase {
-  func testSpeechRestricted() async {
+struct StandupDetailTests {
+  @Test func testSpeechRestricted() async {
     let (standupDetail, tester) = StandupDetail(standup: .mock).andTester() {
       $0.speechClient.authorizationStatus = { .restricted }
     }
@@ -14,7 +14,7 @@ final class StandupDetailTests: XCTestCase {
     await tester.assert(standupDetail.destination?.speechRecognitionRestricted != nil)
   }
 
-  func testSpeechDenied() async throws {
+  @Test func testSpeechDenied() async throws {
     let (standupDetail, tester) = StandupDetail(standup: .mock).andTester() {
       $0.speechClient.authorizationStatus = { .denied }
     }
@@ -23,7 +23,7 @@ final class StandupDetailTests: XCTestCase {
     await tester.assert(standupDetail.destination != nil)// == .alert(.speechRecognitionDenied))
   }
 
-  func testOpenSettings() async throws {
+  @Test func testOpenSettings() async throws {
     let settingsOpened = TestProbe()
 
     let (standupDetail, tester) = StandupDetail(standup: .mock).andTester() {
@@ -40,7 +40,7 @@ final class StandupDetailTests: XCTestCase {
     }
   }
 
-  func testContinueWithoutRecording() async throws {
+  @Test func testContinueWithoutRecording() async throws {
     let (standupDetail, tester) = StandupDetail(standup: .mock).andTester() {
       $0.speechClient.authorizationStatus = { .denied }
     }
@@ -54,7 +54,7 @@ final class StandupDetailTests: XCTestCase {
     }
   }
 
-  func testSpeechAuthorized() async throws {
+  @Test func testSpeechAuthorized() async throws {
     let (standupDetail, tester) = StandupDetail(standup: .mock).andTester() {
       $0.speechClient.authorizationStatus = { .authorized }
     }
@@ -63,7 +63,7 @@ final class StandupDetailTests: XCTestCase {
     await tester.assert(standupDetail.didSend(.startMeeting))
   }
 
-  func testEdit() async throws {
+  @Test func testEdit() async throws {
     var standup = Standup.mock
     let (standupDetail, tester) = StandupDetail(standup: standup).andTester() {
       $0.uuid = .incrementing

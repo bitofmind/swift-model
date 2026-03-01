@@ -1,11 +1,11 @@
 import SwiftModel
-import XCTest
+import Testing
 import Dependencies
 
 @testable import Standups
 
-final class RecordMeetingTests: XCTestCase {
-  func testTimer() async throws {
+struct RecordMeetingTests {
+  @Test func testTimer() async throws {
     let clock = TestClock()
     let onSave = TestProbe()
 
@@ -71,7 +71,7 @@ final class RecordMeetingTests: XCTestCase {
     }
   }
 
-  func testRecordTranscript() async throws {
+  @Test func testRecordTranscript() async throws {
     let clock = TestClock()
     let onSave = TestProbe()
 
@@ -112,7 +112,7 @@ final class RecordMeetingTests: XCTestCase {
     await tester.assert(onSave.wasCalled(with: "I completed the project"))
   }
 
-  func testEndMeetingSave() async throws {
+  @Test func testEndMeetingSave() async throws {
     let clock = TestClock()
     let onSave = TestProbe()
 
@@ -135,7 +135,7 @@ final class RecordMeetingTests: XCTestCase {
     await tester.assert(onSave.wasCalled(with: ""))
   }
 
-  func testEndMeetingDiscard() async throws {
+  @Test func testEndMeetingDiscard() async throws {
     let clock = TestClock()
     let onDiscard = TestProbe()
 
@@ -155,7 +155,7 @@ final class RecordMeetingTests: XCTestCase {
     await tester.assert(onDiscard.wasCalled())
   }
 
-  func testNextSpeaker() async throws {
+  @Test func testNextSpeaker() async throws {
     let clock = TestClock()
     let onSave = TestProbe()
 
@@ -196,7 +196,7 @@ final class RecordMeetingTests: XCTestCase {
     await tester.assert(onSave.wasCalled(with: ""))
   }
 
-  func testSpeechRecognitionFailure_Continue() async throws {
+  @Test func testSpeechRecognitionFailure_Continue() async throws {
     let clock = TestClock()
     let onSave = TestProbe()
 
@@ -246,7 +246,7 @@ final class RecordMeetingTests: XCTestCase {
     }
   }
 
-  func testSpeechRecognitionFailure_Discard() async throws {
+  @Test func testSpeechRecognitionFailure_Discard() async throws {
     let clock = TestClock()
     let onDiscard = TestProbe()
 

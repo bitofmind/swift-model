@@ -1,10 +1,10 @@
 import SwiftModel
-import XCTest
+import Testing
 
 @testable import Standups
 
-final class StandupFormTests: XCTestCase {
-  func testAddAttendee() async {
+struct StandupFormTests {
+  @Test func testAddAttendee() async {
     let (standupForm, store) = StandupForm(
       standup: Standup(
         id: Standup.ID(),
@@ -25,7 +25,7 @@ final class StandupFormTests: XCTestCase {
     }
   }
 
-  func testFocus_RemoveAttendee() async {
+  @Test func testFocus_RemoveAttendee() async {
     let (standupForm, store) = StandupForm(
       standup: Standup(
         id: Standup.ID(),

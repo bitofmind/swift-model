@@ -1,23 +1,18 @@
 import SwiftSyntaxMacros
 import SwiftSyntaxMacrosTestSupport
-import XCTest
+import Testing
 import SwiftModelMacros
 import Dependencies
 import MacroTesting
 
-final class ModelMacroTests: XCTestCase {
-    override func invokeTest() {
-        withMacroTesting(record: false, macros: [
-            "Model": ModelMacro.self,
-            "ModelTracked": ModelTrackedMacro.self,
-            "ModelIgnored": ModelIgnoredMacro.self,
-            "ModelDependency": ModelDependencyMacro.self,
-        ]) {
-            super.invokeTest()
-        }
-    }
-
-    func testClass() {
+@Suite(.macros(record: .never, macros: [
+    "Model": ModelMacro.self,
+    "ModelTracked": ModelTrackedMacro.self,
+    "ModelIgnored": ModelIgnoredMacro.self,
+    "ModelDependency": ModelDependencyMacro.self,
+]))
+struct ModelMacroTests {
+    @Test func testClass() {
         assertMacro {
             """
             @Model class MyModel {
@@ -35,7 +30,7 @@ final class ModelMacroTests: XCTestCase {
         }
     }
 
-    func testEnum() {
+    @Test func testEnum() {
         assertMacro {
             """
             @Model enum MyModel {
@@ -53,7 +48,7 @@ final class ModelMacroTests: XCTestCase {
         }
     }
 
-    func testModelMacro() {
+    @Test func testModelMacro() {
         assertMacro {
             """
             @Model struct MyModel {
@@ -129,7 +124,7 @@ final class ModelMacroTests: XCTestCase {
         }
     }
 
-    func testEquatableAndHashableModel() {
+    @Test func testEquatableAndHashableModel() {
         assertMacro {
             """
             @Model struct MyModel: Hashable {
@@ -213,7 +208,7 @@ final class ModelMacroTests: XCTestCase {
         }
     }
 
-    func testModelWillDidSet() {
+    @Test func testModelWillDidSet() {
         assertMacro {
             """
             @Model struct MyModel {
@@ -311,7 +306,7 @@ final class ModelMacroTests: XCTestCase {
         }
     }
 
-    func testModelPrivateSet() {
+    @Test func testModelPrivateSet() {
         assertMacro {
             """
             @Model struct MyModel {
@@ -387,8 +382,8 @@ final class ModelMacroTests: XCTestCase {
         }
     }
 
-    func testModelDependency() {
-        assertMacro(record: false) {
+    @Test func testModelDependency() {
+        assertMacro(record: .never) {
             """
             @Model struct MyModel {
                 @ModelDependency var someModel: SomeModel

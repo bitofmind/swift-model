@@ -1,20 +1,15 @@
 import SwiftSyntaxMacros
 import SwiftSyntaxMacrosTestSupport
-import XCTest
+import Testing
 import SwiftModelMacros
 import Dependencies
 import MacroTesting
 
-final class ModelContainerMacroTests: XCTestCase {
-    override func invokeTest() {
-        withMacroTesting(record: false, macros: [
-            "ModelContainer": ModelContainerMacro.self,
-        ]) {
-            super.invokeTest()
-        }
-    }
-
-    func testStructModelContainer() {
+@Suite(.macros(record: .never, macros: [
+    "ModelContainer": ModelContainerMacro.self,
+]))
+struct ModelContainerMacroTests {
+    @Test func testStructModelContainer() {
         assertMacro {
             """
             @ModelContainer struct Container {
@@ -39,7 +34,7 @@ final class ModelContainerMacroTests: XCTestCase {
         }
     }
 
-    func testEnumModelContainer() {
+    @Test func testEnumModelContainer() {
         assertMacro {
             """
             @ModelContainer enum Container {
@@ -156,7 +151,7 @@ final class ModelContainerMacroTests: XCTestCase {
         }
     }
 
-    func testClassModelContainer() {
+    @Test func testClassModelContainer() {
         assertMacro {
             """
             @ModelContainer class Container {
@@ -173,5 +168,4 @@ final class ModelContainerMacroTests: XCTestCase {
             """
         }
     }
-
 }

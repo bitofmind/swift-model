@@ -1,11 +1,11 @@
 import SwiftModel
-import XCTest
+import Testing
 import Dependencies
 
 @testable import Standups
 
-final class AppFeatureTests: XCTestCase {
-  func testDelete() async throws {
+struct AppFeatureTests {
+  @Test func testDelete() async throws {
     let standup = Standup.mock
 
     let (appFeature, tester) = AppFeature(path: []).andTester {
@@ -30,7 +30,7 @@ final class AppFeatureTests: XCTestCase {
     }
   }
 
-  func testDetailEdit() async throws {
+  @Test func testDetailEdit() async throws {
     var standup = Standup.mock
     let saveStandup = TestProbe()
 
@@ -70,7 +70,7 @@ final class AppFeatureTests: XCTestCase {
     await tester.assert(saveStandup.wasCalled(with: [savedStandup]))
   }
 
-  func testRecording() async throws {
+  @Test func testRecording() async throws {
     let speechResult = SpeechRecognitionResult(
       bestTranscription: Transcription(formattedString: "I completed the project"),
       isFinal: true

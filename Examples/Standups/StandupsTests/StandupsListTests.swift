@@ -1,11 +1,11 @@
 import SwiftModel
-import XCTest
+import Testing
 import Dependencies
 
 @testable import Standups
 
-final class StandupsListTests: XCTestCase {
-  func testAdd() async throws {
+struct StandupsListTests {
+  @Test func testAdd() async throws {
     let (standupList, tester) = StandupsList().andTester() {
       $0.continuousClock = ImmediateClock()
       $0.dataManager = .mock()
@@ -33,7 +33,7 @@ final class StandupsListTests: XCTestCase {
     }
   }
 
-  func testAdd_ValidatedAttendees() async throws {
+  @Test func testAdd_ValidatedAttendees() async throws {
     let uuid = UUIDGenerator.incrementing
     let (standupList, tester) = StandupsList().withActivation {
       $0.destination = $0.addDestination(
@@ -69,7 +69,7 @@ final class StandupsListTests: XCTestCase {
     }
   }
 
-  func testLoadingDataDecodingFailed() async throws {
+  @Test func testLoadingDataDecodingFailed() async throws {
     let (standupList, tester) = StandupsList().andTester {
       $0.continuousClock = ImmediateClock()
       $0.dataManager = .mock(
@@ -89,7 +89,7 @@ final class StandupsListTests: XCTestCase {
     }
   }
 
-  func testLoadingDataFileNotFound() async throws {
+  @Test func testLoadingDataFileNotFound() async throws {
     let (standupList, tester) = StandupsList().andTester {
       $0.continuousClock = ImmediateClock()
       $0.dataManager.load = { _ in
