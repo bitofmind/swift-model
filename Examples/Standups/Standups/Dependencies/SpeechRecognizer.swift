@@ -144,6 +144,7 @@ private actor Speech {
   ) -> AsyncThrowingStream<SpeechRecognitionResult, Error> {
     AsyncThrowingStream { continuation in
       self.recognitionContinuation = continuation
+      #if os(iOS)
       let audioSession = AVAudioSession.sharedInstance()
       do {
         try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
@@ -152,6 +153,7 @@ private actor Speech {
         continuation.finish(throwing: error)
         return
       }
+      #endif
 
       self.audioEngine = AVAudioEngine()
       let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))!

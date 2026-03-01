@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Workspace
+   version = "1.0">
+   <FileRef
+      location = "container:">
+   </FileRef>
+   <Group
+      location = "container:Examples"
+      name = "Examples">
+      <FileRef
+         location = "container:Examples/CounterFact/CounterFact.xcodeproj">
+      </FileRef>
+      <FileRef
+         location = "container:Examples/SharedState/SharedState.xcodeproj">
+      </FileRef>
+      <FileRef
+         location = "container:Examples/SignUpFlow/SignUpFlow.xcodeproj">
+      </FileRef>
+      <FileRef
+         location = "container:Examples/SignUpFlowUsingDependency/SignUpFlowUsingDependency.xcodeproj">
+      </FileRef>
+      <FileRef
+         location = "container:Examples/Standups/Standups.xcodeproj">
+      </FileRef>
+   </Group>
+</Workspace>

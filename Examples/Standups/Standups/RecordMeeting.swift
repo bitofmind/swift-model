@@ -108,7 +108,9 @@ struct RecordMeetingView: View {
     }
     .padding()
     .foregroundColor(model.standup.theme.accentColor)
+    #if os(iOS)
     .navigationBarTitleDisplayMode(.inline)
+    #endif
     .toolbar {
       ToolbarItem(placement: .cancellationAction) {
         Button("End meeting") {
@@ -116,7 +118,9 @@ struct RecordMeetingView: View {
         }
       }
     }
+    #if os(iOS)
     .navigationBarBackButtonHidden(true)
+    #endif
     .alert(title: { _ in
       Text("End meeting?")
     }, unwrapping: $model.destination.endMeeting) { confirmSave, discard in

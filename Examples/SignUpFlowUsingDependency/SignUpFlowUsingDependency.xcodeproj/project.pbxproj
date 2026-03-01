@@ -21,15 +21,15 @@
 			containerPortal = F6FB1FD22778D5D9005BB6B6 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = F6E72B5F2781F53E00A8FC45;
-			remoteInfo = CounterFact;
+			remoteInfo = SignUpFlowUsingDependency;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		F61EBCD12786139400F098A8 /* SignUpFlowTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SignUpFlowTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F61EBCD12786139400F098A8 /* SignUpFlowUsingDependencyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SignUpFlowUsingDependencyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F61EBCD32786139400F098A8 /* SharedStateTests.swift */ = {isa = PBXFileReference; indentWidth = 2; lastKnownFileType = sourcecode.swift; path = SharedStateTests.swift; sourceTree = "<group>"; tabWidth = 2; };
 		F6D9D2242AF26C0C00EBFB91 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = SOURCE_ROOT; };
-		F6E72B602781F53E00A8FC45 /* SignUpFlow.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SignUpFlow.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F6E72B602781F53E00A8FC45 /* SignUpFlowUsingDependency.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SignUpFlowUsingDependency.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F6E72B622781F53E00A8FC45 /* SignUpFlowApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignUpFlowApp.swift; sourceTree = "<group>"; };
 		F6E72B642781F53E00A8FC45 /* SignUpFlow.swift */ = {isa = PBXFileReference; indentWidth = 2; lastKnownFileType = sourcecode.swift; path = SignUpFlow.swift; sourceTree = "<group>"; tabWidth = 2; };
 		F6F3F1712B4847FD003A9305 /* swift-model */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = "swift-model"; path = ../..; sourceTree = "<group>"; };
@@ -97,8 +97,8 @@
 		F6FB1FDF2778D5DD005BB6B6 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				F6E72B602781F53E00A8FC45 /* SignUpFlow.app */,
-				F61EBCD12786139400F098A8 /* SignUpFlowTests.xctest */,
+				F6E72B602781F53E00A8FC45 /* SignUpFlowUsingDependency.app */,
+				F61EBCD12786139400F098A8 /* SignUpFlowUsingDependencyTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -106,9 +106,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		F61EBCD02786139400F098A8 /* SignUpFlowTests */ = {
+		F61EBCD02786139400F098A8 /* SignUpFlowUsingDependencyTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = F61EBCD92786139400F098A8 /* Build configuration list for PBXNativeTarget "SignUpFlowTests" */;
+			buildConfigurationList = F61EBCD92786139400F098A8 /* Build configuration list for PBXNativeTarget "SignUpFlowUsingDependencyTests" */;
 			buildPhases = (
 				F61EBCCD2786139400F098A8 /* Sources */,
 				F61EBCCE2786139400F098A8 /* Frameworks */,
@@ -119,14 +119,14 @@
 			dependencies = (
 				F61EBCDB278615AE00F098A8 /* PBXTargetDependency */,
 			);
-			name = SignUpFlowTests;
-			productName = CounterFactTests;
-			productReference = F61EBCD12786139400F098A8 /* SignUpFlowTests.xctest */;
+			name = SignUpFlowUsingDependencyTests;
+			productName = SignUpFlowUsingDependencyTests;
+			productReference = F61EBCD12786139400F098A8 /* SignUpFlowUsingDependencyTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		F6E72B5F2781F53E00A8FC45 /* SignUpFlow */ = {
+		F6E72B5F2781F53E00A8FC45 /* SignUpFlowUsingDependency */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = F6E72B6D2781F54100A8FC45 /* Build configuration list for PBXNativeTarget "SignUpFlow" */;
+			buildConfigurationList = F6E72B6D2781F54100A8FC45 /* Build configuration list for PBXNativeTarget "SignUpFlowUsingDependency" */;
 			buildPhases = (
 				F6E72B5C2781F53E00A8FC45 /* Sources */,
 				F6E72B5D2781F53E00A8FC45 /* Frameworks */,
@@ -136,14 +136,14 @@
 			);
 			dependencies = (
 			);
-			name = SignUpFlow;
+			name = SignUpFlowUsingDependency;
 			packageProductDependencies = (
 				F60DAA1D299FC9DC00589B17 /* Dependencies */,
 				F6F3F1722B48483B003A9305 /* SwiftModel */,
 				F6155FE12BAC3C38007039DA /* SwiftUINavigation */,
 			);
-			productName = CounterFact;
-			productReference = F6E72B602781F53E00A8FC45 /* SignUpFlow.app */;
+			productName = SignUpFlowUsingDependency;
+			productReference = F6E72B602781F53E00A8FC45 /* SignUpFlowUsingDependency.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -165,7 +165,7 @@
 					};
 				};
 			};
-			buildConfigurationList = F6FB1FD52778D5D9005BB6B6 /* Build configuration list for PBXProject "SignUpFlow" */;
+			buildConfigurationList = F6FB1FD52778D5D9005BB6B6 /* Build configuration list for PBXProject "SignUpFlowUsingDependency" */;
 			compatibilityVersion = "Xcode 13.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -182,8 +182,8 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				F6E72B5F2781F53E00A8FC45 /* SignUpFlow */,
-				F61EBCD02786139400F098A8 /* SignUpFlowTests */,
+				F6E72B5F2781F53E00A8FC45 /* SignUpFlowUsingDependency */,
+				F61EBCD02786139400F098A8 /* SignUpFlowUsingDependencyTests */,
 			);
 		};
 /* End PBXProject section */
@@ -228,7 +228,7 @@
 /* Begin PBXTargetDependency section */
 		F61EBCDB278615AE00F098A8 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = F6E72B5F2781F53E00A8FC45 /* SignUpFlow */;
+			target = F6E72B5F2781F53E00A8FC45 /* SignUpFlowUsingDependency */;
 			targetProxy = F61EBCDA278615AE00F098A8 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -238,20 +238,30 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.5;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = swift.onestate.CounterFactTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				REGISTER_APP_GROUPS = YES;
 				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "appletvos appletvsimulator iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SignUpFlow.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SignUpFlow";
+				TARGETED_DEVICE_FAMILY = "1,2,3";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SignUpFlowUsingDependency.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SignUpFlowUsingDependency";
 			};
 			name = Debug;
 		};
@@ -259,20 +269,30 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGN_IDENTITY = "";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.5;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = swift.onestate.CounterFactTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				REGISTER_APP_GROUPS = YES;
 				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "appletvos appletvsimulator iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = NO;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SignUpFlow.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SignUpFlow";
+				TARGETED_DEVICE_FAMILY = "1,2,3";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SignUpFlowUsingDependency.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SignUpFlowUsingDependency";
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
@@ -282,7 +302,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_IDENTITY = "";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
@@ -319,7 +339,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_IDENTITY = "";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
@@ -478,7 +498,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		F61EBCD92786139400F098A8 /* Build configuration list for PBXNativeTarget "SignUpFlowTests" */ = {
+		F61EBCD92786139400F098A8 /* Build configuration list for PBXNativeTarget "SignUpFlowUsingDependencyTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				F61EBCD72786139400F098A8 /* Debug */,
@@ -487,7 +507,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		F6E72B6D2781F54100A8FC45 /* Build configuration list for PBXNativeTarget "SignUpFlow" */ = {
+		F6E72B6D2781F54100A8FC45 /* Build configuration list for PBXNativeTarget "SignUpFlowUsingDependency" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				F6E72B6B2781F54100A8FC45 /* Debug */,
@@ -496,7 +516,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		F6FB1FD52778D5D9005BB6B6 /* Build configuration list for PBXProject "SignUpFlow" */ = {
+		F6FB1FD52778D5D9005BB6B6 /* Build configuration list for PBXProject "SignUpFlowUsingDependency" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				F6FB1FED2778D5DD005BB6B6 /* Debug */,

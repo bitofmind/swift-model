@@ -1,5 +1,7 @@
 import Dependencies
+#if canImport(UIKit)
 import UIKit
+#endif
 
 extension DependencyValues {
   var openSettings: @Sendable () async -> Void {
@@ -11,9 +13,11 @@ extension DependencyValues {
     typealias Value = @Sendable () async -> Void
 
     static let liveValue: @Sendable () async -> Void = {
+      #if canImport(UIKit)
       await MainActor.run {
         UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!)
       }
+      #endif
     }
   }
 }

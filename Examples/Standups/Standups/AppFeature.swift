@@ -40,7 +40,7 @@ import ConcurrencyExtras
       }
     }
 
-    let standupUpdates = Observe(initial: false) { standupsList.standupDetails.map(\.standup) }
+    let standupUpdates = Observed(initial: false) { standupsList.standupDetails.map(\.standup) }
       .debounce(for: .seconds(1), clock: AnyClock(node.continuousClock))
 
     node.forEach(standupUpdates) { standups in

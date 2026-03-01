@@ -1,19 +1,19 @@
 import SwiftModel
 import Testing
 import SwiftUINavigation
-@testable import SignUpFlow
+@testable import SignUpFlowUsingDependency
 
 struct SharedStateTests {
   @Test func testSignUpFlow() async {
-    let (model, tester) = SignUpFeature(
-      path: [
-        .basics(BasicsFeature()),
-        .personalInfo(PersonalInfoFeature()),
-        .topics(TopicsFeature())
-      ]
-    ).andTester {
+    let (model, tester) = SignUpFeature().andTester {
       $0[SignUpData.self] = SignUpData()
     }
+
+    model.path = [
+      .basics(BasicsFeature()),
+      .personalInfo(PersonalInfoFeature()),
+      .topics(TopicsFeature())
+    ]
 
     model.path[2].topics?.nextButtonTapped()
 
@@ -23,10 +23,10 @@ struct SharedStateTests {
       }
     }
 
-    model.signUpData.topics = [.testing]
+    model.path[2].topics?.signUpData.topics = [.testing]
 
     await tester.assert {
-      model.signUpData.topics == [.testing]
+      model.path[2].topics?.signUpData.topics == [.testing]
     }
 
     model.path[2].topics?.nextButtonTapped()
@@ -43,9 +43,10 @@ struct SharedStateTests {
       model.path[3].summary?.destination.is(\.personalInfo) == true
     }
 
-    model.signUpData.firstName = "Blob"
+    model.path[3].summary?.signUpData.firstName = "Blob"
+
     await tester.assert {
-      model.signUpData.firstName == "Blob"
+      model.path[3].summary?.signUpData.firstName == "Blob"
     }
 
     model.path[3].summary?.destination = nil
