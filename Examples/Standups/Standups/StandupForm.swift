@@ -104,10 +104,8 @@ extension Duration {
   }
 }
 
-struct EditStandup_Previews: PreviewProvider {
-  static var previews: some View {
-    NavigationStack {
-      StandupFormView(model: StandupForm(standup: .mock).withAnchor())
-    }
+#Preview {
+  NavigationStack {
+    StandupFormView(model: StandupForm(standup: .mock).withAnchor())
   }
 }

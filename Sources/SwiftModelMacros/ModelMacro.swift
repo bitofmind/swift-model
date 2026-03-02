@@ -72,10 +72,11 @@ extension ModelMacro: ExtensionMacro {
             if !isConforming(to: "CustomStringConvertible") {
                 extensions.append(
                 """
-                extension \(raw: type.trimmedDescription): \(raw: "CustomStringConvertible") {
+                extension \(raw: type.trimmedDescription): \(raw: "CustomStringConvertible"), \(raw: "CustomDebugStringConvertible") {
                     public var description: String {
                         _$modelContext.description(of: self)
                     }
+                    public var debugDescription: String { description }
                 }
                 """)
             }

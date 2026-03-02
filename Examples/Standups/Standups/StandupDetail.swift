@@ -191,10 +191,8 @@ struct StandupDetailView: View {
   }
 }
 
-struct StandupDetail_Previews: PreviewProvider {
-  static var previews: some View {
-    NavigationStack {
-      StandupDetailView(model: StandupDetail(standup: .mock).withAnchor())
-    }
+#Preview {
+  NavigationStack {
+    StandupDetailView(model: StandupDetail(standup: .mock).withAnchor())
   }
 }

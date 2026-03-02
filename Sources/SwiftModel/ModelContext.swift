@@ -50,13 +50,20 @@ public extension ModelContext {
     func mirror(of model: M, children: [(String, Any)]) -> Mirror {
         if threadLocals.includeInMirror, !children.map(\.0).contains("id") {
             return Mirror(model, children: [("id", modelID)] + children, displayStyle: .struct)
-        } else {
+        } else if threadLocals.includeInMirror || threadLocals.includeChildrenInMirror {
             return Mirror(model, children: children, displayStyle: .struct)
+        } else {
+            // Return an empty mirror so LLDB doesn't expand properties below debugDescription
+            return Mirror(model, children: [], displayStyle: .struct)
         }
     }
 
     func description(of model: M) -> String {
-        String(customDumping: model)
+        // Set includeChildrenInMirror so customDumping gets the full children via customMirror,
+        // without prepending the id (which is only needed for test diffing).
+        threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+            String(customDumping: model)
+        }
     }
 }
 

@@ -296,10 +296,8 @@ struct MeetingFooterView: View {
   }
 }
 
-struct RecordMeeting_Previews: PreviewProvider {
-  static var previews: some View {
-    NavigationStack {
-      RecordMeetingView(model: RecordMeeting(standup: .mock, onSave: { _ in }, onDiscard: {}).withAnchor())
-    }
+#Preview {
+  NavigationStack {
+    RecordMeetingView(model: RecordMeeting(standup: .mock, onSave: { _ in }, onDiscard: {}).withAnchor())
   }
 }

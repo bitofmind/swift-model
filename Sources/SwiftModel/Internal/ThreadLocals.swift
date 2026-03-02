@@ -5,6 +5,7 @@ final class ThreadLocals: @unchecked Sendable {
     var forceDirectAccess = false
     var didReplaceModelWithDestructedOrFrozenCopy: () -> Void = {}
     var includeInMirror = false
+    var includeChildrenInMirror = false
 
     fileprivate init() {}
 

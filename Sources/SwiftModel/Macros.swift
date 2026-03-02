@@ -1,7 +1,7 @@
 import Dependencies
 import Observation
 
-@attached(extension, conformances: Model, Sendable, Identifiable, CustomReflectable, Observable, CustomStringConvertible, names: named(customMirror), named(description))
+@attached(extension, conformances: Model, Sendable, Identifiable, CustomReflectable, Observable, CustomStringConvertible, CustomDebugStringConvertible, names: named(customMirror), named(description), named(debugDescription))
 @attached(member, names: named(_$modelContext), named(node), named(_node), named(isEqual), named(visit), named(==))
 @attached(memberAttribute)
 public macro Model() = #externalMacro(module: "SwiftModelMacros", type: "ModelMacro")

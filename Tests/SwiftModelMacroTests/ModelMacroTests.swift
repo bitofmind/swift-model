@@ -115,9 +115,12 @@ struct ModelMacroTests {
             extension MyModel: Observation.Observable {
             }
 
-            extension MyModel: CustomStringConvertible {
+            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     _$modelContext.description(of: self)
+                }
+                public var debugDescription: String {
+                    description
                 }
             }
             """#
@@ -199,9 +202,12 @@ struct ModelMacroTests {
             extension MyModel: Observation.Observable {
             }
 
-            extension MyModel: CustomStringConvertible {
+            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     _$modelContext.description(of: self)
+                }
+                public var debugDescription: String {
+                    description
                 }
             }
             """#
@@ -297,9 +303,12 @@ struct ModelMacroTests {
             extension MyModel: Observation.Observable {
             }
 
-            extension MyModel: CustomStringConvertible {
+            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     _$modelContext.description(of: self)
+                }
+                public var debugDescription: String {
+                    description
                 }
             }
             """#
@@ -373,9 +382,12 @@ struct ModelMacroTests {
             extension MyModel: Observation.Observable {
             }
 
-            extension MyModel: CustomStringConvertible {
+            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     _$modelContext.description(of: self)
+                }
+                public var debugDescription: String {
+                    description
                 }
             }
             """#
@@ -442,9 +454,12 @@ struct ModelMacroTests {
             extension MyModel: Observation.Observable {
             }
 
-            extension MyModel: CustomStringConvertible {
+            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     _$modelContext.description(of: self)
+                }
+                public var debugDescription: String {
+                    description
                 }
             }
             """

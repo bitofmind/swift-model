@@ -153,21 +153,20 @@ extension LabelStyle where Self == TrailingIconLabelStyle {
   static var trailingIcon: Self { Self() }
 }
 
-struct StandupsList_Previews: PreviewProvider {
-  static var previews: some View {
-    StandupsListView(model: StandupsList().withAnchor {
-      $0.dataManager.load = { _ in
-        try JSONEncoder().encode([
-          Standup.mock,
-          .designMock,
-          .engineeringMock,
-        ])
-      }
-    })
+#Preview("Default") {
+  StandupsListView(model: StandupsList().withAnchor {
+    $0.dataManager.load = { _ in
+      try JSONEncoder().encode([
+        Standup.mock,
+        .designMock,
+        .engineeringMock,
+      ])
+    }
+  })
+}
 
-    StandupsListView(model: StandupsList().withAnchor {
-      $0.dataManager = .mock(initialData: Data("!@#$% bad data ^&*()".utf8))
-    })
-    .previewDisplayName("Load data failure")
-  }
+#Preview("Load data failure") {
+  StandupsListView(model: StandupsList().withAnchor {
+    $0.dataManager = .mock(initialData: Data("!@#$% bad data ^&*()".utf8))
+  })
 }
