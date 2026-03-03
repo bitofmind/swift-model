@@ -7,6 +7,7 @@ SwiftModel is a library for composing models that drives SwiftUI views. It comes
 - [SwiftUI Integration](#swiftui-integration)
 - [Dependencies](#dependencies)
 - [Lifetime and Asynchronous Work](#lifetime-and-asynchronous-work)
+- [State Capture and Restore](#state-capture-and-restore)
 - [Events](#events)
 - [Testing](#testing)
 
@@ -696,6 +697,101 @@ func onActivate() {
 ```
 
 > `observeAnyModification()` is on `Model` directly (not `node`), so you call it as `observeAnyModification()` from within a model, or `childModel.observeAnyModification()` from a parent model.
+
+### State Capture and Restore
+
+SwiftModel can snapshot a model tree's entire value state at a point in time and restore it later. This is the foundation for implementing undo/redo, time-travel debugging, or any other feature that needs to rewind state.
+
+```swift
+// Capture the current state
+let snapshot = node.captureState()
+
+// Restore it later — applied as a single transaction
+node.restoreState(snapshot)
+```
+
+`ModelStateSnapshot` is a value type that captures all tracked `var` properties in the model and its descendants. `let` properties and dependencies are excluded. The restore is applied atomically: all observers fire exactly once after it completes.
+
+#### Undo/Redo with onChange
+
+`node.onChange` registers a callback that fires after each modification to the model tree, **but not** during a `restoreState`. This makes it the ideal hook for building an undo stack: you receive a `ModelChangeProxy` from which you can obtain a snapshot of the state that just changed.
+
+```swift
+node.onChange { proxy in
+    undoStack.append(proxy.snapshot)  // snapshot is taken lazily on first access
+    redoStack.removeAll()
+}
+```
+
+The snapshot on `proxy` is taken lazily (on first access) by default, or eagerly (inside the transaction) if you pass `.eager`:
+
+```swift
+node.onChange(capture: .eager) { proxy in
+    // proxy.snapshot reflects exactly the state that triggered the callback,
+    // with no race window from concurrent mutations.
+    undoStack.append(proxy.snapshot)
+}
+```
+
+#### Full undo/redo example
+
+The recommended pattern stores the undo/redo stacks in a heap-allocated `let` constant so they are excluded from snapshots and don't trigger `onChange` themselves. `canUndo`/`canRedo` are computed properties (not stored state), so they never pollute the undo stack.
+
+```swift
+@Model struct NoteEditorModel {
+    var title: String = "Untitled"
+    var body: String = ""
+
+    var canUndo: Bool { history.canUndo }
+    var canRedo: Bool { history.canRedo }
+
+    /// `let` constant — excluded from state snapshots automatically.
+    let history: UndoHistory<NoteEditorModel>
+
+    init(title: String = "Untitled", body: String = "") {
+        _title = title
+        _body = body
+        history = UndoHistory()
+    }
+
+    func onActivate() {
+        history.previousSnapshot = node.captureState()
+
+        node.onChange { [history] proxy in
+            history.undoStack.append(history.previousSnapshot)
+            history.redoStack.removeAll()
+            history.previousSnapshot = proxy.snapshot
+        }
+    }
+
+    func undo() {
+        guard let snapshot = history.undoStack.popLast() else { return }
+        history.redoStack.append(node.captureState())
+        node.restoreState(snapshot)
+    }
+
+    func redo() {
+        guard let snapshot = history.redoStack.popLast() else { return }
+        history.undoStack.append(node.captureState())
+        node.restoreState(snapshot)
+    }
+}
+
+final class UndoHistory<M: Model>: @unchecked Sendable {
+    var undoStack: [ModelStateSnapshot<M>] = []
+    var redoStack: [ModelStateSnapshot<M>] = []
+    var previousSnapshot: ModelStateSnapshot<M>!
+
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+}
+```
+
+Key design points:
+- `let history` uses the backing-store prefix (`_title`, `_body`) in the custom `init` because `@Model` wraps `var` properties. The `let` property uses its plain name.
+- `let` constants are excluded from snapshots automatically — no `@ModelIgnored` needed.
+- `onChange` is suppressed during `restoreState`, so undo/redo never pushes onto the undo stack.
+- A full working example is available in [Examples/NoteEditor](./Examples/NoteEditor).
 
 ### Shared Models and Unique Ownership
 

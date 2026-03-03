@@ -22,5 +22,8 @@
       <FileRef
          location = "container:Examples/Standups/Standups.xcodeproj">
       </FileRef>
+      <FileRef
+         location = "container:Examples/NoteEditor/NoteEditor.xcodeproj">
+      </FileRef>
    </Group>
 </Workspace>

@@ -75,7 +75,8 @@ public extension Model where Self: Sendable {
     ///
     /// - **Dirty tracking**: detect unsaved changes to show a "modified" indicator
     /// - **Debounced autosave**: debounce rapid changes before persisting to disk
-    /// - **Undo/redo stacks**: capture a snapshot before each logical change
+    /// - **Undo/redo stacks**: use ``ModelNode/onChange(capture:perform:)`` which skips
+    ///   restore notifications automatically and provides lazy snapshot capture
     ///
     /// ```swift
     /// func onActivate() {
