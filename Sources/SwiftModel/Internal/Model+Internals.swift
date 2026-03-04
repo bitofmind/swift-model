@@ -191,19 +191,25 @@ struct MainCalls {
             if $0 == nil {
                 $0 = (Task(priority: .userInitiated) { @MainActor in
                     while !Task.isCancelled {
-                        let call: (@Sendable () -> Void)? = calls.withValue {
+                        // Drain all queued callbacks at once before yielding.
+                        // This ensures that callbacks added while a previous batch was
+                        // executing are not delayed by an extra Task.yield() round-trip.
+                        let batch: [@Sendable () -> Void] = calls.withValue {
                             if $0 == nil {
-                                return nil
+                                return []
                             } else if $0!.calls.isEmpty {
                                 $0!.task.cancel()
                                 $0 = nil
-                                return nil
+                                return []
                             }
-
-                            return $0!.calls.removeFirst()
+                            let batch = $0!.calls
+                            $0!.calls.removeAll()
+                            return batch
                         }
 
-                        if let call {
+                        guard !batch.isEmpty else { break }
+
+                        for call in batch {
                             call()
                         }
 
@@ -231,25 +237,31 @@ let mainCall = MainCalls()
 // This is purely a Task management optimization.
 struct BackgroundCalls {
     private let calls = LockIsolated<(task: Task<(), Never>, calls: [@Sendable () -> Void])?>(nil)
-    
+
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
         calls.withValue {
             if $0 == nil {
                 $0 = (Task.detached(priority: .userInitiated) {
                     while !Task.isCancelled {
-                        let call: (@Sendable () -> Void)? = calls.withValue {
+                        // Drain all queued callbacks at once before yielding.
+                        // This ensures that callbacks added while a previous batch was
+                        // executing are not delayed by an extra Task.yield() round-trip.
+                        let batch: [@Sendable () -> Void] = calls.withValue {
                             if $0 == nil {
-                                return nil
+                                return []
                             } else if $0!.calls.isEmpty {
                                 $0!.task.cancel()
                                 $0 = nil
-                                return nil
+                                return []
                             }
-
-                            return $0!.calls.removeFirst()
+                            let batch = $0!.calls
+                            $0!.calls.removeAll()
+                            return batch
                         }
 
-                        if let call {
+                        guard !batch.isEmpty else { break }
+
+                        for call in batch {
                             call()
                         }
 
