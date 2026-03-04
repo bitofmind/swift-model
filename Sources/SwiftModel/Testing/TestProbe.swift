@@ -96,8 +96,8 @@ public extension TestProbe {
 
 extension TestProbe {
     func index(of value: Any) -> Int? {
-       values.firstIndex {
-           diff($0, value) == nil
+       values.firstIndex { element in
+           threadLocals.withValue(true, at: \.includeChildrenInMirror) { diff(element, value) == nil }
        }
     }
 

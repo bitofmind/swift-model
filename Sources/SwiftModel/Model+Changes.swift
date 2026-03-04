@@ -132,7 +132,9 @@ public extension Model where Self: Sendable {
             let current = context.model
             defer { previous.setValue(current.frozenCopy) }
 
-            var difference: String? = diff(previous.value, current)
+            var difference: String? = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+                diff(previous.value, current)
+            }
 
             if difference == nil {
                 difference = threadLocals.withValue(true, at: \.includeInMirror) {

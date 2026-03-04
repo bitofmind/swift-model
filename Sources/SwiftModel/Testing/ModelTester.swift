@@ -218,6 +218,11 @@ public extension AssertBuilder {
         [Predicate(predicate: predicate, fileAndLine: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))]
     }
 
+    @_disfavoredOverload
+    static func buildExpression(_ predicate: @autoclosure @escaping () -> Bool?, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Result {
+        [Predicate(predicate: { predicate() == true }, fileAndLine: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))]
+    }
+
     static func buildExpression(_ predicate: TestPredicate, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Result {
         [Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))]
     }
@@ -236,6 +241,10 @@ public struct TestPredicate {
 
 public func == <T: Equatable>(lhs: @escaping @autoclosure () -> T, rhs: @escaping @autoclosure () -> T) -> TestPredicate {
     TestPredicate(predicate: { lhs() == rhs() }, values: { (lhs(), rhs()) })
+}
+
+public func == <T: Equatable>(lhs: @escaping @autoclosure () -> T?, rhs: @escaping @autoclosure () -> T) -> TestPredicate {
+    TestPredicate(predicate: { lhs() == rhs() }, values: { (lhs() as Any, rhs() as Any) })
 }
 
 public extension ModelTester {

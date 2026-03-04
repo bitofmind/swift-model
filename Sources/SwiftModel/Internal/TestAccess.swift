@@ -207,7 +207,10 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                                 }
 
                                 let title = "Failed to assert: \(propertyNames)"
-                                if let message = diffMessage(expected: rhs, actual: lhs, title: "Failed to assert: \(propertyNames)") {
+                                let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+                                    diffMessage(expected: rhs, actual: lhs, title: title)
+                                }
+                                if let message {
                                     fail(message, at: failure.predicate.fileAndLine)
                                 } else {
                                     fail(title, at: failure.predicate.fileAndLine)
@@ -247,7 +250,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
                                         No available probe values
                                         """, at: fileAndLine)
-                                } else if probe.count == 1, let message = diffMessage(expected: value, actual: probe.values[0], title: "Probe does not match") {
+                                } else if probe.count == 1, let message = threadLocals.withValue(true, at: \.includeChildrenInMirror, perform: { diffMessage(expected: value, actual: probe.values[0], title: "Probe does not match") }) {
                                     fail(message, at: fileAndLine)
                                 } else {
                                     fail(
@@ -396,7 +399,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             let index = events.indices.firstIndex { i in
                 !eventsSent.contains(i) &&
                 events[i].context === context &&
-                (isEqual(events[i].event, event) ?? (diff(events[i].event, event) == nil))
+                (isEqual(events[i].event, event) ?? threadLocals.withValue(true, at: \.includeChildrenInMirror) { diff(events[i].event, event) == nil })
             }
 
             guard let index else {
