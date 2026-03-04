@@ -849,11 +849,23 @@ internal func update<T: Sendable>(
                 let performUpdate: @Sendable () -> Void = {
                     let (value, index) = last.withValue { last in
                         last.index = last.index &+ 1
+
+                        // Clear hasPendingUpdate BEFORE observe() re-registers tracking.
+                        // Holding last's lock here ensures only one performUpdate runs at
+                        // a time, so clearing here is safe. Any mutation that fires onChange
+                        // during observe() will see hasPendingUpdate=false and schedule a new
+                        // performUpdate, which will block on last's lock until we finish.
+                        // Without this, the following race loses updates:
+                        //   1. observe() re-registers tracking
+                        //   2. Mutation fires the newly registered onChange
+                        //   3. onChange sees hasPendingUpdate=true (stale) → skips scheduling
+                        //   4. This performUpdate clears hasPendingUpdate → no new performUpdate
+                        //   5. Observer never gets the update
+                        hasPendingUpdate.setValue(false)
+
                         return (observe(), last.index)
                     }
-                    
-                    hasPendingUpdate.setValue(false)
-                    
+
                     // update() compares value to last.value using isSame, which catches
                     // any changes that happened during the gap between observations
                     update(with: value, index: index)
@@ -864,13 +876,11 @@ internal func update<T: Sendable>(
                     // Inside transaction: defer callback until transaction completes
                     // This matches AccessCollector behavior and prevents 100x callback spam
                     threadLocals.postTransactions!.append { callbacks in
-                        // Always use backgroundCall to avoid synchronous recursion with withObservationTracking
                         backgroundCall(performUpdate)
                     }
                 } else {
-                    // Outside transaction: always use backgroundCall to avoid synchronous recursion
-                    // backgroundCall efficiently batches callbacks into a single Task using Task.yield()
-                    // to break the call stack. The hasPendingUpdate flag prevents excessive scheduling.
+                    // Use backgroundCall to avoid synchronous recursion and break the call stack.
+                    // The hasPendingUpdate flag prevents excessive scheduling.
                     backgroundCall(performUpdate)
                 }
             }
@@ -890,7 +900,7 @@ internal func update<T: Sendable>(
         let collector = AccessCollector { collector in
             // Call didModify immediately when dependency changes (for dirty tracking)
             didModify?()
-            
+
             // Coalescing: skip if update already pending
             if useCoalescing {
                 let shouldSchedule = hasPendingUpdate.withValue { pending in
@@ -901,13 +911,22 @@ internal func update<T: Sendable>(
                         return true
                     }
                 }
-                
+
                 guard shouldSchedule else { return nil }
             }
-            
+
             let performUpdate: @Sendable () -> Void = {
                 let (value, index) = last.withValue { last in
                     last.index = last.index &+ 1
+
+                    // Clear hasPendingUpdate BEFORE collector.reset() re-registers callbacks.
+                    // Holding last's lock ensures only one performUpdate runs at a time.
+                    // Any mutation firing onModify during re-registration sees hasPendingUpdate=false
+                    // and schedules a new performUpdate, which blocks on last's lock until we finish.
+                    // Same race as the withObservationTracking path — see comment there.
+                    if useCoalescing {
+                        hasPendingUpdate.setValue(false)
+                    }
 
                     let value = collector.reset {
                         usingActiveAccess(collector) {
@@ -917,18 +936,13 @@ internal func update<T: Sendable>(
 
                     return (value, last.index)
                 }
-                
-                if useCoalescing {
-                    hasPendingUpdate.setValue(false)
-                }
-                
+
                 update(with: value, index: index)
             }
-            
+
             if useCoalescing {
-                // Use background coalescing to batch rapid updates
                 // backgroundCall schedules on next runloop iteration, allowing multiple
-                // mutations to coalesce into a single update callback
+                // mutations to coalesce into a single update callback.
                 return {
                     backgroundCall(performUpdate)
                 }
