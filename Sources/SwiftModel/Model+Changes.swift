@@ -371,10 +371,20 @@ public extension ModelNode {
 private extension Observed {
     init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false) {
         stream = AsyncStream { cont in
-            // Use withObservationTracking when coalescing is enabled (required for async execution)
-            // This enables Observed to work with pure @Observable types when coalescing
-            // Fall back to AccessCollector when coalesceUpdates: false (for synchronous updates)
-            let cancellable = update(initial: initial, isSame: isSame, useWithObservationTracking: coalesceUpdates, useCoalescing: coalesceUpdates) {
+            // Detect whether accessed models use ObservationRegistrar.
+            // If any accessed model was created with .disableObservationRegistrar, the
+            // withObservationTracking path won't fire (the model's access(path:from:) is a no-op).
+            // In that case we fall back to AccessCollector which works on all configurations.
+            let useWithObservationTracking: Bool
+            if coalesceUpdates {
+                let detector = RegistrarDetector()
+                _ = usingActiveAccess(detector) { access() }
+                useWithObservationTracking = detector.allHaveRegistrar
+            } else {
+                useWithObservationTracking = false
+            }
+
+            let cancellable = update(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: coalesceUpdates) {
                 access()
             } onUpdate: { value in
                 cont.yield(value)
@@ -384,6 +394,24 @@ private extension Observed {
                 cancellable()
             }
         }
+    }
+}
+
+/// Probes the `access` closure to determine whether all accessed model contexts have
+/// an `ObservationRegistrar`. Used by `Observed.init` to select the correct observation path.
+private final class RegistrarDetector: ModelAccess, @unchecked Sendable {
+    /// `true` if every accessed context has an `ObservationRegistrar` (or no model was accessed).
+    var allHaveRegistrar = true
+
+    init() {
+        super.init(useWeakReference: false)
+    }
+
+    override func willAccess<M: Model, T>(_ model: M, at path: KeyPath<M, T> & Sendable) -> (() -> Void)? {
+        if let context = model.context, !context.hasObservationRegistrar {
+            allHaveRegistrar = false
+        }
+        return nil
     }
 }
 

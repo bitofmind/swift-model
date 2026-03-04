@@ -530,7 +530,15 @@ class AnyContext: @unchecked Sendable {
                     }
                     setupModelDependency(&model, cacheKey: cacheKey, postSetups: &postSetups)
                 } else {
-                    model = model.initialCopy
+                    // If the model already has a live context (e.g. a @Model dependency whose
+                    // testValue/liveValue was previously anchored), make a fresh copy preserving
+                    // its identity so it can be re-anchored cleanly.
+                    // If it has no context, initialCopy suffices and preserves the model's identity.
+                    if model.context != nil {
+                        model = model.initialDependencyCopy
+                    } else {
+                        model = model.initialCopy
+                    }
                     assert(model.context == nil)
                     let child = Context<D>(model: model, lock: lock, options: self.options, dependencies: { _ in }, parent: self)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }

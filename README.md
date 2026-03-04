@@ -7,7 +7,7 @@ SwiftModel is a library for composing models that drives SwiftUI views. It comes
 - [SwiftUI Integration](#swiftui-integration)
 - [Dependencies](#dependencies)
 - [Lifetime and Asynchronous Work](#lifetime-and-asynchronous-work)
-- [State Capture and Restore](#state-capture-and-restore)
+- [Undo and Redo](#undo-and-redo)
 - [Events](#events)
 - [Testing](#testing)
 
@@ -698,100 +698,84 @@ func onActivate() {
 
 > `observeAnyModification()` is on `Model` directly (not `node`), so you call it as `observeAnyModification()` from within a model, or `childModel.observeAnyModification()` from a parent model.
 
-### State Capture and Restore
+## Undo and Redo
 
-SwiftModel can snapshot a model tree's entire value state at a point in time and restore it later. This is the foundation for implementing undo/redo, time-travel debugging, or any other feature that needs to rewind state.
+SwiftModel has built-in support for undo/redo via `node.trackUndo()`. Call it from `onActivate()` to register which properties participate in the undo stack. Each modification to a tracked property automatically pushes an entry onto a ``ModelUndoStack`` (or any custom ``UndoBackend``), and undoing restores the model to its previous state as a single atomic transaction.
 
-```swift
-// Capture the current state
-let snapshot = node.captureState()
+### Basic setup
 
-// Restore it later — applied as a single transaction
-node.restoreState(snapshot)
-```
-
-`ModelStateSnapshot` is a value type that captures all tracked `var` properties in the model and its descendants. `let` properties and dependencies are excluded. The restore is applied atomically: all observers fire exactly once after it completes.
-
-#### Undo/Redo with onChange
-
-`node.onChange` registers a callback that fires after each modification to the model tree, **but not** during a `restoreState`. This makes it the ideal hook for building an undo stack: you receive a `ModelChangeProxy` from which you can obtain a snapshot of the state that just changed.
+Inject a `ModelUndoStack` as the `undoSystem` dependency when anchoring, then call `trackUndo()` from `onActivate()`:
 
 ```swift
-node.onChange { proxy in
-    undoStack.append(proxy.snapshot)  // snapshot is taken lazily on first access
-    redoStack.removeAll()
-}
-```
-
-The snapshot on `proxy` is taken lazily (on first access) by default, or eagerly (inside the transaction) if you pass `.eager`:
-
-```swift
-node.onChange(capture: .eager) { proxy in
-    // proxy.snapshot reflects exactly the state that triggered the callback,
-    // with no race window from concurrent mutations.
-    undoStack.append(proxy.snapshot)
-}
-```
-
-#### Full undo/redo example
-
-The recommended pattern stores the undo/redo stacks in a heap-allocated `let` constant so they are excluded from snapshots and don't trigger `onChange` themselves. `canUndo`/`canRedo` are computed properties (not stored state), so they never pollute the undo stack.
-
-```swift
-@Model struct NoteEditorModel {
-    var title: String = "Untitled"
-    var body: String = ""
-
-    var canUndo: Bool { history.canUndo }
-    var canRedo: Bool { history.canRedo }
-
-    /// `let` constant — excluded from state snapshots automatically.
-    let history: UndoHistory<NoteEditorModel>
-
-    init(title: String = "Untitled", body: String = "") {
-        _title = title
-        _body = body
-        history = UndoHistory()
-    }
+@Model struct EditorModel {
+    var title = ""
+    var body = ""
 
     func onActivate() {
-        history.previousSnapshot = node.captureState()
-
-        node.onChange { [history] proxy in
-            history.undoStack.append(history.previousSnapshot)
-            history.redoStack.removeAll()
-            history.previousSnapshot = proxy.snapshot
-        }
-    }
-
-    func undo() {
-        guard let snapshot = history.undoStack.popLast() else { return }
-        history.redoStack.append(node.captureState())
-        node.restoreState(snapshot)
-    }
-
-    func redo() {
-        guard let snapshot = history.redoStack.popLast() else { return }
-        history.undoStack.append(node.captureState())
-        node.restoreState(snapshot)
+        node.trackUndo()  // all @ModelTracked properties participate in undo
     }
 }
 
-final class UndoHistory<M: Model>: @unchecked Sendable {
-    var undoStack: [ModelStateSnapshot<M>] = []
-    var redoStack: [ModelStateSnapshot<M>] = []
-    var previousSnapshot: ModelStateSnapshot<M>!
+// At the call site:
+let stack = ModelUndoStack()
+let model = EditorModel().withAnchor {
+    $0.undoSystem.backend = stack
+}
 
-    var canUndo: Bool { !undoStack.isEmpty }
-    var canRedo: Bool { !redoStack.isEmpty }
+stack.undo()
+stack.redo()
+```
+
+### Selective tracking
+
+Pass explicit key paths to exclude properties from the undo stack — useful for ephemeral UI state like a search field or a "new item" text box:
+
+```swift
+@Model struct TodoListModel {
+    var items: [TodoItem] = []
+    var newItemTitle = ""   // ephemeral — not part of undo history
+
+    func onActivate() {
+        node.trackUndo(\.items)  // only item changes are undoable
+    }
 }
 ```
 
-Key design points:
-- `let history` uses the backing-store prefix (`_title`, `_body`) in the custom `init` because `@Model` wraps `var` properties. The `let` property uses its plain name.
-- `let` constants are excluded from snapshots automatically — no `@ModelIgnored` needed.
-- `onChange` is suppressed during `restoreState`, so undo/redo never pushes onto the undo stack.
-- A full working example is available in [Examples/NoteEditor](./Examples/NoteEditor).
+### Observable canUndo / canRedo
+
+`ModelUndoSystem` exposes `canUndo` and `canRedo` as observable model properties that update reactively as the stack changes. Wire them directly in your view:
+
+```swift
+Button { model.node.undoSystem.undo() } label: {
+    Label("Undo", systemImage: "arrow.uturn.backward")
+}
+.disabled(!model.node.undoSystem.canUndo)
+.keyboardShortcut("z", modifiers: .command)
+
+Button { model.node.undoSystem.redo() } label: {
+    Label("Redo", systemImage: "arrow.uturn.forward")
+}
+.disabled(!model.node.undoSystem.canRedo)
+.keyboardShortcut("z", modifiers: [.command, .shift])
+```
+
+### System UndoManager integration
+
+For macOS and iOS apps that want Cmd+Z / Cmd+Shift+Z wired to the system Edit menu automatically, use `UndoManagerBackend` instead of `ModelUndoStack`:
+
+```swift
+struct TodoListView: View {
+    @ObservedModel var model: TodoListModel
+    @Environment(\.undoManager) var undoManager
+
+    var body: some View {
+        TodoListContent(model: model)
+            .task(id: undoManager.map(ObjectIdentifier.init)) {
+                model.node.undoSystem.backend = undoManager.map(UndoManagerBackend.init)
+            }
+    }
+}
+```
 
 ### Shared Models and Unique Ownership
 
