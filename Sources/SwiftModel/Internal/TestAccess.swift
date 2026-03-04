@@ -319,7 +319,10 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         let (lastAsserted, actual) = lock { (expectedState, lastState) }
 
         let title = "State not exhausted"
-        if let message = diffMessage(expected: lastAsserted, actual: actual, title: title) {
+        let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+            diffMessage(expected: lastAsserted, actual: actual, title: title)
+        }
+        if let message {
             fail(message, for: .state, at: fileAndLine)
         } else {
             let message = threadLocals.withValue(true, at: \.includeInMirror) {
