@@ -368,13 +368,13 @@ struct UndoObservationTests {
         defer { task.cancel() }
 
         // Wait for initial observation value
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { observed.value.count >= 1 }
+        await tester.assert() { observed.value.count >= 1 }
 
         model.count = 42
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { observed.value.last == 42 }
+        await tester.assert() { observed.value.last == 42 }
 
         stack.undo()
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { observed.value.last == 0 }
+        await tester.assert() { observed.value.last == 0 }
     }
 
     @Test(arguments: UpdatePath.allCases)
@@ -394,16 +394,16 @@ struct UndoObservationTests {
         }
         defer { task.cancel() }
 
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { observed.value.count >= 1 }
+        await tester.assert() { observed.value.count >= 1 }
 
         model.count = 7
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { observed.value.last == 7 }
+        await tester.assert() { observed.value.last == 7 }
 
         stack.undo()
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { observed.value.last == 0 }
+        await tester.assert() { observed.value.last == 0 }
 
         stack.redo()
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { observed.value.last == 7 }
+        await tester.assert() { observed.value.last == 7 }
     }
 
     // MARK: - Container item property (trackUndo(\.items))
@@ -419,21 +419,21 @@ struct UndoObservationTests {
 
         // Add an item and wait for it to be undoable
         model.items.append(EquatableChild(value: 0))
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) {
+        await tester.assert() {
             model.items.count == 1 && stack.canUndo
         }
         // Consume the "add item" undo entry so it doesn't interfere
         stack.undo()
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { model.items.isEmpty }
+        await tester.assert() { model.items.isEmpty }
 
         // Add item again, wait for undo entry
         model.items.append(EquatableChild(value: 0))
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) {
+        await tester.assert() {
             model.items.count == 1 && stack.canUndo
         }
         stack.undo()
         stack.redo()
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { model.items.count == 1 }
+        await tester.assert() { model.items.count == 1 }
 
         // Now observe the item's value property
         let observedValues = LockIsolated<[Int]>([])
@@ -444,14 +444,14 @@ struct UndoObservationTests {
         }
         defer { task.cancel() }
 
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { observedValues.value.count >= 1 }
+        await tester.assert() { observedValues.value.count >= 1 }
 
         model.items[0].value = 99
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { observedValues.value.last == 99 }
+        await tester.assert() { observedValues.value.last == 99 }
 
         // Undo the item value change — observer should see the revert
         stack.undo()
-        await tester.assert(timeoutNanoseconds: NSEC_PER_SEC) { observedValues.value.last == 0 }
+        await tester.assert() { observedValues.value.last == 0 }
     }
 }
 

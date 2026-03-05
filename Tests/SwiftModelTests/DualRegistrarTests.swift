@@ -37,7 +37,7 @@ struct DualRegistrarTests {
         model.value = 42
 
         // Observer should fire immediately (synchronously on background registrar)
-        await tester.assert(timeoutNanoseconds: 100_000_000) {  // 100ms should be plenty
+        await tester.assert(timeout: .milliseconds(100)) {  // short: observer should fire without mainCall delay
             observerFired.value
         }
 
@@ -106,7 +106,7 @@ struct DualRegistrarTests {
         }
 
         // Both observers should fire immediately (main thread modification)
-        await tester.assert(timeoutNanoseconds: 100_000_000) {
+        await tester.assert(timeout: .milliseconds(100)) {  // short: both observers should fire synchronously on main thread
             mainObserverFired.value && backgroundObserverFired.value
         }
     }
@@ -175,7 +175,7 @@ struct DualRegistrarTests {
         model.value = 5
 
         // Background observer should detect change without mainCall delay
-        await tester.assert(timeoutNanoseconds: 100_000_000) {
+        await tester.assert(timeout: .milliseconds(100)) {  // short: background observer should fire without mainCall delay
             changeDetected.value
         }
 

@@ -40,7 +40,7 @@ struct UpdateStreamTests {
         // Give time for background observation callbacks to process
         try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         
-        await tester.assert(timeoutNanoseconds: 5_000_000_000) {
+        await tester.assert(timeout: .seconds(5)) {
             model.count == range.count
             model.counts.count > 0
             model.counts == model.counts.sorted()
@@ -112,7 +112,7 @@ struct UpdateStreamTests {
         // Give time for background observation callbacks to process
         try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         
-        await tester.assert(timeoutNanoseconds: 5_000_000_000) {
+        await tester.assert(timeout: .seconds(5)) {
             model.child.count == range.count
             model.childCounts.count > 0
             model.childCounts == model.childCounts.sorted()

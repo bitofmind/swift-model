@@ -161,7 +161,7 @@ struct UpdateFunctionTests {
         await tester.assert { model.value == 5 }
 
         DebugHook.record("[TEST] Waiting for onChange callbacks via tester.assert...")
-        await tester.assert(timeoutNanoseconds: 2_000_000_000) {
+        await tester.assert(timeout: .seconds(2)) {
             updateCount.value >= 2
         }
 

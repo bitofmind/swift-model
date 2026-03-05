@@ -312,4 +312,54 @@ public extension ModelTester {
 
 private struct UnwrapError: Error { }
 
+@available(macOS 13, iOS 16, watchOS 9, tvOS 16, *)
+public extension ModelTester {
+    /// Waits for all pending model updates to propagate, then verifies that every predicate in
+    /// the builder body is `true` and that no unasserted side-effects remain (subject to `exhaustivity`).
+    ///
+    /// ```swift
+    /// await tester.assert(timeout: .seconds(2)) {
+    ///     model.count == 1
+    ///     model.didSend(.increment)
+    /// }
+    /// ```
+    ///
+    /// - Parameter timeout: Maximum time to wait for the predicates to become true (default 1 s).
+    /// - Parameter builder: A result-builder block of Boolean predicates. Use the `==` operator for
+    ///   pretty-printed diff output on failure.
+    func assert(timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: () -> AssertBuilder.Result) async {
+        await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
+    }
+
+    @_disfavoredOverload
+    func assert(_ predicate: @escaping @autoclosure () -> Bool, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
+        let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
+        let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
+        await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
+    }
+
+    func assert(_ predicate: TestPredicate, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
+        let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
+        let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
+        await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
+    }
+
+    /// Waits for an optional expression to become non-`nil`, then returns the unwrapped value.
+    ///
+    /// Fails and throws if the expression is still `nil` after `timeout`. Unlike `assert`,
+    /// exhaustion checking is **not** triggered by a successful unwrap.
+    func unwrap<T>(_ unwrap: @escaping @autoclosure () -> T?, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T {
+        try await self.unwrap(unwrap(), timeoutNanoseconds: timeout.toNanoseconds, fileID: fileID, filePath: filePath, line: line, column: column)
+    }
+}
+
+@available(macOS 13, iOS 16, watchOS 9, tvOS 16, *)
+private extension Duration {
+    /// Converts a `Duration` to nanoseconds as `UInt64`, clamped to zero for negative values.
+    var toNanoseconds: UInt64 {
+        let (seconds, attoseconds) = components
+        return UInt64(max(seconds, 0)) * NSEC_PER_SEC + UInt64(max(attoseconds, 0)) / 1_000_000_000
+    }
+}
+
 

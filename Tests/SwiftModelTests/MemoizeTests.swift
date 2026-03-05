@@ -34,7 +34,7 @@ struct MemoizeTests {
         await tester.assert { model.value == 5 }
 
         // Access should recompute (wait for async onChange if needed)
-        await tester.assert(timeoutNanoseconds: 5_000_000_000) {
+        await tester.assert(timeout: .seconds(5)) {
             model.doubled == 10
         }
         
@@ -263,7 +263,7 @@ struct MemoizeTests {
         await tester.assert { model.conditional == 10 }  // Uses valueA
 
         model.useA = false
-        await tester.assert(timeoutNanoseconds: 2_000_000_000) {
+        await tester.assert(timeout: .seconds(2)) {
             model.conditional == 20  // Uses valueB
         }
 
@@ -274,7 +274,7 @@ struct MemoizeTests {
 
         // Change valueB (currently tracked)
         model.valueB = 200
-        await tester.assert(timeoutNanoseconds: 2_000_000_000) {
+        await tester.assert(timeout: .seconds(2)) {
             model.conditional == 200  // Should update
         }
     }
@@ -474,7 +474,7 @@ struct MemoizeTests {
         
         // Mutate valueA (currently observed path)
         model.valueA = 15
-        await tester.assert(timeoutNanoseconds: 2_000_000_000) {
+        await tester.assert(timeout: .seconds(2)) {
             model.conditional == 15
         }
         let countAfterValueA = model.computeCount.value
@@ -492,7 +492,7 @@ struct MemoizeTests {
         
         // Switch branch to valueB
         model.useA = false
-        await tester.assert(timeoutNanoseconds: 2_000_000_000) {
+        await tester.assert(timeout: .seconds(2)) {
             model.conditional == 25  // Now using valueB
         }
         let countAfterSwitch = model.computeCount.value
@@ -500,7 +500,7 @@ struct MemoizeTests {
         
         // Mutate valueB (now observed path)
         model.valueB = 30
-        await tester.assert(timeoutNanoseconds: 2_000_000_000) {
+        await tester.assert(timeout: .seconds(2)) {
             model.conditional == 30
         }
         let countAfterValueB = model.computeCount.value

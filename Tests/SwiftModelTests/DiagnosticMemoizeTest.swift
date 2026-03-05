@@ -33,7 +33,7 @@ struct DiagnosticMemoizeTest {
         
         print("\n3️⃣ Waiting for onChange → onUpdate chain via tester.assert...")
         // Wait for cache to be invalidated and recomputed
-        await tester.assert(timeoutNanoseconds: 5_000_000_000) {
+        await tester.assert(timeout: .seconds(5)) {
             model.doubled == 10
         }
         
@@ -115,7 +115,7 @@ struct DiagnosticMemoizeTest {
         print("   This continuously accesses model.doubled until it equals 10 or times out")
         
         // This should work IF onUpdate eventually fires
-        await tester.assert(timeoutNanoseconds: 2_000_000_000) {
+        await tester.assert(timeout: .seconds(2)) {
             model.doubled == 10
         }
         
