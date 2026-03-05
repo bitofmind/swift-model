@@ -7,6 +7,10 @@ final class ThreadLocals: @unchecked Sendable {
     var includeInMirror = false
     var includeChildrenInMirror = false
     var isRestoringState = false
+    /// Closures registered to run after the current postLockCallbacks pass completes.
+    /// Non-nil only while postLockCallbacks are executing. Use this to schedule work
+    /// that must run after ALL per-property onModify callbacks in a transaction batch.
+    var postLockFlushes: [() -> Void]? = nil
 
     fileprivate init() {}
 

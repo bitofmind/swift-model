@@ -2,12 +2,6 @@
 import ConcurrencyExtras
 import Dependencies
 
-// MARK: - Snapshot types
-
-struct ModelStateSnapshot<M: Model>: Sendable {
-    let frozenValue: M
-}
-
 // MARK: - UndoAvailability
 
 /// The combined undo/redo availability state emitted by an ``UndoBackend``.
@@ -23,7 +17,7 @@ public struct UndoAvailability: Sendable, Equatable {
 
 // MARK: - ModelUndoEntry
 
-/// A single undoable action produced by ``ModelNode/trackUndo(_:)``.
+/// A single undoable action produced by ``ModelNode/trackUndo(_:)``/``ModelNode/trackUndo()``.
 ///
 /// An entry encapsulates both how to *apply* a state restoration and how to
 /// *capture* the reverse action (for redo when undoing, or undo when redoing).
@@ -220,14 +214,13 @@ extension DependencyValues {
 // MARK: - ModelNode.trackUndo
 
 public extension ModelNode {
-    /// Registers all `@ModelTracked` properties for undo/redo tracking.
+    /// Registers all `@ModelTracked` properties of this model for undo/redo tracking.
     ///
-    /// When any tracked property in this model changes, a ``ModelUndoEntry`` is pushed
-    /// onto the ``ModelUndoSystem`` dependency's backend. Changes caused by a
-    /// restore are not re-recorded, preventing infinite loops.
-    ///
-    /// This is the simplest way to enable full undo/redo. Use ``trackUndo(_:)`` with
-    /// explicit key paths if you need to track only a subset of properties.
+    /// Each property is tracked independently. When a property changes, a
+    /// ``ModelUndoEntry`` is pushed onto the ``ModelUndoSystem`` dependency's
+    /// backend. Multiple property changes within a single `node.transaction {}`
+    /// are coalesced into one entry. Changes caused by a restore are not
+    /// re-recorded, preventing infinite loops.
     ///
     /// ```swift
     /// func onActivate() {
@@ -235,25 +228,26 @@ public extension ModelNode {
     /// }
     /// ```
     ///
-    /// Inject a backend at anchor time:
-    ///
-    /// ```swift
-    /// let stack = ModelUndoStack()
-    /// let model = MyModel().withAnchor { $0.undoSystem.backend = stack }
-    /// ```
+    /// Each model is responsible for its own properties. Child models that
+    /// should participate in undo must call `trackUndo` in their own `onActivate`.
     func trackUndo() {
-        _setupUndoTracking { previous, current in
-            var visitor = DiffVisitor(lhs: previous, rhs: current)
-            previous.visit(with: &visitor, includeSelf: false)
-            return visitor.anyChanged
-        }
+        guard let context = enforcedContext() else { return }
+        let undoSystem: ModelUndoSystem = self[dynamicMember: \.undoSystem]
+        guard let backend = undoSystem.backend else { return }
+
+        var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, only: nil)
+        context.model.visit(with: &visitor, includeSelf: false)
     }
 
     /// Registers one or more writable key paths for undo/redo tracking.
     ///
     /// When any of the listed properties changes, a ``ModelUndoEntry`` is pushed
-    /// onto the ``ModelUndoSystem`` dependency's backend. Changes caused by a
-    /// restore are not re-recorded, preventing infinite loops.
+    /// onto the ``ModelUndoSystem`` dependency's backend. Multiple property
+    /// changes within a single `node.transaction {}` are coalesced into one entry.
+    /// Changes caused by a restore are not re-recorded, preventing infinite loops.
+    ///
+    /// Each model is responsible for its own properties — child models that
+    /// should participate in undo must call `trackUndo` in their own `onActivate`.
     ///
     /// ```swift
     /// func onActivate() {
@@ -261,334 +255,371 @@ public extension ModelNode {
     ///     node.trackUndo(\.items)
     /// }
     /// ```
-    ///
-    /// Inject a backend at anchor time:
-    ///
-    /// ```swift
-    /// let stack = ModelUndoStack()
-    /// let model = MyModel().withAnchor { $0.undoSystem.backend = stack }
-    /// ```
-    func trackUndo<each V: Equatable & Sendable>(
-        _ paths: repeat WritableKeyPath<M, each V> & Sendable
-    ) {
-        // The user-provided paths are computed properties (e.g. \.items), but the @Model macro
-        // generates accessors that read/write the private backing storage (e.g. \._items).
-        // We need the backing paths because:
-        //
-        // 1. Restore safety: writing via a computed WritableKeyPath goes through the property
-        //    setter → Context.subscript._modify → `yield &modifyModel[keyPath: path]`. That
-        //    `yield` holds an inout exclusive access on the storage while postLockCallbacks run.
-        //    If a restore callback fires from postLockCallbacks and tries to write the same
-        //    path again, Swift sees two simultaneous inout accesses → process terminates.
-        //    RestoreVisitor avoids this by writing via Context.transaction(at: backingPath),
-        //    where the inout ends before postLockCallbacks.
-        //
-        // 2. Path collection: we intercept willAccess on the LIVE model (not a frozen copy).
-        //    Frozen copies bypass the Context machinery and don't fire willAccess.
-        //    The live model goes through Context.subscript._read, which calls
-        //    willAccess(model, at: backingPath) before yielding the value. Setting
-        //    ModelAccess.active = collector before the reads lets us capture those paths.
-        guard let context = enforcedContext() else { return }
-
-        // Map user-provided computed paths (e.g. \.tracked) to backing storage paths
-        // (e.g. \._tracked) by intercepting willAccess on the LIVE model.
-        //
-        // Frozen copies do NOT fire willAccess — they bypass the Context machinery and
-        // yield model[keyPath: path] directly. The live model goes through
-        // Context.subscript._read which calls willAccess(model, at: backingPath).
-        // We set ModelAccess.active to our collector so that the willAccess calls land on it.
-        let collector = BackingPathCollector<M>()
-        usingActiveAccess(collector) {
-            func collectPath<PathValue: Equatable & Sendable>(_ path: WritableKeyPath<M, PathValue> & Sendable) {
-                _ = context.model[keyPath: path]
-            }
-            repeat collectPath(each paths)
-        }
-        let trackedBackingPaths = collector.paths
-
-        _setupUndoTracking(trackedBackingPaths: trackedBackingPaths) { previousFrozen, currentFrozen in
-            var anyChanged = false
-            func checkChanged<PathValue: Equatable & Sendable>(_ path: WritableKeyPath<M, PathValue> & Sendable) {
-                guard !anyChanged else { return }
-                let keyPath = path as KeyPath<M, PathValue>
-                if previousFrozen[keyPath: keyPath] != currentFrozen[keyPath: keyPath] {
-                    anyChanged = true
-                }
-            }
-            repeat checkChanged(each paths)
-            return anyChanged
-        }
-    }
-}
-
-private extension ModelNode {
-    /// Shared scaffolding for all `trackUndo` variants.
-    ///
-    /// Sets up the ``SnapshotBaseline``, restore closure, ``UndoEntryFactory``, and
-    /// ``onAnyModification`` callback. The `hasChanged` closure is the only thing
-    /// that differs between variants — it receives the previous and current frozen
-    /// copies and returns whether the change is relevant.
-    ///
-    /// - Parameter trackedBackingPaths: When non-nil, `RestoreVisitor` restores only these
-    ///   backing paths. Used by `trackUndo(\.field)` for selective restoration.
-    ///   When nil, all fields are restored via `RestoreVisitor`.
-    func _setupUndoTracking(
-        trackedBackingPaths: Set<PartialKeyPath<M>>? = nil,
-        hasChanged: @escaping @Sendable (_ previous: M, _ current: M) -> Bool
+    func trackUndo<each PathValue: Sendable>(
+        _ paths: repeat WritableKeyPath<M, each PathValue> & Sendable
     ) {
         guard let context = enforcedContext() else { return }
         let undoSystem: ModelUndoSystem = self[dynamicMember: \.undoSystem]
         guard let backend = undoSystem.backend else { return }
-        let modelContext = _$modelContext
 
-        // `baseline` tracks the last committed snapshot so we can always hand the backend
-        // the "before this change" state. Updated atomically inside the post-transaction
-        // callback, so it is always consistent with the live model.
-        let baseline = SnapshotBaseline(snapshot: context.model.frozenCopy)
-
-        // Closure that restores a typed snapshot into the live model.
-        // RestoreVisitor writes directly via backing paths using Context.transaction(at:),
-        // which is safe to call from within ctx.transaction {} (postLockCallbacks) because
-        // the inout access ends before postLockCallbacks run. If trackedBackingPaths is
-        // provided, only those paths are restored; otherwise all fields are restored.
+        // The user-provided paths are computed properties (e.g. \.items), but the @Model
+        // macro generates accessors that read/write private backing storage (e.g. \._items).
+        // We need the backing paths to register onModify callbacks correctly.
         //
-        // PartialKeyPath does not conform to Sendable in all Swift compiler versions, so we
-        // use nonisolated(unsafe) to suppress the concurrency warning. The paths are
-        // immutable after construction and safe to share across threads.
-        nonisolated(unsafe) let sendableTrackedPaths = trackedBackingPaths
-        let restore: @Sendable (ModelStateSnapshot<M>) -> Void = { snapshot in
-            let node = ModelNode(_$modelContext: modelContext)
-            var postRestoreSnapshot: M? = nil
-            threadLocals.withValue(true, at: \.isRestoringState) {
-                if let ctx = node.context {
-                    ctx.transaction {
-                        restoreModel(snapshot.frozenValue, into: ctx, using: modelContext, only: sendableTrackedPaths)
-                        postRestoreSnapshot = ctx.model.frozenCopy
+        // Strategy: read each path on the LIVE model while a BackingPathCollector is installed
+        // as the active ModelAccess. The live model routes reads through Context.subscript._read,
+        // which calls willAccess(model, at: backingPath) before yielding. Frozen copies bypass
+        // the Context machinery entirely and never fire willAccess.
+        let collector = BackingPathCollector<M>()
+        usingActiveAccess(collector) {
+            func collect<PV>(_ path: WritableKeyPath<M, PV> & Sendable) {
+                _ = context.model[keyPath: path]
+            }
+            repeat collect(each paths)
+        }
+        let trackedBackingPaths = collector.paths
+
+        var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, only: trackedBackingPaths)
+        context.model.visit(with: &visitor, includeSelf: false)
+    }
+
+    /// Registers all `@ModelTracked` properties **except** the listed ones for undo/redo tracking.
+    ///
+    /// Equivalent to `trackUndo()` but excludes specific key paths from the undo stack.
+    ///
+    /// ```swift
+    /// func onActivate() {
+    ///     node.trackUndo(excluding: \.draftText)
+    /// }
+    /// ```
+    func trackUndo<each PathValue: Sendable>(
+        excluding paths: repeat WritableKeyPath<M, each PathValue> & Sendable
+    ) {
+        guard let context = enforcedContext() else { return }
+        let undoSystem: ModelUndoSystem = self[dynamicMember: \.undoSystem]
+        guard let backend = undoSystem.backend else { return }
+
+        let collector = BackingPathCollector<M>()
+        usingActiveAccess(collector) {
+            func collect<PV>(_ path: WritableKeyPath<M, PV> & Sendable) {
+                _ = context.model[keyPath: path]
+            }
+            repeat collect(each paths)
+        }
+        let excludedBackingPaths = collector.paths
+
+        var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, excluding: excludedBackingPaths)
+        context.model.visit(with: &visitor, includeSelf: false)
+    }
+}
+
+// MARK: - InstallUndoVisitor
+
+/// Visits each field of a model and installs a per-property `onModify` undo callback.
+///
+/// The visitor is used by all `trackUndo` variants:
+/// - `only == nil, excluding == nil`:  install for all fields (zero-arg `trackUndo()`)
+/// - `only != nil`:                    install only for fields whose backing path is in `only`
+/// - `excluding != nil`:               install for all fields except those in `excluding`
+private struct InstallUndoVisitor<M: Model>: ModelVisitor {
+    typealias State = M
+
+    let context: Context<M>
+    let backend: any UndoBackend
+    let modelContext: ModelContext<M>
+    // When non-nil, only these backing paths are installed.
+    nonisolated(unsafe) let only: Set<PartialKeyPath<M>>?
+    // When non-nil, skip these backing paths (all-except variant).
+    nonisolated(unsafe) let excluding: Set<PartialKeyPath<M>>?
+
+    init(context: Context<M>, backend: any UndoBackend, modelContext: ModelContext<M>,
+         only: Set<PartialKeyPath<M>>?) {
+        self.context = context
+        self.backend = backend
+        self.modelContext = modelContext
+        self.only = only
+        self.excluding = nil
+    }
+
+    init(context: Context<M>, backend: any UndoBackend, modelContext: ModelContext<M>,
+         excluding: Set<PartialKeyPath<M>>) {
+        self.context = context
+        self.backend = backend
+        self.modelContext = modelContext
+        self.only = nil
+        self.excluding = excluding
+    }
+
+    private func shouldInstall(path: PartialKeyPath<M>) -> Bool {
+        if let only { return only.contains(path) }
+        if let excluding { return !excluding.contains(path) }
+        return true
+    }
+
+    mutating func visit<T>(path: WritableKeyPath<M, T>) {
+        guard shouldInstall(path: path) else { return }
+        // T is not constrained to Sendable by the ModelVisitor protocol, but @Model properties
+        // are always Sendable in practice. We use unsafeBitCast (same pattern as RestoreVisitor)
+        // to satisfy the Swift concurrency checker.
+        installPropertyUndoUnchecked(for: path, context: context, backend: backend, modelContext: modelContext)
+    }
+
+    // Model and ModelContainer fields are stored as a whole value (snapshot of the full
+    // field). Writing them back goes through the normal context assignment path which
+    // handles child-context re-creation automatically. We use initialCopy (not frozenCopy)
+    // so that restored values can be re-anchored by the context assignment path.
+    mutating func visit<T: Model & Sendable>(path: WritableKeyPath<M, T>) {
+        guard shouldInstall(path: path) else { return }
+        installPropertyUndoUnchecked(for: path, context: context, backend: backend, modelContext: modelContext, useInitialCopy: true)
+    }
+
+    mutating func visit<T: ModelContainer & Sendable>(path: WritableKeyPath<M, T>) {
+        guard shouldInstall(path: path) else { return }
+        installPropertyUndoUnchecked(for: path, context: context, backend: backend, modelContext: modelContext, useInitialCopy: true)
+    }
+}
+
+// MARK: - Per-property undo installation
+
+/// Installs a single `onModify` undo callback for a typed backing path.
+///
+/// `T` is treated as Sendable via `nonisolated(unsafe)` — valid because all `@Model`
+/// stored properties must be Sendable in practice (the macro enforces this).
+///
+/// When the property at `path` changes:
+/// 1. The old value (captured in `baseline`) and a restore closure are handed to the
+///    shared ``UndoCoalescer`` for this context.
+/// 2. The coalescer merges all property changes that occur within one transaction
+///    into a single ``ModelUndoEntry`` pushed to the backend.
+private func installPropertyUndoUnchecked<M: Model, T>(
+    for path: WritableKeyPath<M, T>,
+    context: Context<M>,
+    backend: any UndoBackend,
+    modelContext: ModelContext<M>,
+    useInitialCopy: Bool = false
+) {
+    // All @Model stored properties are Sendable in practice (the macro enforces this).
+    // We use nonisolated(unsafe) / unsafeBitCast to satisfy the Swift concurrency checker
+    // without adding a T: Sendable constraint that the ModelVisitor protocol cannot provide.
+    nonisolated(unsafe) let sendablePath = unsafeBitCast(path, to: (WritableKeyPath<M, T> & Sendable).self)
+
+    // One coalescer is shared across all properties registered for the same context/backend.
+    let coalescer = UndoCoalescer.forContext(context, backend: backend)
+
+    // Per-property baseline: last committed value, used to build undo entries.
+    // Wrapped in a class box so @Sendable closures can capture it without a T: Sendable constraint.
+    // For Model/ModelContainer typed properties we use initialCopy (not frozenCopy) so that
+    // restored values can be re-anchored by the context assignment path. Frozen copies are
+    // rejected by the setter ("It is not allowed to add a destructed nor frozen model.").
+    let baseline = UnsafeSendableBox(snapshotValue(context.model[keyPath: path], useInitialCopy: useInitialCopy))
+
+    let cancel = context.onModify(for: sendablePath) { hasEnded in
+        guard !hasEnded else { return nil }
+        guard !threadLocals.isRestoringState else { return nil }
+
+        let oldValue = baseline.value
+        let newValue = snapshotValue(context.model[keyPath: sendablePath], useInitialCopy: useInitialCopy)
+
+        guard !areEqual(oldValue, newValue) else { return nil }
+
+        // Builds a closure that writes `value` back into the live model.
+        // Uses modelContext.transaction(with:at:) which ends the inout access before
+        // postLockCallbacks run — safe to call from within another callback chain.
+        //
+        // We run the transaction under `usingAccess(rootAccess)` where `rootAccess` is the
+        // ModelAccess registered on the root model (e.g. TestAccess in tests). Without this,
+        // `ModelAccess.current` and `ModelAccess.active` are both nil during undo, so
+        // TestAccess.lastState is never updated and the tester's exhaustion check fails.
+        @Sendable func makeRestore(value: T) -> @Sendable () -> Void {
+            nonisolated(unsafe) let v = value
+            return {
+                // Skip if the model has been destructed (e.g. item removed from parent array).
+                guard context.lifetime == .active else { return }
+                // Propagate the root access (e.g. TestAccess) so that didModify notifications
+                // fire correctly during restore. The root context's readModel._$modelContext
+                // holds the registered ModelAccess; child contexts have _access = nil.
+                let rootAccess = context.rootParent.anyModelAccess
+                usingAccess(rootAccess) {
+                    threadLocals.withValue(true, at: \.isRestoringState) {
+                        if let ctx = ModelNode(_$modelContext: modelContext).context {
+                            _ = modelContext.transaction(with: ctx.model, at: sendablePath, modify: { $0 = v }, isSame: nil)
+                        }
                     }
                 }
-            }
-            // Sync the baseline with the actual restored state so that subsequent
-            // onAnyModification callbacks do not see a stale baseline.
-            _ = baseline.swap(to: postRestoreSnapshot ?? snapshot.frozenValue)
-        }
-
-        // UndoEntryFactory (file-scoped below) builds ModelUndoEntry values. Using a
-        // class allows its `make` method to be captured by @Sendable closures, enabling
-        // the recursive captureReverse chain without @Sendable local-function restrictions.
-        let factory = UndoEntryFactory(
-            restore: restore,
-            captureNow: { ModelStateSnapshot(frozenValue: context.model.frozenCopy) }
-        )
-
-        let cancel = context.onAnyModification { hasEnded in
-            guard !hasEnded else { return nil }
-            guard !threadLocals.isRestoringState else { return nil }
-
-            let currentFrozen = context.model.frozenCopy
-            let previousFrozen = baseline.value
-
-            guard hasChanged(previousFrozen, currentFrozen) else { return nil }
-
-            return {
-                let before = baseline.swap(to: currentFrozen)
-                let entry = factory.make(for: ModelStateSnapshot(frozenValue: before))
-                backend.push(entry)
+                baseline.value = v
             }
         }
-        _ = AnyCancellable(cancellations: context.cancellations, onCancel: cancel)
-    }
-}
 
-// MARK: - Internal restore machinery
-
-/// Walks the fields of `snapshot` (a frozenCopy) and writes each field's value
-/// into the live `context`. If `only` is non-nil, only those backing paths are restored.
-private func restoreModel<M: Model>(_ snapshot: M, into context: Context<M>, using modelContext: ModelContext<M>, only trackedPaths: Set<PartialKeyPath<M>>? = nil) {
-    var visitor = RestoreVisitor(snapshot: snapshot, context: context, modelContext: modelContext, trackedPaths: trackedPaths)
-    context.model.visit(with: &visitor, includeSelf: false)
-}
-
-private struct RestoreVisitor<M: Model>: ModelVisitor {
-    typealias State = M
-
-    let snapshot: M
-    let context: Context<M>
-    let modelContext: ModelContext<M>
-    /// When non-nil, only these backing paths are restored; others are skipped.
-    let trackedPaths: Set<PartialKeyPath<M>>?
-
-    mutating func visit<T>(path: WritableKeyPath<M, T>) {
-        if let trackedPaths, !trackedPaths.contains(path) { return }
-        let sendablePath = unsafeBitCast(path, to: (WritableKeyPath<M, T> & Sendable).self)
-        let newValue = snapshot[keyPath: path]
-        if areEqual(newValue, context.model[keyPath: path]) { return }
-        modelContext[model: context.model, path: sendablePath] = newValue
-    }
-
-    mutating func visit<T: Model>(path: WritableKeyPath<M, T>) {
-        if let trackedPaths, !trackedPaths.contains(path) { return }
-        let sendablePath = unsafeBitCast(path, to: (WritableKeyPath<M, T> & Sendable).self)
-        let snapshotChild = snapshot[keyPath: path]
-        let liveChild = context.model[keyPath: path]
-
-        if snapshotChild.id == liveChild.id {
-            if let childContext = liveChild.context {
-                // Use usingActiveAccess (not usingAccess) so that didModify notifications
-                // from child context property writes reach ModelAccess.active (e.g. TestAccess),
-                // which reads ModelAccess.active rather than ModelAccess.current.
-                usingActiveAccess(modelContext.access) {
-                    restoreModel(snapshotChild, into: childContext, using: ModelContext(context: childContext))
-                }
+        // captureReverse: reads the current live value and returns a restore closure for it.
+        // Guards against the context having been destructed (e.g. the item was removed from
+        // its parent array and then re-added via undo — the old context is gone).
+        let captureCurrentReverse: @Sendable () -> @Sendable () -> Void = {
+            guard context.lifetime == .active else {
+                // Context is gone — return a no-op restore.
+                return {}
             }
+            let currentValue = snapshotValue(context.model[keyPath: sendablePath], useInitialCopy: useInitialCopy)
+            return makeRestore(value: currentValue)
+        }
+
+        let restore = makeRestore(value: oldValue)
+
+        return {
+            baseline.value = newValue
+            coalescer.add(restore: restore, captureReverse: captureCurrentReverse)
+        }
+    }
+    _ = AnyCancellable(cancellations: context.cancellations, onCancel: cancel)
+}
+
+/// Returns a snapshot of `value` suitable for undo baseline/restore storage.
+///
+/// - `useInitialCopy == true` (Model/ModelContainer properties): returns `initialCopy`, which
+///   creates a fresh `Reference` that can be re-anchored by the context assignment path during
+///   restore. `frozenCopy` would produce values rejected by the setter.
+/// - `useInitialCopy == false` (plain value types): returns `frozenCopy`, which freezes any
+///   nested `ModelContainer` trees so they are safe to capture in closures.
+private func snapshotValue<T>(_ value: T, useInitialCopy: Bool) -> T {
+    if useInitialCopy, let container = value as? any ModelContainer {
+        return container.initialCopy as! T
+    }
+    return frozenCopy(value)
+}
+
+/// A class box that allows capturing non-Sendable values in @Sendable closures via
+/// nonisolated(unsafe). Used in installPropertyUndoUnchecked where T may not be Sendable
+/// at the type-system level but is always Sendable in practice for @Model properties.
+private final class UnsafeSendableBox<T>: @unchecked Sendable {
+    var value: T
+    init(_ value: T) { self.value = value }
+}
+
+// MARK: - UndoCoalescer
+
+/// Collects all property-change restore closures that arrive during a single transaction
+/// (one `postLockCallbacks` flush) and merges them into a single ``ModelUndoEntry``.
+///
+/// One coalescer is shared per `(context, backend)` pair. When the first property change
+/// arrives in a batch, the coalescer registers a flush callback via `context.onPostTransaction`;
+/// subsequent changes in the same batch append to the accumulator. The flush runs after all
+/// per-property callbacks have fired, building and pushing one merged entry.
+private final class UndoCoalescer: @unchecked Sendable {
+    private let lock = NSLock()
+    private let backend: any UndoBackend
+    // Accumulated restore/captureReverse pairs for the current transaction batch.
+    private var pending: [PendingChange] = []
+    private var isFlushScheduled = false
+
+    struct PendingChange {
+        let restore: @Sendable () -> Void
+        let captureReverse: @Sendable () -> @Sendable () -> Void
+    }
+
+    init(backend: any UndoBackend) {
+        self.backend = backend
+    }
+
+    // MARK: - Shared instance lookup
+
+    // Coalescers are stored weakly on the context so they are released when trackUndo
+    // cancellations fire. Using ObjectIdentifier(context) as key.
+    private static let globalLock = NSLock()
+    nonisolated(unsafe) private static var coalescers: [ObjectIdentifier: WeakCoalescer] = [:]
+
+    private struct WeakCoalescer {
+        weak var coalescer: UndoCoalescer?
+    }
+
+    static func forContext<M: Model>(_ context: Context<M>, backend: any UndoBackend) -> UndoCoalescer {
+        let key = ObjectIdentifier(context)
+        return globalLock {
+            if let existing = coalescers[key]?.coalescer {
+                return existing
+            }
+            let new = UndoCoalescer(backend: backend)
+            coalescers[key] = WeakCoalescer(coalescer: new)
+            return new
+        }
+    }
+
+    // MARK: - Accumulation
+
+    /// Called from each per-property `onModify` postLockCallback.
+    func add(restore: @escaping @Sendable () -> Void, captureReverse: @escaping @Sendable () -> @Sendable () -> Void) {
+        lock {
+            pending.append(PendingChange(restore: restore, captureReverse: captureReverse))
+        }
+        scheduleFlushIfNeeded()
+    }
+
+    private func scheduleFlushIfNeeded() {
+        // Register the flush to run at the end of the current postLockCallbacks pass.
+        // onPostTransaction is called from within postLockCallbacks, so if postTransactions
+        // is already being drained, this append runs after all current callbacks.
+        //
+        // We use a simple flag to avoid registering the flush closure more than once per batch.
+        let shouldSchedule = lock {
+            guard !isFlushScheduled else { return false }
+            isFlushScheduled = true
+            return true
+        }
+        guard shouldSchedule else { return }
+
+        // If we're inside a postLockCallbacks pass (signalled by postLockFlushes being non-nil),
+        // append the flush to run AFTER all per-property onModify callbacks for the transaction
+        // have completed. This ensures that multi-property transactions produce one merged entry.
+        // Outside postLockCallbacks (e.g. from a background thread or directly from user code),
+        // flush synchronously.
+        if threadLocals.postLockFlushes != nil {
+            threadLocals.postLockFlushes!.append { [weak self] in self?.flush() }
         } else {
-            let restoredChild = snapshotChild.initialCopy
-            modelContext[model: context.model, path: sendablePath] = restoredChild
+            flush()
         }
     }
 
-    mutating func visit<T: ModelContainer>(path: WritableKeyPath<M, T>) {
-        if let trackedPaths, !trackedPaths.contains(path) { return }
-        let sendablePath = unsafeBitCast(path, to: (WritableKeyPath<M, T> & Sendable).self)
-        let snapshotContainer = snapshot[keyPath: path]
-        let snapshotModels: [AnyHashable: any Model] = snapshotContainer.reduceValue(
-            with: CollectModelsReducer.self,
-            initialValue: [:]
-        )
-        var liveContextsByID: [AnyHashable: AnyContext] = [:]
-        context.model[keyPath: path].forEachContext {
-            liveContextsByID[$0.anyModel.anyModelID] = $0
-        }
-        let restoredContainer = snapshotContainer.initialCopy
-        modelContext[model: context.model, path: sendablePath] = restoredContainer
-        // Use usingActiveAccess (not usingAccess) so that didModify notifications from
-        // child context writes reach ModelAccess.active (e.g. TestAccess).
-        usingActiveAccess(modelContext.access) {
-            for (id, snapshotModel) in snapshotModels {
-                guard let liveContext = liveContextsByID[id] else { continue }
-                restoreMatchedContext(snapshot: snapshotModel, liveContext: liveContext)
+    private func flush() {
+        let changes = lock {
+            defer {
+                pending.removeAll()
+                isFlushScheduled = false
             }
+            return pending
         }
-    }
-}
+        guard !changes.isEmpty else { return }
 
-private enum CollectModelsReducer: ValueReducer {
-    typealias Value = [AnyHashable: any Model]
-    static func reduce(value: inout Value, model: some Model) {
-        value[model.anyModelID] = model
-    }
-}
-
-private func restoreMatchedContext(snapshot: any Model, liveContext: AnyContext) {
-    func open<S: Model>(_ snapshot: S) {
-        guard let typedContext = liveContext as? Context<S> else { return }
-        // Child contexts are always fully restored (no path filtering).
-        restoreModel(snapshot, into: typedContext, using: ModelContext(context: typedContext), only: nil)
-    }
-    open(snapshot)
-}
-
-// MARK: - ID helpers
-
-private extension AnyContext {
-    var anyModelID: AnyHashable { anyModel.anyModelID }
-}
-
-private extension Model {
-    var anyModelID: AnyHashable { AnyHashable(id) }
-}
-
-// MARK: - Diff visitor
-
-/// Compares two frozen copies of a model field-by-field using the `ModelVisitor` pattern.
-/// Sets `anyChanged` to `true` as soon as any tracked field differs between `lhs` and `rhs`.
-/// Used by the zero-argument ``ModelNode/trackUndo()`` to detect whether any field changed.
-private struct DiffVisitor<M: Model>: ModelVisitor {
-    typealias State = M
-    let lhs: M
-    let rhs: M
-    var anyChanged = false
-
-    mutating func visit<T>(path: WritableKeyPath<M, T>) {
-        guard !anyChanged else { return }
-        if !areEqual(lhs[keyPath: path], rhs[keyPath: path]) {
-            anyChanged = true
-        }
+        let entry = makeEntry(for: changes)
+        backend.push(entry)
     }
 
-    mutating func visit<T: Model>(path: WritableKeyPath<M, T>) {
-        guard !anyChanged else { return }
-        let l = lhs[keyPath: path]
-        let r = rhs[keyPath: path]
-        // Different identities mean the field was replaced entirely.
-        if l.id != r.id { anyChanged = true; return }
-        // Same identity — recurse into the child to check its fields.
-        var child = DiffVisitor<T>(lhs: l, rhs: r)
-        l.visit(with: &child, includeSelf: false)
-        if child.anyChanged { anyChanged = true }
+    private func makeEntry(for changes: [PendingChange]) -> ModelUndoEntry {
+        makeEntryFromRestores(
+            applyRestores: changes.map { $0.restore },
+            captureReverses: changes.map { $0.captureReverse }
+        )
     }
 
-    mutating func visit<T: ModelContainer>(path: WritableKeyPath<M, T>) {
-        guard !anyChanged else { return }
-        if !areEqual(lhs[keyPath: path], rhs[keyPath: path]) {
-            anyChanged = true
-        }
-    }
-}
-
-// MARK: - UndoEntry factory helper
-
-/// Builds ``ModelUndoEntry`` values for `trackUndo`. Implemented as a class so its
-/// `make` method can be captured by `@Sendable` closures — Swift does not allow
-/// recursive local functions to be marked `@Sendable`, and generic functions
-/// prohibit nested class declarations.
-private final class UndoEntryFactory<M: Model>: @unchecked Sendable {
-    let restore: @Sendable (ModelStateSnapshot<M>) -> Void
-    let captureNow: @Sendable () -> ModelStateSnapshot<M>
-
-    init(
-        restore: @escaping @Sendable (ModelStateSnapshot<M>) -> Void,
-        captureNow: @escaping @Sendable () -> ModelStateSnapshot<M>
-    ) {
-        self.restore = restore
-        self.captureNow = captureNow
-    }
-
-    func make(for snapshot: ModelStateSnapshot<M>) -> ModelUndoEntry {
+    private func makeEntryFromRestores(
+        applyRestores: [@Sendable () -> Void],
+        captureReverses: [@Sendable () -> @Sendable () -> Void]
+    ) -> ModelUndoEntry {
         ModelUndoEntry(
-            apply: { self.restore(snapshot) },
-            captureReverse: { self.make(for: self.captureNow()) }
+            apply: {
+                for restore in applyRestores { restore() }
+            },
+            captureReverse: { [self] in
+                // Capture current live values for all changed properties to build the reverse entry.
+                let reverseRestores = captureReverses.map { $0() }
+                // The reverse entry's captureReverse re-captures at that future point in time.
+                return self.makeEntryFromRestores(applyRestores: reverseRestores, captureReverses: captureReverses)
+            }
         )
     }
 }
 
-// MARK: - Snapshot baseline helper
-
-/// A `LockIsolated`-backed mutable snapshot used inside `trackUndo` to track the last
-/// committed model state. Updated atomically so it is always consistent with the live model.
-private final class SnapshotBaseline<M: Model>: @unchecked Sendable {
-    private let storage: LockIsolated<M>
-
-    init(snapshot: M) {
-        storage = LockIsolated(snapshot)
-    }
-
-    /// The current stored snapshot (read-only).
-    var value: M { storage.value }
-
-    /// Atomically replaces the stored snapshot with `new` and returns the old value.
-    @discardableResult
-    func swap(to new: M) -> M {
-        storage.withValue { old in
-            defer { old = new }
-            return old
-        }
-    }
-}
-
-// MARK: - Equality helpers
+// MARK: - Equality helper
 
 /// Returns `true` when both values are `Equatable` and compare equal.
-/// Returns `false` for non-Equatable types so the caller always writes in that case.
+/// Returns `false` for non-Equatable types so the caller always treats them as changed.
 private func areEqual<T>(_ lhs: T, _ rhs: T) -> Bool {
     func openEquatable<E: Equatable>(_ l: E, _ r: Any) -> Bool {
         (r as? E).map { l == $0 } ?? false
@@ -602,13 +633,12 @@ private func areEqual<T>(_ lhs: T, _ rhs: T) -> Bool {
 // MARK: - Backing path collector
 
 /// A `ModelAccess` subclass that intercepts `willAccess` callbacks to collect the
-/// backing key paths that are accessed when reading a model's properties.
+/// backing key paths accessed when reading a model's properties.
 ///
-/// Used by `trackUndo(_ paths:)` to map user-provided computed key paths (e.g. `\.items`)
-/// to the private backing storage paths (e.g. `\._items`) generated by the `@Model` macro.
-/// Must be installed via `usingActiveAccess` while reading from the LIVE model — frozen copies
-/// bypass `Context` and never fire `willAccess`.
-/// The collected backing paths are passed to `RestoreVisitor` for safe selective restoration.
+/// Used by `trackUndo(_ paths:)` and `trackUndo(excluding:)` to map user-provided
+/// computed key paths (e.g. `\.items`) to the private backing storage paths (e.g. `\._items`)
+/// generated by the `@Model` macro. Must be installed via `usingActiveAccess` while
+/// reading from the LIVE model — frozen copies bypass `Context` and never fire `willAccess`.
 private final class BackingPathCollector<M: Model>: ModelAccess, @unchecked Sendable {
     private(set) var paths: Set<PartialKeyPath<M>> = []
 
@@ -623,5 +653,3 @@ private final class BackingPathCollector<M: Model>: ModelAccess, @unchecked Send
         return nil
     }
 }
-
-

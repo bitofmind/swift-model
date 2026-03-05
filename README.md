@@ -728,7 +728,9 @@ stack.redo()
 
 ### Selective tracking
 
-Pass explicit key paths to exclude properties from the undo stack — useful for ephemeral UI state like a search field or a "new item" text box:
+There are two ways to track only a subset of properties:
+
+**Track specific paths** — pass the key paths you want to track:
 
 ```swift
 @Model struct TodoListModel {
@@ -737,6 +739,33 @@ Pass explicit key paths to exclude properties from the undo stack — useful for
 
     func onActivate() {
         node.trackUndo(\.items)  // only item changes are undoable
+    }
+}
+```
+
+**Exclude specific paths** — track everything except the listed key paths:
+
+```swift
+@Model struct EditorModel {
+    var title = ""
+    var body = ""
+    var searchQuery = ""   // ephemeral search field
+
+    func onActivate() {
+        node.trackUndo(excluding: \.searchQuery)  // all except searchQuery
+    }
+}
+```
+
+**Child model tracking** — each model is responsible for its own properties. Child models that should participate in undo must call `trackUndo` in their own `onActivate`:
+
+```swift
+@Model struct TodoItem {
+    var title: String
+    var isDone: Bool = false
+
+    func onActivate() {
+        node.trackUndo(\.title, \.isDone)  // tracked by the child itself
     }
 }
 ```

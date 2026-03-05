@@ -91,18 +91,20 @@ struct TrackUndoAllTests {
         #expect(!stack.canRedo)
     }
 
-    // MARK: - Child model changes are tracked
+    // MARK: - Child model changes are tracked by the child itself
 
-    @Test func childModelChangeCreatesUndoEntry() async {
+    @Test func childModelChangeCreatesUndoEntryViaChild() async {
         let stack = makeStack()
         let (model, tester) = ParentTrackAll().andTester(withDependencies: { $0.undoSystem.backend = stack })
 
+        // EquatableChild registers trackUndo() in its onActivate, so changing its value
+        // pushes an entry to the shared backend.
         model.child.value = 99
         await tester.assert { model.child.value == 99 }
         #expect(stack.canUndo)
     }
 
-    @Test func undoRevertsChildModelChange() async {
+    @Test func undoRevertsChildModelChangeViaChild() async {
         let stack = makeStack()
         let (model, tester) = ParentTrackAll().andTester(withDependencies: { $0.undoSystem.backend = stack })
 
@@ -111,6 +113,20 @@ struct TrackUndoAllTests {
 
         stack.undo()
         await tester.assert { model.child.value == 0 && model.node.undoSystem.canRedo == true }
+    }
+
+    @Test func parentTrackAllDoesNotTrackChildInternalProperties() async {
+        // ParentTrackAll.trackUndo() tracks `title` and `child` as a whole value.
+        // Changing child.value is tracked by EquatableChild's own trackUndo(), not the parent.
+        // If EquatableChild were NOT to call trackUndo, changes to child.value would not be tracked.
+        let stack = makeStack()
+        let (model, tester) = ParentTrackAll().andTester(withDependencies: { $0.undoSystem.backend = stack })
+
+        model.title = "Hello"
+        await tester.assert { model.title == "Hello" }
+        #expect(stack.canUndo)
+        stack.undo()
+        await tester.assert { model.title == "" }
     }
 
     // MARK: - @ModelIgnored fields are not tracked
@@ -489,6 +505,10 @@ private struct ParentTrackAll {
 @Model
 private struct EquatableChild: Equatable {
     var value = 0
+
+    func onActivate() {
+        node.trackUndo()
+    }
 }
 
 @Model

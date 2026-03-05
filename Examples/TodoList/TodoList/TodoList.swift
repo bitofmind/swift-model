@@ -8,6 +8,11 @@ import SwiftUI
     var title: String
     var isDone: Bool = false
 
+    func onActivate() {
+        // Track title and isDone for undo so renaming and toggling are undoable.
+        node.trackUndo(\.title, \.isDone)
+    }
+
     func toggleTapped() {
         isDone.toggle()
     }

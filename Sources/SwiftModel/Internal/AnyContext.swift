@@ -179,6 +179,10 @@ class AnyContext: @unchecked Sendable {
 
     var anyModel: any Model { fatalError() }
 
+    /// The ModelAccess registered on this context's live model, if any.
+    /// Overridden by Context<M> to return readModel._$modelContext.access.
+    var anyModelAccess: ModelAccess? { nil }
+
     var rootPaths: [AnyKeyPath] {
         lock {
             if parents.isEmpty {
@@ -528,7 +532,18 @@ class AnyContext: @unchecked Sendable {
                         rootParent.setupModelDependency(&model, cacheKey: nil, postSetups: &postSetups)
                         rootParent.dependencyCache[cacheKey] = model
                     }
-                    setupModelDependency(&model, cacheKey: cacheKey, postSetups: &postSetups)
+                    // Register the shared dependency context on self directly rather than
+                    // recursing into setupModelDependency again. At this point the model's
+                    // context exists in rootParent.dependencyContexts, but its parent link
+                    // to rootParent hasn't been established yet (that happens in postSetups),
+                    // so the child.rootParent === rootParent check in the recursive call would
+                    // fail, producing an infinite recursion / stack overflow.
+                    if let child = model._$modelContext.reference?.context {
+                        if dependencyContexts[ObjectIdentifier(D.self)] == nil {
+                            dependencyContexts[ObjectIdentifier(D.self)] = child
+                            child.addParent(self, callbacks: &postSetups)
+                        }
+                    }
                 } else {
                     // If the model already has a live context (e.g. a @Model dependency whose
                     // testValue/liveValue was previously anchored), make a fresh copy preserving

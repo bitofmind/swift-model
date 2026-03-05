@@ -176,6 +176,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         model
     }
 
+    override var anyModelAccess: ModelAccess? {
+        lock { readModel._$modelContext.access }
+    }
+
     func updateContext<T: Model>(for model: inout T, at path: WritableKeyPath<M, T>){
         guard !isDestructed else { return }
         
@@ -258,7 +262,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 }
                 lock.unlock()
 
-                for plc in postLockCallbacks { plc() }
+                runPostLockCallbacks(postLockCallbacks)
             }
         }
     }
@@ -296,7 +300,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
             lock.unlock()
 
-            for plc in postLockCallbacks { plc() }
+            runPostLockCallbacks(postLockCallbacks)
         }
         return result
     }
@@ -308,9 +312,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
         var postLockCallbacks: [() -> Void] = []
         defer {
-            for plc in postLockCallbacks {
-                plc()
-            }
+            runPostLockCallbacks(postLockCallbacks)
         }
 
         return try lock {
@@ -334,7 +336,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     func childContext<C: ModelContainer, Child: Model>(containerPath: WritableKeyPath<M, C>, elementPath: WritableKeyPath<C, Child>, childModel: Child) -> Context<Child> {
         var postLockCallbacks: [() -> Void] = []
         defer {
-            for c in postLockCallbacks { c() }
+            runPostLockCallbacks(postLockCallbacks)
         }
         return lock {
             let modelRef = ModelRef(elementPath: elementPath, id: childModel.id)
@@ -450,3 +452,26 @@ func _testing_keepLastSeenAround<T>(_ operation: () throws -> T) rethrows -> T {
 }
 
 let lastSeenTimeToLive: TimeInterval = 2
+
+/// Runs `callbacks` and then drains any `threadLocals.postLockFlushes` registered during the run.
+///
+/// Setting `postLockFlushes` to a non-nil array before execution allows callbacks (such as the
+/// `UndoCoalescer`) to defer work until after ALL per-property `onModify` callbacks in the
+/// current transaction batch have completed. This guarantees that multi-property transactions
+/// are merged into a single undo entry rather than one entry per changed property.
+///
+/// Re-entrant: if `postLockFlushes` is already non-nil (we're nested inside another
+/// `runPostLockCallbacks` call), we simply run `callbacks` without wrapping, allowing the outer
+/// invocation to drain the accumulated flushes.
+func runPostLockCallbacks(_ callbacks: [() -> Void]) {
+    guard threadLocals.postLockFlushes == nil else {
+        // Nested call — outer invocation will drain flushes after all callbacks complete.
+        for plc in callbacks { plc() }
+        return
+    }
+    threadLocals.postLockFlushes = []
+    for plc in callbacks { plc() }
+    let flushes = threadLocals.postLockFlushes!
+    threadLocals.postLockFlushes = nil
+    for f in flushes { f() }
+}
