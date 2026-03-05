@@ -39,10 +39,14 @@ import Dependencies
 ///
 /// > A model is always identifiable, either by providing your own id or using a automatically generated identity id
 public protocol Model: ModelContainer, Identifiable, Sendable {
-    var _$modelContext: ModelContext<Self> { get set }
-
     /// The type of events that this model can send
     associatedtype Event = ()
+
+    /// The model's node, providing access to tasks, events, cancellation, and more.
+    ///
+    /// > Important: Do not assign to `node` directly. The setter is required by the framework
+    /// internally, and bypassing it will corrupt the model's state tracking.
+    var node: ModelNode<Self> { get set }
 
     /// Will be called once a model becomes part of a anchored model hierarchy.
     /// > Any parent will always be activated before its children to allow the parent to set up listener on child events and value changes

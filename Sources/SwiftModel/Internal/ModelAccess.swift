@@ -53,22 +53,32 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
 }
 
 extension Model {
+    /// Internal shorthand to access the underlying ModelContext without going through `node`.
+    var _$modelContext: ModelContext<Self> {
+        node._$modelContext
+    }
+
     var access: ModelAccess? {
         _$modelContext.access
     }
 
     func withAccess(_ access: ModelAccess?) -> Self {
+        var ctx = _$modelContext
+        ctx.access = access
         var model = self
-        model._$modelContext.access = access
+        model.node = ModelNode(_$modelContext: ctx)
         return model
     }
 
     func withAccessIfPropagateToChildren(_ access: ModelAccess?) -> Self {
-        var model = self
-        if let access, access.shouldPropagateToChildren {
-            model._$modelContext.access = access
-        }
-        return model
+        guard let access, access.shouldPropagateToChildren else { return self }
+        return withAccess(access)
+    }
+
+    mutating func withSource(_ source: ModelContext<Self>.Source) {
+        var ctx = _$modelContext
+        ctx.source = source
+        node = ModelNode(_$modelContext: ctx)
     }
 }
 

@@ -51,31 +51,28 @@ extension Model {
 
 extension Model {
     var noAccess: Self {
-        var copy = self
-        copy._$modelContext.access = nil
-        return copy
+        withAccess(nil)
     }
-    
+
     var shallowCopy: Self {
         switch _$modelContext.source {
         case .frozenCopy:
             return self
-            
+
         case let .reference(reference):
             if let context = reference.context {
                 var copy = context[\.self]
-                copy._$modelContext.source = .frozenCopy(id: copy.modelID)
-                copy._$modelContext.access = nil
-                return copy
+                copy.withSource(.frozenCopy(id: copy.modelID))
+                return copy.withAccess(nil)
             } else if let last = reference.model {
                 return last
             } else {
                 return self
             }
-            
+
         case let .lastSeen(id: id):
             var copy = self
-            copy._$modelContext.source = .frozenCopy(id: id)
+            copy.withSource(.frozenCopy(id: id))
             return copy
         }
     }

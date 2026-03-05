@@ -42,7 +42,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
 
         readModel.withContextAdded(context: self)
-        readModel._$modelContext.access = nil
+        readModel = readModel.withAccess(nil)
         modifyModel = readModel
         reference.setContext(self)
 
@@ -392,7 +392,12 @@ extension Context {
 
         func updateAccess(_ access: ModelAccess?) {
             lock {
-                _model?._$modelContext._access = access?.reference
+                if var model = _model {
+                    var ctx = model._$modelContext
+                    ctx._access = access?.reference
+                    model.node = ModelNode(_$modelContext: ctx)
+                    _model = model
+                }
             }
         }
 

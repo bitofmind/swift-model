@@ -64,10 +64,10 @@ struct ModelMacroTests {
                         _count = newValue
                     }
                     _read {
-                        yield _$modelContext[model: self, path: \._count]
+                        yield node._$modelContext[model: self, path: \._count]
                     }
                     nonmutating _modify {
-                        yield &_$modelContext[model: self, path: \._count]
+                        yield &node._$modelContext[model: self, path: \._count]
                     }
                 }
 
@@ -75,25 +75,21 @@ struct ModelMacroTests {
                     visitor.visitStatically(at: \._count)
                 }
 
-                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                public var node: ModelNode<Self> = ModelNode(_$modelContext: ModelContext<Self>())
                 {
                     @storageRestrictions(initializes: _node)
                     init {
-                        _node = ModelNode(_$modelContext: newValue)
+                        _node = newValue
                     }
                     get {
-                        _node._$modelContext
+                        _node
                     }
                     set {
-                        _node = ModelNode(_$modelContext: newValue)
+                        _node = newValue
                     }
                 }
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
-
-                public var node: ModelNode<Self> {
-                    _node
-                }
             }
 
             extension MyModel: SwiftModel.Model {
@@ -107,7 +103,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
-                    _$modelContext.mirror(of: self, children: [("count", count as Any)])
+                    node._$modelContext.mirror(of: self, children: [("count", count as Any)])
                 }
             }
 
@@ -117,7 +113,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
-                    _$modelContext.description(of: self)
+                    node._$modelContext.description(of: self)
                 }
                 public var debugDescription: String {
                     description
@@ -143,10 +139,10 @@ struct ModelMacroTests {
                         _count = newValue
                     }
                     _read {
-                        yield _$modelContext[model: self, path: \._count]
+                        yield node._$modelContext[model: self, path: \._count]
                     }
                     nonmutating _modify {
-                        yield &_$modelContext[model: self, path: \._count]
+                        yield &node._$modelContext[model: self, path: \._count]
                     }
                 }
 
@@ -162,25 +158,21 @@ struct ModelMacroTests {
                     hasher.combine(count)
                 }
 
-                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                public var node: ModelNode<Self> = ModelNode(_$modelContext: ModelContext<Self>())
                 {
                     @storageRestrictions(initializes: _node)
                     init {
-                        _node = ModelNode(_$modelContext: newValue)
+                        _node = newValue
                     }
                     get {
-                        _node._$modelContext
+                        _node
                     }
                     set {
-                        _node = ModelNode(_$modelContext: newValue)
+                        _node = newValue
                     }
                 }
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
-
-                public var node: ModelNode<Self> {
-                    _node
-                }
             }
 
             extension MyModel: SwiftModel.Model {
@@ -194,7 +186,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
-                    _$modelContext.mirror(of: self, children: [("count", count as Any)])
+                    node._$modelContext.mirror(of: self, children: [("count", count as Any)])
                 }
             }
 
@@ -204,7 +196,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
-                    _$modelContext.description(of: self)
+                    node._$modelContext.description(of: self)
                 }
                 public var debugDescription: String {
                     description
@@ -243,14 +235,14 @@ struct ModelMacroTests {
                     }
 
                     _read {
-                        yield _$modelContext[model: self, path: \._count]
+                        yield node._$modelContext[model: self, path: \._count]
                     }
 
                     nonmutating set {
-                        let oldValue = _$modelContext[model: self, path: \._count]
+                        let oldValue = node._$modelContext[model: self, path: \._count]
                         _ = oldValue
                         print("willSet")
-                        _$modelContext[model: self, path: \._count] = newValue
+                        node._$modelContext[model: self, path: \._count] = newValue
                         print("didSet")
                     }
                 }
@@ -263,25 +255,21 @@ struct ModelMacroTests {
                     visitor.visitStatically(at: \._count)
                 }
 
-                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                public var node: ModelNode<Self> = ModelNode(_$modelContext: ModelContext<Self>())
                 {
                     @storageRestrictions(initializes: _node)
                     init {
-                        _node = ModelNode(_$modelContext: newValue)
+                        _node = newValue
                     }
                     get {
-                        _node._$modelContext
+                        _node
                     }
                     set {
-                        _node = ModelNode(_$modelContext: newValue)
+                        _node = newValue
                     }
                 }
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
-
-                public var node: ModelNode<Self> {
-                    _node
-                }
             }
 
             extension MyModel: SwiftModel.Model {
@@ -295,7 +283,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
-                    _$modelContext.mirror(of: self, children: [("id", id as Any), ("count", count as Any)])
+                    node._$modelContext.mirror(of: self, children: [("id", id as Any), ("count", count as Any)])
                 }
             }
 
@@ -305,7 +293,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
-                    _$modelContext.description(of: self)
+                    node._$modelContext.description(of: self)
                 }
                 public var debugDescription: String {
                     description
@@ -331,10 +319,10 @@ struct ModelMacroTests {
                         _count = newValue
                     }
                     _read {
-                        yield _$modelContext[model: self, path: \._count]
+                        yield node._$modelContext[model: self, path: \._count]
                     }
                     nonmutating _modify {
-                        yield &_$modelContext[model: self, path: \._count]
+                        yield &node._$modelContext[model: self, path: \._count]
                     }
                 }
 
@@ -342,25 +330,21 @@ struct ModelMacroTests {
                     visitor.visitStatically(at: \._count)
                 }
 
-                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                public var node: ModelNode<Self> = ModelNode(_$modelContext: ModelContext<Self>())
                 {
                     @storageRestrictions(initializes: _node)
                     init {
-                        _node = ModelNode(_$modelContext: newValue)
+                        _node = newValue
                     }
                     get {
-                        _node._$modelContext
+                        _node
                     }
                     set {
-                        _node = ModelNode(_$modelContext: newValue)
+                        _node = newValue
                     }
                 }
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
-
-                public var node: ModelNode<Self> {
-                    _node
-                }
             }
 
             extension MyModel: SwiftModel.Model {
@@ -374,7 +358,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
-                    _$modelContext.mirror(of: self, children: [("count", count as Any)])
+                    node._$modelContext.mirror(of: self, children: [("count", count as Any)])
                 }
             }
 
@@ -384,7 +368,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
-                    _$modelContext.description(of: self)
+                    node._$modelContext.description(of: self)
                 }
                 public var debugDescription: String {
                     description
@@ -406,7 +390,7 @@ struct ModelMacroTests {
             struct MyModel {
                 var someModel: SomeModel {
                     get {
-                        _$modelContext.dependency()
+                        node._$modelContext.dependency()
                     }
                 }
 
@@ -414,25 +398,21 @@ struct ModelMacroTests {
 
                 }
 
-                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                public var node: ModelNode<Self> = ModelNode(_$modelContext: ModelContext<Self>())
                 {
                     @storageRestrictions(initializes: _node)
                     init {
-                        _node = ModelNode(_$modelContext: newValue)
+                        _node = newValue
                     }
                     get {
-                        _node._$modelContext
+                        _node
                     }
                     set {
-                        _node = ModelNode(_$modelContext: newValue)
+                        _node = newValue
                     }
                 }
 
                 private var _node = ModelNode(_$modelContext: ModelContext<Self>())
-
-                public var node: ModelNode<Self> {
-                    _node
-                }
             }
 
             extension MyModel: SwiftModel.Model {
@@ -446,7 +426,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
-                    _$modelContext.mirror(of: self, children: [])
+                    node._$modelContext.mirror(of: self, children: [])
                 }
             }
 
@@ -456,7 +436,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
-                    _$modelContext.description(of: self)
+                    node._$modelContext.description(of: self)
                 }
                 public var debugDescription: String {
                     description

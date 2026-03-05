@@ -33,8 +33,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
         super.init(useWeakReference: true)
 
-        context.readModel._$modelContext.access = self
-        context.modifyModel._$modelContext.access = self
+        context.readModel = context.readModel.withAccess(self)
+        context.modifyModel = context.modifyModel.withAccess(self)
         usingAccess(self) {
             context.model.activate()
         }

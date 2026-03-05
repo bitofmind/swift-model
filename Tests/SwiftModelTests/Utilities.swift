@@ -53,6 +53,11 @@ extension Optional where Wrapped: AnyObject {
             while self != nil {
                 await Task.yield()
             }
+            // After the object is released, teardown closures dispatched during
+            // onRemoval may still be held in backgroundCall's drain task queue.
+            // Wait for those to finish so transitively owned objects (e.g. child
+            // context References) are also released before callers assert on them.
+            await backgroundCall.waitUntilIdle()
         }
     }
 }
