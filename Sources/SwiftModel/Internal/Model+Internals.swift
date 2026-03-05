@@ -144,35 +144,54 @@ extension Model where Self: Observable {
     }
 }
 
-// Efficiently batches multiple callbacks to execute on the main thread.
+// Batches multiple callbacks into a single Task, draining them all before yielding.
 //
-// This mechanism serves two key purposes:
-// 1. Breaks synchronous call stacks using Task.yield() to prevent stack overflow
-// 2. Amortizes Task creation overhead by batching multiple callbacks into a single Task
+// This serves two purposes:
+// 1. Breaks synchronous call stacks via Task.yield() to prevent stack overflow.
+// 2. Amortizes Task creation overhead by batching multiple callbacks into one Task.
 //
-// Note: This does NOT implement "coalescing" in the sense of deduplicating or batching
-// updates. That logic happens elsewhere (e.g., via hasPendingUpdate flags in callers).
-// This is purely a Task management optimization.
-struct MainCalls {
-    private let calls = LockIsolated<(task: Task<(), Never>, calls: [@Sendable () -> Void])?>(nil)
+// Note: This does NOT implement "coalescing" (deduplication). That logic lives in callers.
+//
+// Two instances are used:
+// - `mainCall`: runs callbacks on the MainActor (SwiftUI observation registrar delivery).
+//   Supports `drain()`/`drainIfOnMain()` and has an early-exit when already on main.
+// - `backgroundCall`: runs callbacks on a detached background task (Observed pipeline).
+//   Supports `isIdle`/`waitUntilIdle()` for the test assert loop.
+struct BatchedCalls: @unchecked Sendable {
+    struct State {
+        var task: Task<(), Never>
+        var calls: [@Sendable () -> Void]
+        /// One-shot callbacks fired when the task goes idle (after all calls drain and yield).
+        var onIdleCallbacks: [@Sendable () -> Void] = []
+    }
 
+    private let state = LockIsolated<State?>(nil)
+    /// Called to spawn a new drain task. Receives the `state` lock so the loop can call `nextBatch`.
+    private let makeTask: @Sendable (LockIsolated<State?>) -> Task<(), Never>
+    /// When set, `callAsFunction` fast-paths by calling immediately instead of enqueuing.
+    private let shouldCallDirectly: @Sendable () -> Bool
+
+    init(
+        makeTask: @escaping @Sendable (LockIsolated<State?>) -> Task<(), Never>,
+        shouldCallDirectly: @escaping @Sendable () -> Bool = { false }
+    ) {
+        self.makeTask = makeTask
+        self.shouldCallDirectly = shouldCallDirectly
+    }
+
+    // MARK: Drain (main-thread synchronous flush)
+
+    /// Synchronously drains all pending callbacks. Must only be called from the main thread.
     func drain() {
-        let calls: [@Sendable () -> Void] = calls.withValue {
-            if $0 == nil {
-                return []
-            }
-
+        let calls: [@Sendable () -> Void] = state.withValue {
+            guard $0 != nil else { return [] }
             let calls = $0!.calls
             $0!.calls.removeAll()
             return calls
         }
-
         guard !calls.isEmpty else { return }
-
         MainActor.assumeIsolated {
-            for call in calls {
-                call()
-            }
+            for call in calls { call() }
         }
     }
 
@@ -181,100 +200,88 @@ struct MainCalls {
         drain()
     }
 
+    // MARK: Idle (background settle detection)
+
+    /// True when no drain task is currently running.
+    var isIdle: Bool { state.value == nil }
+
+    /// Suspends until the drain task goes idle (all calls flushed including `Task.yield()`).
+    /// Returns immediately if already idle.
+    func waitUntilIdle() async {
+        await withCheckedContinuation { cont in
+            let shouldResume = state.withValue { s -> Bool in
+                if s != nil {
+                    s!.onIdleCallbacks.append { cont.resume() }
+                    return false
+                }
+                return true
+            }
+            if shouldResume { cont.resume() }
+        }
+    }
+
+    // MARK: Enqueue
+
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
-        guard !Thread.isMainThread else {
+        guard !shouldCallDirectly() else {
             callback()
             return
         }
-
-        calls.withValue {
+        state.withValue {
             if $0 == nil {
-                $0 = (Task(priority: .userInitiated) { @MainActor in
-                    while !Task.isCancelled {
-                        // Drain all queued callbacks at once before yielding.
-                        // This ensures that callbacks added while a previous batch was
-                        // executing are not delayed by an extra Task.yield() round-trip.
-                        let batch: [@Sendable () -> Void] = calls.withValue {
-                            if $0 == nil {
-                                return []
-                            } else if $0!.calls.isEmpty {
-                                $0!.task.cancel()
-                                $0 = nil
-                                return []
-                            }
-                            let batch = $0!.calls
-                            $0!.calls.removeAll()
-                            return batch
-                        }
-
-                        guard !batch.isEmpty else { break }
-
-                        for call in batch {
-                            call()
-                        }
-
-                        await Task.yield()
-                    }
-
-                }, calls: [callback])
+                $0 = State(task: makeTask(state), calls: [callback])
             } else {
                 $0!.calls.append(callback)
             }
         }
     }
-}
 
-let mainCall = MainCalls()
+    // MARK: Drain loop
 
-// Efficiently batches multiple callbacks to execute on a background thread.
-//
-// This mechanism serves two key purposes:
-// 1. Breaks synchronous call stacks using Task.yield() to prevent stack overflow
-// 2. Amortizes Task creation overhead by batching multiple callbacks into a single Task
-//
-// Note: This does NOT implement "coalescing" in the sense of deduplicating or batching
-// updates. That logic happens elsewhere (e.g., via hasPendingUpdate flags in callers).
-// This is purely a Task management optimization.
-struct BackgroundCalls {
-    private let calls = LockIsolated<(task: Task<(), Never>, calls: [@Sendable () -> Void])?>(nil)
-
-    func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
-        calls.withValue {
-            if $0 == nil {
-                $0 = (Task.detached(priority: .userInitiated) {
-                    while !Task.isCancelled {
-                        // Drain all queued callbacks at once before yielding.
-                        // This ensures that callbacks added while a previous batch was
-                        // executing are not delayed by an extra Task.yield() round-trip.
-                        let batch: [@Sendable () -> Void] = calls.withValue {
-                            if $0 == nil {
-                                return []
-                            } else if $0!.calls.isEmpty {
-                                $0!.task.cancel()
-                                $0 = nil
-                                return []
-                            }
-                            let batch = $0!.calls
-                            $0!.calls.removeAll()
-                            return batch
-                        }
-
-                        guard !batch.isEmpty else { break }
-
-                        for call in batch {
-                            call()
-                        }
-
-                        await Task.yield()
-                    }
-                }, calls: [callback])
-            } else {
-                $0!.calls.append(callback)
+    /// The shared async drain loop body. Runs until the queue is empty, firing idle
+    /// callbacks and executing each batch before yielding to the cooperative scheduler.
+    static func drainLoop(state: LockIsolated<State?>) async {
+        while !Task.isCancelled {
+            let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
+                guard $0 != nil else { return ([], []) }
+                if $0!.calls.isEmpty {
+                    $0!.task.cancel()
+                    let idle = $0!.onIdleCallbacks
+                    $0 = nil
+                    return ([], idle)
+                }
+                let batch = $0!.calls
+                $0!.calls.removeAll()
+                return (batch, [])
             }
+            for f in onIdle { f() }
+            guard !batch.isEmpty else { break }
+            for call in batch { call() }
+            await Task.yield()
         }
     }
 }
 
-let backgroundCall = BackgroundCalls()
+/// Delivers SwiftUI ObservationRegistrar notifications on the main actor.
+/// Fast-paths when already on the main thread (calls directly without enqueuing).
+/// Use `drain()`/`drainIfOnMain()` for synchronous flush from main-thread code paths.
+let mainCall = BatchedCalls(
+    makeTask: { state in
+        Task(priority: .userInitiated) { @MainActor in
+            await BatchedCalls.drainLoop(state: state)
+        }
+    },
+    shouldCallDirectly: { Thread.isMainThread }
+)
+
+/// Delivers Observed pipeline updates on a background thread.
+/// Use `isIdle`/`waitUntilIdle()` in tests to wait for the pipeline to settle.
+let backgroundCall = BatchedCalls(
+    makeTask: { state in
+        Task.detached(priority: .userInitiated) {
+            await BatchedCalls.drainLoop(state: state)
+        }
+    }
+)
 
 

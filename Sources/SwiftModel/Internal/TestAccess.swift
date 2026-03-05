@@ -286,9 +286,59 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     return
                 }
 
-                await Task.yield()
+                let elapsed = start.distance(to: DispatchTime.now().uptimeNanoseconds)
+                let remaining = elapsed < timeout ? timeout - UInt64(elapsed) : 0
+                await waitForModification(timeoutNanoseconds: remaining)
             }
         }
+    }
+
+    /// Suspends until a model modification occurs or the remaining timeout expires,
+    /// then lets the async pipeline settle before returning.
+    ///
+    /// When a model write completes, `onAnyModification` wakes this method. We then
+    /// wait for `backgroundCall` to go idle (so `Observed` stream continuations have
+    /// been resumed) and yield once more so `for await` loop bodies can run.
+    ///
+    /// If a modification already happened before we register (backgroundCall is busy),
+    /// we skip straight to waiting for idle.
+    private func waitForModification(timeoutNanoseconds remaining: UInt64) async {
+        guard remaining > 0 else { return }
+
+        // Fast path: a modification already happened and backgroundCall is processing it.
+        // Skip the onAnyModification wait and go straight to idle.
+        if !backgroundCall.isIdle {
+            await backgroundCall.waitUntilIdle()
+            // Extra yield: for-await loop bodies run after backgroundCall resumes continuations.
+            await Task.yield()
+            return
+        }
+
+        let (stream, cont) = AsyncStream<Void>.makeStream()
+        let cancelModification = context.onAnyModification { _ in
+            return { cont.yield() }
+        }
+        defer {
+            cancelModification()
+            cont.finish()
+        }
+
+        // Suspend until a modification fires or timeout.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                _ = await stream.first { _ in true }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: remaining)
+            }
+            await group.next()
+            group.cancelAll()
+        }
+
+        // Wait for backgroundCall to finish its batch (Observed performUpdate).
+        await backgroundCall.waitUntilIdle()
+        // Extra yield: for-await loop bodies run after the continuation resumes.
+        await Task.yield()
     }
 
     func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false) {

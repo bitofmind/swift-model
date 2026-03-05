@@ -341,9 +341,10 @@ struct TrackUndoSelectiveTests {
 /// Verifies that undoing and redoing a change properly notifies observers on both
 /// the AccessCollector path (pre-iOS 17 / .disableObservationRegistrar) and the
 /// ObservationRegistrar path (iOS 17+ `withObservationTracking`).
-/// Serialized to avoid timing failures: these tests require two sequential round-trips
-/// through backgroundCall (set value → wait for observer → undo → wait for observer),
-/// which can be starved by the cooperative scheduler under heavy parallel test load.
+/// Serialized because these tests assert against external async state (`observed.value`)
+/// that is updated by a `for await` loop. The tester has no hook into that external
+/// state, so it can only poll. Serialization prevents competing test tasks from
+/// delaying the cooperative scheduler turns needed for the for-await body to run.
 @Suite(.serialized)
 struct UndoObservationTests {
 
