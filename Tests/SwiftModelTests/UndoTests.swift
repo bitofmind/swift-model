@@ -129,7 +129,7 @@ struct TrackUndoAllTests {
         await tester.assert { model.title == "" }
     }
 
-    // MARK: - @ModelIgnored fields are not tracked
+    // MARK: - @_ModelIgnored fields are not tracked
 
     @Test func ignoredFieldChangeDoesNotCreateUndoEntry() async {
         let stack = makeStack()
@@ -514,7 +514,7 @@ private struct EquatableChild: Equatable {
 
 @Model
 private struct ModelWithIgnoredTrackAll {
-    @ModelIgnored var ignored = ""
+    @_ModelIgnored var ignored = ""
 
     func onActivate() {
         node.trackUndo()

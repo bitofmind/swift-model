@@ -93,7 +93,7 @@ enum ModelMacroError: String, Error, CustomStringConvertible {
 
 private extension VariableDeclSyntax {
     var isValid: Bool {
-        !hasMacroApplication("ModelIgnored") && !hasMacroApplication("ModelDependency")
+        !hasMacroApplication("_ModelIgnored") && !hasMacroApplication("ModelDependency")
     }
 }
 
@@ -220,10 +220,10 @@ extension ModelMacro: MemberAttributeMacro {
             return []
         }
 
-        if property.hasMacroApplication("ModelIgnored") || property.hasMacroApplication("ModelDependency") {
+        if property.hasMacroApplication("_ModelIgnored") || property.hasMacroApplication("ModelDependency") {
             return []
         }
 
-        return ["@ModelTracked"]
+        return ["@_ModelTracked"]
     }
 }

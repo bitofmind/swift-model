@@ -175,7 +175,7 @@ public final class ModelUndoStack: UndoBackend, @unchecked Sendable {
     ///
     /// Set this before anchoring. Changes after activation are not observed;
     /// use ``UndoManagerBackend`` for system UndoManager integration.
-    @ModelIgnored public var backend: (any UndoBackend)? = nil
+    @_ModelIgnored public var backend: (any UndoBackend)? = nil
 
     /// Whether there is at least one undoable action available.
     public var canUndo = false
@@ -214,7 +214,7 @@ extension DependencyValues {
 // MARK: - ModelNode.trackUndo
 
 public extension ModelNode {
-    /// Registers all `@ModelTracked` properties of this model for undo/redo tracking.
+    /// Registers all tracked properties of this model for undo/redo tracking.
     ///
     /// Each property is tracked independently. When a property changes, a
     /// ``ModelUndoEntry`` is pushed onto the ``ModelUndoSystem`` dependency's
@@ -224,7 +224,7 @@ public extension ModelNode {
     ///
     /// ```swift
     /// func onActivate() {
-    ///     node.trackUndo()  // tracks all @ModelTracked properties
+    ///     node.trackUndo()  // tracks all model properties
     /// }
     /// ```
     ///
@@ -283,7 +283,7 @@ public extension ModelNode {
         context.model.visit(with: &visitor, includeSelf: false)
     }
 
-    /// Registers all `@ModelTracked` properties **except** the listed ones for undo/redo tracking.
+    /// Registers all tracked properties **except** the listed ones for undo/redo tracking.
     ///
     /// Equivalent to `trackUndo()` but excludes specific key paths from the undo stack.
     ///

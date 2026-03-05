@@ -7,8 +7,8 @@ import MacroTesting
 
 @Suite(.macros([
     "Model": ModelMacro.self,
-    "ModelTracked": ModelTrackedMacro.self,
-    "ModelIgnored": ModelIgnoredMacro.self,
+    "_ModelTracked": ModelTrackedMacro.self,
+    "_ModelIgnored": ModelIgnoredMacro.self,
     "ModelDependency": ModelDependencyMacro.self,
 ], record: .never))
 struct ModelMacroTests {

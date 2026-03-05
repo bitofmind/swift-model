@@ -89,10 +89,6 @@ Because models are structs (value types), SwiftModel eliminates the retain-cycle
 
 This works because each `@Model` struct holds only a weak reference to its underlying context. The strong ownership lives in the model hierarchy (parent → child), so closures that capture `self` cannot create cycles.
 
-### @ModelIgnored and @ModelTracked
-
-`@ModelIgnored` and `@ModelTracked` are implementation details used internally by the `@Model` macro. You should not use them directly in your own models.
-
 ### Composition
 
 A model can be composed by other models where the most common composition is to have either an inline model, an optional model, or a collection of models.
@@ -712,7 +708,7 @@ Inject a `ModelUndoStack` as the `undoSystem` dependency when anchoring, then ca
     var body = ""
 
     func onActivate() {
-        node.trackUndo()  // all @ModelTracked properties participate in undo
+        node.trackUndo()  // all tracked properties participate in undo
     }
 }
 

@@ -18,7 +18,7 @@ public struct ModelTrackedMacro: AccessorMacro {
             return []
         }
 
-        if property.hasMacroApplication("ModelIgnored") {
+        if property.hasMacroApplication("_ModelIgnored") {
             return []
         }
 
@@ -90,14 +90,14 @@ extension ModelTrackedMacro: PeerMacro {
           return []
         }
 
-        if property.hasMacroApplication("ModelIgnored")
-          || property.hasMacroApplication("ModelTracked")
+        if property.hasMacroApplication("_ModelIgnored")
+          || property.hasMacroApplication("_ModelTracked")
         {
           return []
         }
 
         let storage = DeclSyntax(
-          property.privatePrefixed("_", addingAttribute: "@ModelIgnored"))
+          property.privatePrefixed("_", addingAttribute: "@_ModelIgnored"))
         return [storage]
     }
 }
