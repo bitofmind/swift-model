@@ -1,6 +1,6 @@
 # SwiftModel
 
-SwiftModel is a library for composing models that drives SwiftUI views. It comes with many powerful features and advanced tooling using a lightweight modern Swift style.
+SwiftModel is a library for composing models that drive SwiftUI views, with powerful features and advanced tooling using a lightweight modern Swift style.
 
 - [What is SwiftModel](#what-is-swiftmodel)
 - [Models and Composition](#models-and-composition)
@@ -13,12 +13,12 @@ SwiftModel is a library for composing models that drives SwiftUI views. It comes
 
 ## What is SwiftModel   
 
-Much like SwiftUI's composition of views, SwiftModel uses well-integrated modern Swift tools for composing your app's different features into a hierarchy of models. Under the hood, SwiftModel will keep track of model state changes, dependencies and ongoing asynchronous work. This result in several advantages, such as:  
+Much like SwiftUI's composition of views, SwiftModel uses well-integrated modern Swift tools for composing your app's different features into a hierarchy of models. Under the hood, SwiftModel keeps track of model state changes, dependencies, and ongoing asynchronous work. This results in several advantages:
 
 - Natural injection and propagation of dependencies down the model hierarchy.
 - Support for sending events up or down the model hierarchy.
 - Exhaustive testing of state changes, events and concurrent operations.
-- Integrates fully with modern swift concurrency with extended tools for powerful lifetime management.
+- Integrates fully with modern Swift concurrency with extended tools for powerful lifetime management.
 - Fine-grained observation of model state changes.
 
  > SwiftModel is an evolution of the [Swift One State](https://github.com/bitofmind/swift-one-state) library, where the introduction of Swift macros allows a more lightweight syntax. 
@@ -59,7 +59,7 @@ import SwiftModel
 }
 ``` 
 
-> Note, that your model types is required to be a struct, even though its behavior is more like a reference type such as class. This is required to unlock some of the powerful state update tracking that is used in testing and debugging as well as to avoid issues with retain cycles that are common with reference types.
+> Note that your model type is required to be a struct, even though its behavior is more like a reference type such as a class. This is required to unlock the powerful state tracking used in testing and debugging, and to avoid retain cycles that are common with reference types.
 
 ### No Retain Cycles
 
@@ -166,6 +166,12 @@ If a view is not called more than once, you can create the model with an anchor 
 }
 ```
 
+If you need to keep a reference to both the model and the anchor separately, use `andAnchor()`:
+
+```swift
+let (model, anchor) = AppModel().andAnchor()
+```
+
 ### Model Life Stages
 
 A SwiftModel model goes through different life stages. It starts out in the initial state. This is typically just for a really brief period between calling the initializer and being added to a model hierarchy of anchored models.
@@ -179,7 +185,7 @@ func addButtonTapped() {
 
 Once an initial model is added to an anchored model, it is set up with a supporting context and becomes anchored.
 
-If the model is later on removed from the parent’s anchored model, it will loose its supporting context and enter a destructed state.
+If the model is later removed from the parent's anchored model, it will lose its supporting context and enter a destructed state.
 
 > A model can also be copied into a frozen copy where the state will become immutable. This is used e.g. when printing state updates, and while running unit tests, to be able to compare previous states of a model with later ones.   
 
@@ -187,7 +193,7 @@ If the model is later on removed from the parent’s anchored model, it will loo
 
 The `Model` protocol provides an `onActivate()` extension point that is called by SwiftModel once the model becomes part of anchored model hierarchy. This is a perfect place to populate a model's state from its dependencies and to set up listeners on child events and state changes.
 
-> Any parent will always be activated before its children to allow the parent to set up listener on child events and value changes. Once a parent is deactivated it will cancel it own activities before deactivating its children.
+> Any parent will always be activated before its children to allow the parent to set up listeners on child events and value changes. Once a parent is deactivated it will cancel its own activities before deactivating its children.
 
 ```swift
 func onActivate() {
@@ -465,7 +471,7 @@ let services = node.mapHierarchy(for: [.self, .descendants, .dependencies]) {
 
 ## Lifetime and Asynchronous Work
 
-A typical model will need to handle asynchronous work such as performing operations and listening on updates from its dependencies. It is also common to listen on model events and state changes, that SwiftModel exposes as asynchronous streams.
+A typical model will need to handle asynchronous work such as performing operations and listening on updates from its dependencies. It is also common to listen to model events and state changes that SwiftModel exposes as asynchronous streams.
 
 >  SwiftModel is fully thread safe, and supports working with your models and their state from any task context. SwiftUI helpers such as `@ObservedModel` will make sure to only update views from the `@MainActor` that is required by SwiftUI.
 
@@ -568,7 +574,7 @@ The `Equatable` overload automatically compares the new result with the cached v
 
 ### Cancellation
 
-All tasks started from a model are automatically cancelled once the model is deactivated (it is removed from an anchored model hierarchy). But `task()` and `forEach()` also returns a `Cancellable` instance that allows you to cancel an operation earlier.
+All tasks started from a model are automatically cancelled once the model is deactivated (it is removed from an anchored model hierarchy). But `task()` and `forEach()` also return a `Cancellable` instance that allows you to cancel an operation earlier.
 
 ```swift
 let task = task { ... }
@@ -654,7 +660,7 @@ func startOperation() {
 
 ### Transactions
 
-As SwiftModel fully embraces swift concurrency tools, it means that your model is often accessed from several different threads at once. This is safe to do, but sometimes it is important that model state modifications are grouped together to not break invariants. For this SwiftModel provides the `node.transaction { ... }` helper.
+As SwiftModel fully embraces Swift concurrency tools, it means that your model is often accessed from several different threads at once. This is safe to do, but sometimes it is important that model state modifications are grouped together to not break invariants. For this SwiftModel provides the `node.transaction { ... }` helper.
 
 ```swift
 node.transaction {
@@ -693,6 +699,18 @@ func onActivate() {
 ```
 
 > `observeAnyModification()` is on `Model` directly (not `node`), so you call it as `observeAnyModification()` from within a model, or `childModel.observeAnyModification()` from a parent model.
+
+### Combine Integration
+
+If your project uses Combine, `node.onReceive(_:)` lets you subscribe to any `Publisher` for the lifetime of the model. The subscription is automatically cancelled when the model is deactivated.
+
+```swift
+func onActivate() {
+    node.onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+        refresh()
+    }
+}
+```
 
 ## Undo and Redo
 
@@ -897,7 +915,7 @@ When a new `EditorModel` is added to `editors`, the stream immediately includes 
 
 ## Events
 
-It is common that models needs to communicate up or down the model hierarchy. Often it is most natural to set up a callback closure for children to communicate back to parents, or for parents to call method directly on children. But for more complicated setups, SwiftModel also support sending events up and down the model hierarchy. 
+It is common that models need to communicate up or down the model hierarchy. Often it is most natural to set up a callback closure for children to communicate back to parents, or for parents to call methods directly on children. But for more complicated setups, SwiftModel also supports sending events up and down the model hierarchy.
 
 ```swift
 enum AppEvent { 
@@ -936,7 +954,7 @@ Often events are specific to one type of model, and SwiftModel adds special supp
 }
 ```
 
-Now you can explicitly ask for events from composed models where your will conveniently also receive an instance of the sending model.
+Now you can explicitly ask for events from composed models, and you will also receive an instance of the sending model.
 
 ```swift
 node.forEach(node.event(fromType: StandupDetail.self)) { event, standupDetail in
