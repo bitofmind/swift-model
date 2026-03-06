@@ -75,24 +75,32 @@ struct ModelMacroTests {
                     visitor.visitStatically(at: \._count)
                 }
 
-                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                var _$contextInit: ModelContext<Self> = ModelContext<Self>()
                 {
-                    @storageRestrictions(initializes: _node)
-                    init {
-                        _node = ModelNode(_$modelContext: newValue)
+                    @storageRestrictions(initializes: _$modelContext)
+                    init(initialValue) {
+                        _$modelContext = initialValue
                     }
                     get {
-                        _node._$modelContext
+                        fatalError("_$contextInit is an initializer-only property and must never be read")
                     }
                     set {
-                        _node = ModelNode(_$modelContext: newValue)
+                        fatalError("_$contextInit is an initializer-only property and must never be written after initialization")
                     }
                 }
 
-                private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+                public var _context: ModelContextAccess<Self> {
+                    ModelContextAccess(_$modelContext)
+                }
+
+                private var _$modelContext: ModelContext<Self>
 
                 public var node: ModelNode<Self> {
-                    _node
+                    ModelNode(_$modelContext: _$modelContext)
+                }
+
+                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                    _$modelContext = update._$modelContext
                 }
             }
 
@@ -107,7 +115,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
-                    _$modelContext.mirror(of: self, children: [("count", count as Any)])
+                    node.mirror(of: self, children: [("count", count as Any)])
                 }
             }
 
@@ -117,7 +125,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
-                    _$modelContext.description(of: self)
+                    node.description(of: self)
                 }
                 public var debugDescription: String {
                     description
@@ -162,24 +170,32 @@ struct ModelMacroTests {
                     hasher.combine(count)
                 }
 
-                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                var _$contextInit: ModelContext<Self> = ModelContext<Self>()
                 {
-                    @storageRestrictions(initializes: _node)
-                    init {
-                        _node = ModelNode(_$modelContext: newValue)
+                    @storageRestrictions(initializes: _$modelContext)
+                    init(initialValue) {
+                        _$modelContext = initialValue
                     }
                     get {
-                        _node._$modelContext
+                        fatalError("_$contextInit is an initializer-only property and must never be read")
                     }
                     set {
-                        _node = ModelNode(_$modelContext: newValue)
+                        fatalError("_$contextInit is an initializer-only property and must never be written after initialization")
                     }
                 }
 
-                private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+                public var _context: ModelContextAccess<Self> {
+                    ModelContextAccess(_$modelContext)
+                }
+
+                private var _$modelContext: ModelContext<Self>
 
                 public var node: ModelNode<Self> {
-                    _node
+                    ModelNode(_$modelContext: _$modelContext)
+                }
+
+                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                    _$modelContext = update._$modelContext
                 }
             }
 
@@ -194,7 +210,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
-                    _$modelContext.mirror(of: self, children: [("count", count as Any)])
+                    node.mirror(of: self, children: [("count", count as Any)])
                 }
             }
 
@@ -204,7 +220,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
-                    _$modelContext.description(of: self)
+                    node.description(of: self)
                 }
                 public var debugDescription: String {
                     description
@@ -263,24 +279,32 @@ struct ModelMacroTests {
                     visitor.visitStatically(at: \._count)
                 }
 
-                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                var _$contextInit: ModelContext<Self> = ModelContext<Self>()
                 {
-                    @storageRestrictions(initializes: _node)
-                    init {
-                        _node = ModelNode(_$modelContext: newValue)
+                    @storageRestrictions(initializes: _$modelContext)
+                    init(initialValue) {
+                        _$modelContext = initialValue
                     }
                     get {
-                        _node._$modelContext
+                        fatalError("_$contextInit is an initializer-only property and must never be read")
                     }
                     set {
-                        _node = ModelNode(_$modelContext: newValue)
+                        fatalError("_$contextInit is an initializer-only property and must never be written after initialization")
                     }
                 }
 
-                private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+                public var _context: ModelContextAccess<Self> {
+                    ModelContextAccess(_$modelContext)
+                }
+
+                private var _$modelContext: ModelContext<Self>
 
                 public var node: ModelNode<Self> {
-                    _node
+                    ModelNode(_$modelContext: _$modelContext)
+                }
+
+                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                    _$modelContext = update._$modelContext
                 }
             }
 
@@ -295,7 +319,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
-                    _$modelContext.mirror(of: self, children: [("id", id as Any), ("count", count as Any)])
+                    node.mirror(of: self, children: [("id", id as Any), ("count", count as Any)])
                 }
             }
 
@@ -305,7 +329,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
-                    _$modelContext.description(of: self)
+                    node.description(of: self)
                 }
                 public var debugDescription: String {
                     description
@@ -342,24 +366,32 @@ struct ModelMacroTests {
                     visitor.visitStatically(at: \._count)
                 }
 
-                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                var _$contextInit: ModelContext<Self> = ModelContext<Self>()
                 {
-                    @storageRestrictions(initializes: _node)
-                    init {
-                        _node = ModelNode(_$modelContext: newValue)
+                    @storageRestrictions(initializes: _$modelContext)
+                    init(initialValue) {
+                        _$modelContext = initialValue
                     }
                     get {
-                        _node._$modelContext
+                        fatalError("_$contextInit is an initializer-only property and must never be read")
                     }
                     set {
-                        _node = ModelNode(_$modelContext: newValue)
+                        fatalError("_$contextInit is an initializer-only property and must never be written after initialization")
                     }
                 }
 
-                private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+                public var _context: ModelContextAccess<Self> {
+                    ModelContextAccess(_$modelContext)
+                }
+
+                private var _$modelContext: ModelContext<Self>
 
                 public var node: ModelNode<Self> {
-                    _node
+                    ModelNode(_$modelContext: _$modelContext)
+                }
+
+                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                    _$modelContext = update._$modelContext
                 }
             }
 
@@ -374,7 +406,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
-                    _$modelContext.mirror(of: self, children: [("count", count as Any)])
+                    node.mirror(of: self, children: [("count", count as Any)])
                 }
             }
 
@@ -384,7 +416,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
-                    _$modelContext.description(of: self)
+                    node.description(of: self)
                 }
                 public var debugDescription: String {
                     description
@@ -414,24 +446,32 @@ struct ModelMacroTests {
 
                 }
 
-                public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+                var _$contextInit: ModelContext<Self> = ModelContext<Self>()
                 {
-                    @storageRestrictions(initializes: _node)
-                    init {
-                        _node = ModelNode(_$modelContext: newValue)
+                    @storageRestrictions(initializes: _$modelContext)
+                    init(initialValue) {
+                        _$modelContext = initialValue
                     }
                     get {
-                        _node._$modelContext
+                        fatalError("_$contextInit is an initializer-only property and must never be read")
                     }
                     set {
-                        _node = ModelNode(_$modelContext: newValue)
+                        fatalError("_$contextInit is an initializer-only property and must never be written after initialization")
                     }
                 }
 
-                private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+                public var _context: ModelContextAccess<Self> {
+                    ModelContextAccess(_$modelContext)
+                }
+
+                private var _$modelContext: ModelContext<Self>
 
                 public var node: ModelNode<Self> {
-                    _node
+                    ModelNode(_$modelContext: _$modelContext)
+                }
+
+                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                    _$modelContext = update._$modelContext
                 }
             }
 
@@ -446,7 +486,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
-                    _$modelContext.mirror(of: self, children: [])
+                    node.mirror(of: self, children: [])
                 }
             }
 
@@ -456,7 +496,7 @@ struct ModelMacroTests {
 
             extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
-                    _$modelContext.description(of: self)
+                    node.description(of: self)
                 }
                 public var debugDescription: String {
                     description

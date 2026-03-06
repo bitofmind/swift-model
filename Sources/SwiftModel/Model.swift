@@ -39,8 +39,6 @@ import Dependencies
 ///
 /// > A model is always identifiable, either by providing your own id or using a automatically generated identity id
 public protocol Model: ModelContainer, Identifiable, Sendable {
-    var _$modelContext: ModelContext<Self> { get set }
-
     /// The type of events that this model can send
     associatedtype Event = ()
 
@@ -49,6 +47,45 @@ public protocol Model: ModelContainer, Identifiable, Sendable {
     /// 
     /// > Any remaining children will always be deactivated (cancelled) just after its parent deactivation to allow the parent to access and tear down listeners on child events and value changes.
     func onActivate()
+
+    /// The runtime interface for this model.
+    ///
+    /// Use `node` to access SwiftModel's runtime APIs from within the model's own implementation —
+    /// in `onActivate()`, in methods, and in extensions. It provides access to async tasks, events,
+    /// cancellations, dependencies, memoization, and hierarchy queries.
+    ///
+    /// `node` is intended for use by the *model implementor*, not by *consumers* of a model.
+    /// A view or parent model should interact with a model through the properties and methods the
+    /// model explicitly exposes, not through `node`.
+    ///
+    /// > Note: The `@Model` macro generates this property automatically. You do not need to
+    /// > declare or implement it yourself.
+    var node: ModelNode<Self> { get }
+
+    /// An opaque read handle to the model's internal context.
+    ///
+    /// `_context` is the protocol requirement that gives the `SwiftModel` framework read access
+    /// to the model's runtime state. The underlying `ModelContext` is accessible only within
+    /// the `SwiftModel` module — external consumers cannot read it back out of the access token.
+    ///
+    /// > Warning: This is a framework implementation detail. Do not read or write `_context`
+    /// > directly in application code. Use `node` for all runtime interactions.
+    ///
+    /// > Note: The `@Model` macro generates this property automatically. You do not need to
+    /// > declare or implement it yourself.
+    var _context: ModelContextAccess<Self> { get }
+
+    /// Updates the model's internal context with the provided write token.
+    ///
+    /// The `SwiftModel` framework is the only code that can construct a `ModelContextUpdate`
+    /// (its initializer is `internal`), so only the framework can call this effectively.
+    ///
+    /// > Warning: This is a framework implementation detail. Do not call `_updateContext`
+    /// > directly in application code.
+    ///
+    /// > Note: The `@Model` macro generates this method automatically. You do not need to
+    /// > declare or implement it yourself.
+    mutating func _updateContext(_ update: ModelContextUpdate<Self>)
 }
 
 public extension Model {

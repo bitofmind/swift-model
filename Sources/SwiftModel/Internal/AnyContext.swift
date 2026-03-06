@@ -180,7 +180,7 @@ class AnyContext: @unchecked Sendable {
     var anyModel: any Model { fatalError() }
 
     /// The ModelAccess registered on this context's live model, if any.
-    /// Overridden by Context<M> to return readModel._$modelContext.access.
+    /// Overridden by Context<M> to return readModel.modelContext.access.
     var anyModelAccess: ModelAccess? { nil }
 
     var rootPaths: [AnyKeyPath] {
@@ -515,7 +515,7 @@ class AnyContext: @unchecked Sendable {
     @TaskLocal static var keepLastSeenAround = false
 
     func setupModelDependency<D: Model>(_ model: inout D, cacheKey: AnyHashable?, postSetups: inout [() -> Void]) {
-        switch model._$modelContext.source {
+        switch model.modelContext.source {
         case let .reference(reference):
             if let child = reference.context, child.rootParent === rootParent {
                 if dependencyContexts[ObjectIdentifier(D.self)] == nil {
@@ -538,7 +538,7 @@ class AnyContext: @unchecked Sendable {
                     // to rootParent hasn't been established yet (that happens in postSetups),
                     // so the child.rootParent === rootParent check in the recursive call would
                     // fail, producing an infinite recursion / stack overflow.
-                    if let child = model._$modelContext.reference?.context {
+                    if let child = model.modelContext.reference?.context {
                         if dependencyContexts[ObjectIdentifier(D.self)] == nil {
                             dependencyContexts[ObjectIdentifier(D.self)] = child
                             child.addParent(self, callbacks: &postSetups)

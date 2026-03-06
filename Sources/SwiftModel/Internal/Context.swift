@@ -42,7 +42,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
 
         readModel.withContextAdded(context: self)
-        readModel._$modelContext.access = nil
+        readModel.modelContext.access = nil
         modifyModel = readModel
         reference.setContext(self)
 
@@ -177,7 +177,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     override var anyModelAccess: ModelAccess? {
-        lock { readModel._$modelContext.access }
+        lock { readModel.modelContext.access }
     }
 
     func updateContext<T: Model>(for model: inout T, at path: WritableKeyPath<M, T>){
@@ -392,7 +392,9 @@ extension Context {
 
         func updateAccess(_ access: ModelAccess?) {
             lock {
-                _model?._$modelContext._access = access?.reference
+                if _model != nil {
+                    _model!.modelContext._access = access?.reference
+                }
             }
         }
 

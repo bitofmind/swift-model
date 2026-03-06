@@ -55,7 +55,7 @@ extension ModelMacro: ExtensionMacro {
                 """
                 extension \(raw: type.trimmedDescription): \(raw: "CustomReflectable") {
                     public var customMirror: Mirror {
-                        _$modelContext.mirror(of: self, children: [\(raw: mirrorChildren.joined(separator: ", "))])
+                        node.mirror(of: self, children: [\(raw: mirrorChildren.joined(separator: ", "))])
                     }
                 }
                 """)
@@ -74,7 +74,7 @@ extension ModelMacro: ExtensionMacro {
                 """
                 extension \(raw: type.trimmedDescription): \(raw: "CustomStringConvertible"), \(raw: "CustomDebugStringConvertible") {
                     public var description: String {
-                        _$modelContext.description(of: self)
+                        node.description(of: self)
                     }
                     public var debugDescription: String { description }
                 }
@@ -175,29 +175,37 @@ extension ModelMacro: MemberMacro {
 
         result.append(
         """
-        public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
+        var _$contextInit: ModelContext<Self> = ModelContext<Self>()
         {
-            @storageRestrictions(initializes: _node)
-            init {
-                _node = ModelNode(_$modelContext: newValue)
+            @storageRestrictions(initializes: _$modelContext)
+            init(initialValue) {
+                _$modelContext = initialValue
             }
-            get {
-                _node._$modelContext
-            }
-            set {
-                _node = ModelNode(_$modelContext: newValue)
-            }
+            get { fatalError("_$contextInit is an initializer-only property and must never be read") }
+            set { fatalError("_$contextInit is an initializer-only property and must never be written after initialization") }
         }
         """)
 
         result.append(
         """
-        private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+        public var _context: ModelContextAccess<Self> { ModelContextAccess(_$modelContext) }
         """)
 
         result.append(
         """
-        public var node: ModelNode<Self> { _node }
+        private var _$modelContext: ModelContext<Self>
+        """)
+
+        result.append(
+        """
+        public var node: ModelNode<Self> { ModelNode(_$modelContext: _$modelContext) }
+        """)
+
+        result.append(
+        """
+        public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+            _$modelContext = update._$modelContext
+        }
         """)
 
         return result

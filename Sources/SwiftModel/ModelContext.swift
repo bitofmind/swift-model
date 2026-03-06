@@ -1,6 +1,38 @@
 import Foundation
 import Dependencies
 
+/// A read token that gives the `SwiftModel` framework access to a model's internal context.
+///
+/// `ModelContextAccess` can be constructed by macro-generated code (its `init` is `public`),
+/// but its stored context (`_$modelContext`) is `internal` — external code cannot read the
+/// context back out. This prevents consumers from bypassing the model's lifecycle management.
+public struct ModelContextAccess<M: Model>: Sendable {
+    /// Public so macro-generated code (in user modules) can construct the access token
+    /// from the model's private stored `_$modelContext`.
+    public init(_ context: ModelContext<M>) {
+        self._$modelContext = context
+    }
+
+    /// Internal so only `SwiftModel` framework code can read the underlying context.
+    internal let _$modelContext: ModelContext<M>
+}
+
+/// A write token that lets the `SwiftModel` framework push a new context into a model.
+///
+/// `ModelContextUpdate` can only be constructed inside the `SwiftModel` module (its `init` is
+/// `internal`), preventing external code from forging an update. Its stored context
+/// (`_$modelContext`) is `public` so macro-generated `_updateContext` (in user modules) can
+/// read it and write it into the model's private stored property.
+public struct ModelContextUpdate<M: Model>: Sendable {
+    /// Internal so only `SwiftModel` framework code can forge an update token.
+    internal init(_ context: ModelContext<M>) {
+        self._$modelContext = context
+    }
+
+    /// Public so macro-generated `_updateContext` (in user modules) can read the new context.
+    public let _$modelContext: ModelContext<M>
+}
+
 public struct ModelContext<M: Model> {
     var source: Source = .reference(.init(modelID: .generate()))
     var _access: ModelAccess.Reference?

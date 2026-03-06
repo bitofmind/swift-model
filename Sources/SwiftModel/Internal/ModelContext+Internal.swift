@@ -73,7 +73,7 @@ extension ModelContext {
 
 extension Model {
     var lifetime: ModelLifetime {
-        _$modelContext.lifetime
+        modelContext.lifetime
     }
 }
 
@@ -116,7 +116,7 @@ extension ModelContext {
 }
 
 extension Model {
-    var reference: Context<Self>.Reference? { _$modelContext.reference }
+    var reference: Context<Self>.Reference? { modelContext.reference }
 
     var context: Context<Self>? {
         reference?.context
@@ -131,7 +131,7 @@ extension Model {
     }
 
     var modelID: ModelID {
-        _$modelContext.modelID
+        modelContext.modelID
     }
 
     mutating func withContextAdded(context: Context<Self>) {

@@ -96,7 +96,7 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
 
         if childContext !== childModel.context {
             value[keyPath: path].withContextAdded(context: childContext, containerPath: \.self, elementPath: \.self, includeSelf: false)
-            value[keyPath: path]._$modelContext = ModelContext(context: childContext)
+            value[keyPath: path].modelContext = ModelContext(context: childContext)
         }
     }
 

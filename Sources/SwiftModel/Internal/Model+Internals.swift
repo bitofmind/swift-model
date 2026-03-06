@@ -1,6 +1,15 @@
 import Foundation
 import Dependencies
 
+/// Internal bridge so all framework code can access the model context directly
+/// without going through the public `_context` access token.
+extension Model {
+    var modelContext: ModelContext<Self> {
+        get { _context._$modelContext }
+        set { _updateContext(ModelContextUpdate(newValue)) }
+    }
+}
+
 extension Model {
     func assertInitialState(function: String = #function) {
         if lifetime != .initial {
@@ -45,37 +54,37 @@ extension Model {
     }
 
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
-        try _$modelContext.transaction(callback)
+        try modelContext.transaction(callback)
     }
 }
 
 extension Model {
     var noAccess: Self {
         var copy = self
-        copy._$modelContext.access = nil
+        copy.modelContext.access = nil
         return copy
     }
-    
+
     var shallowCopy: Self {
-        switch _$modelContext.source {
+        switch modelContext.source {
         case .frozenCopy:
             return self
-            
+
         case let .reference(reference):
             if let context = reference.context {
                 var copy = context[\.self]
-                copy._$modelContext.source = .frozenCopy(id: copy.modelID)
-                copy._$modelContext.access = nil
+                copy.modelContext.source = .frozenCopy(id: copy.modelID)
+                copy.modelContext.access = nil
                 return copy
             } else if let last = reference.model {
                 return last
             } else {
                 return self
             }
-            
+
         case let .lastSeen(id: id):
             var copy = self
-            copy._$modelContext.source = .frozenCopy(id: id)
+            copy.modelContext.source = .frozenCopy(id: id)
             return copy
         }
     }

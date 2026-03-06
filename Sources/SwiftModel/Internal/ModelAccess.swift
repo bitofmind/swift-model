@@ -54,19 +54,19 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
 
 extension Model {
     var access: ModelAccess? {
-        _$modelContext.access
+        modelContext.access
     }
 
     func withAccess(_ access: ModelAccess?) -> Self {
         var model = self
-        model._$modelContext.access = access
+        model.modelContext.access = access
         return model
     }
 
     func withAccessIfPropagateToChildren(_ access: ModelAccess?) -> Self {
         var model = self
         if let access, access.shouldPropagateToChildren {
-            model._$modelContext.access = access
+            model.modelContext.access = access
         }
         return model
     }

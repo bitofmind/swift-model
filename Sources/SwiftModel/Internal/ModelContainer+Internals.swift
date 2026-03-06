@@ -57,12 +57,12 @@ extension ModelContainer {
 private struct MakeInitialTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
         if model.context != nil { return }
-        let initial = model._$modelContext.initial
+        let initial = model.modelContext.initial
         model = model.shallowCopy
         if let initial {
-            model._$modelContext.source = .reference(initial)
+            model.modelContext.source = .reference(initial)
         } else {
-            model._$modelContext.source = .reference(.init(modelID: model.modelID))
+            model.modelContext.source = .reference(.init(modelID: model.modelID))
         }
     }
 }
@@ -70,14 +70,14 @@ private struct MakeInitialTransformer: ModelTransformer {
 private struct MakeInitialDependencyCopyTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
         model = model.shallowCopy
-        model._$modelContext.source = .reference(.init(modelID: .generate()))
+        model.modelContext.source = .reference(.init(modelID: .generate()))
     }
 }
 
 private struct FrozenCopyTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
         model = model.shallowCopy.noAccess
-        model._$modelContext.source = .frozenCopy(id: model.modelID)
+        model.modelContext.source = .frozenCopy(id: model.modelID)
     }
 }
 
@@ -86,7 +86,7 @@ private struct LastSeenTransformer: ModelTransformer {
 
     func transform<M: Model>(_ model: inout M) -> Void {
         model = model.shallowCopy.withAccess(lastSeenAccess)
-        model._$modelContext.source = .lastSeen(id: model.modelID)
+        model.modelContext.source = .lastSeen(id: model.modelID)
     }
 }
 
@@ -104,7 +104,7 @@ final class LastSeenAccess: ModelAccess, @unchecked Sendable {
 private struct WithAccessTransformer: ModelTransformer {
     let access: ModelAccess?
     func transform<M: Model>(_ model: inout M) -> Void {
-        model._$modelContext.access = access
+        model.modelContext.access = access
     }
 }
 
