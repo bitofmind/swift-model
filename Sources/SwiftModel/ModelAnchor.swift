@@ -61,10 +61,9 @@ public extension Model {
         model.withContextAdded(context: context)
         context.model.activate()
 
+        model._$modelContext = ModelContext(context: context)
         let access = self.access ?? ModelAccess(useWeakReference: false)
-        var modelContext = ModelContext(context: context)
-        modelContext.access = access
-        model.node = ModelNode(_$modelContext: modelContext)
+        model._$modelContext.access = access
 
         return (model, ModelAnchor(context: context))
     }

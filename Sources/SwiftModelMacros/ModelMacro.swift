@@ -55,7 +55,7 @@ extension ModelMacro: ExtensionMacro {
                 """
                 extension \(raw: type.trimmedDescription): \(raw: "CustomReflectable") {
                     public var customMirror: Mirror {
-                        node._$modelContext.mirror(of: self, children: [\(raw: mirrorChildren.joined(separator: ", "))])
+                        _$modelContext.mirror(of: self, children: [\(raw: mirrorChildren.joined(separator: ", "))])
                     }
                 }
                 """)
@@ -74,7 +74,7 @@ extension ModelMacro: ExtensionMacro {
                 """
                 extension \(raw: type.trimmedDescription): \(raw: "CustomStringConvertible"), \(raw: "CustomDebugStringConvertible") {
                     public var description: String {
-                        node._$modelContext.description(of: self)
+                        _$modelContext.description(of: self)
                     }
                     public var debugDescription: String { description }
                 }
@@ -175,17 +175,17 @@ extension ModelMacro: MemberMacro {
 
         result.append(
         """
-        public var node: ModelNode<Self> = ModelNode(_$modelContext: ModelContext<Self>())
+        public var _$modelContext: ModelContext<Self> = ModelContext<Self>()
         {
             @storageRestrictions(initializes: _node)
             init {
-                _node = newValue
+                _node = ModelNode(_$modelContext: newValue)
             }
             get {
-                _node
+                _node._$modelContext
             }
             set {
-                _node = newValue
+                _node = ModelNode(_$modelContext: newValue)
             }
         }
         """)
@@ -193,6 +193,11 @@ extension ModelMacro: MemberMacro {
         result.append(
         """
         private var _node = ModelNode(_$modelContext: ModelContext<Self>())
+        """)
+
+        result.append(
+        """
+        public var node: ModelNode<Self> { _node }
         """)
 
         return result

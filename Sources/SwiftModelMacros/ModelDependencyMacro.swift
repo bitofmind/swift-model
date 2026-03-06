@@ -14,13 +14,13 @@ public struct ModelDependencyMacro: AccessorMacro {
             return []
         }
 
-        if property.hasMacroApplication("_ModelIgnored") {
+        if property.hasMacroApplication("ModelIgnored") {
             return []
         }
 
         let readAccessor: AccessorDeclSyntax =
         """
-        get { node._$modelContext.dependency() }
+        get { _$modelContext.dependency() }
         """
 
         return [readAccessor]

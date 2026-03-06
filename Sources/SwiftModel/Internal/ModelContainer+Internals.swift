@@ -60,9 +60,9 @@ private struct MakeInitialTransformer: ModelTransformer {
         let initial = model._$modelContext.initial
         model = model.shallowCopy
         if let initial {
-            model.withSource(.reference(initial))
+            model._$modelContext.source = .reference(initial)
         } else {
-            model.withSource(.reference(.init(modelID: model.modelID)))
+            model._$modelContext.source = .reference(.init(modelID: model.modelID))
         }
     }
 }
@@ -70,14 +70,14 @@ private struct MakeInitialTransformer: ModelTransformer {
 private struct MakeInitialDependencyCopyTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
         model = model.shallowCopy
-        model.withSource(.reference(.init(modelID: .generate())))
+        model._$modelContext.source = .reference(.init(modelID: .generate()))
     }
 }
 
 private struct FrozenCopyTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
         model = model.shallowCopy.noAccess
-        model.withSource(.frozenCopy(id: model.modelID))
+        model._$modelContext.source = .frozenCopy(id: model.modelID)
     }
 }
 
@@ -86,7 +86,7 @@ private struct LastSeenTransformer: ModelTransformer {
 
     func transform<M: Model>(_ model: inout M) -> Void {
         model = model.shallowCopy.withAccess(lastSeenAccess)
-        model.withSource(.lastSeen(id: model.modelID))
+        model._$modelContext.source = .lastSeen(id: model.modelID)
     }
 }
 
@@ -104,7 +104,7 @@ final class LastSeenAccess: ModelAccess, @unchecked Sendable {
 private struct WithAccessTransformer: ModelTransformer {
     let access: ModelAccess?
     func transform<M: Model>(_ model: inout M) -> Void {
-        model = model.withAccess(access)
+        model._$modelContext.access = access
     }
 }
 

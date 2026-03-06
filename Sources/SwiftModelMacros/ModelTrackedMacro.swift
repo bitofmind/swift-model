@@ -47,7 +47,7 @@ public struct ModelTrackedMacro: AccessorMacro {
 
         let readAccessor: AccessorDeclSyntax =
         """
-        _read { yield node._$modelContext[model: self, path: \\._\(identifier)] }
+        _read { yield _$modelContext[model: self, path: \\._\(identifier)] }
         """
 
         let modifyAccessor: AccessorDeclSyntax
@@ -55,10 +55,10 @@ public struct ModelTrackedMacro: AccessorMacro {
             modifyAccessor =
             """
             nonmutating set {
-            let oldValue = node._$modelContext[model: self, path: \\._\(identifier)]
+            let oldValue = _$modelContext[model: self, path: \\._\(identifier)]
             _ = oldValue
             \(willSet?.trimmed ?? "")
-            node._$modelContext[model: self, path: \\._\(identifier)] = newValue
+            _$modelContext[model: self, path: \\._\(identifier)] = newValue
             \(didSet?.trimmed ?? "")
             }
             """
@@ -66,7 +66,7 @@ public struct ModelTrackedMacro: AccessorMacro {
             modifyAccessor =
             """
             nonmutating _modify {
-                yield &node._$modelContext[model: self, path: \\._\(identifier)]
+                yield &_$modelContext[model: self, path: \\._\(identifier)]
             }
             """
         }
