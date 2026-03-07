@@ -172,6 +172,16 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         }
                     }
 
+                    // Predicate passed but IDs don't match yet: there is a pending
+                    // backgroundCall batch in flight. Wait for it to settle and retry —
+                    // do NOT call waitForModification (which blocks on the *next* modification
+                    // event and would miss the modification that already happened).
+                    if !isEqualIncludingIds {
+                        await backgroundCall.waitUntilIdle()
+                        await Task.yield()
+                        continue
+                    }
+
                     if isEqualIncludingIds {
                         lock {
                             for access in passedAccesses {
@@ -324,12 +334,21 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         }
 
         // Suspend until a modification fires or timeout.
+        // The timeout task uses short 1ms sleeps rather than one Task.sleep for
+        // the full duration. This ensures other tasks — including model tasks
+        // suspended on a TestClock waiting for advance() to be called — get
+        // cooperative scheduling turns between slices. A single long Task.sleep
+        // would prevent TestClock-based tests from making progress when the test
+        // needs to call advance() before the model state can change.
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
                 _ = await stream.first { _ in true }
             }
             group.addTask {
-                try? await Task.sleep(nanoseconds: remaining)
+                let deadline = DispatchTime.now().uptimeNanoseconds + remaining
+                while DispatchTime.now().uptimeNanoseconds < deadline {
+                    try? await Task.sleep(nanoseconds: 1_000_000) // 1ms slices
+                }
             }
             await group.next()
             group.cancelAll()
