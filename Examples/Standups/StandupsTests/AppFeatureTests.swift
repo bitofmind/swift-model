@@ -46,7 +46,8 @@ struct AppFeatureTests {
       }
     }
 
-    await tester.assert(appFeature.standupsList.standupDetails.first?.standup == standup)
+    let standup0 = standup
+    await tester.assert(appFeature.standupsList.standupDetails.first?.standup == standup0)
     let detail = try await tester.unwrap(appFeature.standupsList.standupDetails.first)
 
     appFeature.path.append(.detail(detail.id))
@@ -57,18 +58,17 @@ struct AppFeatureTests {
     let edit = try await tester.unwrap(detail.destination?.edit)
 
     standup.title = "Blob"
-    edit.form.standup = standup
-    await tester.assert(edit.form.standup == standup)
+    let editedStandup = standup
+    edit.form.standup = editedStandup
+    await tester.assert(edit.form.standup == editedStandup)
 
-    edit.save(standup)
+    edit.save(editedStandup)
     await tester.assert {
       detail.destination == nil
-      detail.standup == standup
+      detail.standup == editedStandup
     }
 
-    var savedStandup = standup
-    savedStandup.title = "Blob"
-    await tester.assert(saveStandup.wasCalled(with: [savedStandup]))
+    await tester.assert(saveStandup.wasCalled(with: [editedStandup]))
   }
 
   @Test func testRecording() async throws {

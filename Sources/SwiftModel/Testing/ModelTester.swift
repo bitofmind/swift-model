@@ -202,9 +202,9 @@ public extension Exhaustivity {
 public enum AssertBuilder { }
 
 public extension AssertBuilder {
-    struct Predicate {
-        var predicate: () -> Bool
-        var values: () -> (Any, Any)? = { nil }
+    struct Predicate: @unchecked Sendable {
+        var predicate: @Sendable () -> Bool
+        var values: @Sendable () -> (Any, Any)? = { nil }
         var fileAndLine: FileAndLine
     }
     typealias Result = [Predicate]
@@ -214,12 +214,12 @@ public extension AssertBuilder {
     }
 
     @_disfavoredOverload
-    static func buildExpression(_ predicate: @autoclosure @escaping () -> Bool, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Result {
+    static func buildExpression(_ predicate: @autoclosure @escaping @Sendable () -> Bool, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Result {
         [Predicate(predicate: predicate, fileAndLine: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))]
     }
 
     @_disfavoredOverload
-    static func buildExpression(_ predicate: @autoclosure @escaping () -> Bool?, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Result {
+    static func buildExpression(_ predicate: @autoclosure @escaping @Sendable () -> Bool?, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Result {
         [Predicate(predicate: { predicate() == true }, fileAndLine: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))]
     }
 
@@ -228,22 +228,22 @@ public extension AssertBuilder {
     }
 }
 
-func predicate(@AssertBuilder _ builder: () -> AssertBuilder.Result) -> Bool {
+func predicate(@AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) -> Bool {
     let result = builder()
 
     return result.allSatisfy { $0.predicate() }
 }
 
 public struct TestPredicate {
-    var predicate: () -> Bool
-    var values: () -> (Any, Any)? = { nil }
+    var predicate: @Sendable () -> Bool
+    var values: @Sendable () -> (Any, Any)? = { nil }
 }
 
-public func == <T: Equatable>(lhs: @escaping @autoclosure () -> T, rhs: @escaping @autoclosure () -> T) -> TestPredicate {
+public func == <T: Equatable>(lhs: @escaping @Sendable @autoclosure () -> T, rhs: @escaping @Sendable @autoclosure () -> T) -> TestPredicate {
     TestPredicate(predicate: { lhs() == rhs() }, values: { (lhs(), rhs()) })
 }
 
-public func == <T: Equatable>(lhs: @escaping @autoclosure () -> T?, rhs: @escaping @autoclosure () -> T) -> TestPredicate {
+public func == <T: Equatable>(lhs: @escaping @Sendable @autoclosure () -> T?, rhs: @escaping @Sendable @autoclosure () -> T) -> TestPredicate {
     TestPredicate(predicate: { lhs() == rhs() }, values: { (lhs() as Any, rhs() as Any) })
 }
 
@@ -261,12 +261,12 @@ public extension ModelTester {
     /// - Parameter timeout: Maximum nanoseconds to wait for the predicates to become true (default 1 s).
     /// - Parameter builder: A result-builder block of Boolean predicates. Use the `==` operator for
     ///   pretty-printed diff output on failure.
-    func assert(timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: () -> AssertBuilder.Result) async {
+    func assert(timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) async {
         await access.assert(timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
     }
 
     @_disfavoredOverload
-    func assert(_ predicate: @escaping @autoclosure () -> Bool, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
+    func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
         await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
@@ -290,7 +290,7 @@ public extension ModelTester {
     ///     detail.name == "Expected"
     /// }
     /// ```
-    func unwrap<T>(_ unwrap: @escaping @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T  {
+    func unwrap<T>(_ unwrap: @escaping @Sendable @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T  {
         let start = DispatchTime.now().uptimeNanoseconds
         while true {
             if let value = unwrap() {
@@ -327,12 +327,12 @@ public extension ModelTester {
     /// - Parameter timeout: Maximum time to wait for the predicates to become true (default 1 s).
     /// - Parameter builder: A result-builder block of Boolean predicates. Use the `==` operator for
     ///   pretty-printed diff output on failure.
-    func assert(timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: () -> AssertBuilder.Result) async {
+    func assert(timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) async {
         await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
     }
 
     @_disfavoredOverload
-    func assert(_ predicate: @escaping @autoclosure () -> Bool, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
+    func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
         await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
@@ -348,7 +348,7 @@ public extension ModelTester {
     ///
     /// Fails and throws if the expression is still `nil` after `timeout`. Unlike `assert`,
     /// exhaustion checking is **not** triggered by a successful unwrap.
-    func unwrap<T>(_ unwrap: @escaping @autoclosure () -> T?, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T {
+    func unwrap<T>(_ unwrap: @escaping @Sendable @autoclosure () -> T?, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T {
         try await self.unwrap(unwrap(), timeoutNanoseconds: timeout.toNanoseconds, fileID: fileID, filePath: filePath, line: line, column: column)
     }
 }

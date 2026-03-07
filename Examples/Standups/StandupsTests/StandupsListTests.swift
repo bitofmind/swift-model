@@ -13,7 +13,7 @@ struct StandupsListTests {
       $0.uuid = .incrementing
     }
 
-    var standup = Standup(
+    let standup0 = Standup(
       id: Standup.ID(UUID(0)),
       attendees: [
         Attendee(id: Attendee.ID(UUID(1)))
@@ -21,16 +21,19 @@ struct StandupsListTests {
     )
     standupList.addStandupButtonTapped()
     let addStandup = try await tester.unwrap(standupList.destination?.add)
-    await tester.assert(addStandup.form.standup == standup)
+    await tester.assert(addStandup.form.standup == standup0)
 
-    standup.title = "Engineering"
-    addStandup.form.standup = standup
-    await tester.assert(addStandup.form.standup == standup)
+    var standup1 = standup0
+    standup1.title = "Engineering"
+    let standup1Final = standup1
+    addStandup.form.standup = standup1Final
+    await tester.assert(addStandup.form.standup == standup1Final)
 
+    let expectedStandup = standup1Final
     addStandup.add(addStandup.form.standup)
     await tester.assert {
       standupList.destination == nil
-      standupList.standupDetails.map(\.standup) == [standup]
+      standupList.standupDetails.map(\.standup) == [expectedStandup]
     }
   }
 
