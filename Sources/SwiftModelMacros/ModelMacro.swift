@@ -198,11 +198,6 @@ extension ModelMacro: MemberMacro {
 
         result.append(
         """
-        public var node: ModelNode<Self> { ModelNode(_$modelContext: _$modelContext) }
-        """)
-
-        result.append(
-        """
         public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
             _$modelContext = update._$modelContext
         }
