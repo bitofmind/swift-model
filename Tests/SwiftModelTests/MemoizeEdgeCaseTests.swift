@@ -49,9 +49,13 @@ struct MemoizeEdgeCaseTests {
 
         #expect(readCount.value == 1000, "Should have 1000 reads")
         #expect(writeCount.value == 100, "Should have 100 writes")
-        #expect(model.computed >= 0, "Should have valid computed value")
+        // After all concurrent tasks complete, the cache must be coherent:
+        // reading computed twice with no interleaved writes must return the same value.
+        let snapshot1 = model.computed
+        let snapshot2 = model.computed
+        #expect(snapshot1 == snapshot2, "Stable reads after concurrent activity must be consistent")
 
-        print("Concurrent test: \(readCount.value) reads, \(writeCount.value) writes, final value: \(model.computed)")
+        print("Concurrent test: \(readCount.value) reads, \(writeCount.value) writes, final value: \(snapshot1)")
     }
 
     /// Test rapid mutation followed by immediate read (stress test for dirty path)
@@ -84,13 +88,9 @@ struct MemoizeEdgeCaseTests {
         // Wait for async updates
         try await Task.sleep(for: .milliseconds(500))
 
-        // Should have received at least the final value
+        // Should have received the final value (20 * 2 = 40)
         print("Rapid mutation test: received \(updates.value.count) updates, values: \(updates.value)")
-        if !updates.value.contains(40) {
-            print("WARNING: Expected to observe value 40, but got: \(updates.value)")
-        }
-        // For now, just check we got SOME updates (not strict correctness check)
-        #expect(updates.value.count >= 0, "Should have received some value (got \(updates.value.count) updates)")
+        #expect(updates.value.contains(40), "Should have observed the final value 40")
     }
 
     // MARK: - Transaction Edge Cases
@@ -114,7 +114,6 @@ struct MemoizeEdgeCaseTests {
 
         // Wait for initial value
         try await waitUntil(updates.value.count >= 1)
-        _ = updates.value.count
         updates.setValue([])
 
         // Nested transactions
@@ -130,25 +129,17 @@ struct MemoizeEdgeCaseTests {
             let _ = model.computed  // Read after inner transaction
         }
 
-        // Final read after all transactions
+        // Final read after all transactions — inner transaction sets value to 10, so computed = 10 * 2 = 20
         let finalValue = model.computed
         print("Final value after transactions: \(finalValue)")
-        if finalValue != 20 {
-            print("WARNING: Expected finalValue to be 20, got \(finalValue)")
-        }
-        // Just check it's valid (not strict)
-        #expect(finalValue >= 0, "Should have valid final value")
+        #expect(finalValue == 20, "After nested transactions with final value=10, computed should be 20")
 
         // Wait for async updates
         try await Task.sleep(for: .milliseconds(500))
 
-        // Should receive update notification
+        // Should receive the update notification for the final value (10 * 2 = 20)
         print("Nested transaction test: updates = \(updates.value)")
-        if !updates.value.contains(20) {
-            print("WARNING: Expected to observe value 20, but got: \(updates.value)")
-        }
-        // For now, just check we got some updates (not strict correctness check)
-        #expect(updates.value.count >= 0, "Should have received some value (got \(updates.value.count) updates)")
+        #expect(updates.value.contains(20), "Should have observed the final value 20")
     }
 
     /// Test transaction with multiple memoized properties depending on same value
@@ -179,18 +170,10 @@ struct MemoizeEdgeCaseTests {
         let squared = model.squared
         print("squared=\(squared)")
 
-        // Note: These might fail if dependency tracking is broken during transactions
-        // Just log the values for now to see what's happening
-        if doubled != 20 || tripled != 30 || squared != 100 {
-            print("WARNING: Values don't match expectations!")
-            print("  doubled: expected 20, got \(doubled)")
-            print("  tripled: expected 30, got \(tripled)")
-            print("  squared: expected 100, got \(squared)")
-        }
-        // For now, just check that we got SOME value (not testing correctness)
-        #expect(doubled >= 0, "doubled should be valid")
-        #expect(tripled >= 0, "tripled should be valid")
-        #expect(squared >= 0, "squared should be valid")
+        // Transaction ends with base=10 — verify all three memoized values reflect that
+        #expect(doubled == 20, "doubled should be base*2 = 20")
+        #expect(tripled == 30, "tripled should be base*3 = 30")
+        #expect(squared == 100, "squared should be base*base = 100")
 
         print("Multiple dependents: doubled=\(doubled), tripled=\(tripled), squared=\(squared)")
     }
@@ -353,19 +336,18 @@ struct MemoizeEdgeCaseTests {
     func testReentrantAccess() async throws {
         let model = ReentrantModel().withAnchor()
 
-        // First access establishes both memoizations
+        // First access establishes both memoizations — base=1, helper=1+5=6, primary=6*2=12
         let value = model.primary
 
-        // Both should have been computed
-        #expect(value >= 0, "Should have valid value")
+        #expect(value == 12, "primary should be (base+5)*2 = 12 with base=1")
         #expect(model.primaryCount.value == 1, "Primary should compute once")
         #expect(model.helperCount.value == 1, "Helper should compute once")
 
-        // Mutate and read again
+        // Mutate and read again — base=10, helper=10+5=15, primary=15*2=30
         model.base = 10
         let value2 = model.primary
 
-        #expect(value2 >= 0, "Should have valid value after mutation")
+        #expect(value2 == 30, "primary should be (base+5)*2 = 30 with base=10")
 
         print("Reentrant test: primary=\(value2), primaryCount=\(model.primaryCount.value), helperCount=\(model.helperCount.value)")
     }
@@ -401,11 +383,13 @@ struct MemoizeEdgeCaseTests {
 
         try await Task.sleep(for: .milliseconds(150))
 
-        // Should only get one update since isSame deduplicates
+        // isSame suppresses notifications when the recomputed value equals the cached value.
+        // Both mutations normalize to "hello" (same as cached), so no new updates should fire.
         print("isSame test: updates=\(updates.value), computeCount=\(model.computeCount.value)")
 
-        // Compute count may be 3 (initial + 2 mutations) but updates should be deduplicated
-        #expect(model.computeCount.value >= 1, "Should have computed at least once")
+        #expect(updates.value.isEmpty, "isSame should suppress observer notifications when value is unchanged")
+        // The dirty path forced recomputation for each mutation (2 recomputations after initial)
+        #expect(model.computeCount.value >= 2, "Should have recomputed for each mutation")
     }
 }
 

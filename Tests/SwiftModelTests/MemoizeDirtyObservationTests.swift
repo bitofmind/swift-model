@@ -332,7 +332,7 @@ struct MemoizeDirtyObservationTests {
         let changeCount = LockIsolated(0)
 
         // Track just model.value directly (not through memoize)
-        let cancellable1 = withObservationTracking {
+        withObservationTracking {
             _ = model.value
         } onChange: {
             changeCount.withValue { $0 += 1 }
@@ -344,7 +344,6 @@ struct MemoizeDirtyObservationTests {
         print("Direct value tracking: changeCount=\(changeCount.value)")
         #expect(changeCount.value >= 1, "Direct value access should trigger onChange")
 
-        _ = cancellable1
     }
     
     /// Test that simulates SwiftUI's ObservedModel behavior (via onModify callbacks)

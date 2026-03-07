@@ -401,7 +401,7 @@ private func installPropertyUndoUnchecked<M: Model, T>(
     // All @Model stored properties are Sendable in practice (the macro enforces this).
     // We use nonisolated(unsafe) / unsafeBitCast to satisfy the Swift concurrency checker
     // without adding a T: Sendable constraint that the ModelVisitor protocol cannot provide.
-    nonisolated(unsafe) let sendablePath = unsafeBitCast(path, to: (WritableKeyPath<M, T> & Sendable).self)
+    let sendablePath = unsafeBitCast(path, to: (WritableKeyPath<M, T> & Sendable).self)
 
     // One coalescer is shared across all properties registered for the same context/backend.
     let coalescer = UndoCoalescer.forContext(context, backend: backend)
@@ -442,7 +442,7 @@ private func installPropertyUndoUnchecked<M: Model, T>(
                 usingAccess(rootAccess) {
                     threadLocals.withValue(true, at: \.isRestoringState) {
                         if let ctx = ModelNode(_$modelContext: modelContext).context {
-                            _ = modelContext.transaction(with: ctx.model, at: sendablePath, modify: { $0 = v }, isSame: nil)
+                            modelContext.transaction(with: ctx.model, at: sendablePath, modify: { $0 = v }, isSame: nil)
                         }
                     }
                 }

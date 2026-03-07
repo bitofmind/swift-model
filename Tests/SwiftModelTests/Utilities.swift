@@ -127,7 +127,7 @@ struct WaitTimeoutError: Error, CustomStringConvertible {
 func waitUntil(
     _ condition: @autoclosure () -> Bool,
     pollInterval: UInt64 = 1_000_000,  // 1ms
-    timeout: UInt64 = 1_000_000_000,   // 5s
+    timeout: UInt64 = 5_000_000_000,   // 5s
     file: StaticString = #file,
     line: UInt = #line
 ) async throws {

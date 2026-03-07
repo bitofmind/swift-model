@@ -109,7 +109,7 @@ struct CancellationTests {
             } catch: { _ in }
             .cancel(for: CancelKey.one, cancelInFlight: true)
 
-            let _ = await v
+            _ = await v
 
             #expect(count == 0)
 

@@ -361,7 +361,7 @@ struct UndoObservationTests {
 
         let observed = LockIsolated<[Int]>([])
         let task = Task {
-            for await value in Observed { model.count } {
+            for await value in Observed({ model.count }) {
                 observed.withValue { $0.append(value) }
             }
         }
@@ -388,7 +388,7 @@ struct UndoObservationTests {
 
         let observed = LockIsolated<[Int]>([])
         let task = Task {
-            for await value in Observed { model.count } {
+            for await value in Observed({ model.count }) {
                 observed.withValue { $0.append(value) }
             }
         }
@@ -438,7 +438,7 @@ struct UndoObservationTests {
         // Now observe the item's value property
         let observedValues = LockIsolated<[Int]>([])
         let task = Task {
-            for await value in Observed { model.items.first?.value ?? -1 } {
+            for await value in Observed({ model.items.first?.value ?? -1 }) {
                 observedValues.withValue { $0.append(value) }
             }
         }
