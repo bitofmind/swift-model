@@ -87,10 +87,8 @@ class AnyContext: @unchecked Sendable {
     }
 
     private func collectModificationCounts(_ counts: inout ModificationCounts) {
-        counts[ObjectIdentifier(self)] = modificationCount
-        for child in allChildren {
-            child.collectModificationCounts(&counts)
-        }
+        counts[ObjectIdentifier(self)] = _modificationCount  // already under lock, avoid re-entrant lock acquisition
+        forEachChild { $0.collectModificationCounts(&counts) }
     }
 
     struct EventInfo: @unchecked Sendable {
@@ -291,8 +289,23 @@ class AnyContext: @unchecked Sendable {
         context.removeParent(self, callbacks: &callbacks)
     }
 
+    /// Calls `body` for each direct child context without allocating an intermediate array.
+    /// Use this in hot paths instead of `allChildren` to avoid the 3-array allocation overhead.
+    func forEachChild(_ body: (AnyContext) -> Void) {
+        for modelRefs in children.values {
+            for child in modelRefs.values where child !== self {
+                body(child)
+            }
+        }
+        for child in dependencyContexts.values where child !== self {
+            body(child)
+        }
+    }
+
     var allChildren: [AnyContext] {
-        (children.values.flatMap { $0.values } + dependencyContexts.values).filter { $0 !== self }
+        var result: [AnyContext] = []
+        forEachChild { result.append($0) }
+        return result
     }
 
     func onActivate() -> Bool {
@@ -435,10 +448,7 @@ class AnyContext: @unchecked Sendable {
 
     func cancelAllRecursively(for id: some Hashable&Sendable) {
         cancellations.cancelAll(for: id)
-
-        for child in allChildren {
-            child.cancelAllRecursively(for: id)
-        }
+        forEachChild { $0.cancelAllRecursively(for: id) }
     }
 
     var typeDescription: String { fatalError() }
@@ -472,9 +482,7 @@ class AnyContext: @unchecked Sendable {
     func withModificationActiveCount(_ callback: (inout Int) -> Void) {
         lock {
             callback(&anyModificationActiveCount)
-            for child in allChildren {
-                child.withModificationActiveCount(callback)
-            }
+            forEachChild { $0.withModificationActiveCount(callback) }
         }
     }
 

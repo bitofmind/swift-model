@@ -134,7 +134,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // willSet/didSet, activeAccess.didModify, and mainCall.drainIfOnMain — identical
         // to how any other @Model property change is broadcast.
         let postModify = modelContext.didModify(readModel, at: path)
-        let modifyCallbacksForPath = (modifyCallbacks[path] ?? [:]).values.compactMap { $0(false) }
+        let modifyCallbacksForPath = modifyCallbacks[path]?.values.compactMap { $0(false) } ?? []
         callbacks.append {
             postModify?()
             for c in modifyCallbacksForPath { c() }
@@ -253,9 +253,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 postModify?()
                 var postLockCallbacks: [() -> Void] = []
                 onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
-                    for callback in (self.modifyCallbacks[path] ?? [:]).values {
-                        if let postCallback = callback(false) {
-                            postCallbacks.append(postCallback)
+                    if let callbacks = self.modifyCallbacks[path] {
+                        for callback in callbacks.values {
+                            if let postCallback = callback(false) {
+                                postCallbacks.append(postCallback)
+                            }
                         }
                     }
                     self.didModify(callbacks: &postCallbacks)
@@ -290,9 +292,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
             var postLockCallbacks: [() -> Void] = []
             onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
-                for callback in (self.modifyCallbacks[path] ?? [:]).values {
-                    if let postCallback = callback(false) {
-                        postCallbacks.append(postCallback)
+                if let callbacks = self.modifyCallbacks[path] {
+                    for callback in callbacks.values {
+                        if let postCallback = callback(false) {
+                            postCallbacks.append(postCallback)
+                        }
                     }
                 }
                 self.didModify(callbacks: &postCallbacks)

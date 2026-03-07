@@ -575,9 +575,11 @@ private extension ModelNode {
                                 
                                 if currentPrevValue != nil {
                                     context.onPostTransaction(callbacks: &postCallbacks) { callbacks in
-                                        for callback in (context.modifyCallbacks[path] ?? [:]).values {
-                                            if let postCallback = callback(false) {
-                                                callbacks.append(postCallback)
+                                        if let modifyCallbacks = context.modifyCallbacks[path] {
+                                            for callback in modifyCallbacks.values {
+                                                if let postCallback = callback(false) {
+                                                    callbacks.append(postCallback)
+                                                }
                                             }
                                         }
                                         
@@ -605,9 +607,11 @@ private extension ModelNode {
 
                         if prevValue != nil {
                             context.onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
-                                for callback in (context.modifyCallbacks[path] ?? [:]).values {
-                                    if let postCallback = callback(false) {
-                                        postCallbacks.append(postCallback)
+                                if let modifyCallbacks = context.modifyCallbacks[path] {
+                                    for callback in modifyCallbacks.values {
+                                        if let postCallback = callback(false) {
+                                            postCallbacks.append(postCallback)
+                                        }
                                     }
                                 }
 
