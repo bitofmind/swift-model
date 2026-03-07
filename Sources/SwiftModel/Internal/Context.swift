@@ -25,7 +25,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let modelSetup = model.modelSetup
         self.activations = modelSetup?.activations ?? []
         reference = readModel.reference ?? Reference(modelID: model.modelID)
-        super.init(lock: lock, options: options, parent: parent)
+        let isObservable: Bool
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            isObservable = M.self is any Observable.Type
+        } else {
+            isObservable = false
+        }
+        super.init(lock: lock, options: options, parent: parent, isObservable: isObservable)
 
         var dependencyModels: [AnyHashable: any Model] = [:]
         Dependencies.withDependencies(from: parent ?? self) {

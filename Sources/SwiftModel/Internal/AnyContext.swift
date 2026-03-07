@@ -213,9 +213,12 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    init(lock: NSRecursiveLock, options: ModelOption, parent: AnyContext?) {
+    let isObservable: Bool
+
+    init(lock: NSRecursiveLock, options: ModelOption, parent: AnyContext?, isObservable: Bool) {
         self.lock = lock
         self.options = parent?.options ?? options
+        self.isObservable = isObservable
         
         // Use ObservationRegistrar unless disabled
         let useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
