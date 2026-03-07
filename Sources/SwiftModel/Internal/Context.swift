@@ -292,8 +292,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     /// Builds the post-lock callbacks array for a property modification.
+    /// Returns nil when there is nothing to do, avoiding the array allocation entirely.
     /// Must be called while the context lock is held.
-    private func buildPostLockCallbacks<T>(for path: WritableKeyPath<M, T>) -> [() -> Void] {
+    private func buildPostLockCallbacks<T>(for path: WritableKeyPath<M, T>) -> [() -> Void]? {
+        // Fast path: skip allocation when no observers exist and we're not in a batched transaction.
+        guard modifyCallbacks[path] != nil || anyModificationActiveCount > 0 || threadLocals.postTransactions != nil else {
+            return nil
+        }
         var postLockCallbacks: [() -> Void] = []
         onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
             if let callbacks = self.modifyCallbacks[path] {
@@ -468,7 +473,8 @@ let lastSeenTimeToLive: TimeInterval = 2
 /// Re-entrant: if `postLockFlushes` is already non-nil (we're nested inside another
 /// `runPostLockCallbacks` call), we simply run `callbacks` without wrapping, allowing the outer
 /// invocation to drain the accumulated flushes.
-func runPostLockCallbacks(_ callbacks: [() -> Void]) {
+func runPostLockCallbacks(_ callbacks: [() -> Void]?) {
+    guard let callbacks else { return }
     guard threadLocals.postLockFlushes == nil else {
         // Nested call — outer invocation will drain flushes after all callbacks complete.
         for plc in callbacks { plc() }
