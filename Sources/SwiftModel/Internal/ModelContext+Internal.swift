@@ -151,25 +151,21 @@ extension ModelContext {
     }
 
 
-    func didModify<T>(_ model: M, at path: KeyPath<M, T>&Sendable) -> (() -> Void)? {
+    /// Performs all post-modify observation notifications inline.
+    /// Called directly from Context._modify/transaction and any other post-modify site.
+    func invokeDidModify<T>(_ model: M, at path: KeyPath<M, T>&Sendable) {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, let observable = model as? any Observable&Model {
-            return {
-                observable.willSet(path: path, from: context)
-                defer {
-                    observable.didSet(path: path, from: context)
-                }
-
-                activeAccess?.didModify(model, at: path)?()
-
-                mainCall.drainIfOnMain()
+            observable.willSet(path: path, from: context)
+            defer {
+                observable.didSet(path: path, from: context)
             }
+            activeAccess?.didModify(model, at: path)?()
         } else {
-            return {
-                activeAccess?.didModify(model, at: path)?()
-                mainCall.drainIfOnMain()
-            }
+            activeAccess?.didModify(model, at: path)?()
         }
+        mainCall.drainIfOnMain()
     }
+
 }
 
 extension ModelNode {
@@ -178,10 +174,7 @@ extension ModelNode {
     }
 
     func withMutation<Member, T>(of model: M, keyPath: WritableKeyPath<M, Member>&Sendable, _ mutation: () throws -> T) rethrows -> T {
-        let postModify = _$modelContext.didModify(model, at: keyPath)
-        defer {
-            postModify?()
-        }
+        defer { _$modelContext.invokeDidModify(model, at: keyPath) }
         return try mutation()
     }
 }
@@ -219,7 +212,9 @@ extension ModelContext {
                 return
             }
 
-            yield &context[path, isSame, didModify(model, at: path)]
+            // Use the typed subscript overload to avoid allocating a didModify closure.
+            // Observation notifications are performed inline after the isSame check.
+            yield &context[path, isSame, self]
         }
     }
 
@@ -233,15 +228,9 @@ extension ModelContext {
             }
         }
 
-        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let observable = model as? any Observable&Model {
-            return try context.transaction(at: path, isSame: isSame, postModify: {
-                observable.willSet(path: path, from: context)
-                observable.didSet(path: path, from: context)
-                let _ = activeAccess?.didModify(model, at: path)?()
-            }, modify: modify)
-        } else {
-            return try context.transaction(at: path, isSame: isSame, postModify: activeAccess?.didModify(model, at: path), modify: modify)
-        }
+        // Use the typed transaction overload to avoid allocating a postModify closure.
+        // Observation notifications are performed inline after the isSame check.
+        return try context.transaction(at: path, isSame: isSame, modelContext: self, modify: modify)
     }
 
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {

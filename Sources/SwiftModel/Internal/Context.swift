@@ -130,13 +130,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     override func didModifyParents(callbacks: inout [() -> Void]) {
         let path = parentsObservationPath
         didModify()
-        // Use ModelContext.didModify to get a closure that handles ObservationRegistrar
-        // willSet/didSet, activeAccess.didModify, and mainCall.drainIfOnMain — identical
-        // to how any other @Model property change is broadcast.
-        let postModify = modelContext.didModify(readModel, at: path)
+        let mc = modelContext
+        let snap = readModel
         let modifyCallbacksForPath = modifyCallbacks[path]?.values.compactMap { $0(false) } ?? []
         callbacks.append {
-            postModify?()
+            mc.invokeDidModify(snap, at: path)
             for c in modifyCallbacksForPath { c() }
         }
         var didModifyCallbacks: [() -> Void] = []
@@ -224,7 +222,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    subscript<T>(path: WritableKeyPath<M, T>, isSame: ((T, T) -> Bool)?, postModify: (() -> Void)?) -> T {
+    subscript<T>(path: WritableKeyPath<M, T>&Sendable, isSame: ((T, T) -> Bool)?, modelContext: ModelContext<M>) -> T {
         _read {
             fatalError()
         }
@@ -250,18 +248,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 isMutating = true
                 readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
                 isMutating = false
-                postModify?()
-                var postLockCallbacks: [() -> Void] = []
-                onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
-                    if let callbacks = self.modifyCallbacks[path] {
-                        for callback in callbacks.values {
-                            if let postCallback = callback(false) {
-                                postCallbacks.append(postCallback)
-                            }
-                        }
-                    }
-                    self.didModify(callbacks: &postCallbacks)
-                }
+
+                // Invoke observation notifications via shared helper — no closure allocation.
+                modelContext.invokeDidModify(readModel, at: path)
+
+                let postLockCallbacks = buildPostLockCallbacks(for: path)
                 lock.unlock()
 
                 runPostLockCallbacks(postLockCallbacks)
@@ -269,7 +260,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    func transaction<Value, T>(at path: WritableKeyPath<M, Value>, isSame: ((Value, Value) -> Bool)?, postModify: (() -> Void)?, modify: (inout Value) throws -> T) rethrows -> T {
+    func transaction<Value, T>(at path: WritableKeyPath<M, Value>&Sendable, isSame: ((Value, Value) -> Bool)?, modelContext: ModelContext<M>, modify: (inout Value) throws -> T) rethrows -> T {
         lock.lock()
         let result: T
         if var last = reference.model {
@@ -288,25 +279,33 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             isMutating = true
             readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
             isMutating = false
-            postModify?()
 
-            var postLockCallbacks: [() -> Void] = []
-            onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
-                if let callbacks = self.modifyCallbacks[path] {
-                    for callback in callbacks.values {
-                        if let postCallback = callback(false) {
-                            postCallbacks.append(postCallback)
-                        }
-                    }
-                }
-                self.didModify(callbacks: &postCallbacks)
-            }
+            // Invoke observation notifications via shared helper — no closure allocation.
+            modelContext.invokeDidModify(readModel, at: path)
 
+            let postLockCallbacks = buildPostLockCallbacks(for: path)
             lock.unlock()
 
             runPostLockCallbacks(postLockCallbacks)
         }
         return result
+    }
+
+    /// Builds the post-lock callbacks array for a property modification.
+    /// Must be called while the context lock is held.
+    private func buildPostLockCallbacks<T>(for path: WritableKeyPath<M, T>) -> [() -> Void] {
+        var postLockCallbacks: [() -> Void] = []
+        onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
+            if let callbacks = self.modifyCallbacks[path] {
+                for callback in callbacks.values {
+                    if let postCallback = callback(false) {
+                        postCallbacks.append(postCallback)
+                    }
+                }
+            }
+            self.didModify(callbacks: &postCallbacks)
+        }
+        return postLockCallbacks
     }
 
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
