@@ -62,6 +62,7 @@ class AnyContext: @unchecked Sendable {
     }
     
     var _memoizeCache: [AnyHashableSendable: MemoizeCacheEntry] = [:]
+    var isTrackingUndo = false
 
     func didModify() {
         _modificationCount &+= 1

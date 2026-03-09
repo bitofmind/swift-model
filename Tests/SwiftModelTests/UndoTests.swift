@@ -550,3 +550,100 @@ private struct ContainerTrackedModel {
         node.trackUndo(\.items)
     }
 }
+
+// MARK: - Models for double-registration tests
+
+@Model
+private struct DoubleTrackUndoAllModel {
+    var value = 0
+
+    func onActivate() {
+        node.trackUndo()
+    }
+
+    func trackAgain() {
+        node.trackUndo() // second call — should be ignored with an issue
+    }
+}
+
+@Model
+private struct DoubleTrackUndoSelectiveModel {
+    var value = 0
+
+    func onActivate() {
+        node.trackUndo(\.value)
+    }
+
+    func trackAgain() {
+        node.trackUndo(\.value) // second call — should be ignored with an issue
+    }
+}
+
+@Model
+private struct DoubleTrackUndoExcludingModel {
+    var value = 0
+    var other = 0
+
+    func onActivate() {
+        node.trackUndo(excluding: \.other)
+    }
+
+    func trackAgain() {
+        node.trackUndo(excluding: \.other) // second call — should be ignored with an issue
+    }
+}
+
+// MARK: - Double-registration guard tests
+
+struct TrackUndoDoubleRegistrationTests {
+
+    /// Calling trackUndo() twice reports an issue and only installs one observer,
+    /// so a single mutation produces exactly one undo entry (not two).
+    @Test func doubleTrackUndoAllReportsIssue() async {
+        let stack = ModelUndoStack()
+        let (model, tester) = DoubleTrackUndoAllModel()
+            .andTester(withDependencies: { $0.undoSystem.backend = stack })
+        withKnownIssue {
+            model.trackAgain()
+        }
+        model.value = 1
+        await tester.assert { model.value == 1 }
+        // Undo once — the stack should then be empty, proving only one entry was pushed
+        #expect(stack.canUndo)
+        stack.undo()
+        #expect(!stack.canUndo)
+        await tester.assert { model.value == 0 }
+    }
+
+    /// Calling trackUndo(_:) twice reports an issue and only installs one observer.
+    @Test func doubleTrackUndoSelectiveReportsIssue() async {
+        let stack = ModelUndoStack()
+        let (model, tester) = DoubleTrackUndoSelectiveModel()
+            .andTester(withDependencies: { $0.undoSystem.backend = stack })
+        withKnownIssue {
+            model.trackAgain()
+        }
+        model.value = 1
+        await tester.assert { model.value == 1 }
+        #expect(stack.canUndo)
+        stack.undo()
+        #expect(!stack.canUndo)
+        await tester.assert { model.value == 0 }
+    }
+
+    /// Calling trackUndo(excluding:) twice reports an issue and only installs one observer.
+    @Test func doubleTrackUndoExcludingReportsIssue() async {
+        let stack = ModelUndoStack()
+        let (model, tester) = DoubleTrackUndoExcludingModel()
+            .andTester(withDependencies: { $0.undoSystem.backend = stack })
+        withKnownIssue {
+            model.trackAgain()
+        }
+        model.value = 1
+        await tester.assert { model.value == 1 }
+        #expect(stack.canUndo)
+        stack.undo()
+        #expect(!stack.canUndo)
+        await tester.assert { model.value == 0 }
+    }
+}

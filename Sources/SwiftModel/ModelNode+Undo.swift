@@ -232,9 +232,14 @@ public extension ModelNode {
     /// should participate in undo must call `trackUndo` in their own `onActivate`.
     func trackUndo() {
         guard let context = enforcedContext() else { return }
+        guard !context.isTrackingUndo else {
+            reportIssue("trackUndo() has already been called for this model. Call it only once in onActivate().")
+            return
+        }
         let undoSystem: ModelUndoSystem = self[dynamicMember: \.undoSystem]
         guard let backend = undoSystem.backend else { return }
 
+        context.isTrackingUndo = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, only: nil)
         context.model.visit(with: &visitor, includeSelf: false)
     }
@@ -259,6 +264,10 @@ public extension ModelNode {
         _ paths: repeat WritableKeyPath<M, each PathValue> & Sendable
     ) {
         guard let context = enforcedContext() else { return }
+        guard !context.isTrackingUndo else {
+            reportIssue("trackUndo() has already been called for this model. Call it only once in onActivate().")
+            return
+        }
         let undoSystem: ModelUndoSystem = self[dynamicMember: \.undoSystem]
         guard let backend = undoSystem.backend else { return }
 
@@ -279,6 +288,7 @@ public extension ModelNode {
         }
         let trackedBackingPaths = collector.paths
 
+        context.isTrackingUndo = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, only: trackedBackingPaths)
         context.model.visit(with: &visitor, includeSelf: false)
     }
@@ -296,6 +306,10 @@ public extension ModelNode {
         excluding paths: repeat WritableKeyPath<M, each PathValue> & Sendable
     ) {
         guard let context = enforcedContext() else { return }
+        guard !context.isTrackingUndo else {
+            reportIssue("trackUndo() has already been called for this model. Call it only once in onActivate().")
+            return
+        }
         let undoSystem: ModelUndoSystem = self[dynamicMember: \.undoSystem]
         guard let backend = undoSystem.backend else { return }
 
@@ -308,6 +322,7 @@ public extension ModelNode {
         }
         let excludedBackingPaths = collector.paths
 
+        context.isTrackingUndo = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, excluding: excludedBackingPaths)
         context.model.visit(with: &visitor, includeSelf: false)
     }
