@@ -120,7 +120,25 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         }
     }
 
+    /// Measures current scheduler latency and returns an effective timeout that scales
+    /// with system load, using `floor` as the minimum.
+    ///
+    /// Under parallel test load the cooperative thread pool is saturated, so `Task.yield()`
+    /// takes much longer than usual — and model tasks waiting for a thread are delayed by
+    /// exactly the same factor. Scaling the timeout by yield latency keeps the effective
+    /// "number of scheduler rounds" constant regardless of how many tests run in parallel.
+    /// Under no load a yield takes ~microseconds, so the multiplier stays near 1× and
+    /// `floor` is returned as-is.
+    static func adaptiveTimeout(floor: UInt64) async -> UInt64 {
+        let calibrationStart = DispatchTime.now().uptimeNanoseconds
+        await Task.yield()
+        let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
+        // Give the condition ~100 scheduler rounds at the current pace.
+        return max(floor, yieldLatencyNs * 100)
+    }
+
     func assert(timeoutNanoseconds timeout: UInt64, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
+        let scaledTimeout = await Self.adaptiveTimeout(floor: timeout)
         let context = TesterAssertContext(events: { self.lock { self.events } }, fileAndLine: fileAndLine)
         await TesterAssertContextBase.$assertContext.withValue(context) {
 
@@ -204,7 +222,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     }
                 }
 
-                if start.distance(to: DispatchTime.now().uptimeNanoseconds) > timeout {
+                if start.distance(to: DispatchTime.now().uptimeNanoseconds) > scaledTimeout {
                     lock {
                         for failure in failures {
                             if let (lhs, rhs) = failure.predicate.values() {
@@ -297,9 +315,30 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 }
 
                 let elapsed = start.distance(to: DispatchTime.now().uptimeNanoseconds)
-                let remaining = elapsed < timeout ? timeout - UInt64(elapsed) : 0
+                let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
                 await waitForModification(timeoutNanoseconds: remaining)
             }
+        }
+    }
+
+    func unwrap<T>(_ expression: @escaping @Sendable () -> T?, timeoutNanoseconds timeout: UInt64, at fileAndLine: FileAndLine) async throws -> T {
+        let scaledTimeout = await Self.adaptiveTimeout(floor: timeout)
+        let start = DispatchTime.now().uptimeNanoseconds
+        while true {
+            if let value = expression() {
+                let predicate = AssertBuilder.Predicate(predicate: { expression() != nil }, fileAndLine: fileAndLine)
+                await assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate], enableExhaustionTest: false)
+                return value
+            }
+
+            if start.distance(to: DispatchTime.now().uptimeNanoseconds) > scaledTimeout {
+                fail("Failed to unwrap value", at: fileAndLine)
+                throw UnwrapError()
+            }
+
+            let elapsed = start.distance(to: DispatchTime.now().uptimeNanoseconds)
+            let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
+            await waitForModification(timeoutNanoseconds: remaining)
         }
     }
 
@@ -492,6 +531,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         TesterAssertContextBase.assertContext as? TesterAssertContext
     }
 }
+
+struct UnwrapError: Error { }
 
 class TesterAssertContextBase: @unchecked Sendable {
     func didSend<M: Model, Event>(event: Event, from context: Context<M>) -> Bool { fatalError() }

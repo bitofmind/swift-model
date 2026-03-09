@@ -21,12 +21,6 @@ enum FileDebugLogger {
         try? "".write(toFile: filename, atomically: true, encoding: .utf8)
         
         currentLogFile = filename
-        
-        // Connect DebugHook to file
-        DebugHook.record = { message in
-            Self.append(message)
-        }
-        
         return filename
     }
     
@@ -38,10 +32,6 @@ enum FileDebugLogger {
         
         let file = currentLogFile
         currentLogFile = nil
-        
-        // Reset DebugHook
-        DebugHook.record = { _ in }
-        
         return file
     }
     

@@ -85,11 +85,8 @@ struct MemoizeEdgeCaseTests {
             let _ = model.computed  // Immediate read (dirty path)
         }
 
-        // Wait for async updates
-        try await Task.sleep(for: .milliseconds(500))
-
-        // Should have received the final value (20 * 2 = 40)
-        print("Rapid mutation test: received \(updates.value.count) updates, values: \(updates.value)")
+        // Wait for the final value to be observed (avoids fixed sleep durations under load)
+        try await waitUntil(updates.value.contains(40), timeout: 5_000_000_000)
         #expect(updates.value.contains(40), "Should have observed the final value 40")
     }
 
@@ -134,11 +131,8 @@ struct MemoizeEdgeCaseTests {
         print("Final value after transactions: \(finalValue)")
         #expect(finalValue == 20, "After nested transactions with final value=10, computed should be 20")
 
-        // Wait for async updates
-        try await Task.sleep(for: .milliseconds(500))
-
-        // Should receive the update notification for the final value (10 * 2 = 20)
-        print("Nested transaction test: updates = \(updates.value)")
+        // Wait for the update notification for the final value (10 * 2 = 20)
+        try await waitUntil(updates.value.contains(20), timeout: 5_000_000_000)
         #expect(updates.value.contains(20), "Should have observed the final value 20")
     }
 

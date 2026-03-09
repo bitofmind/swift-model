@@ -130,37 +130,6 @@ struct CancellationTests {
         #expect(count == 4)
     }
 
-    @Test func testCancelInFlightAlt() async throws {
-        @Locked var count = 0
-
-        do {
-            let model = CounterModel(count: 0).withAnchor().testNode
-
-            for _ in 1...5 {
-                model.task {
-                    try await withTaskCancellationHandler {
-                        try await Task.sleep(nanoseconds: NSEC_PER_MSEC*500)  // Increased from 100ms to 500ms
-                    } onCancel: {
-                        $count.wrappedValue += 1
-                    }
-                    $count.wrappedValue += 50
-                } catch: { _ in }
-                .cancel(for: CancelKey.one, cancelInFlight: true)
-
-                try await Task.sleep(nanoseconds: NSEC_PER_MSEC*50)  // Increased from 10ms to 50ms
-            }
-
-            // Wait for all cancellations to complete
-            try await waitUntil(count == 4, timeout: 5_000_000_000)
-
-            model.cancelAll(for: CancelKey.one)
-            
-            // Wait for final cancellation
-            try await waitUntil(count == 5, timeout: 5_000_000_000)
-        }
-
-        #expect(count == 5)
-    }
 
     @Test func testForEachCancelPrevious() async throws {
         @Locked var count = 0

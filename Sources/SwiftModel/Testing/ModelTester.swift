@@ -291,26 +291,9 @@ public extension ModelTester {
     /// }
     /// ```
     func unwrap<T>(_ unwrap: @escaping @Sendable @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T  {
-        let start = DispatchTime.now().uptimeNanoseconds
-        while true {
-            if let value = unwrap() {
-                let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
-                let predicate = AssertBuilder.Predicate(predicate: { unwrap() != nil }, fileAndLine: fileAndLine)
-                await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate], enableExhaustionTest: false)
-                return value
-            }
-
-            if start.distance(to: DispatchTime.now().uptimeNanoseconds) > timeout {
-                reportIssue("Failed to unwrap value", filePath: filePath, line: line)
-                throw UnwrapError()
-            }
-
-            await Task.yield()
-        }
+        try await access.unwrap(unwrap, timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))
     }
 }
-
-private struct UnwrapError: Error { }
 
 @available(macOS 13, iOS 16, watchOS 9, tvOS 16, *)
 public extension ModelTester {
