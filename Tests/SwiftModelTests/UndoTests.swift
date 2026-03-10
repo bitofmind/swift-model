@@ -1,6 +1,7 @@
 import Testing
 import AsyncAlgorithms
 import ConcurrencyExtras
+import Observation
 @testable import SwiftModel
 
 // MARK: - trackUndo() (all fields) tests
@@ -346,6 +347,7 @@ struct TrackUndoSelectiveTests {
 /// `TestAccess.didModify` fires through the same `invokeDidModify` path as
 /// `AccessCollector` and `withObservationTracking` — so confirming the model state
 /// changed also confirms that async `Observed` streams would be notified.
+@Suite(.serialized)
 struct UndoObservationTests {
 
     // MARK: - Direct property (trackUndo())
@@ -359,10 +361,17 @@ struct UndoObservationTests {
         )
 
         model.count = 42
-        await tester.assert { model.count == 42 }
+        await tester.assert {
+            model.count == 42
+            model.node.undoSystem.canUndo == true
+        }
 
         stack.undo()
-        await tester.assert { model.count == 0 }
+        await tester.assert {
+            model.count == 0
+            model.node.undoSystem.canUndo == false
+            model.node.undoSystem.canRedo == true
+        }
     }
 
     @Test(arguments: UpdatePath.allCases)
@@ -374,13 +383,24 @@ struct UndoObservationTests {
         )
 
         model.count = 7
-        await tester.assert { model.count == 7 }
+        await tester.assert {
+            model.count == 7
+            model.node.undoSystem.canUndo == true
+        }
 
         stack.undo()
-        await tester.assert { model.count == 0 }
+        await tester.assert {
+            model.count == 0
+            model.node.undoSystem.canUndo == false
+            model.node.undoSystem.canRedo == true
+        }
 
         stack.redo()
-        await tester.assert { model.count == 7 }
+        await tester.assert {
+            model.count == 7
+            model.node.undoSystem.canUndo == true
+            model.node.undoSystem.canRedo == false
+        }
     }
 
     // MARK: - Container item property (trackUndo(\.items))
@@ -395,11 +415,18 @@ struct UndoObservationTests {
         )
 
         model.items[0].value = 99
-        await tester.assert { model.items[0].value == 99 }
+        await tester.assert {
+            model.items[0].value == 99
+            model.node.undoSystem.canUndo == true
+        }
 
         // Undo the item value change — observer should see the revert
         stack.undo()
-        await tester.assert { model.items[0].value == 0 }
+        await tester.assert {
+            model.items[0].value == 0
+            model.node.undoSystem.canUndo == false
+            model.node.undoSystem.canRedo == true
+        }
     }
 }
 
