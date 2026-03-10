@@ -62,10 +62,16 @@ class AnyContext: @unchecked Sendable {
     }
     
     var _memoizeCache: [AnyHashableSendable: MemoizeCacheEntry] = [:]
-    var isTrackingUndo = false
-    // Stored directly on the context to avoid the ObjectIdentifier address-reuse
-    // bug that occurs when using a global static dictionary keyed by memory address.
-    var undoCoalescer: AnyObject? = nil
+
+    // Typed per-context storage for internal features (undo, future environment, etc.).
+    // Keyed by AnyHashableSendable (source location or explicit key from ModelContextStorage).
+    // Access via the typed subscript defined in ModelContextStorage.swift.
+    struct ContextStorageEntry: @unchecked Sendable {
+        var value: any Sendable
+        // Type-erased onRemoval hook, set when the storage declares one.
+        var cleanup: (() -> Void)?
+    }
+    var contextStorage: [AnyHashableSendable: ContextStorageEntry] = [:]
 
     func didModify() {
         _modificationCount &+= 1
@@ -340,6 +346,12 @@ class AnyContext: @unchecked Sendable {
         }
 
         _memoizeCache.removeAll()
+
+        for entry in contextStorage.values {
+            entry.cleanup?()
+        }
+
+        contextStorage.removeAll()
 
         callbacks.append {
             self.cancellations.cancelAll()
