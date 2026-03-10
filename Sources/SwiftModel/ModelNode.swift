@@ -75,14 +75,10 @@ extension ModelNode {
     /// Properties declared as extensions on `ModelContextValues` are accessible as
     /// `node.metadata.myFlag` (read) and `node.metadata.myFlag = value` (write).
     ///
-    /// Declare entries by extending `ModelContextValues`:
+    /// Declare entries by extending `ModelContextKeys`:
     /// ```swift
-    /// private let _myFlag = ModelContextStorage(defaultValue: false)
-    /// extension ModelContextValues {
-    ///     var myFlag: Bool {
-    ///         get { self[_myFlag] }
-    ///         nonmutating set { self[_myFlag] = newValue }
-    ///     }
+    /// extension ModelContextKeys {
+    ///     var myFlag: ModelContextStorage<Bool> { .init(defaultValue: false) }
     /// }
     /// // Usage: node.metadata.myFlag / node.metadata.myFlag = true
     /// ```

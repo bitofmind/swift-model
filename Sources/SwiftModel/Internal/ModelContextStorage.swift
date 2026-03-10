@@ -4,25 +4,17 @@ import ConcurrencyExtras
 
 /// A typed key + default value for per-context metadata storage.
 ///
-/// Create one as a private/fileprivate constant at the declaration site of the property
-/// you want to expose on `ModelContextValues`. The source location captured at `init`
-/// time serves as the unique dictionary key, so no separate enum boilerplate is needed.
+/// Declare one as a computed property on `ModelContextKeys`. The source location
+/// captured at `init` time serves as the unique dictionary key — no separate enum needed.
 ///
 /// ```swift
-/// extension ModelContextValues {
-///     var isTrackingUndo: Bool {
-///         get { self[_isTrackingUndo] }
-///         nonmutating set { self[_isTrackingUndo] = newValue }
-///     }
+/// extension ModelContextKeys {
+///     var isTrackingUndo: ModelContextStorage<Bool> { .init(defaultValue: false) }
 /// }
-/// private let _isTrackingUndo = ModelContextStorage(defaultValue: false)
-/// ```
 ///
-/// You can also supply an explicit key when the source-location default is not unique enough
-/// (e.g. generated code):
-///
-/// ```swift
-/// private let _myKey = ModelContextStorage(defaultValue: 0, key: "myFeature.counter")
+/// // Access via node.metadata (read/write resolved by @dynamicMemberLookup):
+/// node.metadata.isTrackingUndo        // Bool
+/// node.metadata.isTrackingUndo = true
 /// ```
 struct ModelContextStorage<Value: Sendable>: Sendable {
     let defaultValue: Value
@@ -50,38 +42,28 @@ struct ModelContextStorage<Value: Sendable>: Sendable {
     }
 }
 
-// MARK: - ModelContextEntry
+// MARK: - ModelContextKeys
 
-/// A typed get/set accessor into a context's metadata storage for a specific `ModelContextStorage`.
+/// A namespace for declaring named context storage keys as computed properties.
 ///
-/// Returned by `ModelContextValues` subscripts. The `@dynamicMemberLookup` subscript
-/// on `ModelContextValues` resolves keypaths through this type, providing clean
-/// `node.metadata.someKey` read/write syntax.
-struct ModelContextEntry<Value: Sendable>: Sendable {
-    let get: @Sendable () -> Value
-    let set: @Sendable (Value) -> Void
-}
+/// Properties declared here return a `ModelContextStorage<V>` descriptor. The
+/// `@dynamicMemberLookup` subscript on `ModelContextValues` resolves keypaths through
+/// this type into actual get/set calls on the context's storage.
+///
+/// ```swift
+/// extension ModelContextKeys {
+///     var myFlag: ModelContextStorage<Bool> { .init(defaultValue: false) }
+/// }
+/// ```
+struct ModelContextKeys: Sendable {}
 
 // MARK: - ModelContextValues
 
-/// A namespace struct providing `@dynamicMemberLookup` access to a context's metadata storage.
+/// Provides `@dynamicMemberLookup` access to a context's metadata storage via `ModelContextKeys`.
 ///
-/// Declare properties as extensions that return `ModelContextEntry<V>` via the storage subscript.
-/// The `@dynamicMemberLookup` subscript resolves those keypaths into actual get/set calls.
-///
-/// Usage:
+/// Access via `node.metadata`:
 /// ```swift
-/// private let _myFlag = ModelContextStorage(defaultValue: false)
-///
-/// extension ModelContextValues {
-///     var myFlag: Bool {
-///         get { self[_myFlag] }
-///         nonmutating set { self[_myFlag] = newValue }
-///     }
-/// }
-///
-/// // Access via node.metadata:
-/// node.metadata.myFlag        // read
+/// node.metadata.myFlag        // read → Bool
 /// node.metadata.myFlag = true // write
 /// ```
 @dynamicMemberLookup
@@ -89,6 +71,7 @@ struct ModelContextValues: Sendable {
     // Optional: nil when the node is unanchored. Reads return defaultValue, writes are no-ops.
     let context: AnyContext?
 
+    // Direct subscript for explicit access with a storage descriptor.
     subscript<V>(storage: ModelContextStorage<V>) -> V {
         get {
             guard let context else { return storage.defaultValue }
@@ -100,8 +83,10 @@ struct ModelContextValues: Sendable {
         }
     }
 
-    subscript<V>(dynamicMember path: KeyPath<ModelContextValues, V>) -> V {
-        self[keyPath: path]
+    // @dynamicMemberLookup: KeyPath<ModelContextKeys, ModelContextStorage<V>> → V
+    subscript<V>(dynamicMember path: KeyPath<ModelContextKeys, ModelContextStorage<V>>) -> V {
+        get { self[ModelContextKeys()[keyPath: path]] }
+        nonmutating set { self[ModelContextKeys()[keyPath: path]] = newValue }
     }
 }
 

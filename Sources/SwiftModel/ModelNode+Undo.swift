@@ -4,22 +4,13 @@ import Dependencies
 
 // MARK: - Context storage keys for undo state
 
-/// Guards against calling `trackUndo` more than once per context.
-private let _isTrackingUndo = ModelContextStorage(defaultValue: false)
+extension ModelContextKeys {
+    /// Guards against calling `trackUndo` more than once per context.
+    var isTrackingUndo: ModelContextStorage<Bool> { .init(defaultValue: false) }
 
-/// The shared `UndoCoalescer` for a context. Stored directly on the context to avoid
-/// the ObjectIdentifier address-reuse bug that occurs with global static dictionaries.
-private let _undoCoalescer = ModelContextStorage<UndoCoalescer?>(defaultValue: nil)
-
-extension ModelContextValues {
-    var isTrackingUndo: Bool {
-        get { self[_isTrackingUndo] }
-        nonmutating set { self[_isTrackingUndo] = newValue }
-    }
-    fileprivate var undoCoalescer: UndoCoalescer? {
-        get { self[_undoCoalescer] }
-        nonmutating set { self[_undoCoalescer] = newValue }
-    }
+    /// The shared `UndoCoalescer` for a context. Stored directly on the context to avoid
+    /// the ObjectIdentifier address-reuse bug that occurs with global static dictionaries.
+    fileprivate var undoCoalescer: ModelContextStorage<UndoCoalescer?> { .init(defaultValue: nil) }
 }
 
 // MARK: - UndoAvailability
