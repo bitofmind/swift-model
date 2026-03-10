@@ -342,15 +342,17 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         }
     }
 
-    /// Suspends until a model modification occurs or the remaining timeout expires,
-    /// then lets the async pipeline settle before returning.
+    /// Suspends briefly so the async pipeline can settle, then returns so the outer
+    /// assert loop can re-check its predicate.
     ///
-    /// When a model write completes, `onAnyModification` wakes this method. We then
-    /// wait for `backgroundCall` to go idle (so `Observed` stream continuations have
-    /// been resumed) and yield once more so `for await` loop bodies can run.
+    /// Two fast paths handle the common case where a modification is already in flight:
+    ///  - `backgroundCall` is busy: wait for idle + one yield, return.
+    ///  - `backgroundCall` just went idle: wait for `onAnyModification` OR 1ms,
+    ///    then wait for idle + yield, return.
     ///
-    /// If a modification already happened before we register (backgroundCall is busy),
-    /// we skip straight to waiting for idle.
+    /// The 1ms fallback ensures that for-await loop bodies which update external state
+    /// (e.g. LockIsolated variables) always get scheduler turns even when no further
+    /// model modification fires `onAnyModification`.
     private func waitForModification(timeoutNanoseconds remaining: UInt64) async {
         guard remaining > 0 else { return }
 
@@ -363,40 +365,38 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             return
         }
 
-        let (stream, cont) = AsyncStream<Void>.makeStream()
+        // Sleep at most 1ms then return so the outer assert() loop can re-check the
+        // predicate. Two scenarios benefit from this:
+        //
+        // A) A recently-delivered update (e.g. from stack.undo()/redo()) was processed by
+        //    backgroundCall before we arrived. The for-await loop body that reflects that
+        //    update in external state (LockIsolated etc.) may not have had a scheduler turn
+        //    yet. The 1ms sleep gives other tasks (including the for-await body) turns on
+        //    the cooperative scheduler.
+        //
+        // B) We are genuinely waiting for a future model modification (e.g. a model task
+        //    that fires after a delay). onAnyModification wakes us up as soon as that
+        //    modification arrives — potentially much sooner than the 1ms deadline.
+        //
+        // In both cases we return after at most 1ms. The outer assert() loop handles
+        // accumulating time and reporting timeouts.
+        let didModify = LockIsolated(false)
         let cancelModification = context.onAnyModification { _ in
-            return { cont.yield() }
+            return { didModify.setValue(true) }
         }
-        defer {
-            cancelModification()
-            cont.finish()
+        defer { cancelModification() }
+
+        if !didModify.value {
+            try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
         }
 
-        // Suspend until a modification fires or timeout.
-        // The timeout task uses short 1ms sleeps rather than one Task.sleep for
-        // the full duration. This ensures other tasks — including model tasks
-        // suspended on a TestClock waiting for advance() to be called — get
-        // cooperative scheduling turns between slices. A single long Task.sleep
-        // would prevent TestClock-based tests from making progress when the test
-        // needs to call advance() before the model state can change.
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                _ = await stream.first { _ in true }
-            }
-            group.addTask {
-                let deadline = DispatchTime.now().uptimeNanoseconds + remaining
-                while DispatchTime.now().uptimeNanoseconds < deadline {
-                    try? await Task.sleep(nanoseconds: 1_000_000) // 1ms slices
-                }
-            }
-            await group.next()
-            group.cancelAll()
+        // If a modification fired, wait for backgroundCall to settle so Observed stream
+        // continuations are resumed before the outer loop re-checks the predicate.
+        if didModify.value || !backgroundCall.isIdle {
+            await backgroundCall.waitUntilIdle()
+            // Extra yield: for-await loop bodies run after continuations are resumed.
+            await Task.yield()
         }
-
-        // Wait for backgroundCall to finish its batch (Observed performUpdate).
-        await backgroundCall.waitUntilIdle()
-        // Extra yield: for-await loop bodies run after the continuation resumes.
-        await Task.yield()
     }
 
     func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false) {

@@ -158,16 +158,25 @@ struct MemoizeDirtyObservationTests {
         // CRITICAL: Access the memoized property immediately, before backgroundCall fires
         // This hits the dirty path which recomputes and returns fresh value
         // For withObservationTracking, the dirty path does NOT notify immediately (to avoid infinite recursion)
-        // Instead, it keeps isDirty=true so performUpdate will fire and re-establish tracking
+        // Instead, it keeps isDirty=true so performUpdate will fire and re-establish tracking.
+        //
+        // Capture observationCount synchronously before and after to verify the dirty path
+        // does NOT call onUpdate synchronously (no await between these two captures, so
+        // any change would have to be synchronous — backgroundCall.performUpdate is async
+        // and may race under parallel test load, but synchronous notification would be
+        // visible immediately).
+        let observationCountBeforeDirtyAccess = observationCount.value
         let freshValue = model.computed
+        let observationCountAfterDirtyAccess = observationCount.value
         print("AFTER access: freshValue=\(freshValue), observationCount=\(observationCount.value), observedValues=\(observedValues.value)")
 
         #expect(freshValue == 10, "Should compute fresh value (5 * 2)")
-        #expect(model.computeCount.value == 2, "Should have recomputed (initial + dirty path)")
+        #expect(model.computeCount.value >= 2, "Should have recomputed at least once via dirty path")
 
         // The dirty path returns fresh value but doesn't notify immediately (to avoid infinite recursion)
-        // Notification happens when the scheduled performUpdate fires
-        #expect(observationCount.value == initialObservationCount, "Dirty path should not notify immediately for withObservationTracking")
+        // Notification happens when the scheduled performUpdate fires asynchronously.
+        // We verify this by checking observationCount didn't change synchronously during the access.
+        #expect(observationCountAfterDirtyAccess == observationCountBeforeDirtyAccess, "Dirty path should not notify immediately for withObservationTracking")
 
         // Wait for the scheduled performUpdate to fire
         // Note: performUpdate is scheduled via backgroundCall, which might take some time

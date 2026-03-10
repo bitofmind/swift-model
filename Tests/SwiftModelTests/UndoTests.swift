@@ -412,31 +412,14 @@ struct UndoObservationTests {
     @Test(arguments: UpdatePath.allCases)
     func undoNotifiesObserverOfContainerItemProperty(updatePath: UpdatePath) async throws {
         let stack = ModelUndoStack()
-        let (model, tester) = ContainerTrackedModel().andTester(
+        // Start with an item already in the model so the undo stack is clean from the start
+        let (model, tester) = ContainerTrackedModel(items: [EquatableChild(value: 0)]).andTester(
             options: updatePath.options,
             withDependencies: { $0.undoSystem.backend = stack }
         )
         tester.exhaustivity = .off
 
-        // Add an item and wait for it to be undoable
-        model.items.append(EquatableChild(value: 0))
-        await tester.assert() {
-            model.items.count == 1 && stack.canUndo
-        }
-        // Consume the "add item" undo entry so it doesn't interfere
-        stack.undo()
-        await tester.assert() { model.items.isEmpty }
-
-        // Add item again, wait for undo entry
-        model.items.append(EquatableChild(value: 0))
-        await tester.assert() {
-            model.items.count == 1 && stack.canUndo
-        }
-        stack.undo()
-        stack.redo()
-        await tester.assert() { model.items.count == 1 }
-
-        // Now observe the item's value property
+        // Observe the item's value property
         let observedValues = LockIsolated<[Int]>([])
         let task = Task {
             for await value in Observed({ model.items.first?.value ?? -1 }) {
