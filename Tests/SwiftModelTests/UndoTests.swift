@@ -344,8 +344,9 @@ struct TrackUndoSelectiveTests {
 ///
 /// Serialized because these tests assert against external async state (`observed.value`)
 /// that is updated by a `for await` loop. The tester has no hook into that external
-/// state, so it can only poll. Serialization prevents competing test tasks from
-/// delaying the cooperative scheduler turns needed for the for-await body to run.
+/// state, so it can only poll. Under heavy parallel test load the `for await` body
+/// (a separate Task) cannot be guaranteed enough scheduler turns within any fixed
+/// sleep budget — serialization avoids that load entirely.
 @Suite(.serialized)
 struct UndoObservationTests {
 

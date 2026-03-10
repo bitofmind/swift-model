@@ -138,7 +138,14 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     }
 
     func assert(timeoutNanoseconds timeout: UInt64, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
-        let scaledTimeout = await Self.adaptiveTimeout(floor: timeout)
+        let calibrationStart = DispatchTime.now().uptimeNanoseconds
+        await Task.yield()
+        let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
+        let scaledTimeout = max(timeout, yieldLatencyNs * 100)
+        // One scheduler round at the current pace. Used as the minimum poll interval so
+        // for-await loop bodies always get at least one full cooperative-pool turn per
+        // waitForModification call, even under heavy parallel test load.
+        let yieldRoundNs = max(1_000_000, yieldLatencyNs) // floor at 1ms for lightly loaded runs
         let context = TesterAssertContext(events: { self.lock { self.events } }, fileAndLine: fileAndLine)
         await TesterAssertContextBase.$assertContext.withValue(context) {
 
@@ -316,7 +323,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
                 let elapsed = start.distance(to: DispatchTime.now().uptimeNanoseconds)
                 let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
-                await waitForModification(timeoutNanoseconds: remaining)
+                await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: yieldRoundNs)
             }
         }
     }
@@ -338,64 +345,61 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
             let elapsed = start.distance(to: DispatchTime.now().uptimeNanoseconds)
             let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
-            await waitForModification(timeoutNanoseconds: remaining)
+            await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: 1_000_000)
         }
     }
 
     /// Suspends briefly so the async pipeline can settle, then returns so the outer
     /// assert loop can re-check its predicate.
     ///
-    /// Two fast paths handle the common case where a modification is already in flight:
-    ///  - `backgroundCall` is busy: wait for idle + one yield, return.
-    ///  - `backgroundCall` just went idle: wait for `onAnyModification` OR 1ms,
-    ///    then wait for idle + yield, return.
-    ///
-    /// The 1ms fallback ensures that for-await loop bodies which update external state
-    /// (e.g. LockIsolated variables) always get scheduler turns even when no further
-    /// model modification fires `onAnyModification`.
-    private func waitForModification(timeoutNanoseconds remaining: UInt64) async {
+    /// `yieldRoundNs` is the measured yield latency at the start of `assert()` — it
+    /// represents one full cooperative-pool round at the current load level. The function
+    /// sleeps for at least this long so that `for await` loop bodies (which consume values
+    /// yielded by `backgroundCall.performUpdate` and write to external `LockIsolated`
+    /// state) always get at least one scheduler turn per call, regardless of pool load.
+    private func waitForModification(timeoutNanoseconds remaining: UInt64, yieldRoundNs: UInt64) async {
         guard remaining > 0 else { return }
 
-        // Fast path: a modification already happened and backgroundCall is processing it.
-        // Skip the onAnyModification wait and go straight to idle.
+        // Fast path: a modification is currently being processed by backgroundCall.
+        // Wait for it to finish, then sleep one scheduler round so for-await consumers
+        // of the yielded stream values get to run.
         if !backgroundCall.isIdle {
             await backgroundCall.waitUntilIdle()
-            // Extra yield: for-await loop bodies run after backgroundCall resumes continuations.
-            await Task.yield()
+            try? await Task.sleep(nanoseconds: yieldRoundNs)
             return
         }
 
-        // Sleep at most 1ms then return so the outer assert() loop can re-check the
-        // predicate. Two scenarios benefit from this:
+        // backgroundCall is idle. Two cases:
         //
-        // A) A recently-delivered update (e.g. from stack.undo()/redo()) was processed by
-        //    backgroundCall before we arrived. The for-await loop body that reflects that
-        //    update in external state (LockIsolated etc.) may not have had a scheduler turn
-        //    yet. The 1ms sleep gives other tasks (including the for-await body) turns on
-        //    the cooperative scheduler.
+        // A) The update pipeline already ran before we arrived (e.g. backgroundCall
+        //    processed the undo change while we were in adaptiveTimeout's yield).
+        //    The for-await body may not have run yet. We register onAnyModification
+        //    to catch future changes, then sleep one full scheduler round so the
+        //    for-await body gets a turn.
         //
-        // B) We are genuinely waiting for a future model modification (e.g. a model task
-        //    that fires after a delay). onAnyModification wakes us up as soon as that
-        //    modification arrives — potentially much sooner than the 1ms deadline.
+        // B) We are genuinely waiting for a future modification. onAnyModification
+        //    fires as soon as it arrives, cutting the sleep short.
         //
-        // In both cases we return after at most 1ms. The outer assert() loop handles
-        // accumulating time and reporting timeouts.
+        // The outer assert() loop re-checks the predicate after each return and
+        // accumulates elapsed time against the scaled timeout.
         let didModify = LockIsolated(false)
         let cancelModification = context.onAnyModification { _ in
             return { didModify.setValue(true) }
         }
         defer { cancelModification() }
 
+        // Sleep one scheduler round. Under light load this is ~1ms; under heavy parallel
+        // test load it scales up to match the actual cooperative-pool round-trip time,
+        // ensuring the for-await body gets at least one scheduling opportunity.
         if !didModify.value {
-            try? await Task.sleep(nanoseconds: 1_000_000) // 1ms
+            try? await Task.sleep(nanoseconds: yieldRoundNs)
         }
 
-        // If a modification fired, wait for backgroundCall to settle so Observed stream
-        // continuations are resumed before the outer loop re-checks the predicate.
+        // If a modification arrived (either before we registered or during the sleep),
+        // wait for backgroundCall to finish and sleep another round for the consumer.
         if didModify.value || !backgroundCall.isIdle {
             await backgroundCall.waitUntilIdle()
-            // Extra yield: for-await loop bodies run after continuations are resumed.
-            await Task.yield()
+            try? await Task.sleep(nanoseconds: yieldRoundNs)
         }
     }
 
