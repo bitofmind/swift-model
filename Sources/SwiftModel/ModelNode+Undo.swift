@@ -536,23 +536,17 @@ private final class UndoCoalescer: @unchecked Sendable {
 
     // MARK: - Shared instance lookup
 
-    // Coalescers are stored weakly on the context so they are released when trackUndo
-    // cancellations fire. Using ObjectIdentifier(context) as key.
-    private static let globalLock = NSLock()
-    nonisolated(unsafe) private static var coalescers: [ObjectIdentifier: WeakCoalescer] = [:]
-
-    private struct WeakCoalescer {
-        weak var coalescer: UndoCoalescer?
-    }
-
+    // The coalescer is stored directly on the context to avoid the ObjectIdentifier
+    // address-reuse bug: two concurrent tests can allocate Context<M> at the same memory
+    // address, causing a global-dict lookup keyed by ObjectIdentifier to return the wrong
+    // (still-live) coalescer from the other test and push undo entries to the wrong backend.
     static func forContext<M: Model>(_ context: Context<M>, backend: any UndoBackend) -> UndoCoalescer {
-        let key = ObjectIdentifier(context)
-        return globalLock {
-            if let existing = coalescers[key]?.coalescer {
+        return context.lock {
+            if let existing = context.undoCoalescer as? UndoCoalescer {
                 return existing
             }
             let new = UndoCoalescer(backend: backend)
-            coalescers[key] = WeakCoalescer(coalescer: new)
+            context.undoCoalescer = new
             return new
         }
     }

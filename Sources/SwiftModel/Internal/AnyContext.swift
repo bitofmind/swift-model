@@ -63,6 +63,9 @@ class AnyContext: @unchecked Sendable {
     
     var _memoizeCache: [AnyHashableSendable: MemoizeCacheEntry] = [:]
     var isTrackingUndo = false
+    // Stored directly on the context to avoid the ObjectIdentifier address-reuse
+    // bug that occurs when using a global static dictionary keyed by memory address.
+    var undoCoalescer: AnyObject? = nil
 
     func didModify() {
         _modificationCount &+= 1

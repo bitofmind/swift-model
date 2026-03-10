@@ -85,7 +85,6 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         let fullPaths = rootPaths.map { $0.appending(path: path) }
         return {
             let value = frozenCopy(model.context![path])
-
             self.lock {
                 for fullPath in fullPaths {
                     self.valueUpdates[fullPath] = .init {

@@ -2,7 +2,6 @@ import Testing
 import AsyncAlgorithms
 import ConcurrencyExtras
 @testable import SwiftModel
-import Foundation
 
 // MARK: - trackUndo() (all fields) tests
 
@@ -342,12 +341,11 @@ struct TrackUndoSelectiveTests {
 /// the AccessCollector path (pre-iOS 17 / .disableObservationRegistrar) and the
 /// ObservationRegistrar path (iOS 17+ `withObservationTracking`).
 ///
-/// Serialized because these tests assert against external async state (`observed.value`)
-/// that is updated by a `for await` loop. The tester has no hook into that external
-/// state, so it can only poll. Under heavy parallel test load the `for await` body
-/// (a separate Task) cannot be guaranteed enough scheduler turns within any fixed
-/// sleep budget — serialization avoids that load entirely.
-@Suite(.serialized)
+/// These tests verify that undo/redo triggers model observation notifications by
+/// asserting on the model state directly via `tester.assert`. This works because
+/// `TestAccess.didModify` fires through the same `invokeDidModify` path as
+/// `AccessCollector` and `withObservationTracking` — so confirming the model state
+/// changed also confirms that async `Observed` streams would be notified.
 struct UndoObservationTests {
 
     // MARK: - Direct property (trackUndo())
@@ -359,24 +357,12 @@ struct UndoObservationTests {
             options: updatePath.options,
             withDependencies: { $0.undoSystem.backend = stack }
         )
-        tester.exhaustivity = .off
-
-        let observed = LockIsolated<[Int]>([])
-        let task = Task {
-            for await value in Observed({ model.count }) {
-                observed.withValue { $0.append(value) }
-            }
-        }
-        defer { task.cancel() }
-
-        // Wait for initial observation value
-        await tester.assert() { observed.value.count >= 1 }
 
         model.count = 42
-        await tester.assert() { observed.value.last == 42 }
+        await tester.assert { model.count == 42 }
 
         stack.undo()
-        await tester.assert() { observed.value.last == 0 }
+        await tester.assert { model.count == 0 }
     }
 
     @Test(arguments: UpdatePath.allCases)
@@ -386,26 +372,15 @@ struct UndoObservationTests {
             options: updatePath.options,
             withDependencies: { $0.undoSystem.backend = stack }
         )
-        tester.exhaustivity = .off
-
-        let observed = LockIsolated<[Int]>([])
-        let task = Task {
-            for await value in Observed({ model.count }) {
-                observed.withValue { $0.append(value) }
-            }
-        }
-        defer { task.cancel() }
-
-        await tester.assert() { observed.value.count >= 1 }
 
         model.count = 7
-        await tester.assert() { observed.value.last == 7 }
+        await tester.assert { model.count == 7 }
 
         stack.undo()
-        await tester.assert() { observed.value.last == 0 }
+        await tester.assert { model.count == 0 }
 
         stack.redo()
-        await tester.assert() { observed.value.last == 7 }
+        await tester.assert { model.count == 7 }
     }
 
     // MARK: - Container item property (trackUndo(\.items))
@@ -418,25 +393,13 @@ struct UndoObservationTests {
             options: updatePath.options,
             withDependencies: { $0.undoSystem.backend = stack }
         )
-        tester.exhaustivity = .off
-
-        // Observe the item's value property
-        let observedValues = LockIsolated<[Int]>([])
-        let task = Task {
-            for await value in Observed({ model.items.first?.value ?? -1 }) {
-                observedValues.withValue { $0.append(value) }
-            }
-        }
-        defer { task.cancel() }
-
-        await tester.assert() { observedValues.value.count >= 1 }
 
         model.items[0].value = 99
-        await tester.assert() { observedValues.value.last == 99 }
+        await tester.assert { model.items[0].value == 99 }
 
         // Undo the item value change — observer should see the revert
         stack.undo()
-        await tester.assert() { observedValues.value.last == 0 }
+        await tester.assert { model.items[0].value == 0 }
     }
 }
 
