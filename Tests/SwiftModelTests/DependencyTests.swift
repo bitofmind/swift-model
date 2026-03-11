@@ -66,10 +66,12 @@ struct DependencyTests {
 
     @Test func testDependencyInTask() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            TaskModel().withAnchor {
-                $0.testResult = testResult
-            }
+        let (model, tester) = TaskModel().andTester {
+            $0.testResult = testResult
+        }
+        tester.exhaustivity = []
+        await tester.assert(timeoutNanoseconds: 5_000_000_000) {
+            model.taskDone == true
         }
 
         #expect(testResult.value == "task")
@@ -139,11 +141,14 @@ private struct Leaf {
 
 @Model
 private struct TaskModel {
+    var taskDone = false
+
     func onActivate() {
         node.task {
             // @Dependency should resolve using the context's dependencies, not the global default
             @Dependency(\.testResult) var result
             result.add("task")
+            taskDone = true
         }
     }
 }
