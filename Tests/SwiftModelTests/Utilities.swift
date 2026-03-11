@@ -70,7 +70,7 @@ extension Model {
 
 extension ModelNode {
     var waitUntilRemoved: () async -> Void {
-        context.waitUntilNil
+        _context.waitUntilNil
     }
 }
 

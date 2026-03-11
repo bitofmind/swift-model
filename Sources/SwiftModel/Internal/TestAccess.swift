@@ -36,20 +36,20 @@ import Dependencies
 //   - expectedState: advances one assert at a time — updated only when an assert passes.
 //   - valueUpdates : pending un-asserted changes — entries are removed when asserted.
 //
-// Why metadata (node.metadata.x) can't currently participate as a regular access:
+// Why context storage (node.context.x) can't currently participate as a regular access:
 //
 //   willAccess<M,V> and didModify<M,V> both guard on a WritableKeyPath<M,Value> so the
 //   value can be stored/applied into the typed Root snapshots (lastState/expectedState).
-//   The synthetic keypath \M[environmentKey: key] used by the metadata observation system
+//   The synthetic keypath \M[environmentKey: key] used by the context storage observation system
 //   is a read-only KeyPath returning AnyHashableSendable — it can never be cast to
 //   WritableKeyPath, and even if it could, there is no typed Value to write back into Root.
-//   Metadata values live in AnyContext.contextStorage (a type-erased dictionary), not in
-//   the @Model struct. A parallel tracking system (metadataUpdates / expectedMetadata /
-//   lastMetadata) with hooks called from willAccessEnvironmentKey/didModifyEnvironmentKey
+//   Context values live in AnyContext.contextStorage (a type-erased dictionary), not in
+//   the @Model struct. A parallel tracking system (contextUpdates / expectedContext /
+//   lastContext) with hooks called from willAccessEnvironmentKey/didModifyEnvironmentKey
 //   would be the correct fix — see the planned implementation in the tester gap investigation.
 
-// Key for tracking metadata writes on dependency models (which have no root-relative keypath).
-// Combines the context's identity with the per-model metadata path so distinct storage
+// Key for tracking context storage writes on dependency models (which have no root-relative keypath).
+// Combines the context's identity with the per-model context path so distinct storage
 // keys on distinct dependency model contexts produce distinct entries.
 private struct DependencyMetadataKey: Hashable, @unchecked Sendable {
     let contextID: ObjectIdentifier
@@ -84,9 +84,9 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     // remaining entries at exhaustion time are reported as failures.
     var valueUpdates: [PartialKeyPath<Root>: ValueUpdate] = [:]
 
-    // Pending unasserted metadata writes on dependency models. Dependency models have no
+    // Pending unasserted context storage writes on dependency models. Dependency models have no
     // root-relative WritableKeyPath (they live in dependencyContexts, not children), so
-    // their metadata updates are tracked here rather than in valueUpdates.
+    // their context storage updates are tracked here rather than in valueUpdates.
     private var dependencyMetadataUpdates: [DependencyMetadataKey: ValueUpdate] = [:]
 
     var events: [Event] = []
@@ -99,7 +99,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         var apply: (inout Root) -> Void
         var debugInfo: () -> String
         /// Which exhaustivity category this update belongs to. Defaults to `.state` for
-        /// regular property writes; `.metadata` for `node.metadata` writes.
+        /// regular property writes; `.context` for `node.context` writes.
         var area: Exhaustivity
     }
 
@@ -137,7 +137,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     // Only WritableKeyPath properties participate — read-only keypaths (e.g. computed
     // properties, synthetic environment keypaths) are silently skipped.
     //
-    // For dependency model metadata (no root-relative path exists), a dummy Access is
+    // For dependency model context storage (no root-relative path exists), a dummy Access is
     // returned that carries a cleanup closure to clear dependencyMetadataUpdates.
     override func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
         guard let path = path as? WritableKeyPath<M, Value> else { return nil }
@@ -162,10 +162,10 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
         let fullPaths = rootPaths.map { $0.appending(path: path) }
 
-        // Dependency model metadata: no root-relative path exists (the model lives in
+        // Dependency model context storage: no root-relative path exists (the model lives in
         // dependencyContexts, not children). Return a dummy Access whose additionalCleanup
         // clears the corresponding dependencyMetadataUpdates entry when asserted.
-        if fullPaths.isEmpty, capturedArea == .metadata, let modelContext = model.context {
+        if fullPaths.isEmpty, capturedArea == .context, let modelContext = model.context {
             let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
             return { [weak self] in
                 guard let self else { return }
@@ -208,7 +208,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     //
     // Only WritableKeyPath properties participate — the same guard as willAccess.
     //
-    // For dependency model metadata (no root-relative path exists), the update is stored
+    // For dependency model context storage (no root-relative path exists), the update is stored
     // in dependencyMetadataUpdates instead of valueUpdates.
     override func didModify<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
         guard let path = path as? WritableKeyPath<M, Value> else { return nil }
@@ -221,18 +221,18 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         let fullPaths = rootPaths.map { $0.appending(path: path) }
         let area = threadLocals.modificationArea ?? .state
 
-        // Dependency model metadata: no root-relative path exists. Track the update
+        // Dependency model context storage: no root-relative path exists. Track the update
         // separately so checkExhaustion can report it if not asserted.
-        if fullPaths.isEmpty, area == .metadata, let modelContext = model.context {
+        if fullPaths.isEmpty, area == .context, let modelContext = model.context {
             let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
             return { [weak self] in
                 guard let self else { return }
                 let value = frozenCopy(modelContext[path])
                 self.lock {
                     self.dependencyMetadataUpdates[key] = ValueUpdate(
-                        apply: { _ in },  // dependency metadata not in Root snapshot
+                        apply: { _ in },  // dependency context storage not in Root snapshot
                         debugInfo: { "\(String(describing: M.self)).\(propertyName(from: model, path: path) ?? "UNKNOWN") == \(String(customDumping: value))" },
-                        area: .metadata
+                        area: .context
                     )
                 }
             }
@@ -374,7 +374,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                             for access in passedAccesses {
                                 // Clear the pending update — this path has been asserted.
                                 valueUpdates[access.path] = nil
-                                // For dependency metadata, run the additional cleanup (clears
+                                // For dependency context storage, run the additional cleanup (clears
                                 // dependencyMetadataUpdates for this storage key+context).
                                 access.additionalCleanup?()
                                 // Advance the baseline to include this asserted value.
@@ -630,14 +630,14 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 fail(message, for: .state, at: fileAndLine)
             } else if includeUpdates {
                 // Layer 3: check for pending valueUpdates not visible in the struct diff.
-                // Partition by area so state and metadata are reported independently and
+                // Partition by area so state and context storage are reported independently and
                 // respect their respective exhaustivity flags.
-                // Report state and metadata updates separately so each respects its own flag.
-                for area: Exhaustivity in [.state, .metadata] {
+                // Report state and context updates separately so each respects its own flag.
+                for area: Exhaustivity in [.state, .context] {
                     let updates = valueUpdates.values.filter { $0.area == area }
                     if !updates.isEmpty {
                         let descriptions = updates.map { $0.debugInfo() }
-                        let areaTitle = area == .metadata ? "Metadata not exhausted" : "State not exhausted"
+                        let areaTitle = area == .context ? "Context not exhausted" : "State not exhausted"
                         fail("""
                             \(areaTitle): …
 
@@ -648,19 +648,19 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     }
                 }
 
-                // Layer 3b: check for unasserted metadata on dependency models.
+                // Layer 3b: check for unasserted context storage on dependency models.
                 // These are tracked separately because dependency models have no
                 // root-relative WritableKeyPath and cannot be put in valueUpdates.
                 let depUpdates = lock { dependencyMetadataUpdates }
                 if !depUpdates.isEmpty {
                     let descriptions = depUpdates.values.map { $0.debugInfo() }
                     fail("""
-                        Metadata not exhausted: …
+                        Context not exhausted: …
 
                         Modifications not asserted:
 
                         \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
-                        """, for: .metadata, at: fileAndLine)
+                        """, for: .context, at: fileAndLine)
                 }
             }
         }
@@ -694,7 +694,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
             var apply: (inout Root) -> Void
             // Called during assertion clearing for accesses that need side-effect cleanup
-            // beyond the standard valueUpdates path-based removal (e.g. dependency metadata).
+            // beyond the standard valueUpdates path-based removal (e.g. dependency context storage).
             var additionalCleanup: (() -> Void)?
 
             init(path: PartialKeyPath<Root>, modelName: String, propertyName: String?, value: String, apply: @escaping (inout Root) -> Void, additionalCleanup: (() -> Void)? = nil) {

@@ -70,20 +70,20 @@ public struct ModelNode<M: Model> {
 extension ModelNode: Sendable where M: Sendable {}
 
 extension ModelNode {
-    /// Typed access to per-node metadata storage via `@dynamicMemberLookup`.
+    /// Typed access to per-node context storage via `@dynamicMemberLookup`.
     ///
-    /// Properties declared as extensions on `ModelContextKeys` are accessible as
-    /// `node.metadata.myFlag` (read) and `node.metadata.myFlag = value` (write).
+    /// Properties declared as extensions on `ContextKeys` are accessible as
+    /// `node.context.myFlag` (read) and `node.context.myFlag = value` (write).
     ///
-    /// Declare entries by extending `ModelContextKeys`:
+    /// Declare entries by extending `ContextKeys`:
     /// ```swift
-    /// extension ModelContextKeys {
-    ///     var myFlag: ModelContextStorage<Bool> { .init(defaultValue: false) }
+    /// extension ContextKeys {
+    ///     var myFlag: ContextStorage<Bool> { .init(defaultValue: false) }
     /// }
-    /// // Usage: node.metadata.myFlag / node.metadata.myFlag = true
+    /// // Usage: node.context.myFlag / node.context.myFlag = true
     /// ```
-    var metadata: ModelContextValues {
-        ModelContextValues(context: context)
+    var context: ContextValues {
+        ContextValues(context: _context)
     }
 
     /// Removes a previously stored environment value from this node's context.
@@ -92,9 +92,9 @@ extension ModelNode {
     /// or return the storage's `defaultValue` if no ancestor has set it.
     ///
     /// Fires observation notifications so any active observers re-evaluate.
-    func removeMetadata<V>(_ key: KeyPath<ModelContextKeys, ModelContextStorage<V>>) {
-        let storage = ModelContextKeys()[keyPath: key]
-        context?.removeEnvironmentValue(for: storage)
+    func removeContext<V>(_ key: KeyPath<ContextKeys, ContextStorage<V>>) {
+        let storage = ContextKeys()[keyPath: key]
+        _context?.removeEnvironmentValue(for: storage)
     }
 }
 
@@ -294,7 +294,7 @@ public extension ModelNode {
     /// - Returns: The value returned by the callback
     /// - Throws: Rethrows any error thrown by the callback (without rollback)
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
-        if let context {
+        if let context = _context {
             return try ModelAccess.$isInModelTaskContext.withValue(true) {
                 try context.transaction(callback)
             }
@@ -364,7 +364,7 @@ public extension ModelNode {
 
     /// Returns `true` if this model has at most one parent in the hierarchy (i.e. it is not shared).
     var isUniquelyReferenced: Bool {
-        context.map { $0.parents.count <= 1 } ?? true
+        _context.map { $0.parents.count <= 1 } ?? true
     }
 
     /// Returns a stream that emits `true` when the model has a single owner, `false` when it is shared.
@@ -464,7 +464,7 @@ public extension ModelNode {
     ///   - updateAccumulatingResult: A closure that folds an element into the accumulator.
     /// - Returns: The final accumulated result.
     func reduceHierarchy<Result, Element>(for relation: ModelRelation, transform: (any Model) throws -> Element?, into initialResult: Result, _ updateAccumulatingResult: (inout Result, Element) throws -> ()) rethrows -> Result {
-        try context?.reduceHierarchy(for: relation, transform: {
+        try _context?.reduceHierarchy(for: relation, transform: {
             try transform($0.anyModel.withAccessIfPropagateToChildren(access))
         }, into: initialResult, updateAccumulatingResult) ?? initialResult
     }
@@ -504,7 +504,7 @@ extension ModelNode {
     }
 
     func enforcedContext(_ message: @autoclosure () -> String) -> Context<M>? {
-        guard let context else {
+        guard let context = _context else {
             reportIssue(message())
             return nil
         }
@@ -512,7 +512,7 @@ extension ModelNode {
         return context
     }
 
-    var context: Context<M>? {
+    var _context: Context<M>? {
         modelContext.context
     }
 

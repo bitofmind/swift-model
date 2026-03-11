@@ -7,7 +7,7 @@ private struct EnvironmentValueFound: Error {
 
 // MARK: - StoragePropagation
 
-/// Controls how a `ModelContextStorage` value is read and written across the model hierarchy.
+/// Controls how a `ContextStorage` value is read and written across the model hierarchy.
 enum StoragePropagation: Sendable {
     /// Read and write only on this context. Default behavior.
     case local
@@ -16,25 +16,25 @@ enum StoragePropagation: Sendable {
     case environment
 }
 
-// MARK: - ModelContextStorage
+// MARK: - ContextStorage
 
-/// A typed key + default value for per-context metadata storage.
+/// A typed key + default value for per-context storage.
 ///
-/// Declare one as a computed property on `ModelContextKeys`. The source location
+/// Declare one as a computed property on `ContextKeys`. The source location
 /// captured at `init` time serves as the unique dictionary key — no separate enum needed.
 ///
 /// ```swift
-/// extension ModelContextKeys {
-///     var isTrackingUndo: ModelContextStorage<Bool> { .init(defaultValue: false) }
-///     var theme: ModelContextStorage<ColorScheme> { .init(defaultValue: .light, propagation: .environment) }
+/// extension ContextKeys {
+///     var isTrackingUndo: ContextStorage<Bool> { .init(defaultValue: false) }
+///     var theme: ContextStorage<ColorScheme> { .init(defaultValue: .light, propagation: .environment) }
 /// }
 ///
-/// // Access via node.metadata:
-/// node.metadata.isTrackingUndo        // Bool (.local)
-/// node.metadata.theme                 // ColorScheme (.environment — reads nearest ancestor)
-/// node.metadata.theme = .dark         // stores here, notifies descendants
+/// // Access via node.context:
+/// node.context.isTrackingUndo        // Bool (.local)
+/// node.context.theme                 // ColorScheme (.environment — reads nearest ancestor)
+/// node.context.theme = .dark         // stores here, notifies descendants
 /// ```
-struct ModelContextStorage<Value: Sendable>: Hashable, Sendable {
+struct ContextStorage<Value: Sendable>: Hashable, Sendable {
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
     func hash(into hasher: inout Hasher) { hasher.combine(key) }
     let defaultValue: Value
@@ -79,31 +79,31 @@ struct ModelContextStorage<Value: Sendable>: Hashable, Sendable {
     }
 }
 
-// MARK: - ModelContextKeys
+// MARK: - ContextKeys
 
 /// A namespace for declaring named context storage keys as computed properties.
 ///
 /// ```swift
-/// extension ModelContextKeys {
-///     var myFlag: ModelContextStorage<Bool> { .init(defaultValue: false) }
-///     var theme: ModelContextStorage<ColorScheme> { .init(defaultValue: .light, propagation: .environment) }
+/// extension ContextKeys {
+///     var myFlag: ContextStorage<Bool> { .init(defaultValue: false) }
+///     var theme: ContextStorage<ColorScheme> { .init(defaultValue: .light, propagation: .environment) }
 /// }
 /// ```
-struct ModelContextKeys: Sendable {}
+struct ContextKeys: Sendable {}
 
-// MARK: - ModelContextValues
+// MARK: - ContextValues
 
-/// Provides `@dynamicMemberLookup` access to a context's metadata storage via `ModelContextKeys`.
+/// Provides `@dynamicMemberLookup` access to a context's storage via `ContextKeys`.
 ///
-/// Access via `node.metadata`:
+/// Access via `node.context`:
 /// ```swift
-/// node.metadata.myFlag        // read → Bool
-/// node.metadata.myFlag = true // write
-/// node.metadata.theme         // reads nearest ancestor that set it
-/// node.metadata.theme = .dark // stores here, notifies descendants
+/// node.context.myFlag        // read → Bool
+/// node.context.myFlag = true // write
+/// node.context.theme         // reads nearest ancestor that set it
+/// node.context.theme = .dark // stores here, notifies descendants
 /// ```
 @dynamicMemberLookup
-struct ModelContextValues: Sendable {
+struct ContextValues: Sendable {
     // Optional: nil when the node is unanchored. Reads return defaultValue, writes are no-ops.
     let context: AnyContext?
 
@@ -112,14 +112,14 @@ struct ModelContextValues: Sendable {
     }
 
     // Direct subscript for explicit access with a storage descriptor.
-    subscript<V>(storage: ModelContextStorage<V>) -> V {
+    subscript<V>(storage: ContextStorage<V>) -> V {
         get {
             guard let context else { return storage.defaultValue }
             switch storage.propagation {
             case .local:
                 return context[storage]
             case .environment:
-                // Walk ancestors calling willAccessEnvironmentKey on each — this registers
+                // Walk ancestors calling willAccessStorage on each — this registers
                 // observation dependencies at every level so any ancestor write is detected.
                 return context.environmentValue(for: storage)
             }
@@ -133,21 +133,21 @@ struct ModelContextValues: Sendable {
         }
     }
 
-    // @dynamicMemberLookup: KeyPath<ModelContextKeys, ModelContextStorage<V>> → V
-    subscript<V>(dynamicMember path: KeyPath<ModelContextKeys, ModelContextStorage<V>>) -> V {
-        get { self[ModelContextKeys()[keyPath: path]] }
-        nonmutating set { self[ModelContextKeys()[keyPath: path]] = newValue }
+    // @dynamicMemberLookup: KeyPath<ContextKeys, ContextStorage<V>> → V
+    subscript<V>(dynamicMember path: KeyPath<ContextKeys, ContextStorage<V>>) -> V {
+        get { self[ContextKeys()[keyPath: path]] }
+        nonmutating set { self[ContextKeys()[keyPath: path]] = newValue }
     }
 }
 
-// MARK: - AnyContext typed storage subscript + metadata accessor
+// MARK: - AnyContext typed storage subscript + context accessor
 
 extension AnyContext {
-    var metadata: ModelContextValues {
-        ModelContextValues(context: self)
+    var context: ContextValues {
+        ContextValues(context: self)
     }
 
-    subscript<V>(storage: ModelContextStorage<V>) -> V {
+    subscript<V>(storage: ContextStorage<V>) -> V {
         get {
             if !storage.isSystemStorage {
                 willAccessStorage(storage)
@@ -177,7 +177,7 @@ extension AnyContext {
     /// - `observedParents` is used at each level, so structural changes (re-parenting) also
     ///   trigger re-evaluation of observers.
     /// - Deduplication prevents visiting the same ancestor twice.
-    func environmentValue<V>(for storage: ModelContextStorage<V>) -> V {
+    func environmentValue<V>(for storage: ContextStorage<V>) -> V {
         do {
             try reduceHierarchy(for: [.self, .ancestors], transform: \.self, into: ()) { _, ctx in
                 ctx.willAccessStorage(storage)
@@ -194,7 +194,7 @@ extension AnyContext {
     /// Remove a previously stored environment value from this context, returning it to
     /// inheriting from the nearest ancestor that has set it (or defaultValue if none).
     /// Fires observation notifications so observers of this context re-evaluate.
-    func removeEnvironmentValue<V>(for storage: ModelContextStorage<V>) {
+    func removeEnvironmentValue<V>(for storage: ContextStorage<V>) {
         let hadEntry = lock {
             guard let entry = contextStorage[storage.key] else { return false }
             entry.cleanup?()
@@ -207,7 +207,7 @@ extension AnyContext {
     }
 }
 
-// MARK: - Internal Model subscript for metadata observation
+// MARK: - Internal Model subscript for context storage observation
 //
 // Provides a WritableKeyPath<M, V> rooted at the Model type itself.
 // Swift requires keypath subscript indices to be Hashable; AnyHashableSendable satisfies this,
@@ -216,14 +216,14 @@ extension AnyContext {
 // TestAccess exactly like a regular @Model property keypath.
 //
 // This subscript is internal-only — it is the bridge between the typed storage system
-// and the TestAccess observation machinery. Users always use `node.metadata.myKey`;
+// and the TestAccess observation machinery. Users always use `node.context.myKey`;
 // `Context<M>` uses this subscript internally in willAccessStorage/didModifyStorage
 // to produce the typed keypath needed for TestAccess snapshot tracking.
 extension Model {
-    subscript<V>(_metadata storage: ModelContextStorage<V>) -> V {
+    subscript<V>(_metadata storage: ContextStorage<V>) -> V {
         // The subscript index must be Hashable for keypath formation. We use a wrapper
         // that hashes/equals on storage.key so distinct storages produce distinct paths.
-        get { node.metadata[storage] }
-        set { node.metadata[storage] = newValue }
+        get { node.context[storage] }
+        set { node.context[storage] = newValue }
     }
 }

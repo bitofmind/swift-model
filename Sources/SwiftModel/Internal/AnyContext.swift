@@ -63,9 +63,9 @@ class AnyContext: @unchecked Sendable {
     
     var _memoizeCache: [AnyHashableSendable: MemoizeCacheEntry] = [:]
 
-    // Typed per-context storage for internal features (undo, future environment, etc.).
-    // Keyed by AnyHashableSendable (source location or explicit key from ModelContextStorage).
-    // Access via the typed subscript defined in ModelContextStorage.swift.
+    // Typed per-context storage for internal features (undo, environment, etc.).
+    // Keyed by AnyHashableSendable (source location or explicit key from ContextStorage).
+    // Access via the typed subscript defined in ModelContextStorage.swift (ContextStorage subscript).
     struct ContextStorageEntry: @unchecked Sendable {
         var value: any Sendable
         // Type-erased onRemoval hook, set when the storage declares one.
@@ -128,20 +128,20 @@ class AnyContext: @unchecked Sendable {
 
     // MARK: - Storage observation hooks
     //
-    // A metadata read (local or environment) calls `willAccessStorage` on each visited context
+    // A context storage read (local or environment) calls `willAccessStorage` on each visited context
     // so that any active observation tracking (AccessCollector, ObservationRegistrar, ViewAccess,
-    // TestAccess) registers a dependency. The typed `ModelContextStorage<V>` is passed so that
+    // TestAccess) registers a dependency. The typed `ContextStorage<V>` is passed so that
     // `Context<M>` can form both the synthetic untyped keypath (for Observed/SwiftUI) and a
     // typed `WritableKeyPath<M, V>` (for TestAccess snapshot tracking).
     // When a value is set or removed, `didModifyStorage` fires the corresponding notifications.
 
     /// Called when a storage key is read on this context during an environment walk.
     /// Implementations (Context<M>) call `willAccess` for both observation paths.
-    func willAccessStorage<V>(_ storage: ModelContextStorage<V>) {}
+    func willAccessStorage<V>(_ storage: ContextStorage<V>) {}
 
     /// Called after a storage value is written or removed from this context.
     /// Implementations (Context<M>) call `invokeDidModify` and fire post-lock callbacks.
-    func didModifyStorage<V>(_ storage: ModelContextStorage<V>) {}
+    func didModifyStorage<V>(_ storage: ContextStorage<V>) {}
 
     /// Called inside the lock just before weakParents is mutated.
     /// Implementations should call willSet on the ObservationRegistrar.
