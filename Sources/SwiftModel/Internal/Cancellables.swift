@@ -1,4 +1,5 @@
 import Foundation
+import Dependencies
 
 struct EmptyCancellable: Cancellable {
     func cancel() {}
@@ -88,13 +89,15 @@ extension TaskCancellable {
             let contexts = AnyCancellable.contexts
             let operation = { @Sendable in
                 do {
-                    try await ModelAccess.$isInModelTaskContext.withValue(true) {
-                        try await AnyCancellable.$inheritedContexts.withValue(contexts) {
-                            try await AnyCancellable.$contexts.withValue([]) {
-                                defer { onDone() }
+                    try await Dependencies.withDependencies(from: context) {
+                        try await ModelAccess.$isInModelTaskContext.withValue(true) {
+                            try await AnyCancellable.$inheritedContexts.withValue(contexts) {
+                                try await AnyCancellable.$contexts.withValue([]) {
+                                    defer { onDone() }
 
-                                guard !Task.isCancelled, !context.isDestructed else { return }
-                                try await operation()
+                                    guard !Task.isCancelled, !context.isDestructed else { return }
+                                    try await operation()
+                                }
                             }
                         }
                     }

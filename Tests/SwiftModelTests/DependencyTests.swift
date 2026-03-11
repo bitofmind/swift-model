@@ -1,6 +1,7 @@
 import Testing
 import SwiftModel
 import Observation
+import Dependencies
 
 struct DependencyTests {
     @Test func testParent() async {
@@ -63,6 +64,17 @@ struct DependencyTests {
         #expect(childResult.value == "C1c1")
     }
 
+    @Test func testDependencyInTask() async {
+        let testResult = TestResult()
+        await waitUntilRemoved {
+            TaskModel().withAnchor {
+                $0.testResult = testResult
+            }
+        }
+
+        #expect(testResult.value == "task")
+    }
+
     @Test func testChildrenOverride() async {
         let testResult = TestResult()
         let childrenResult = TestResult()
@@ -121,6 +133,17 @@ private struct Leaf {
         node.testResult.add("L")
         node.onCancel {
             node.testResult.add("l")
+        }
+    }
+}
+
+@Model
+private struct TaskModel {
+    func onActivate() {
+        node.task {
+            // @Dependency should resolve using the context's dependencies, not the global default
+            @Dependency(\.testResult) var result
+            result.add("task")
         }
     }
 }
