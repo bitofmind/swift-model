@@ -45,6 +45,9 @@ struct ContextStorage<Value: Sendable>: Hashable, Sendable {
     /// or exhaustion checking. Used for system-internal storage (undo, memoize) that should
     /// not appear as unasserted state changes in user tests.
     let isSystemStorage: Bool
+    /// Optional equality check. When set, a write that doesn't change the stored value is a no-op
+    /// and fires no observation notifications. Nil means always notify (non-Equatable types).
+    let isEqual: (@Sendable (Value, Value) -> Bool)?
 
     /// Default init: uses the source location as the unique storage key.
     init(
@@ -61,6 +64,7 @@ struct ContextStorage<Value: Sendable>: Hashable, Sendable {
         self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
         self.onRemoval = onRemoval
         self.isSystemStorage = isSystemStorage
+        self.isEqual = nil
     }
 
     /// Explicit-key init: use when you need a stable key independent of source location.
@@ -76,6 +80,44 @@ struct ContextStorage<Value: Sendable>: Hashable, Sendable {
         self.key = AnyHashableSendable(key)
         self.onRemoval = onRemoval
         self.isSystemStorage = isSystemStorage
+        self.isEqual = nil
+    }
+}
+
+extension ContextStorage where Value: Equatable {
+    /// Default init for Equatable values: automatically skips observation notifications
+    /// when the new value equals the currently stored value.
+    init(
+        defaultValue: Value,
+        propagation: StoragePropagation = .local,
+        onRemoval: (@Sendable (Value) -> Void)? = nil,
+        isSystemStorage: Bool = false,
+        fileID: StaticString = #fileID,
+        line: UInt = #line,
+        column: UInt = #column
+    ) {
+        self.defaultValue = defaultValue
+        self.propagation = propagation
+        self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
+        self.onRemoval = onRemoval
+        self.isSystemStorage = isSystemStorage
+        self.isEqual = { $0 == $1 }
+    }
+
+    /// Explicit-key init for Equatable values.
+    init<K: Hashable & Sendable>(
+        defaultValue: Value,
+        key: K,
+        propagation: StoragePropagation = .local,
+        onRemoval: (@Sendable (Value) -> Void)? = nil,
+        isSystemStorage: Bool = false
+    ) {
+        self.defaultValue = defaultValue
+        self.propagation = propagation
+        self.key = AnyHashableSendable(key)
+        self.onRemoval = onRemoval
+        self.isSystemStorage = isSystemStorage
+        self.isEqual = { $0 == $1 }
     }
 }
 
@@ -157,12 +199,18 @@ extension AnyContext {
         set {
             let v = newValue
             let cleanup: (() -> Void)? = storage.onRemoval.map { onRemoval in { onRemoval(v) } }
-            lock {
+            let changed = lock {
+                if let isEqual = storage.isEqual,
+                   let existing = contextStorage[storage.key]?.value as? V,
+                   isEqual(existing, newValue) {
+                    return false
+                }
                 contextStorage[storage.key] = ContextStorageEntry(value: newValue, cleanup: cleanup)
+                return true
             }
             // Don't notify observers for system-internal storage (undo, memoize, etc.) —
             // those writes should not surface as unasserted state in TestAccess exhaustion checks.
-            if !storage.isSystemStorage {
+            if changed && !storage.isSystemStorage {
                 didModifyStorage(storage)
             }
         }

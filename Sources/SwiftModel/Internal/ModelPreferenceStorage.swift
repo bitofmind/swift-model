@@ -32,6 +32,9 @@ struct PreferenceStorage<Value: Sendable>: Hashable, Sendable {
     let reduce: @Sendable (inout Value, Value) -> Void
     /// When `true`, contributions from dependency model contexts are also included in the aggregate.
     let includeDependencies: Bool
+    /// Optional equality check. When set, a write that doesn't change the stored value is a no-op
+    /// and fires no observation notifications. Nil means always notify (non-Equatable types).
+    let isEqual: (@Sendable (Value, Value) -> Bool)?
 
     /// Default init: uses the source location as the unique storage key.
     init(
@@ -46,6 +49,7 @@ struct PreferenceStorage<Value: Sendable>: Hashable, Sendable {
         self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
         self.reduce = reduce
         self.includeDependencies = includeDependencies
+        self.isEqual = nil
     }
 
     /// Explicit-key init: use when you need a stable key independent of source location.
@@ -59,6 +63,40 @@ struct PreferenceStorage<Value: Sendable>: Hashable, Sendable {
         self.key = AnyHashableSendable(key)
         self.reduce = reduce
         self.includeDependencies = includeDependencies
+        self.isEqual = nil
+    }
+}
+
+extension PreferenceStorage where Value: Equatable {
+    /// Default init for Equatable values: automatically skips observation notifications
+    /// when the new contribution equals the currently stored value.
+    init(
+        defaultValue: Value,
+        includeDependencies: Bool = false,
+        fileID: StaticString = #fileID,
+        line: UInt = #line,
+        column: UInt = #column,
+        reduce: @Sendable @escaping (inout Value, Value) -> Void
+    ) {
+        self.defaultValue = defaultValue
+        self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
+        self.reduce = reduce
+        self.includeDependencies = includeDependencies
+        self.isEqual = { $0 == $1 }
+    }
+
+    /// Explicit-key init for Equatable values.
+    init<K: Hashable & Sendable>(
+        defaultValue: Value,
+        key: K,
+        includeDependencies: Bool = false,
+        reduce: @Sendable @escaping (inout Value, Value) -> Void
+    ) {
+        self.defaultValue = defaultValue
+        self.key = AnyHashableSendable(key)
+        self.reduce = reduce
+        self.includeDependencies = includeDependencies
+        self.isEqual = { $0 == $1 }
     }
 }
 
@@ -128,10 +166,18 @@ extension AnyContext {
             return preferenceStorage[storage.key]?.value as? V ?? storage.defaultValue
         }
         set {
-            lock {
+            let changed = lock {
+                if let isEqual = storage.isEqual,
+                   let existing = preferenceStorage[storage.key]?.value as? V,
+                   isEqual(existing, newValue) {
+                    return false
+                }
                 preferenceStorage[storage.key] = PreferenceStorageEntry(value: newValue, cleanup: nil)
+                return true
             }
-            didModifyPreference(storage)
+            if changed {
+                didModifyPreference(storage)
+            }
         }
     }
 
