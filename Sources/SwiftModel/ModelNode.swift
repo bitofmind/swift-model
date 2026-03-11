@@ -72,7 +72,7 @@ extension ModelNode: Sendable where M: Sendable {}
 extension ModelNode {
     /// Typed access to per-node metadata storage via `@dynamicMemberLookup`.
     ///
-    /// Properties declared as extensions on `ModelContextValues` are accessible as
+    /// Properties declared as extensions on `ModelContextKeys` are accessible as
     /// `node.metadata.myFlag` (read) and `node.metadata.myFlag = value` (write).
     ///
     /// Declare entries by extending `ModelContextKeys`:
@@ -84,6 +84,17 @@ extension ModelNode {
     /// ```
     var metadata: ModelContextValues {
         ModelContextValues(context: context)
+    }
+
+    /// Removes a previously stored environment value from this node's context.
+    ///
+    /// After removal this node will inherit the value from the nearest ancestor that has set it,
+    /// or return the storage's `defaultValue` if no ancestor has set it.
+    ///
+    /// Fires observation notifications so any active observers re-evaluate.
+    func removeMetadata<V>(_ key: KeyPath<ModelContextKeys, ModelContextStorage<V>>) {
+        let storage = ModelContextKeys()[keyPath: key]
+        context?.removeEnvironmentValue(for: storage)
     }
 }
 

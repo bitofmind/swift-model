@@ -126,6 +126,24 @@ class AnyContext: @unchecked Sendable {
     /// Implementations should register the read with any active observation tracking.
     func willAccessParents() {}
 
+    // MARK: - Environment observation hooks
+    //
+    // An environment read walks up the ancestor chain. At each context we call
+    // `willAccessEnvironmentKey` so that any active observation tracking
+    // (AccessCollector, ObservationRegistrar, ViewAccess) registers a dependency on
+    // the synthetic `\M[environmentKey: key]` path for that specific context.
+    // When the value is set on any ancestor the normal willSet/didSet machinery fires
+    // and all registered observers are notified — no separate notify-list needed.
+
+    /// Called when an environment key is read on this context.
+    /// Implementations (Context<M>) call `willAccess` for the synthetic environment keypath.
+    func willAccessEnvironmentKey(_ key: AnyHashableSendable) {}
+
+    /// Called after an environment value is removed from this context, so observers are notified
+    /// that the effective value may have changed.
+    /// Implementations (Context<M>) call `invokeDidModify` for the synthetic environment keypath.
+    func didModifyEnvironmentKey(_ key: AnyHashableSendable) {}
+
     /// Called inside the lock just before weakParents is mutated.
     /// Implementations should call willSet on the ObservationRegistrar.
     func willModifyParents() {}

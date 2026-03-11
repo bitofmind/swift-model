@@ -148,6 +148,19 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         callbacks.append(contentsOf: didModifyCallbacks)
     }
 
+    override func willAccessEnvironmentKey(_ key: AnyHashableSendable) {
+        let path: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: key]
+        modelContext.willAccess(readModel, at: path)?()
+    }
+
+    override func didModifyEnvironmentKey(_ key: AnyHashableSendable) {
+        let path: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: key]
+        lock { self.didModify() }
+        modelContext.invokeDidModify(readModel, at: path)
+        let postLockCallbacks = lock { buildPostLockCallbacks(for: path) }
+        runPostLockCallbacks(postLockCallbacks)
+    }
+
     func onModify<T>(for path: KeyPath<M, T>&Sendable, _ callback: @Sendable @escaping (Bool) -> (() -> Void)?) -> @Sendable () -> Void {
         guard !isDestructed else {
             return {}
@@ -300,7 +313,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// Builds the post-lock callbacks array for a property modification.
     /// Returns nil when there is nothing to do, avoiding the array allocation entirely.
     /// Must be called while the context lock is held.
-    private func buildPostLockCallbacks<T>(for path: WritableKeyPath<M, T>) -> [() -> Void]? {
+    private func buildPostLockCallbacks(for path: PartialKeyPath<M>) -> [() -> Void]? {
         // Fast path: skip allocation when no observers exist and we're not in a batched transaction.
         guard modifyCallbacks[path] != nil || anyModificationActiveCount > 0 || threadLocals.postTransactions != nil else {
             return nil

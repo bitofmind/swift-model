@@ -670,6 +670,17 @@ extension Model {
     }
 }
 
+extension Model {
+    // Synthetic key path used to make environment values observable per-context.
+    // The subscript uses `AnyHashableSendable` as both key and return type so the path is
+    // always `KeyPath<M, AnyHashableSendable>` regardless of the stored value type.
+    // Never called for its value — it exists solely so that `\M[environmentKey: key]` is a
+    // valid typed KeyPath that can be passed to willAccess / willSet / didSet / modifyCallbacks.
+    subscript(environmentKey key: AnyHashableSendable) -> AnyHashableSendable {
+        key
+    }
+}
+
 /// Internal update function for testing with explicit path control.
 ///
 /// This function establishes observation tracking for a value accessed via the `access` closure
