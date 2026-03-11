@@ -3,18 +3,77 @@ import CustomDump
 import IssueReporting
 import Dependencies
 
+// MARK: - How tester.assert works
+//
+// tester.assert { predicate } is a polling loop that:
+//
+//   1. Evaluates each predicate closure. Reading any @Model property during evaluation
+//      fires willAccess<M,V>, which (if a TesterAssertContext is active) appends an
+//      Access entry recording the full root-relative keypath, the current value, and
+//      an `apply` closure that writes that value back into a Root snapshot.
+//
+//   2. If ALL predicates pass, compares the read values (passedAccesses) against the
+//      current lastState snapshot to verify the model has actually settled at those
+//      values — not just transiently true. If IDs don't match (a backgroundCall batch
+//      is still in flight), it waits and retries rather than accepting a stale read.
+//
+//   3. On settlement, clears each asserted path from valueUpdates (marking it as
+//      handled), applies the access values into expectedState (advancing the baseline),
+//      and runs the exhaustion check.
+//
+//   4. The exhaustion check diffs expectedState against lastState. Any remaining
+//      unasserted entries in valueUpdates, any unsent events, or any un-consumed probe
+//      values are reported as failures.
+//
+//   5. If any predicate fails and the timeout has elapsed, reports failures by
+//      diffing the predicate's LHS/RHS and listing un-asserted accesses.
+//
+//   6. Between iterations, waitForModification suspends until the next modification
+//      event fires or the timeout expires.
+//
+// State lifecycle:
+//   - lastState    : always up to date — updated by didModify whenever any property changes.
+//   - expectedState: advances one assert at a time — updated only when an assert passes.
+//   - valueUpdates : pending un-asserted changes — entries are removed when asserted.
+//
+// Why metadata (node.metadata.x) can't currently participate as a regular access:
+//
+//   willAccess<M,V> and didModify<M,V> both guard on a WritableKeyPath<M,Value> so the
+//   value can be stored/applied into the typed Root snapshots (lastState/expectedState).
+//   The synthetic keypath \M[environmentKey: key] used by the metadata observation system
+//   is a read-only KeyPath returning AnyHashableSendable — it can never be cast to
+//   WritableKeyPath, and even if it could, there is no typed Value to write back into Root.
+//   Metadata values live in AnyContext.contextStorage (a type-erased dictionary), not in
+//   the @Model struct. A parallel tracking system (metadataUpdates / expectedMetadata /
+//   lastMetadata) with hooks called from willAccessEnvironmentKey/didModifyEnvironmentKey
+//   would be the correct fix — see the planned implementation in the tester gap investigation.
+
 final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     let lock = NSRecursiveLock()
     let context: Context<Root>
+
+    // The most recent fully-settled snapshot of the root model. Updated by didModify
+    // on every property write, so it always reflects the current live state.
     var lastState: Root
+
+    // The baseline snapshot as of the last passed assert. The exhaustion check diffs
+    // expectedState against lastState to catch unasserted changes.
     var expectedState: Root
+
     var exhaustivity: Exhaustivity = .full
     var showSkippedAssertions = false
+
+    // Pending unasserted state changes, keyed by root-relative keypath. Populated by
+    // didModify; entries are cleared when the corresponding path is asserted. Any
+    // remaining entries at exhaustion time are reported as failures.
     var valueUpdates: [PartialKeyPath<Root>: ValueUpdate] = [:]
+
     var events: [Event] = []
     var probes: [TestProbe] = []
     let fileAndLine: FileAndLine
 
+    // Captures a pending state change: how to apply it to a Root snapshot, and how to
+    // describe it for exhaustion-failure messages.
     struct ValueUpdate {
         var apply: (inout Root) -> Void
         var debugInfo: () -> String
@@ -40,11 +99,24 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         }
     }
 
+    // Propagate this TestAccess to all child/dependency contexts so their property
+    // reads and writes are also captured during predicate evaluation.
     override var shouldPropagateToChildren: Bool { true }
 
+    // Called when a @Model property is read (e.g. during predicate evaluation).
+    // Returns a closure that, when invoked, records an Access entry for the assert loop.
+    //
+    // The closure is called after the read is complete (so the value is stable). It
+    // builds the full root-relative keypath by composing the context's rootPaths with
+    // the per-model path, and appends the Access to the active TesterAssertContext.
+    //
+    // Only WritableKeyPath properties participate — read-only keypaths (e.g. computed
+    // properties, synthetic environment keypaths) are silently skipped.
     override func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
         guard let path = path as? WritableKeyPath<M, Value> else { return nil }
         
+        // rootPaths resolves the chain of WritableKeyPaths from Root down to this model.
+        // It is nil only if the model has been detached from the hierarchy.
         let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
         guard let rootPaths else {
             if let assertContext {
@@ -74,6 +146,15 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         }
     }
 
+    // Called when a @Model property is written (via Context._modify / invokeDidModify).
+    // Returns a closure that records the change into valueUpdates and updates lastState.
+    //
+    // The returned closure is run outside the model lock (post-lock callback). It
+    // stores a ValueUpdate for each root-relative path so the exhaustion check can
+    // later detect unasserted changes, and immediately applies the new value to lastState
+    // so the assert loop can compare settled values.
+    //
+    // Only WritableKeyPath properties participate — the same guard as willAccess.
     override func didModify<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
         guard let path = path as? WritableKeyPath<M, Value> else { return nil }
 
@@ -156,6 +237,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 context.eventsSent.removeAll()
                 context.probes.removeAll()
 
+                // Step 1: Evaluate all predicates. Reading properties inside a predicate
+                // fires willAccess → appends Access entries to context.accesses.
                 for predicate in predicates {
                     context.predicate = predicate
                     
@@ -181,6 +264,10 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 }
 
                 if failures.isEmpty {
+                    // Step 2: All predicates passed. Verify that the predicate's read values
+                    // match lastState (the live model). This guards against the predicate
+                    // passing transiently while a backgroundCall batch is still committing
+                    // changes (IDs would diverge because frozenCopy includes generation IDs).
                     let isEqualIncludingIds = lock {
                         var expected = expectedState.frozenCopy
                         var last = lastState.frozenCopy
@@ -207,9 +294,13 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     }
 
                     if isEqualIncludingIds {
+                        // Step 3: Model has settled. Mark all asserted paths as handled,
+                        // advance expectedState, and run the exhaustion check.
                         lock {
                             for access in passedAccesses {
+                                // Clear the pending update — this path has been asserted.
                                 valueUpdates[access.path] = nil
+                                // Advance the baseline to include this asserted value.
                                 access.apply(&expectedState)
                             }
 
@@ -220,6 +311,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                             }
 
                             if enableExhaustionTest {
+                                // Step 4: Check that no other state changed without being
+                                // asserted. Diffs expectedState against lastState.
                                 checkExhaustion(at: fileAndLine, includeUpdates: true)
                             }
                         }
@@ -228,6 +321,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     }
                 }
 
+                // Step 5 (timeout): Report failures.
                 if start.distance(to: DispatchTime.now().uptimeNanoseconds) > scaledTimeout {
                     lock {
                         for failure in failures {
@@ -320,6 +414,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     return
                 }
 
+                // Step 6: Wait for the next modification event before re-checking.
                 let elapsed = start.distance(to: DispatchTime.now().uptimeNanoseconds)
                 let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
                 await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: yieldRoundNs)
@@ -402,6 +497,17 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         }
     }
 
+    // Checks that no state changed without being asserted (exhaustion check).
+    //
+    // Three layers of checking:
+    //   1. Diff expectedState vs lastState by value (without IDs) — catches structural changes.
+    //   2. Diff with IDs included — catches identity changes (e.g. child model replacements).
+    //   3. If states match by value, check valueUpdates for un-asserted paths not yet
+    //      visible in the struct diff (e.g. multiple writes to the same property that
+    //      ended up back at the same value, or writes to hidden/non-mirrored properties).
+    //
+    // At the end, resets expectedState = lastState so the next assert starts from a
+    // clean baseline.
     func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false) {
         if checkTasks {
             for info in context.activeTasks {
@@ -430,12 +536,14 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         let (lastAsserted, actual) = lock { (expectedState, lastState) }
 
         let title = "State not exhausted"
+        // Layer 1: structural diff without IDs.
         let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
             diffMessage(expected: lastAsserted, actual: actual, title: title)
         }
         if let message {
             fail(message, for: .state, at: fileAndLine)
         } else {
+            // Layer 2: diff with IDs included (catches identity/generation changes).
             let message = threadLocals.withValue(true, at: \.includeInMirror) {
                 diffMessage(expected: lastAsserted, actual: actual, title: title)
             }
@@ -443,6 +551,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             if let message {
                 fail(message, for: .state, at: fileAndLine)
             } else if includeUpdates {
+                // Layer 3: check for pending valueUpdates not visible in the struct diff.
                 let updateNotHandled = valueUpdates.values.map {
                     $0.debugInfo()
                 }
@@ -459,6 +568,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             }
         }
 
+        // Reset the baseline so the next assert call starts from the current live state.
         lock {
             self.expectedState = self.lastState
             self.valueUpdates.removeAll()
