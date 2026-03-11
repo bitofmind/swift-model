@@ -126,23 +126,22 @@ class AnyContext: @unchecked Sendable {
     /// Implementations should register the read with any active observation tracking.
     func willAccessParents() {}
 
-    // MARK: - Environment observation hooks
+    // MARK: - Storage observation hooks
     //
-    // An environment read walks up the ancestor chain. At each context we call
-    // `willAccessEnvironmentKey` so that any active observation tracking
-    // (AccessCollector, ObservationRegistrar, ViewAccess) registers a dependency on
-    // the synthetic `\M[environmentKey: key]` path for that specific context.
-    // When the value is set on any ancestor the normal willSet/didSet machinery fires
-    // and all registered observers are notified — no separate notify-list needed.
+    // A metadata read (local or environment) calls `willAccessStorage` on each visited context
+    // so that any active observation tracking (AccessCollector, ObservationRegistrar, ViewAccess,
+    // TestAccess) registers a dependency. The typed `ModelContextStorage<V>` is passed so that
+    // `Context<M>` can form both the synthetic untyped keypath (for Observed/SwiftUI) and a
+    // typed `WritableKeyPath<M, V>` (for TestAccess snapshot tracking).
+    // When a value is set or removed, `didModifyStorage` fires the corresponding notifications.
 
-    /// Called when an environment key is read on this context.
-    /// Implementations (Context<M>) call `willAccess` for the synthetic environment keypath.
-    func willAccessEnvironmentKey(_ key: AnyHashableSendable) {}
+    /// Called when a storage key is read on this context during an environment walk.
+    /// Implementations (Context<M>) call `willAccess` for both observation paths.
+    func willAccessStorage<V>(_ storage: ModelContextStorage<V>) {}
 
-    /// Called after an environment value is removed from this context, so observers are notified
-    /// that the effective value may have changed.
-    /// Implementations (Context<M>) call `invokeDidModify` for the synthetic environment keypath.
-    func didModifyEnvironmentKey(_ key: AnyHashableSendable) {}
+    /// Called after a storage value is written or removed from this context.
+    /// Implementations (Context<M>) call `invokeDidModify` and fire post-lock callbacks.
+    func didModifyStorage<V>(_ storage: ModelContextStorage<V>) {}
 
     /// Called inside the lock just before weakParents is mutated.
     /// Implementations should call willSet on the ObservationRegistrar.

@@ -148,16 +148,30 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         callbacks.append(contentsOf: didModifyCallbacks)
     }
 
-    override func willAccessEnvironmentKey(_ key: AnyHashableSendable) {
-        let path: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: key]
-        modelContext.willAccess(readModel, at: path)?()
+    override func willAccessStorage<V>(_ storage: ModelContextStorage<V>) {
+        // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
+        let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: storage.key]
+        modelContext.willAccess(readModel, at: untypedPath)?()
+
+        // Typed writable path — drives TestAccess snapshot tracking so that
+        // `model.node.metadata.myKey` inside tester.assert {} is fully assertable.
+        // \M[_metadata: storage] is a WritableKeyPath<M, V> because ModelContextStorage<V>
+        // is Hashable (via its key), giving Swift what it needs to form and distinguish paths.
+        let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
+        modelContext.willAccess(readModel, at: typedPath)?()
     }
 
-    override func didModifyEnvironmentKey(_ key: AnyHashableSendable) {
-        let path: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: key]
+    override func didModifyStorage<V>(_ storage: ModelContextStorage<V>) {
+        // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
+        let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: storage.key]
+        // Typed writable path — drives TestAccess didModify so writes are tracked for exhaustion.
+        let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
+
         lock { self.didModify() }
-        modelContext.invokeDidModify(readModel, at: path)
-        let postLockCallbacks = lock { buildPostLockCallbacks(for: path) }
+        modelContext.invokeDidModify(readModel, at: untypedPath)
+        modelContext.invokeDidModify(readModel, at: typedPath)
+        // Use the typed path for post-lock callbacks so modifyCallbacks keyed on it fire correctly.
+        let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
         runPostLockCallbacks(postLockCallbacks)
     }
 

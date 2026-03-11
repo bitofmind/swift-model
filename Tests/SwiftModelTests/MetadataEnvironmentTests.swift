@@ -364,4 +364,55 @@ struct MetadataEnvironmentTests {
         try await waitUntil(values.value.contains(true), timeout: 3_000_000_000)
         #expect(values.value.contains(true), "[\(path)] Removing intermediate override should notify descendant observer, got \(values.value)")
     }
+
+    // MARK: - tester.assert integration
+    //
+    // These tests verify that metadata reads inside tester.assert {} are fully tracked:
+    // - willAccessStorage fires the typed path so TestAccess records the Access
+    // - didModifyStorage fires the typed path so TestAccess records the ValueUpdate
+    // - Exhaustion catches unasserted metadata writes
+    //
+    // The user-facing callsite is the natural `model.node.metadata.myKey` form.
+
+    @Test func testerAssertLocalMetadata() async {
+        let (model, tester) = ChildModel().andTester()
+        model.node.metadata.localFlag = true
+        await tester.assert { model.node.metadata.localFlag == true }
+    }
+
+    @Test func testerAssertEnvironmentMetadata() async {
+        let (model, tester) = ParentModel().andTester()
+        model.node.metadata.isDarkMode = true
+        await tester.assert { model.node.metadata.isDarkMode == true }
+    }
+
+    @Test func testerAssertEnvironmentMetadataInheritedByChild() async {
+        let (model, tester) = ParentModel().andTester()
+        // Setting on parent — child inherits via environment propagation.
+        model.node.metadata.isDarkMode = true
+        await tester.assert {
+            model.node.metadata.isDarkMode == true &&
+            model.child.node.metadata.isDarkMode == true
+        }
+    }
+
+    @Test func testerAssertMetadataExhaustion() async {
+        let (model, tester) = ChildModel().andTester()
+        tester.exhaustivity = .off
+        // Write without asserting — with exhaustion off this should not fail.
+        model.node.metadata.localFlag = true
+        await tester.assert { model.node.metadata.localFlag == true }
+        // Restore exhaustion and verify no pending updates remain.
+        tester.exhaustivity = .full
+        await tester.assert { model.node.metadata.localFlag == true }
+    }
+
+    @Test func testerAssertRemoveMetadataNotifiesAssert() async {
+        let (model, tester) = ChildModel().andTester()
+        model.node.metadata.localFlag = true
+        await tester.assert { model.node.metadata.localFlag == true }
+        model.node.removeMetadata(\.localFlag)
+        await tester.assert { model.node.metadata.localFlag == false }
+    }
+
 }

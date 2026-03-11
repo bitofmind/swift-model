@@ -34,17 +34,24 @@ enum StoragePropagation: Sendable {
 /// node.metadata.theme                 // ColorScheme (.environment — reads nearest ancestor)
 /// node.metadata.theme = .dark         // stores here, notifies descendants
 /// ```
-struct ModelContextStorage<Value: Sendable>: Sendable {
+struct ModelContextStorage<Value: Sendable>: Hashable, Sendable {
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
+    func hash(into hasher: inout Hasher) { hasher.combine(key) }
     let defaultValue: Value
     let key: AnyHashableSendable
     let propagation: StoragePropagation
     let onRemoval: (@Sendable (Value) -> Void)?
+    /// When `true`, writes to this storage are not surfaced to `TestAccess` for observation
+    /// or exhaustion checking. Used for system-internal storage (undo, memoize) that should
+    /// not appear as unasserted state changes in user tests.
+    let isSystemStorage: Bool
 
     /// Default init: uses the source location as the unique storage key.
     init(
         defaultValue: Value,
         propagation: StoragePropagation = .local,
         onRemoval: (@Sendable (Value) -> Void)? = nil,
+        isSystemStorage: Bool = false,
         fileID: StaticString = #fileID,
         line: UInt = #line,
         column: UInt = #column
@@ -53,6 +60,7 @@ struct ModelContextStorage<Value: Sendable>: Sendable {
         self.propagation = propagation
         self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
         self.onRemoval = onRemoval
+        self.isSystemStorage = isSystemStorage
     }
 
     /// Explicit-key init: use when you need a stable key independent of source location.
@@ -60,12 +68,14 @@ struct ModelContextStorage<Value: Sendable>: Sendable {
         defaultValue: Value,
         key: K,
         propagation: StoragePropagation = .local,
-        onRemoval: (@Sendable (Value) -> Void)? = nil
+        onRemoval: (@Sendable (Value) -> Void)? = nil,
+        isSystemStorage: Bool = false
     ) {
         self.defaultValue = defaultValue
         self.propagation = propagation
         self.key = AnyHashableSendable(key)
         self.onRemoval = onRemoval
+        self.isSystemStorage = isSystemStorage
     }
 }
 
@@ -147,14 +157,16 @@ extension AnyContext {
             lock {
                 contextStorage[storage.key] = ContextStorageEntry(value: newValue, cleanup: cleanup)
             }
-            if storage.propagation == .environment {
-                didModifyEnvironmentKey(storage.key)
+            // Don't notify observers for system-internal storage (undo, memoize, etc.) —
+            // those writes should not surface as unasserted state in TestAccess exhaustion checks.
+            if !storage.isSystemStorage {
+                didModifyStorage(storage)
             }
         }
     }
 
     /// Walk up the ancestor chain (including self) to find the nearest context that has set
-    /// this key, calling `willAccessEnvironmentKey` on every visited context so that all
+    /// this key, calling `willAccessStorage` on every visited context so that all
     /// active observation tracking registers a dependency on each level.
     ///
     /// Uses `reduceHierarchy` so that:
@@ -165,7 +177,7 @@ extension AnyContext {
     func environmentValue<V>(for storage: ModelContextStorage<V>) -> V {
         do {
             try reduceHierarchy(for: [.self, .ancestors], transform: \.self, into: ()) { _, ctx in
-                ctx.willAccessEnvironmentKey(storage.key)
+                ctx.willAccessStorage(storage)
                 if let entry = ctx.contextStorage[storage.key], let value = entry.value as? V {
                     throw EnvironmentValueFound(value: value)
                 }
@@ -187,7 +199,28 @@ extension AnyContext {
             return true
         }
         if hadEntry {
-            didModifyEnvironmentKey(storage.key)
+            didModifyStorage(storage)
         }
+    }
+}
+
+// MARK: - Internal Model subscript for metadata observation
+//
+// Provides a WritableKeyPath<M, V> rooted at the Model type itself.
+// Swift requires keypath subscript indices to be Hashable; AnyHashableSendable satisfies this,
+// and distinct storage keys produce distinct AnyHashableSendable values, so Swift forms
+// a distinct WritableKeyPath<M, V> per storage key. This path composes with rootPaths in
+// TestAccess exactly like a regular @Model property keypath.
+//
+// This subscript is internal-only — it is the bridge between the typed storage system
+// and the TestAccess observation machinery. Users always use `node.metadata.myKey`;
+// `Context<M>` uses this subscript internally in willAccessStorage/didModifyStorage
+// to produce the typed keypath needed for TestAccess snapshot tracking.
+extension Model {
+    subscript<V>(_metadata storage: ModelContextStorage<V>) -> V {
+        // The subscript index must be Hashable for keypath formation. We use a wrapper
+        // that hashes/equals on storage.key so distinct storages produce distinct paths.
+        get { node.metadata[storage] }
+        set { node.metadata[storage] = newValue }
     }
 }

@@ -6,11 +6,11 @@ import Dependencies
 
 extension ModelContextKeys {
     /// Guards against calling `trackUndo` more than once per context.
-    var isTrackingUndo: ModelContextStorage<Bool> { .init(defaultValue: false) }
+    var isTrackingUndo: ModelContextStorage<Bool> { .init(defaultValue: false, isSystemStorage: true) }
 
     /// The shared `UndoCoalescer` for a context. Stored directly on the context to avoid
     /// the ObjectIdentifier address-reuse bug that occurs with global static dictionaries.
-    fileprivate var undoCoalescer: ModelContextStorage<UndoCoalescer?> { .init(defaultValue: nil) }
+    fileprivate var undoCoalescer: ModelContextStorage<UndoCoalescer?> { .init(defaultValue: nil, isSystemStorage: true) }
 }
 
 // MARK: - UndoAvailability
