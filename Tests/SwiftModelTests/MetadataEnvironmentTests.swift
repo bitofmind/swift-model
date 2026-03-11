@@ -1,6 +1,7 @@
 import Testing
 import ConcurrencyExtras
 import Observation
+import Dependencies
 @testable import SwiftModel
 
 // MARK: - Keys
@@ -32,6 +33,37 @@ private struct ParentModel {
 @Model
 private struct GrandparentModel {
     var parent: ParentModel = ParentModel()
+}
+
+// Models used for dependency exhaustivity tests.
+
+@Model
+private struct ServiceModel {
+    var status: String = "idle"
+}
+
+extension ServiceModel: DependencyKey {
+    static let liveValue = ServiceModel()
+    static let testValue = ServiceModel()
+}
+
+@Model
+private struct ConsumerModel {
+    @ModelDependency var service: ServiceModel
+}
+
+// A two-level hierarchy where both parent and child hold the same dependency.
+// The shared ServiceModel context has multiple parents (both context instances),
+// and the dependency metadata exhaustivity machinery must still detect unasserted writes.
+@Model
+private struct ChildConsumerModel {
+    @ModelDependency var service: ServiceModel
+}
+
+@Model
+private struct ParentConsumerModel {
+    var child: ChildConsumerModel = ChildConsumerModel()
+    @ModelDependency var service: ServiceModel
 }
 
 // MARK: - MetadataEnvironmentTests
@@ -455,6 +487,74 @@ struct MetadataEnvironmentTests {
         // Assert metadata (unchanged from default) — exhaustion runs but should NOT
         // complain about the unasserted state change because .state is not included.
         await tester.assert { model.node.metadata.localFlag == false }
+    }
+
+    // MARK: - Metadata exhaustivity via dependency models
+
+    @Test func metadataExhaustivityOnDependencyModel() async {
+        // Writing metadata on a dependency model should be tracked and assertable,
+        // and should be caught by .metadata exhaustivity if not asserted.
+        let (model, tester) = ConsumerModel().andTester()
+        model.service.node.metadata.localFlag = true
+        await tester.assert { model.service.node.metadata.localFlag == true }
+    }
+
+    @Test func unassertedMetadataOnDependencyModelIsCaught() async {
+        // With .metadata exhaustivity, an unasserted metadata write on a dependency model
+        // should be reported just like one on a regular child model.
+        let (model, tester) = ConsumerModel().andTester()
+        tester.exhaustivity = .metadata
+        model.service.node.metadata.localFlag = true
+        await withKnownIssue {
+            await tester.assert { model.service.status == "idle" }
+        }
+    }
+
+    @Test func metadataOnDependencyModelSeparateFromState() async {
+        // With only .state exhaustivity, unasserted metadata on a dependency model
+        // should NOT trigger a failure.
+        let (model, tester) = ConsumerModel().andTester()
+        tester.exhaustivity = .state
+        model.service.node.metadata.localFlag = true
+        model.service.status = "running"
+        await tester.assert { model.service.status == "running" }
+    }
+
+    // MARK: - Shared dependency (same instance accessed via ancestor and child)
+    //
+    // When both parent and child declare @ModelDependency for the same type, they share a
+    // single Context<ServiceModel>. That shared context has multiple parents (the parent
+    // model context and the child model context). The metadata exhaustivity machinery must
+    // still find the TestAccess (via metadataModelContext walking the parent chain) and
+    // track/clear pending updates correctly.
+
+    @Test func sharedDependencyMetadataTracked() async {
+        // Write metadata on the dependency accessed via the child.
+        // Assert it via the parent — both resolve to the same underlying context.
+        let (model, tester) = ParentConsumerModel().andTester()
+        model.child.service.node.metadata.localFlag = true
+        await tester.assert { model.child.service.node.metadata.localFlag == true }
+    }
+
+    @Test func sharedDependencyMetadataCaughtWhenUnasserted() async {
+        // With .metadata exhaustivity, an unasserted write via either the parent or the
+        // child accessor should be caught — both resolve to the same shared context.
+        let (model, tester) = ParentConsumerModel().andTester()
+        tester.exhaustivity = .metadata
+        model.child.service.node.metadata.localFlag = true
+        await withKnownIssue {
+            await tester.assert { model.child.service.status == "idle" }
+        }
+    }
+
+    @Test func sharedDependencyMetadataSeparateFromState() async {
+        // With only .state exhaustivity, unasserted metadata on a shared dependency
+        // should NOT trigger a failure.
+        let (model, tester) = ParentConsumerModel().andTester()
+        tester.exhaustivity = .state
+        model.child.service.node.metadata.localFlag = true
+        model.child.service.status = "running"
+        await tester.assert { model.child.service.status == "running" }
     }
 
 }

@@ -159,16 +159,19 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // is Hashable (via its key), giving Swift what it needs to form and distinguish paths.
         // Tag the access as `.metadata` so TestAccess records it under the correct exhaustivity area.
         //
-        // Use readModel.modelContext (which carries the TestAccess reference) rather than the
-        // computed `modelContext` property (which creates a fresh ModelContext with _access = nil).
+        // Use a ModelContext with a known access rather than the computed `modelContext` property
+        // (which creates a fresh ModelContext with _access = nil and never reaches TestAccess).
+        // For dependency model contexts, readModel.modelContext.access is nil; fall back to the
+        // access registered on the nearest ancestor (e.g. ConsumerModel's TestAccess).
         // Guard against re-entry: the TestAccess.willAccess closure reads
         // model.context![path] which invokes the metadata getter, which calls willAccessStorage
         // again → infinite recursion. The flag is set for the closure call only, not the
         // willAccess call itself, so legitimate outer calls (predicate evaluation) still work.
         guard !threadLocals.isAccessingMetadataStorage else { return }
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
+        let mc = metadataModelContext()
         let closureOpt = threadLocals.withValue(.metadata, at: \.modificationArea) {
-            readModel.modelContext.willAccess(readModel, at: typedPath)
+            mc.willAccess(readModel, at: typedPath)
         }
         if let closure = closureOpt {
             threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
@@ -183,10 +186,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // Typed writable path — drives TestAccess didModify so writes are tracked for exhaustion.
         // Tag the modification as `.metadata` so TestAccess records it under the correct area.
         //
-        // Use readModel.modelContext (which carries the TestAccess reference) rather than the
-        // computed `modelContext` property (which creates a fresh ModelContext with _access = nil).
+        // Use a ModelContext with a known access: own readModel's access if set, or the nearest
+        // ancestor's access (handles dependency model contexts where own access is nil).
         // Guard against re-entry via the same isAccessingMetadataStorage flag used in willAccessStorage.
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
+        let mc = metadataModelContext()
 
         lock { self.didModify() }
         modelContext.invokeDidModify(readModel, at: untypedPath)
@@ -195,13 +199,36 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         if !threadLocals.isAccessingMetadataStorage {
             threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
                 threadLocals.withValue(.metadata, at: \.modificationArea) {
-                    readModel.modelContext.invokeDidModify(readModel, at: typedPath)
+                    mc.invokeDidModify(readModel, at: typedPath)
                 }
             }
         }
         // Use the typed path for post-lock callbacks so modifyCallbacks keyed on it fire correctly.
         let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
         runPostLockCallbacks(postLockCallbacks)
+    }
+
+    /// Returns a ModelContext for use in metadata willAccess/didModify notifications.
+    ///
+    /// Uses `readModel.modelContext` when it has a non-nil access (normal child models with
+    /// TestAccess wired in). For dependency model contexts (where readModel.modelContext.access
+    /// is nil), falls back to a copy with the nearest ancestor's access, so TestAccess on the
+    /// root model correctly receives metadata read/write notifications from dependency models.
+    private func metadataModelContext() -> ModelContext<M> {
+        if readModel.modelContext.access != nil {
+            return readModel.modelContext
+        }
+        // Dependency model context: readModel.modelContext.access is nil.
+        // Walk parents to find a context that has a propagating access (e.g. TestAccess).
+        let ancestorAccess = lock {
+            parents.lazy.compactMap { $0.anyModelAccess }.first
+        }
+        guard let ancestorAccess, ancestorAccess.shouldPropagateToChildren else {
+            return readModel.modelContext
+        }
+        var mc = readModel.modelContext
+        mc.access = ancestorAccess
+        return mc
     }
 
     func onModify<T>(for path: KeyPath<M, T>&Sendable, _ callback: @Sendable @escaping (Bool) -> (() -> Void)?) -> @Sendable () -> Void {
