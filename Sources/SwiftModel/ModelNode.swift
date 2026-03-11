@@ -96,6 +96,34 @@ extension ModelNode {
         let storage = ContextKeys()[keyPath: key]
         _context?.removeEnvironmentValue(for: storage)
     }
+
+    /// Typed access to per-node preference storage via `@dynamicMemberLookup`.
+    ///
+    /// Preferences aggregate bottom-up: each node writes its own contribution and any ancestor
+    /// reads the aggregate of all contributions in its subtree.
+    ///
+    /// Declare entries by extending `PreferenceKeys`:
+    /// ```swift
+    /// extension PreferenceKeys {
+    ///     var totalCount: PreferenceStorage<Int> {
+    ///         .init(defaultValue: 0) { $0 += $1 }
+    ///     }
+    /// }
+    /// // Write: node.preference.totalCount = 5
+    /// // Read aggregate: node.preference.totalCount  // sum of self + all descendants
+    /// ```
+    var preference: PreferenceValues {
+        PreferenceValues(context: _context)
+    }
+
+    /// Removes this node's contribution for a preference key.
+    ///
+    /// After removal this node no longer contributes to the aggregate. Ancestor observers
+    /// that read the aggregate will re-evaluate.
+    func removePreference<V>(_ key: KeyPath<PreferenceKeys, PreferenceStorage<V>>) {
+        let storage = PreferenceKeys()[keyPath: key]
+        _context?.removePreferenceContribution(for: storage)
+    }
 }
 
 public extension ModelNode {

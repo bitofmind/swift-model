@@ -89,6 +89,9 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     // their context storage updates are tracked here rather than in valueUpdates.
     private var dependencyMetadataUpdates: [DependencyMetadataKey: ValueUpdate] = [:]
 
+    // Same as dependencyMetadataUpdates but for preference storage writes on dependency models.
+    private var dependencyPreferenceUpdates: [DependencyMetadataKey: ValueUpdate] = [:]
+
     var events: [Event] = []
     var probes: [TestProbe] = []
     let fileAndLine: FileAndLine
@@ -162,15 +165,22 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
         let fullPaths = rootPaths.map { $0.appending(path: path) }
 
-        // Dependency model context storage: no root-relative path exists (the model lives in
-        // dependencyContexts, not children). Return a dummy Access whose additionalCleanup
-        // clears the corresponding dependencyMetadataUpdates entry when asserted.
-        if fullPaths.isEmpty, capturedArea == .context, let modelContext = model.context {
+        // Dependency model context/preference storage: no root-relative path exists (the model
+        // lives in dependencyContexts, not children). Return a dummy Access whose additionalCleanup
+        // clears the corresponding dependency updates entry when asserted.
+        if fullPaths.isEmpty, (capturedArea == .context || capturedArea == .preference), let modelContext = model.context {
             let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
+            let area = capturedArea
             return { [weak self] in
                 guard let self else { return }
                 let cleanup: () -> Void = { [weak self] in
-                    self?.lock { self?.dependencyMetadataUpdates.removeValue(forKey: key) }
+                    self?.lock {
+                        if area == .preference {
+                            self?.dependencyPreferenceUpdates.removeValue(forKey: key)
+                        } else {
+                            self?.dependencyMetadataUpdates.removeValue(forKey: key)
+                        }
+                    }
                 }
                 assertContext.accesses.append(.init(
                     path: \Root.self,
@@ -221,19 +231,24 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         let fullPaths = rootPaths.map { $0.appending(path: path) }
         let area = threadLocals.modificationArea ?? .state
 
-        // Dependency model context storage: no root-relative path exists. Track the update
-        // separately so checkExhaustion can report it if not asserted.
-        if fullPaths.isEmpty, area == .context, let modelContext = model.context {
+        // Dependency model context/preference storage: no root-relative path exists. Track the
+        // update separately so checkExhaustion can report it if not asserted.
+        if fullPaths.isEmpty, (area == .context || area == .preference), let modelContext = model.context {
             let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
             return { [weak self] in
                 guard let self else { return }
                 let value = frozenCopy(modelContext[path])
                 self.lock {
-                    self.dependencyMetadataUpdates[key] = ValueUpdate(
-                        apply: { _ in },  // dependency context storage not in Root snapshot
+                    let update = ValueUpdate(
+                        apply: { _ in },  // dependency storage not in Root snapshot
                         debugInfo: { "\(String(describing: M.self)).\(propertyName(from: model, path: path) ?? "UNKNOWN") == \(String(customDumping: value))" },
-                        area: .context
+                        area: area
                     )
+                    if area == .preference {
+                        self.dependencyPreferenceUpdates[key] = update
+                    } else {
+                        self.dependencyMetadataUpdates[key] = update
+                    }
                 }
             }
         }
@@ -630,14 +645,18 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 fail(message, for: .state, at: fileAndLine)
             } else if includeUpdates {
                 // Layer 3: check for pending valueUpdates not visible in the struct diff.
-                // Partition by area so state and context storage are reported independently and
-                // respect their respective exhaustivity flags.
-                // Report state and context updates separately so each respects its own flag.
-                for area: Exhaustivity in [.state, .context] {
+                // Partition by area so state, context, and preference storage are each reported
+                // independently and respect their respective exhaustivity flags.
+                for area: Exhaustivity in [.state, .context, .preference] {
                     let updates = valueUpdates.values.filter { $0.area == area }
                     if !updates.isEmpty {
                         let descriptions = updates.map { $0.debugInfo() }
-                        let areaTitle = area == .context ? "Context not exhausted" : "State not exhausted"
+                        let areaTitle: String
+                        switch area {
+                        case .context: areaTitle = "Context not exhausted"
+                        case .preference: areaTitle = "Preference not exhausted"
+                        default: areaTitle = "State not exhausted"
+                        }
                         fail("""
                             \(areaTitle): …
 
@@ -648,12 +667,12 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     }
                 }
 
-                // Layer 3b: check for unasserted context storage on dependency models.
+                // Layer 3b: check for unasserted context/preference storage on dependency models.
                 // These are tracked separately because dependency models have no
                 // root-relative WritableKeyPath and cannot be put in valueUpdates.
-                let depUpdates = lock { dependencyMetadataUpdates }
-                if !depUpdates.isEmpty {
-                    let descriptions = depUpdates.values.map { $0.debugInfo() }
+                let depMetaUpdates = lock { dependencyMetadataUpdates }
+                if !depMetaUpdates.isEmpty {
+                    let descriptions = depMetaUpdates.values.map { $0.debugInfo() }
                     fail("""
                         Context not exhausted: …
 
@@ -661,6 +680,18 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
                         \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
                         """, for: .context, at: fileAndLine)
+                }
+
+                let depPrefUpdates = lock { dependencyPreferenceUpdates }
+                if !depPrefUpdates.isEmpty {
+                    let descriptions = depPrefUpdates.values.map { $0.debugInfo() }
+                    fail("""
+                        Preference not exhausted: …
+
+                        Modifications not asserted:
+
+                        \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
+                        """, for: .preference, at: fileAndLine)
                 }
             }
         }
@@ -670,6 +701,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             self.expectedState = self.lastState
             self.valueUpdates.removeAll()
             self.dependencyMetadataUpdates.removeAll()
+            self.dependencyPreferenceUpdates.removeAll()
         }
 
     }

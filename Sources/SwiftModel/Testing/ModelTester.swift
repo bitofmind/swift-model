@@ -193,11 +193,13 @@ public extension Exhaustivity {
     static let probes = Self(rawValue: 1 << 3)
     /// Require all context storage changes (via `node.context`) to be consumed by `assert` blocks.
     internal static let context = Self(rawValue: 1 << 4)
+    /// Require all preference storage changes (via `node.preference`) to be consumed by `assert` blocks.
+    internal static let preference = Self(rawValue: 1 << 5)
 
     /// Exhaustivity is completely disabled — no side effects need to be asserted.
     static let off: Self = []
     /// All categories are checked. This is the default.
-    static let full: Self = [.state, .events, .tasks, .probes, .context]
+    static let full: Self = [.state, .events, .tasks, .probes, .context, .preference]
 }
 
 @resultBuilder

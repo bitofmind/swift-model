@@ -208,6 +208,76 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         runPostLockCallbacks(postLockCallbacks)
     }
 
+    override func willAccessPreference<V>(_ storage: PreferenceStorage<V>) {
+        // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
+        let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[preferenceKey: storage.key]
+        modelContext.willAccess(readModel, at: untypedPath)?()
+
+        // Typed writable path — drives TestAccess snapshot tracking.
+        // Tag the access as `.preference` so TestAccess records it under the correct exhaustivity area.
+        // Use the same re-entry guard as context storage to prevent infinite recursion.
+        guard !threadLocals.isAccessingMetadataStorage else { return }
+        let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
+        let mc = metadataModelContext()
+        let closureOpt = threadLocals.withValue(.preference, at: \.modificationArea) {
+            mc.willAccess(readModel, at: typedPath)
+        }
+        if let closure = closureOpt {
+            threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
+                closure()
+            }
+        }
+    }
+
+    override func didModifyPreference<V>(_ storage: PreferenceStorage<V>) {
+        // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
+        let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[preferenceKey: storage.key]
+        // Typed writable path — drives TestAccess didModify so writes are tracked for exhaustion.
+        let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
+        let mc = metadataModelContext()
+
+        lock { self.didModify() }
+        modelContext.invokeDidModify(readModel, at: untypedPath)
+        if !threadLocals.isAccessingMetadataStorage {
+            threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
+                threadLocals.withValue(.preference, at: \.modificationArea) {
+                    mc.invokeDidModify(readModel, at: typedPath)
+                }
+            }
+        }
+        // Post-lock callbacks for this context.
+        let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
+        runPostLockCallbacks(postLockCallbacks)
+
+        // Preferences are bottom-up: a child contribution change must invalidate ancestor observers.
+        // Use notifyPreferenceChange (not didModifyPreference) so that only the untyped observation
+        // path fires on ancestors — this prevents TestAccess from recording spurious ValueUpdate
+        // entries for ancestor nodes that never wrote their own preference contribution.
+        let parents = lock(self.parents)
+        for parent in parents {
+            parent.notifyPreferenceChange(storage)
+        }
+    }
+
+    /// Fires only the untyped observation path upward through the hierarchy.
+    ///
+    /// Used by upward preference propagation to invalidate ancestor observers (Observed {}, SwiftUI)
+    /// without creating TestAccess ValueUpdate entries. The typed `_preference` path is intentionally
+    /// omitted — ancestors that never wrote a contribution should not appear in exhaustion reports.
+    override func notifyPreferenceChange<V>(_ storage: PreferenceStorage<V>) {
+        let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[preferenceKey: storage.key]
+        lock { self.didModify() }
+        modelContext.invokeDidModify(readModel, at: untypedPath)
+        let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
+        let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
+        runPostLockCallbacks(postLockCallbacks)
+
+        let parents = lock(self.parents)
+        for parent in parents {
+            parent.notifyPreferenceChange(storage)
+        }
+    }
+
     /// Returns a ModelContext for use in context storage willAccess/didModify notifications.
     ///
     /// Uses `readModel.modelContext` when it has a non-nil access (normal child models with

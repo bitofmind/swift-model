@@ -681,6 +681,16 @@ extension Model {
     }
 }
 
+extension Model {
+    // Synthetic key path used to make preference contributions observable per-context.
+    // Analogous to `environmentKey` for context storage, but for bottom-up preferences.
+    // Never called for its value — it exists solely so that `\M[preferenceKey: key]` is a
+    // valid typed KeyPath that can be passed to willAccess / willSet / didSet / modifyCallbacks.
+    subscript(preferenceKey key: AnyHashableSendable) -> AnyHashableSendable {
+        key
+    }
+}
+
 /// Internal update function for testing with explicit path control.
 ///
 /// This function establishes observation tracking for a value accessed via the `access` closure

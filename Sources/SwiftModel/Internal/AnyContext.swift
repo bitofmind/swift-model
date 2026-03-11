@@ -73,6 +73,16 @@ class AnyContext: @unchecked Sendable {
     }
     var contextStorage: [AnyHashableSendable: ContextStorageEntry] = [:]
 
+    // Bottom-up preference storage. Each context holds its own contribution; the aggregate
+    // is computed by walking descendants. Keyed by AnyHashableSendable (source location or
+    // explicit key from PreferenceStorage).
+    // Access via the typed subscript defined in ModelPreferenceStorage.swift.
+    struct PreferenceStorageEntry: @unchecked Sendable {
+        var value: any Sendable
+        var cleanup: (() -> Void)?
+    }
+    var preferenceStorage: [AnyHashableSendable: PreferenceStorageEntry] = [:]
+
     func didModify() {
         _modificationCount &+= 1
     }
@@ -142,6 +152,27 @@ class AnyContext: @unchecked Sendable {
     /// Called after a storage value is written or removed from this context.
     /// Implementations (Context<M>) call `invokeDidModify` and fire post-lock callbacks.
     func didModifyStorage<V>(_ storage: ContextStorage<V>) {}
+
+    // MARK: - Preference observation hooks
+    //
+    // Analogous to storage observation hooks but for bottom-up preference aggregation.
+    // A preference read calls `willAccessPreference` on each visited descendant context so that
+    // observation tracking registers a dependency. A preference write or removal calls
+    // `didModifyPreference` on the writing context, which then propagates upward through parents.
+
+    /// Called when a preference key is read on this context during aggregation.
+    /// Implementations (Context<M>) call `willAccess` for both observation paths.
+    func willAccessPreference<V>(_ storage: PreferenceStorage<V>) {}
+
+    /// Called after a preference contribution is written or removed from this context.
+    /// Implementations (Context<M>) fire notifications and propagate upward through parents.
+    func didModifyPreference<V>(_ storage: PreferenceStorage<V>) {}
+
+    /// Called during upward preference propagation to invalidate ancestor observers.
+    /// Unlike `didModifyPreference`, this fires only the untyped observation path — it
+    /// does NOT fire the typed `_preference` path so TestAccess never records a
+    /// ValueUpdate for ancestor contexts that did not write their own contribution.
+    func notifyPreferenceChange<V>(_ storage: PreferenceStorage<V>) {}
 
     /// Called inside the lock just before weakParents is mutated.
     /// Implementations should call willSet on the ObservationRegistrar.
@@ -369,6 +400,12 @@ class AnyContext: @unchecked Sendable {
         }
 
         contextStorage.removeAll()
+
+        for entry in preferenceStorage.values {
+            entry.cleanup?()
+        }
+
+        preferenceStorage.removeAll()
 
         callbacks.append {
             self.cancellations.cancelAll()
