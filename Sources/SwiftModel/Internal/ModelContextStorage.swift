@@ -149,7 +149,10 @@ extension AnyContext {
 
     subscript<V>(storage: ModelContextStorage<V>) -> V {
         get {
-            contextStorage[storage.key]?.value as? V ?? storage.defaultValue
+            if !storage.isSystemStorage {
+                willAccessStorage(storage)
+            }
+            return contextStorage[storage.key]?.value as? V ?? storage.defaultValue
         }
         set {
             let v = newValue

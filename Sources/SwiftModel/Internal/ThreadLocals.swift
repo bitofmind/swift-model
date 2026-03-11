@@ -11,6 +11,14 @@ final class ThreadLocals: @unchecked Sendable {
     /// Non-nil only while postLockCallbacks are executing. Use this to schedule work
     /// that must run after ALL per-property onModify callbacks in a transaction batch.
     var postLockFlushes: [() -> Void]? = nil
+    /// When non-nil, `TestAccess.didModify` and `willAccess` tag their `ValueUpdate`/`Access`
+    /// entries with this area instead of the default `.state`. Set by `Context<M>` around
+    /// the typed metadata path calls so metadata changes are reported under `.metadata`.
+    var modificationArea: Exhaustivity? = nil
+    /// Guards against infinite recursion in `willAccessStorage`/`didModifyStorage`.
+    /// Reading `readModel[keyPath: \M[_metadata: storage]]` inside the TestAccess closure
+    /// re-enters `willAccessStorage` through the metadata getter. This flag breaks that cycle.
+    var isAccessingMetadataStorage = false
 
     fileprivate init() {}
 

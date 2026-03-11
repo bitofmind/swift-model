@@ -77,6 +77,9 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     struct ValueUpdate {
         var apply: (inout Root) -> Void
         var debugInfo: () -> String
+        /// Which exhaustivity category this update belongs to. Defaults to `.state` for
+        /// regular property writes; `.metadata` for `node.metadata` writes.
+        var area: Exhaustivity
     }
 
     struct Event {
@@ -164,15 +167,16 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         }
 
         let fullPaths = rootPaths.map { $0.appending(path: path) }
+        let area = threadLocals.modificationArea ?? .state
         return {
             let value = frozenCopy(model.context![path])
             self.lock {
                 for fullPath in fullPaths {
-                    self.valueUpdates[fullPath] = .init {
-                        $0[keyPath: fullPath] = value
-                    } debugInfo: {
-                        "\(String(describing: M.self)).\(propertyName(from: model, path: path) ?? "UNKOWN") == \(String(customDumping: value))"
-                    }
+                    self.valueUpdates[fullPath] = ValueUpdate(
+                        apply: { $0[keyPath: fullPath] = value },
+                        debugInfo: { "\(String(describing: M.self)).\(propertyName(from: model, path: path) ?? "UNKOWN") == \(String(customDumping: value))" },
+                        area: area
+                    )
 
                     self.lastState[keyPath: fullPath] = value
                 }
@@ -552,18 +556,22 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 fail(message, for: .state, at: fileAndLine)
             } else if includeUpdates {
                 // Layer 3: check for pending valueUpdates not visible in the struct diff.
-                let updateNotHandled = valueUpdates.values.map {
-                    $0.debugInfo()
-                }
+                // Partition by area so state and metadata are reported independently and
+                // respect their respective exhaustivity flags.
+                // Report state and metadata updates separately so each respects its own flag.
+                for area: Exhaustivity in [.state, .metadata] {
+                    let updates = valueUpdates.values.filter { $0.area == area }
+                    if !updates.isEmpty {
+                        let descriptions = updates.map { $0.debugInfo() }
+                        let areaTitle = area == .metadata ? "Metadata not exhausted" : "State not exhausted"
+                        fail("""
+                            \(areaTitle): …
 
-                if !updateNotHandled.isEmpty {
-                    fail("""
-                        \(title): …
+                            Modifications not asserted:
 
-                        Modifications not asserted:
-
-                        \(updateNotHandled.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
-                        """, for: .state, at: fileAndLine)
+                            \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
+                            """, for: area, at: fileAndLine)
+                    }
                 }
             }
         }

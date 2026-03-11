@@ -157,19 +157,48 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // `model.node.metadata.myKey` inside tester.assert {} is fully assertable.
         // \M[_metadata: storage] is a WritableKeyPath<M, V> because ModelContextStorage<V>
         // is Hashable (via its key), giving Swift what it needs to form and distinguish paths.
+        // Tag the access as `.metadata` so TestAccess records it under the correct exhaustivity area.
+        //
+        // Use readModel.modelContext (which carries the TestAccess reference) rather than the
+        // computed `modelContext` property (which creates a fresh ModelContext with _access = nil).
+        // Guard against re-entry: the TestAccess.willAccess closure reads
+        // model.context![path] which invokes the metadata getter, which calls willAccessStorage
+        // again → infinite recursion. The flag is set for the closure call only, not the
+        // willAccess call itself, so legitimate outer calls (predicate evaluation) still work.
+        guard !threadLocals.isAccessingMetadataStorage else { return }
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
-        modelContext.willAccess(readModel, at: typedPath)?()
+        let closureOpt = threadLocals.withValue(.metadata, at: \.modificationArea) {
+            readModel.modelContext.willAccess(readModel, at: typedPath)
+        }
+        if let closure = closureOpt {
+            threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
+                closure()
+            }
+        }
     }
 
     override func didModifyStorage<V>(_ storage: ModelContextStorage<V>) {
         // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
         let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: storage.key]
         // Typed writable path — drives TestAccess didModify so writes are tracked for exhaustion.
+        // Tag the modification as `.metadata` so TestAccess records it under the correct area.
+        //
+        // Use readModel.modelContext (which carries the TestAccess reference) rather than the
+        // computed `modelContext` property (which creates a fresh ModelContext with _access = nil).
+        // Guard against re-entry via the same isAccessingMetadataStorage flag used in willAccessStorage.
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
 
         lock { self.didModify() }
         modelContext.invokeDidModify(readModel, at: untypedPath)
-        modelContext.invokeDidModify(readModel, at: typedPath)
+        // Same re-entry guard as willAccessStorage: the TestAccess.didModify closure reads
+        // model.context![path] which goes through the metadata getter → willAccessStorage → loop.
+        if !threadLocals.isAccessingMetadataStorage {
+            threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
+                threadLocals.withValue(.metadata, at: \.modificationArea) {
+                    readModel.modelContext.invokeDidModify(readModel, at: typedPath)
+                }
+            }
+        }
         // Use the typed path for post-lock callbacks so modifyCallbacks keyed on it fire correctly.
         let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
         runPostLockCallbacks(postLockCallbacks)

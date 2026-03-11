@@ -415,4 +415,46 @@ struct MetadataEnvironmentTests {
         await tester.assert { model.node.metadata.localFlag == false }
     }
 
+    // MARK: - .metadata exhaustivity option
+
+    @Test func metadataExhaustivityIsSeparateFromState() async {
+        // With only .state exhaustivity (no .metadata), unasserted metadata writes should NOT fail.
+        let (model, tester) = ChildModel().andTester()
+        tester.exhaustivity = .state
+
+        // Write metadata without asserting it.
+        model.node.metadata.localFlag = true
+
+        // Write a regular property and assert only it — exhaustion check runs but should
+        // NOT complain about the unasserted metadata write because .metadata is not included.
+        model.name = "updated"
+        await tester.assert { model.name == "updated" }
+    }
+
+    @Test func metadataExhaustivityCatchesUnassertedMetadataWrites() async {
+        // With .metadata in exhaustivity, unasserted metadata writes SHOULD be caught.
+        let (model, tester) = ChildModel().andTester()
+        tester.exhaustivity = .metadata
+
+        model.node.metadata.localFlag = true
+        // Assert something unrelated so the exhaustion check runs with the metadata write pending.
+        // This should produce a known issue: "Metadata not exhausted".
+        await withKnownIssue {
+            await tester.assert { model.name == "child" }
+        }
+    }
+
+    @Test func stateExhaustivityDoesNotCoverMetadata() async {
+        // With only .metadata exhaustivity (no .state), unasserted state changes should NOT fail.
+        let (model, tester) = ChildModel().andTester()
+        tester.exhaustivity = .metadata
+
+        // Write a regular property without asserting it.
+        model.name = "changed"
+
+        // Assert metadata (unchanged from default) — exhaustion runs but should NOT
+        // complain about the unasserted state change because .state is not included.
+        await tester.assert { model.node.metadata.localFlag == false }
+    }
+
 }
