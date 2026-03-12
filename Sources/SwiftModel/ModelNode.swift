@@ -69,29 +69,60 @@ public struct ModelNode<M: Model> {
 
 extension ModelNode: Sendable where M: Sendable {}
 
-extension ModelNode {
+public extension ModelNode {
     /// Typed access to per-node context storage via `@dynamicMemberLookup`.
     ///
     /// Properties declared as extensions on `ContextKeys` are accessible as
-    /// `node.context.myFlag` (read) and `node.context.myFlag = value` (write).
+    /// `node.context.myKey` (read) and `node.context.myKey = value` (write).
     ///
-    /// Declare entries by extending `ContextKeys`:
+    /// ## Local context (default)
+    ///
+    /// Local context is private to this node. Reading returns only what this node has set.
+    ///
     /// ```swift
     /// extension ContextKeys {
-    ///     var myFlag: ContextStorage<Bool> { .init(defaultValue: false) }
+    ///     var isEditing: ContextStorage<Bool> { .init(defaultValue: false) }
     /// }
-    /// // Usage: node.context.myFlag / node.context.myFlag = true
+    ///
+    /// // Inside the model:
+    /// node.context.isEditing = true
+    /// let editing = node.context.isEditing  // true
+    /// ```
+    ///
+    /// ## Environment context (`.environment` propagation)
+    ///
+    /// Environment context flows downward: a write on any ancestor is visible to all descendants.
+    /// Reading walks up the hierarchy to the nearest ancestor that has set the value.
+    ///
+    /// ```swift
+    /// extension ContextKeys {
+    ///     var theme: ContextStorage<ColorScheme> {
+    ///         .init(defaultValue: .light, propagation: .environment)
+    ///     }
+    /// }
+    ///
+    /// // Parent sets the theme:
+    /// parentNode.context.theme = .dark
+    ///
+    /// // Child reads it (returns .dark — inherited from parent):
+    /// let current = childNode.context.theme
+    ///
+    /// // Child overrides locally:
+    /// childNode.context.theme = .light
+    /// // Now childNode and its descendants see .light; others still see .dark
     /// ```
     var context: ContextValues {
         ContextValues(context: _context)
     }
 
-    /// Removes a previously stored environment value from this node's context.
+    /// Removes a previously stored environment context value from this node.
     ///
     /// After removal this node will inherit the value from the nearest ancestor that has set it,
     /// or return the storage's `defaultValue` if no ancestor has set it.
     ///
     /// Fires observation notifications so any active observers re-evaluate.
+    ///
+    /// - Parameter key: A key path on `ContextKeys` identifying the storage entry to remove.
     func removeContext<V>(_ key: KeyPath<ContextKeys, ContextStorage<V>>) {
         let storage = ContextKeys()[keyPath: key]
         _context?.removeEnvironmentValue(for: storage)
@@ -99,18 +130,21 @@ extension ModelNode {
 
     /// Typed access to per-node preference storage via `@dynamicMemberLookup`.
     ///
-    /// Preferences aggregate bottom-up: each node writes its own contribution and any ancestor
-    /// reads the aggregate of all contributions in its subtree.
+    /// Preferences aggregate **bottom-up**: each node writes its own contribution and any ancestor
+    /// reads the combined aggregate of all contributions in its subtree.
     ///
-    /// Declare entries by extending `PreferenceKeys`:
     /// ```swift
     /// extension PreferenceKeys {
     ///     var totalCount: PreferenceStorage<Int> {
     ///         .init(defaultValue: 0) { $0 += $1 }
     ///     }
     /// }
-    /// // Write: node.preference.totalCount = 5
-    /// // Read aggregate: node.preference.totalCount  // sum of self + all descendants
+    ///
+    /// // Each child sets its contribution:
+    /// childNode.preference.totalCount = 3
+    ///
+    /// // The parent reads the sum of all contributions:
+    /// let total = parentNode.preference.totalCount  // 3 + contributions from other descendants
     /// ```
     var preference: PreferenceValues {
         PreferenceValues(context: _context)
@@ -120,6 +154,8 @@ extension ModelNode {
     ///
     /// After removal this node no longer contributes to the aggregate. Ancestor observers
     /// that read the aggregate will re-evaluate.
+    ///
+    /// - Parameter key: A key path on `PreferenceKeys` identifying the contribution to remove.
     func removePreference<V>(_ key: KeyPath<PreferenceKeys, PreferenceStorage<V>>) {
         let storage = PreferenceKeys()[keyPath: key]
         _context?.removePreferenceContribution(for: storage)

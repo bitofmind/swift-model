@@ -8,7 +8,10 @@ private struct EnvironmentValueFound: Error {
 // MARK: - StoragePropagation
 
 /// Controls how a `ContextStorage` value is read and written across the model hierarchy.
-enum StoragePropagation: Sendable {
+///
+/// Use `.local` (the default) for node-private state. Use `.environment` when you want a
+/// value set on an ancestor to be visible to all of its descendants without explicit passing.
+public enum StoragePropagation: Sendable {
     /// Read and write only on this context. Default behavior.
     case local
     /// Read walks up to the nearest ancestor that has set the value (or returns `defaultValue`).
@@ -23,23 +26,44 @@ enum StoragePropagation: Sendable {
 /// Declare one as a computed property on `ContextKeys`. The source location
 /// captured at `init` time serves as the unique dictionary key — no separate enum needed.
 ///
+/// ## Declaring a context key
+///
 /// ```swift
 /// extension ContextKeys {
-///     var isTrackingUndo: ContextStorage<Bool> { .init(defaultValue: false) }
-///     var theme: ContextStorage<ColorScheme> { .init(defaultValue: .light, propagation: .environment) }
+///     var isFeatureEnabled: ContextStorage<Bool> {
+///         .init(defaultValue: false)
+///     }
+///     var theme: ContextStorage<ColorScheme> {
+///         .init(defaultValue: .light, propagation: .environment)
+///     }
 /// }
-///
-/// // Access via node.context:
-/// node.context.isTrackingUndo        // Bool (.local)
-/// node.context.theme                 // ColorScheme (.environment — reads nearest ancestor)
-/// node.context.theme = .dark         // stores here, notifies descendants
 /// ```
-struct ContextStorage<Value: Sendable>: Hashable, Sendable {
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
-    func hash(into hasher: inout Hasher) { hasher.combine(key) }
-    let defaultValue: Value
+///
+/// ## Accessing via `node.context`
+///
+/// ```swift
+/// // Read
+/// let enabled = node.context.isFeatureEnabled
+/// let current = node.context.theme   // walks up to nearest ancestor that set it
+///
+/// // Write
+/// node.context.isFeatureEnabled = true
+/// node.context.theme = .dark         // stores here, notifies all descendants
+/// ```
+///
+/// ## Propagation modes
+///
+/// - `.local` (default): the value is read and written on this node only.
+/// - `.environment`: writes store on this node; reads walk up to the nearest ancestor
+///   that has set the value, returning `defaultValue` if none has.
+public struct ContextStorage<Value: Sendable>: Hashable, Sendable {
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
+    public func hash(into hasher: inout Hasher) { hasher.combine(key) }
+    /// The value returned when no storage entry has been set for this key.
+    public let defaultValue: Value
     let key: AnyHashableSendable
-    let propagation: StoragePropagation
+    /// Controls whether the value propagates down the model hierarchy.
+    public let propagation: StoragePropagation
     let onRemoval: (@Sendable (Value) -> Void)?
     /// When `true`, writes to this storage are not surfaced to `TestAccess` for observation
     /// or exhaustion checking. Used for system-internal storage (undo, memoize) that should
@@ -49,12 +73,57 @@ struct ContextStorage<Value: Sendable>: Hashable, Sendable {
     /// and fires no observation notifications. Nil means always notify (non-Equatable types).
     let isEqual: (@Sendable (Value, Value) -> Bool)?
 
-    /// Default init: uses the source location as the unique storage key.
+    /// Creates a context storage descriptor using the call-site source location as the unique key.
+    ///
+    /// Because each computed property on `ContextKeys` has its own source location, distinct
+    /// properties produce distinct keys automatically — no explicit key type is needed.
+    ///
+    /// - Parameters:
+    ///   - defaultValue: The value returned when no entry has been set.
+    ///   - propagation: Whether the value is node-local or inheritable from ancestors. Defaults to `.local`.
+    public init(
+        defaultValue: Value,
+        propagation: StoragePropagation = .local,
+        fileID: StaticString = #fileID,
+        line: UInt = #line,
+        column: UInt = #column
+    ) {
+        self.defaultValue = defaultValue
+        self.propagation = propagation
+        self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
+        self.onRemoval = nil
+        self.isSystemStorage = false
+        self.isEqual = nil
+    }
+
+    /// Creates a context storage descriptor with an explicit stable key.
+    ///
+    /// Use this when you need the key to be stable across source-file renames or when you want
+    /// to share a key across multiple call sites.
+    ///
+    /// - Parameters:
+    ///   - defaultValue: The value returned when no entry has been set.
+    ///   - key: An explicit stable key. Must be `Hashable` and `Sendable`.
+    ///   - propagation: Whether the value is node-local or inheritable from ancestors. Defaults to `.local`.
+    public init<K: Hashable & Sendable>(
+        defaultValue: Value,
+        key: K,
+        propagation: StoragePropagation = .local
+    ) {
+        self.defaultValue = defaultValue
+        self.propagation = propagation
+        self.key = AnyHashableSendable(key)
+        self.onRemoval = nil
+        self.isSystemStorage = false
+        self.isEqual = nil
+    }
+
+    /// Internal init that exposes all parameters — used by system code (undo, memoize).
     init(
         defaultValue: Value,
         propagation: StoragePropagation = .local,
         onRemoval: (@Sendable (Value) -> Void)? = nil,
-        isSystemStorage: Bool = false,
+        isSystemStorage: Bool,
         fileID: StaticString = #fileID,
         line: UInt = #line,
         column: UInt = #column
@@ -67,13 +136,13 @@ struct ContextStorage<Value: Sendable>: Hashable, Sendable {
         self.isEqual = nil
     }
 
-    /// Explicit-key init: use when you need a stable key independent of source location.
+    /// Internal explicit-key init that exposes all parameters.
     init<K: Hashable & Sendable>(
         defaultValue: Value,
         key: K,
         propagation: StoragePropagation = .local,
         onRemoval: (@Sendable (Value) -> Void)? = nil,
-        isSystemStorage: Bool = false
+        isSystemStorage: Bool
     ) {
         self.defaultValue = defaultValue
         self.propagation = propagation
@@ -85,13 +154,55 @@ struct ContextStorage<Value: Sendable>: Hashable, Sendable {
 }
 
 extension ContextStorage where Value: Equatable {
-    /// Default init for Equatable values: automatically skips observation notifications
-    /// when the new value equals the currently stored value.
+    /// Creates a context storage descriptor for an `Equatable` value, using the call-site
+    /// source location as the unique key.
+    ///
+    /// Writes that do not change the currently stored value are suppressed — no observation
+    /// notifications are fired. This is the preferred init for `Equatable` value types.
+    ///
+    /// - Parameters:
+    ///   - defaultValue: The value returned when no entry has been set.
+    ///   - propagation: Whether the value is node-local or inheritable from ancestors. Defaults to `.local`.
+    public init(
+        defaultValue: Value,
+        propagation: StoragePropagation = .local,
+        fileID: StaticString = #fileID,
+        line: UInt = #line,
+        column: UInt = #column
+    ) {
+        self.defaultValue = defaultValue
+        self.propagation = propagation
+        self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
+        self.onRemoval = nil
+        self.isSystemStorage = false
+        self.isEqual = { $0 == $1 }
+    }
+
+    /// Creates a context storage descriptor for an `Equatable` value with an explicit stable key.
+    ///
+    /// - Parameters:
+    ///   - defaultValue: The value returned when no entry has been set.
+    ///   - key: An explicit stable key. Must be `Hashable` and `Sendable`.
+    ///   - propagation: Whether the value is node-local or inheritable from ancestors. Defaults to `.local`.
+    public init<K: Hashable & Sendable>(
+        defaultValue: Value,
+        key: K,
+        propagation: StoragePropagation = .local
+    ) {
+        self.defaultValue = defaultValue
+        self.propagation = propagation
+        self.key = AnyHashableSendable(key)
+        self.onRemoval = nil
+        self.isSystemStorage = false
+        self.isEqual = { $0 == $1 }
+    }
+
+    /// Internal Equatable init that exposes all parameters.
     init(
         defaultValue: Value,
         propagation: StoragePropagation = .local,
         onRemoval: (@Sendable (Value) -> Void)? = nil,
-        isSystemStorage: Bool = false,
+        isSystemStorage: Bool,
         fileID: StaticString = #fileID,
         line: UInt = #line,
         column: UInt = #column
@@ -104,13 +215,13 @@ extension ContextStorage where Value: Equatable {
         self.isEqual = { $0 == $1 }
     }
 
-    /// Explicit-key init for Equatable values.
+    /// Internal Equatable explicit-key init.
     init<K: Hashable & Sendable>(
         defaultValue: Value,
         key: K,
         propagation: StoragePropagation = .local,
         onRemoval: (@Sendable (Value) -> Void)? = nil,
-        isSystemStorage: Bool = false
+        isSystemStorage: Bool
     ) {
         self.defaultValue = defaultValue
         self.propagation = propagation
@@ -125,27 +236,47 @@ extension ContextStorage where Value: Equatable {
 
 /// A namespace for declaring named context storage keys as computed properties.
 ///
+/// Extend `ContextKeys` with computed properties that return `ContextStorage<Value>` descriptors.
+/// SwiftModel uses the source location of each property declaration as a unique key automatically,
+/// so no separate enum or string identifier is required.
+///
 /// ```swift
 /// extension ContextKeys {
-///     var myFlag: ContextStorage<Bool> { .init(defaultValue: false) }
-///     var theme: ContextStorage<ColorScheme> { .init(defaultValue: .light, propagation: .environment) }
+///     var isFeatureEnabled: ContextStorage<Bool> {
+///         .init(defaultValue: false)
+///     }
+///     var theme: ContextStorage<ColorScheme> {
+///         .init(defaultValue: .light, propagation: .environment)
+///     }
 /// }
 /// ```
-struct ContextKeys: Sendable {}
+///
+/// Access values via `node.context`:
+///
+/// ```swift
+/// node.context.isFeatureEnabled        // read
+/// node.context.isFeatureEnabled = true // write
+/// ```
+public struct ContextKeys: Sendable {
+    public init() {}
+}
 
 // MARK: - ContextValues
 
-/// Provides `@dynamicMemberLookup` access to a context's storage via `ContextKeys`.
+/// Provides `@dynamicMemberLookup` access to a model node's context storage via `ContextKeys`.
 ///
-/// Access via `node.context`:
+/// You obtain a `ContextValues` instance from `node.context` inside your model implementation.
+/// Properties declared on `ContextKeys` are directly accessible as dynamic members.
+///
 /// ```swift
-/// node.context.myFlag        // read → Bool
-/// node.context.myFlag = true // write
-/// node.context.theme         // reads nearest ancestor that set it
-/// node.context.theme = .dark // stores here, notifies descendants
+/// // Inside a model implementation (via node.context):
+/// let enabled = node.context.isFeatureEnabled   // read
+/// node.context.isFeatureEnabled = true           // write
+/// let current = node.context.theme              // reads nearest ancestor (.environment)
+/// node.context.theme = .dark                    // stores here, notifies descendants
 /// ```
 @dynamicMemberLookup
-struct ContextValues: Sendable {
+public struct ContextValues: Sendable {
     // Optional: nil when the node is unanchored. Reads return defaultValue, writes are no-ops.
     let context: AnyContext?
 
@@ -153,8 +284,8 @@ struct ContextValues: Sendable {
         self.context = context
     }
 
-    // Direct subscript for explicit access with a storage descriptor.
-    subscript<V>(storage: ContextStorage<V>) -> V {
+    /// Reads or writes a context value using a storage descriptor directly.
+    public subscript<V>(storage: ContextStorage<V>) -> V {
         get {
             guard let context else { return storage.defaultValue }
             switch storage.propagation {
@@ -175,8 +306,8 @@ struct ContextValues: Sendable {
         }
     }
 
-    // @dynamicMemberLookup: KeyPath<ContextKeys, ContextStorage<V>> → V
-    subscript<V>(dynamicMember path: KeyPath<ContextKeys, ContextStorage<V>>) -> V {
+    /// Reads or writes a context value using a key path on `ContextKeys`.
+    public subscript<V>(dynamicMember path: KeyPath<ContextKeys, ContextStorage<V>>) -> V {
         get { self[ContextKeys()[keyPath: path]] }
         nonmutating set { self[ContextKeys()[keyPath: path]] = newValue }
     }

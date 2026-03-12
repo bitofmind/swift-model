@@ -192,9 +192,9 @@ public extension Exhaustivity {
     /// Require all values emitted by installed `TestProbe` instances to be consumed.
     static let probes = Self(rawValue: 1 << 3)
     /// Require all context storage changes (via `node.context`) to be consumed by `assert` blocks.
-    internal static let context = Self(rawValue: 1 << 4)
+    static let context = Self(rawValue: 1 << 4)
     /// Require all preference storage changes (via `node.preference`) to be consumed by `assert` blocks.
-    internal static let preference = Self(rawValue: 1 << 5)
+    static let preference = Self(rawValue: 1 << 5)
 
     /// Exhaustivity is completely disabled — no side effects need to be asserted.
     static let off: Self = []

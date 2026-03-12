@@ -913,6 +913,139 @@ A practical real-world example — a document model that tracks whether any sub-
 
 When a new `EditorModel` is added to `editors`, the stream immediately includes its `isDirty` property in the tracking set — no manual subscription needed.
 
+## Context and Preferences
+
+Context and preferences let models share data across the model hierarchy without explicit parent-to-child passing. **Context** flows downward (like SwiftUI's `@Environment`); **preferences** flow upward (like SwiftUI's `PreferenceKey`).
+
+Both systems are declared by extending a namespace type with computed properties, and accessed via `node.context` and `node.preference`.
+
+### Context — top-down propagation
+
+Declare a context key by extending `ContextKeys` with a computed property that returns a `ContextStorage` descriptor:
+
+```swift
+extension ContextKeys {
+    var isFeatureEnabled: ContextStorage<Bool> {
+        .init(defaultValue: false)
+    }
+}
+```
+
+Read and write via `node.context`:
+
+```swift
+node.context.isFeatureEnabled = true      // write
+let enabled = node.context.isFeatureEnabled  // read
+```
+
+#### Environment propagation
+
+For values that should automatically flow to all descendants — like a colour scheme, a selection state, or an editing mode — use `.environment` propagation:
+
+```swift
+extension ContextKeys {
+    var colorScheme: ContextStorage<ColorScheme> {
+        .init(defaultValue: .light, propagation: .environment)
+    }
+}
+```
+
+A write on any ancestor is visible to all descendants. Reading walks up the hierarchy to the nearest ancestor that has set the value, returning `defaultValue` if none has:
+
+```swift
+// Parent sets the theme for its entire subtree:
+parentModel.node.context.colorScheme = .dark
+
+// Any descendant reads it (returns .dark — inherited from parent):
+let scheme = childModel.node.context.colorScheme
+
+// A child can locally override it; only that child and its descendants see the override:
+childModel.node.context.colorScheme = .light
+```
+
+To remove a local override and go back to inheriting from the nearest ancestor:
+
+```swift
+node.removeContext(\.colorScheme)
+```
+
+### Preferences — bottom-up aggregation
+
+Declare a preference key by extending `PreferenceKeys` with a computed property that returns a `PreferenceStorage` descriptor. The descriptor includes a `reduce` closure that folds contributions together:
+
+```swift
+extension PreferenceKeys {
+    var totalCount: PreferenceStorage<Int> {
+        .init(defaultValue: 0) { $0 += $1 }
+    }
+    var hasUnsavedChanges: PreferenceStorage<Bool> {
+        .init(defaultValue: false) { $0 = $0 || $1 }
+    }
+}
+```
+
+Each node writes its own contribution:
+
+```swift
+node.preference.totalCount = 3
+```
+
+Any ancestor reads the aggregate of the whole subtree (self + all descendants):
+
+```swift
+let total = parentNode.preference.totalCount  // sum of all contributions in subtree
+```
+
+To remove a node's contribution:
+
+```swift
+node.removePreference(\.totalCount)
+```
+
+Both reads and writes participate in SwiftModel's observation system: wrapping a read in `Observed { ... }` creates a stream that re-fires whenever any contributing node changes, or when nodes are added or removed from the subtree.
+
+### Common patterns
+
+**Propagating a colour scheme / theme:**
+
+```swift
+extension ContextKeys {
+    var theme: ContextStorage<AppTheme> {
+        .init(defaultValue: .default, propagation: .environment)
+    }
+}
+
+// Root model sets the theme once:
+func onActivate() {
+    node.context.theme = userPreferences.theme
+}
+
+// Any descendant reads it:
+let colors = node.context.theme.colors
+```
+
+**Aggregating unsaved-changes across a subtree:**
+
+```swift
+extension PreferenceKeys {
+    var hasUnsavedChanges: PreferenceStorage<Bool> {
+        .init(defaultValue: false) { $0 = $0 || $1 }
+    }
+}
+
+// Each editor signals its own dirty state:
+func onActivate() {
+    node.forEach(Observed { isDirty }) { dirty in
+        node.preference.hasUnsavedChanges = dirty
+    }
+}
+
+// The document root reads the aggregate:
+var showsUnsavedIndicator: Bool {
+    node.preference.hasUnsavedChanges
+}
+```
+
 ## Events
 
 It is common that models need to communicate up or down the model hierarchy. Often it is most natural to set up a callback closure for children to communicate back to parents, or for parents to call methods directly on children. But for more complicated setups, SwiftModel also supports sending events up and down the model hierarchy.

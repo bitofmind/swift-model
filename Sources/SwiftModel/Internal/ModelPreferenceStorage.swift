@@ -4,40 +4,67 @@ import ConcurrencyExtras
 
 /// A typed key + default value + reduce function for bottom-up aggregated preference storage.
 ///
-/// Preferences flow upward: each node writes its own contribution via `node.preference.myKey = value`,
-/// and any ancestor reads the aggregate of all contributions in its subtree via `node.preference.myKey`.
+/// Preferences flow **upward**: each node writes its own contribution via
+/// `node.preference.myKey = value`, and any ancestor reads the aggregate of all contributions
+/// in its subtree via `node.preference.myKey`.
 ///
-/// Declare one as a computed property on `PreferenceKeys`. The source location captured at `init`
-/// time serves as the unique dictionary key — no separate enum needed.
+/// ## Declaring a preference key
+///
+/// Extend `PreferenceKeys` with a computed property returning a `PreferenceStorage` descriptor.
+/// The source location of each property serves as its unique key automatically.
 ///
 /// ```swift
 /// extension PreferenceKeys {
 ///     var totalCount: PreferenceStorage<Int> {
 ///         .init(defaultValue: 0) { $0 += $1 }
 ///     }
+///     var hasUnsavedChanges: PreferenceStorage<Bool> {
+///         .init(defaultValue: false) { $0 = $0 || $1 }
+///     }
 /// }
+/// ```
 ///
-/// // Child writes its contribution:
+/// ## Writing contributions and reading aggregates
+///
+/// ```swift
+/// // Child writes its own contribution:
 /// node.preference.totalCount = 5
 ///
-/// // Any ancestor reads the aggregate:
-/// let total = node.preference.totalCount  // sum of all descendants + self
+/// // Any ancestor reads the aggregate of the whole subtree:
+/// let total = node.preference.totalCount  // sum of self + all descendants
 /// ```
-struct PreferenceStorage<Value: Sendable>: Hashable, Sendable {
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
-    func hash(into hasher: inout Hasher) { hasher.combine(key) }
-    let defaultValue: Value
+///
+/// ## Reduce function
+///
+/// The `reduce` closure folds each node's contribution into a running result starting from
+/// `defaultValue`. It is called once per node that has set a value.
+///
+/// Common patterns:
+/// - Sum: `{ $0 += $1 }`
+/// - Union: `{ $0 = $0 || $1 }`
+/// - Collection: `{ $0.append(contentsOf: $1) }`
+public struct PreferenceStorage<Value: Sendable>: Hashable, Sendable {
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.key == rhs.key }
+    public func hash(into hasher: inout Hasher) { hasher.combine(key) }
+    /// The starting value for aggregation (used when no contributions exist).
+    public let defaultValue: Value
     let key: AnyHashableSendable
     /// Combines a new contribution into the running aggregate.
-    let reduce: @Sendable (inout Value, Value) -> Void
+    public let reduce: @Sendable (inout Value, Value) -> Void
     /// When `true`, contributions from dependency model contexts are also included in the aggregate.
-    let includeDependencies: Bool
+    public let includeDependencies: Bool
     /// Optional equality check. When set, a write that doesn't change the stored value is a no-op
     /// and fires no observation notifications. Nil means always notify (non-Equatable types).
     let isEqual: (@Sendable (Value, Value) -> Bool)?
 
-    /// Default init: uses the source location as the unique storage key.
-    init(
+    /// Creates a preference storage descriptor using the call-site source location as the unique key.
+    ///
+    /// - Parameters:
+    ///   - defaultValue: The starting value for aggregation when no contributions exist.
+    ///   - includeDependencies: When `true`, dependency model contexts also contribute to the
+    ///     aggregate. Defaults to `false`.
+    ///   - reduce: Folds a new contribution into the running aggregate.
+    public init(
         defaultValue: Value,
         includeDependencies: Bool = false,
         fileID: StaticString = #fileID,
@@ -52,8 +79,15 @@ struct PreferenceStorage<Value: Sendable>: Hashable, Sendable {
         self.isEqual = nil
     }
 
-    /// Explicit-key init: use when you need a stable key independent of source location.
-    init<K: Hashable & Sendable>(
+    /// Creates a preference storage descriptor with an explicit stable key.
+    ///
+    /// - Parameters:
+    ///   - defaultValue: The starting value for aggregation when no contributions exist.
+    ///   - key: An explicit stable key. Must be `Hashable` and `Sendable`.
+    ///   - includeDependencies: When `true`, dependency model contexts also contribute to the
+    ///     aggregate. Defaults to `false`.
+    ///   - reduce: Folds a new contribution into the running aggregate.
+    public init<K: Hashable & Sendable>(
         defaultValue: Value,
         key: K,
         includeDependencies: Bool = false,
@@ -68,9 +102,18 @@ struct PreferenceStorage<Value: Sendable>: Hashable, Sendable {
 }
 
 extension PreferenceStorage where Value: Equatable {
-    /// Default init for Equatable values: automatically skips observation notifications
-    /// when the new contribution equals the currently stored value.
-    init(
+    /// Creates a preference storage descriptor for an `Equatable` value, using the call-site
+    /// source location as the unique key.
+    ///
+    /// Writes that do not change the currently stored contribution are suppressed — no observation
+    /// notifications are fired.
+    ///
+    /// - Parameters:
+    ///   - defaultValue: The starting value for aggregation when no contributions exist.
+    ///   - includeDependencies: When `true`, dependency model contexts also contribute to the
+    ///     aggregate. Defaults to `false`.
+    ///   - reduce: Folds a new contribution into the running aggregate.
+    public init(
         defaultValue: Value,
         includeDependencies: Bool = false,
         fileID: StaticString = #fileID,
@@ -85,8 +128,15 @@ extension PreferenceStorage where Value: Equatable {
         self.isEqual = { $0 == $1 }
     }
 
-    /// Explicit-key init for Equatable values.
-    init<K: Hashable & Sendable>(
+    /// Creates a preference storage descriptor for an `Equatable` value with an explicit stable key.
+    ///
+    /// - Parameters:
+    ///   - defaultValue: The starting value for aggregation when no contributions exist.
+    ///   - key: An explicit stable key. Must be `Hashable` and `Sendable`.
+    ///   - includeDependencies: When `true`, dependency model contexts also contribute to the
+    ///     aggregate. Defaults to `false`.
+    ///   - reduce: Folds a new contribution into the running aggregate.
+    public init<K: Hashable & Sendable>(
         defaultValue: Value,
         key: K,
         includeDependencies: Bool = false,
@@ -104,26 +154,48 @@ extension PreferenceStorage where Value: Equatable {
 
 /// A namespace for declaring named preference storage keys as computed properties.
 ///
+/// Extend `PreferenceKeys` with computed properties that return `PreferenceStorage<Value>`
+/// descriptors. SwiftModel uses the source location of each property as its unique key
+/// automatically — no explicit identifier is needed.
+///
 /// ```swift
 /// extension PreferenceKeys {
 ///     var totalCount: PreferenceStorage<Int> {
 ///         .init(defaultValue: 0) { $0 += $1 }
 ///     }
+///     var hasUnsavedChanges: PreferenceStorage<Bool> {
+///         .init(defaultValue: false) { $0 = $0 || $1 }
+///     }
 /// }
 /// ```
-struct PreferenceKeys: Sendable {}
+///
+/// Access values via `node.preference`:
+///
+/// ```swift
+/// node.preference.totalCount = 3          // write this node's contribution
+/// let total = node.preference.totalCount  // read aggregate of self + descendants
+/// ```
+public struct PreferenceKeys: Sendable {
+    public init() {}
+}
 
 // MARK: - PreferenceValues
 
-/// Provides `@dynamicMemberLookup` access to a context's preference contributions via `PreferenceKeys`.
+/// Provides `@dynamicMemberLookup` access to a model node's preference storage via `PreferenceKeys`.
 ///
-/// Access via `node.preference`:
+/// You obtain a `PreferenceValues` instance from `node.preference` inside your model implementation.
+/// Properties declared on `PreferenceKeys` are directly accessible as dynamic members.
+///
+/// Reading a preference aggregates contributions from the current node **and all descendants**.
+/// Writing stores this node's own contribution, which is then included in any ancestor's read.
+///
 /// ```swift
-/// node.preference.totalCount        // reads aggregate of self + all descendants
-/// node.preference.totalCount = 5    // writes this node's contribution
+/// // Inside a model implementation (via node.preference):
+/// node.preference.totalCount = 3           // write this node's contribution
+/// let total = node.preference.totalCount   // aggregate: self + all descendants
 /// ```
 @dynamicMemberLookup
-struct PreferenceValues: Sendable {
+public struct PreferenceValues: Sendable {
     // Optional: nil when the node is unanchored. Reads return defaultValue, writes are no-ops.
     let context: AnyContext?
 
@@ -131,8 +203,8 @@ struct PreferenceValues: Sendable {
         self.context = context
     }
 
-    // Direct subscript for explicit access with a storage descriptor.
-    subscript<V>(storage: PreferenceStorage<V>) -> V {
+    /// Reads the aggregated preference value (self + all descendants) or writes this node's contribution.
+    public subscript<V>(storage: PreferenceStorage<V>) -> V {
         get {
             guard let context else { return storage.defaultValue }
             return context.preferenceValue(for: storage)
@@ -143,8 +215,8 @@ struct PreferenceValues: Sendable {
         }
     }
 
-    // @dynamicMemberLookup: KeyPath<PreferenceKeys, PreferenceStorage<V>> → V
-    subscript<V>(dynamicMember path: KeyPath<PreferenceKeys, PreferenceStorage<V>>) -> V {
+    /// Reads or writes a preference value using a key path on `PreferenceKeys`.
+    public subscript<V>(dynamicMember path: KeyPath<PreferenceKeys, PreferenceStorage<V>>) -> V {
         get { self[PreferenceKeys()[keyPath: path]] }
         nonmutating set { self[PreferenceKeys()[keyPath: path]] = newValue }
     }
