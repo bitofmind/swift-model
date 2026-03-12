@@ -1,0 +1,83 @@
+{
+  "configurations" : [
+    {
+      "id" : "A1B2C3D4-0001-4345-8D79-DDE5C0E432B6",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "performanceAntipatternCheckerEnabled" : true
+  },
+  "testTargets" : [
+    {
+      "skippedTags" : {
+        "tags" : [
+          ".benchmark"
+        ]
+      },
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "SwiftModelMacroTests",
+        "name" : "SwiftModelMacroTests"
+      }
+    },
+    {
+      "skippedTags" : {
+        "tags" : [
+          ".benchmark"
+        ]
+      },
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "SwiftModelTests",
+        "name" : "SwiftModelTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Examples/CounterFact/CounterFact.xcodeproj",
+        "identifier" : "F61EBCD02786139400F098A8",
+        "name" : "CounterFactTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Examples/SharedState/SharedState.xcodeproj",
+        "identifier" : "F61EBCD02786139400F098A8",
+        "name" : "SharedStateTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Examples/SignUpFlow/SignUpFlow.xcodeproj",
+        "identifier" : "F61EBCD02786139400F098A8",
+        "name" : "SignUpFlowTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Examples/SignUpFlowUsingDependency/SignUpFlowUsingDependency.xcodeproj",
+        "identifier" : "F61EBCD02786139400F098A8",
+        "name" : "SignUpFlowUsingDependencyTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Examples/Standups/Standups.xcodeproj",
+        "identifier" : "DC808D7E29E9C3AD0072B4A9",
+        "name" : "StandupsTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Examples/TodoList/TodoList.xcodeproj",
+        "identifier" : "A1000017000000000000000",
+        "name" : "TodoListTests"
+      }
+    }
+  ],
+  "version" : 1
+}
