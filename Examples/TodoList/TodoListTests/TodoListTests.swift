@@ -10,7 +10,11 @@ import Testing
 struct TodoListTests {
 
     func makeModel() -> (TodoListModel, ModelTester<TodoListModel>) {
-        TodoListModel().andTester(withDependencies: { $0.undoSystem.backend = ModelUndoStack() })
+        let (model, tester) = TodoListModel().andTester(withDependencies: { $0.undoSystem.backend = ModelUndoStack() })
+        // Preference exhaustion is not checked by default in these tests — existing undo/redo
+        // tests don't need to assert TodoItem preference contributions.
+        tester.exhaustivity = [.state, .events, .tasks, .probes]
+        return (model, tester)
     }
 
     // MARK: - Initial state
@@ -133,6 +137,46 @@ struct TodoListTests {
 
         model.newItemTitle = "typing…"
         await tester.assert { model.newItemTitle == "typing…" && model.node.undoSystem.canUndo == false }
+    }
+
+    // MARK: - Completion count preference
+
+    @Test func completedCountReflectsItemsDoneState() async {
+        let (model, tester) = makeModel()
+        tester.exhaustivity = .off
+
+        model.items = [
+            TodoItem(title: "A"),
+            TodoItem(title: "B"),
+            TodoItem(title: "C"),
+        ]
+        await tester.assert {
+            model.items.count == 3
+            model.completedCount == 0
+        }
+
+        model.items[0].toggleTapped()
+        await tester.assert { model.completedCount == 1 }
+
+        model.items[2].toggleTapped()
+        await tester.assert { model.completedCount == 2 }
+
+        model.items[0].toggleTapped()
+        await tester.assert { model.completedCount == 1 }
+    }
+
+    @Test func completedCountUpdatesWhenItemsRemoved() async {
+        let (model, tester) = makeModel()
+        tester.exhaustivity = .off
+
+        model.items = [
+            TodoItem(title: "A", isDone: true),
+            TodoItem(title: "B", isDone: true),
+        ]
+        await tester.assert { model.completedCount == 2 }
+
+        model.items.removeFirst()
+        await tester.assert { model.completedCount == 1 }
     }
 
     // MARK: - Item property changes (title, isDone)

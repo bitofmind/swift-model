@@ -1,3 +1,27 @@
-#  Standups
+# SharedState
 
-The sample app is a straight refactoring of a [sample app](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/CaseStudies/SwiftUICaseStudies/01-GettingStarted-SharedState.swift) from [Point-Free](https://www.pointfree.co)'s  [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture).
+A tabbed app demonstrating how SwiftModel enables multiple views to share state without tightly coupling their models together.
+
+This is a refactoring of a [sample app](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/CaseStudies/SwiftUICaseStudies/01-GettingStarted-SharedState.swift) from [Point-Free](https://www.pointfree.co)'s [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture).
+
+## What it demonstrates
+
+### Shared model identity
+
+The `CounterTab` and `ProfileTab` models both hold a reference to the same `Stats` model instance. Changes made on one tab are immediately visible on the other — no synchronisation code required. This is the core concept: two independent parts of the UI operate on a single source of truth.
+
+```swift
+init(stats: Stats = Stats()) {
+    _counter = CounterTab(stats: stats)  // same Stats instance
+    _profile = ProfileTab(stats: stats)  // shared with counter
+}
+```
+
+Incrementing on the Counter tab updates `stats.count`; switching to the Profile tab shows the new value immediately, because there is only one `Stats` model — not two copies that need to be kept in sync.
+
+## App structure
+
+| Tab | Model | Responsibility |
+|-----|-------|---------------|
+| Counter | `CounterTab` + `Stats` | Increment/decrement, prime check |
+| Profile | `ProfileTab` + `Stats` | Display stats, reset (same `Stats` instance) |

@@ -37,22 +37,37 @@ struct SharedStateTests {
       model.path[3].is(\.summary)
     }
 
-    model.path[3].summary?.editPersonalInfoButtonTapped()
+    // Capture the summary model now that path[3] is confirmed to exist and be a summary.
+    let summary = model.path[3].summary!
+
+    summary.editPersonalInfoButtonTapped()
 
     await tester.assert {
-      model.path[3].summary?.destination.is(\.personalInfo) == true
+      summary.destination.is(\.personalInfo) == true
+      // isEditing is set on SummaryFeature's context and propagates via
+      // .environment to PersonalInfoFeature — no constructor param needed.
+      summary.node.context.isEditing == true
+      summary.destination?.personalInfo?.isEditing == true
     }
 
-    model.path[3].summary?.signUpData.firstName = "Blob"
+    summary.signUpData.firstName = "Blob"
 
     await tester.assert {
-      model.path[3].summary?.signUpData.firstName == "Blob"
+      summary.signUpData.firstName == "Blob"
     }
 
-    model.path[3].summary?.destination = nil
+    summary.destination = nil
 
     await tester.assert {
-      model.path[3].summary?.destination == nil
+      summary.destination == nil
+      summary.node.context.isEditing == false
+    }
+
+    summary.submitButtonTapped()
+
+    await tester.assert {
+      summary.didSend(.onSubmit) == true
+      model.path.isEmpty
     }
   }
 }

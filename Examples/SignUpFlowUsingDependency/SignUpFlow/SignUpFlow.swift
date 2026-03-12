@@ -3,6 +3,20 @@ import SwiftUI
 import SwiftUINavigation
 import Dependencies
 
+// MARK: - Context Keys
+
+extension ContextKeys {
+  /// Set by SummaryFeature on its own node when it pushes an edit destination.
+  /// Because propagation is `.environment`, all descendants of SummaryFeature —
+  /// including PersonalInfoFeature and TopicsFeature inside `destination` —
+  /// inherit the value without any constructor parameter being passed.
+  /// Steps in the normal forward flow (children of SignUpFeature, not SummaryFeature)
+  /// read the default `false`.
+  var isEditing: ContextStorage<Bool> {
+    .init(defaultValue: false, propagation: .environment)
+  }
+}
+
 @Model
 struct SignUpData {
   var email = ""
@@ -84,6 +98,9 @@ struct SignUpFeature {
     node.forEach(node.event(of: .onNext, fromType: TopicsFeature.self)) { _ in
       path.append(.summary(SummaryFeature()))
     }
+    node.forEach(node.event(of: .onSubmit, fromType: SummaryFeature.self)) { _ in
+      path = []
+    }
   }
 }
 
@@ -161,11 +178,15 @@ struct BasicsStep: View {
 @Model
 struct PersonalInfoFeature {
   @ModelDependency var signUpData: SignUpData
+
+  /// True when this instance was pushed from the summary screen for editing.
+  /// Read from context — set by SummaryFeature without threading it through
+  /// the constructor.
+  var isEditing: Bool { node.context.isEditing }
 }
 
 struct PersonalInfoStep: View {
   @ObservedModel var model: PersonalInfoFeature
-  var isEditingFromSummary = false
   @Environment(\.dismiss) var dismiss
 
   var body: some View {
@@ -176,10 +197,10 @@ struct PersonalInfoStep: View {
         TextField("Phone number", text: $model.signUpData.phoneNumber)
       }
     }
-    .navigationTitle("Personal info")
+    .navigationTitle(model.isEditing ? "Edit personal info" : "Personal info")
     .toolbar {
       ToolbarItem {
-        if !isEditingFromSummary {
+        if !model.isEditing {
           NavigationLink(
             "Next",
             item: SignUpFeature.Path.topics(TopicsFeature())
@@ -204,6 +225,9 @@ struct PersonalInfoStep: View {
 struct TopicsFeature {
   var alert: AlertState<Never>?
   @ModelDependency var signUpData: SignUpData
+
+  /// True when this instance was pushed from the summary screen for editing.
+  var isEditing: Bool { node.context.isEditing }
 
   enum Event {
     case onDone
@@ -233,7 +257,6 @@ struct TopicsFeature {
 
 struct TopicsStep: View {
   @ObservedModel var model: TopicsFeature
-  var isEditingFromSummary = false
 
   var body: some View {
     Form {
@@ -250,10 +273,10 @@ struct TopicsStep: View {
       }
     }
     .alert($model.alert)
-    .navigationTitle("Topics")
+    .navigationTitle(model.isEditing ? "Edit topics" : "Topics")
     .toolbar {
       ToolbarItem {
-        if !isEditingFromSummary {
+        if !model.isEditing {
           Button("Next") {
             model.nextButtonTapped()
           }
@@ -296,24 +319,36 @@ struct SummaryFeature {
     case topics(TopicsFeature)
   }
 
+  enum Event { case onSubmit }
+
   var destination: Destination?
   @ModelDependency var signUpData: SignUpData
 
   func editPersonalInfoButtonTapped() {
+    // Setting isEditing on this node propagates via .environment to all
+    // descendants, including the PersonalInfoFeature inside `destination`.
+    node.context.isEditing = true
     destination = .personalInfo(PersonalInfoFeature())
   }
 
   func editFavoriteTopicsButtonTapped() {
+    node.context.isEditing = true
     destination = .topics(TopicsFeature())
   }
 
   func submitButtonTapped() {
-
+    node.send(.onSubmit)
   }
 
   func onActivate() {
     node.forEach(node.event(of: .onDone, fromType: TopicsFeature.self)) { _ in
       destination = nil
+      node.context.isEditing = false
+    }
+    // Reset isEditing whenever the sheet is dismissed (covers both Done button
+    // and interactive dismissal via swipe/tap-outside).
+    node.forEach(Observed(initial: false) { destination == nil }) { isNil in
+      if isNil { node.context.isEditing = false }
     }
   }
 }
@@ -322,64 +357,97 @@ struct SummaryStep: View {
   @ObservedModel var model: SummaryFeature
 
   var body: some View {
-    Form {
-      Section {
-        Text(model.signUpData.email)
-        Text(String(repeating: "•", count: model.signUpData.password.count))
-      } header: {
-        Text("Required info")
-      }
+    ScrollView {
+      VStack(spacing: 16) {
+        // Required info card
+        SummaryCard(title: "Required info") {
+          SummaryRow(label: "Email", value: model.signUpData.email)
+          Divider()
+          SummaryRow(label: "Password", value: String(repeating: "•", count: model.signUpData.password.count))
+        }
 
-      Section {
-        Text(model.signUpData.firstName)
-        Text(model.signUpData.lastName)
-        Text(model.signUpData.phoneNumber)
-      } header: {
-        HStack {
-          Text("Personal info")
-          Spacer()
-          Button("Edit") {
-            model.editPersonalInfoButtonTapped()
+        // Personal info card
+        SummaryCard(title: "Personal info", editAction: model.editPersonalInfoButtonTapped) {
+          SummaryRow(label: "First name", value: model.signUpData.firstName)
+          Divider()
+          SummaryRow(label: "Last name", value: model.signUpData.lastName)
+          Divider()
+          SummaryRow(label: "Phone", value: model.signUpData.phoneNumber)
+        }
+
+        // Topics card
+        SummaryCard(title: "Favorite topics", editAction: model.editFavoriteTopicsButtonTapped) {
+          let sorted = model.signUpData.topics.sorted(by: { $0.rawValue < $1.rawValue })
+          if sorted.isEmpty {
+            Text("None selected").foregroundStyle(.secondary)
+          } else {
+            ForEach(Array(sorted.enumerated()), id: \.element) { index, topic in
+              if index > 0 { Divider() }
+              Text(topic.rawValue)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
           }
-          .font(.caption)
         }
-      }
 
-      Section {
-        ForEach(model.signUpData.topics.sorted(by: { $0.rawValue < $1.rawValue })) { topic in
-          Text(topic.rawValue)
-        }
-      } header: {
-        HStack {
-          Text("Favorite topics")
-          Spacer()
-          Button("Edit") {
-            model.editFavoriteTopicsButtonTapped()
-          }
-          .font(.caption)
-        }
-      }
-
-      Section {
-        Button {
-          model.submitButtonTapped()
-        } label: {
+        Button(action: model.submitButtonTapped) {
           Text("Submit")
+            .frame(maxWidth: .infinity)
         }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .padding(.top, 8)
       }
+      .padding()
     }
     .navigationTitle("Summary")
     .sheet(item: $model.destination.personalInfo) { model in
       NavigationStack {
-        PersonalInfoStep(model: model, isEditingFromSummary: true)
+        PersonalInfoStep(model: model)
       }
       .presentationDetents([.medium])
     }
     .sheet(item: $model.destination.topics) { model in
       NavigationStack {
-        TopicsStep(model: model, isEditingFromSummary: true)
+        TopicsStep(model: model)
       }
       .presentationDetents([.medium])
+    }
+  }
+}
+
+private struct SummaryCard<Content: View>: View {
+  let title: String
+  var editAction: (() -> Void)? = nil
+  @ViewBuilder let content: Content
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      HStack {
+        Text(title)
+          .font(.headline)
+        Spacer()
+        if let editAction {
+          Button("Edit", action: editAction)
+            .buttonStyle(.borderless)
+            .font(.subheadline)
+        }
+      }
+      content
+    }
+    .padding()
+    .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+  }
+}
+
+private struct SummaryRow: View {
+  let label: String
+  let value: String
+
+  var body: some View {
+    HStack {
+      Text(label).foregroundStyle(.secondary)
+      Spacer()
+      Text(value).multilineTextAlignment(.trailing)
     }
   }
 }
