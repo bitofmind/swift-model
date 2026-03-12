@@ -319,6 +319,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         await TesterAssertContextBase.$assertContext.withValue(context) {
 
             let start = DispatchTime.now().uptimeNanoseconds
+            var retryCount = 0
             while true {
                 var failures: [TesterAssertContext.Failure] = []
                 var passedAccesses: [TesterAssertContext.Access] = []
@@ -373,11 +374,11 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     }
 
                     // Predicate passed but IDs don't match yet: there is a pending
-                    // backgroundCall batch in flight. Wait for it to settle and retry —
-                    // do NOT call waitForModification (which blocks on the *next* modification
-                    // event and would miss the modification that already happened).
+                    // backgroundCall batch in flight. Wait for items currently queued to
+                    // drain (FIFO sentinel), then retry. We use waitForCurrentItems rather
+                    // than waitUntilIdle so we don't block on other tests' work under 100x load.
                     if !isEqualIncludingIds {
-                        await backgroundCall.waitUntilIdle()
+                        await backgroundCall.waitForCurrentItems()
                         await Task.yield()
                         continue
                     }
@@ -510,7 +511,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 // Step 6: Wait for the next modification event before re-checking.
                 let elapsed = start.distance(to: DispatchTime.now().uptimeNanoseconds)
                 let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
-                await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: yieldRoundNs)
+                retryCount += 1
+                await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: yieldRoundNs, retryCount: retryCount)
             }
         }
     }
@@ -539,54 +541,68 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// Suspends briefly so the async pipeline can settle, then returns so the outer
     /// assert loop can re-check its predicate.
     ///
-    /// `yieldRoundNs` is the measured yield latency at the start of `assert()` — it
-    /// represents one full cooperative-pool round at the current load level. The function
-    /// sleeps for at least this long so that `for await` loop bodies (which consume values
-    /// yielded by `backgroundCall.performUpdate` and write to external `LockIsolated`
-    /// state) always get at least one scheduler turn per call, regardless of pool load.
-    private func waitForModification(timeoutNanoseconds remaining: UInt64, yieldRoundNs: UInt64) async {
+    /// Uses an escalation strategy based on `retryCount` to balance two competing needs:
+    ///
+    /// - **Fast conditions** (e.g. a model property set by a cancellation handler):
+    ///   The value is written directly to `lastState` synchronously. A `Task.yield()`
+    ///   is sufficient — no need to wait for `backgroundCall` at all.
+    ///
+    /// - **Memoized conditions** (e.g. `model.conditional` after a dependency change):
+    ///   The memoize cache is only updated after `backgroundCall` runs `performUpdate`.
+    ///   Needs a FIFO sentinel via `waitForCurrentItems` to ensure the cache is fresh.
+    ///
+    /// Escalation by retry count:
+    ///   0-1: Just yield — free and instant. Covers fast conditions on the first retry.
+    ///   2+:  Use `waitForCurrentItems(deadline: yieldRoundNs * 20)`. Under 100x load
+    ///        with yieldRoundNs≈50ms the deadline is ~1s — enough for the queue to drain
+    ///        to our performUpdate, but bounded so it doesn't consume the full test budget.
+    private func waitForModification(timeoutNanoseconds remaining: UInt64, yieldRoundNs: UInt64, retryCount: Int = 0) async {
         guard remaining > 0 else { return }
 
-        // Fast path: a modification is currently being processed by backgroundCall.
-        // Wait for it to finish, then sleep one scheduler round so for-await consumers
-        // of the yielded stream values get to run.
-        if !backgroundCall.isIdle {
-            await backgroundCall.waitUntilIdle()
-            try? await Task.sleep(nanoseconds: yieldRoundNs)
+        // After two quick-yield retries, escalate to a sentinel wait when backgroundCall
+        // has pending work. This gives fast conditions a free early-exit while ensuring
+        // memoized conditions get enough time for performUpdate to run.
+        if retryCount >= 2 && !backgroundCall.isIdle {
+            // FIFO sentinel: suspend until all items currently in the queue have been
+            // processed. When it fires, our performUpdate (if any) has already run.
+            //
+            // Deadline: use the full remaining timeout. By retry 2, fast conditions
+            // (e.g. testCancelInFlight) have already passed on an earlier quick-yield
+            // retry, so we know this is a genuinely async condition that needs the
+            // backgroundCall queue to drain. Waiting up to `remaining` is safe and
+            // ensures deep queues under heavy parallel load are fully covered.
+            let deadline = DispatchTime.now().uptimeNanoseconds + remaining
+            await backgroundCall.waitForCurrentItems(deadline: deadline)
+            await Task.yield()
             return
         }
 
-        // backgroundCall is idle. Two cases:
+        // Early retries (0-1) or backgroundCall already idle.
         //
-        // A) The update pipeline already ran before we arrived (e.g. backgroundCall
-        //    processed the undo change while we were in adaptiveTimeout's yield).
-        //    The for-await body may not have run yet. We register onAnyModification
-        //    to catch future changes, then sleep one full scheduler round so the
-        //    for-await body gets a turn.
-        //
-        // B) We are genuinely waiting for a future modification. onAnyModification
-        //    fires as soon as it arrives, cutting the sleep short.
-        //
-        // The outer assert() loop re-checks the predicate after each return and
-        // accumulates elapsed time against the scaled timeout.
+        // backgroundCall idle means either:
+        // A) performUpdate already ran — memoize cache is fresh, predicate will pass.
+        // B) No modification yet — register onAnyModification and sleep one round.
         let didModify = LockIsolated(false)
         let cancelModification = context.onAnyModification { _ in
             return { didModify.setValue(true) }
         }
         defer { cancelModification() }
 
-        // Sleep one scheduler round. Under light load this is ~1ms; under heavy parallel
-        // test load it scales up to match the actual cooperative-pool round-trip time,
-        // ensuring the for-await body gets at least one scheduling opportunity.
         if !didModify.value {
-            try? await Task.sleep(nanoseconds: yieldRoundNs)
+            // No modification yet. On early retries just yield (fast path for conditions
+            // that are already satisfied); on later retries sleep a full round to avoid
+            // busy-spinning while genuinely waiting for a future modification.
+            if retryCount < 2 {
+                await Task.yield()
+            } else {
+                try? await Task.sleep(nanoseconds: yieldRoundNs)
+            }
         }
 
-        // If a modification arrived (either before we registered or during the sleep),
-        // wait for backgroundCall to finish and sleep another round for the consumer.
+        // If a modification arrived, yield once so backgroundCall gets a scheduler
+        // turn to process the resulting performUpdate before the outer loop re-checks.
         if didModify.value || !backgroundCall.isIdle {
-            await backgroundCall.waitUntilIdle()
-            try? await Task.sleep(nanoseconds: yieldRoundNs)
+            await Task.yield()
         }
     }
 

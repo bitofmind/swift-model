@@ -131,17 +131,34 @@ func waitUntil(
     file: StaticString = #file,
     line: UInt = #line
 ) async throws {
-    let start = ContinuousClock.now
+    // Scale the timeout by current scheduler latency so that under heavy parallel
+    // test load (e.g. 100x repetitions) we wait proportionally longer.
+    let calibrationStart = DispatchTime.now().uptimeNanoseconds
+    await Task.yield()
+    let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
+    let scaledTimeout = max(timeout, yieldLatencyNs * 100)
+
+    let start = DispatchTime.now().uptimeNanoseconds
     while !condition() {
-        try await Task.sleep(nanoseconds: pollInterval)
-        let elapsed = ContinuousClock.now - start
-        let elapsedNanos = UInt64(elapsed.components.seconds) * 1_000_000_000 + UInt64(elapsed.components.attoseconds / 1_000_000_000)
-        if elapsedNanos > timeout {
+        let elapsed = DispatchTime.now().uptimeNanoseconds - start
+        if elapsed > scaledTimeout {
             throw WaitTimeoutError(
                 file: file,
                 line: line,
                 timeoutSeconds: Double(timeout) / 1_000_000_000.0
             )
+        }
+
+        // Yield cooperatively so the backgroundCall drain task (which drives Observed
+        // stream updates) gets scheduler turns. Under heavy parallel test load
+        // backgroundCall is almost always busy, so yielding interleaves with it
+        // naturally. We sleep the poll interval only when it's idle to avoid spinning.
+        if !backgroundCall.isIdle {
+            await Task.yield()
+        } else {
+            await Task.yield()
+            if condition() { return }
+            try await Task.sleep(nanoseconds: pollInterval)
         }
     }
 }
