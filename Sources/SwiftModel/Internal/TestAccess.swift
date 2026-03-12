@@ -247,13 +247,14 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // update separately so checkExhaustion can report it if not asserted.
         if fullPaths.isEmpty, (area == .context || area == .preference), let modelContext = model.context {
             let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
+            let name = propertyName(from: model, path: path)
             return { [weak self] in
                 guard let self else { return }
                 let value = frozenCopy(modelContext[path])
                 self.lock {
                     let update = ValueUpdate(
                         apply: { _ in },  // dependency storage not in Root snapshot
-                        debugInfo: { "\(String(describing: M.self)).\(propertyName(from: model, path: path) ?? "UNKNOWN") == \(String(customDumping: value))" },
+                        debugInfo: { "\(String(describing: M.self)).\(name ?? "UNKNOWN") == \(String(customDumping: value))" },
                         area: area
                     )
                     if area == .preference {
@@ -265,13 +266,14 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             }
         }
 
+        let name = propertyName(from: model, path: path)
         return {
             let value = frozenCopy(model.context![path])
             self.lock {
                 for fullPath in fullPaths {
                     self.valueUpdates[fullPath] = ValueUpdate(
                         apply: { $0[keyPath: fullPath] = value },
-                        debugInfo: { "\(String(describing: M.self)).\(propertyName(from: model, path: path) ?? "UNKOWN") == \(String(customDumping: value))" },
+                        debugInfo: { "\(String(describing: M.self)).\(name ?? "UNKNOWN") == \(String(customDumping: value))" },
                         area: area
                     )
 

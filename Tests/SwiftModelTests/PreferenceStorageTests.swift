@@ -58,6 +58,21 @@ private struct ConcurrentWriterHost {
     var writer: ConcurrentWriterModel = ConcurrentWriterModel()
 }
 
+// Model used for checkExhaustion debugInfo deadlock regression test.
+// A background observer mirrors `trigger` into `derived` so there is always
+// a concurrent writer contending for the model lock when exhaustion runs.
+
+@Model
+private struct ReactiveModel {
+    var trigger: Int = 0
+    var derived: Int = 0
+    func onActivate() {
+        node.forEach(Observed { trigger }) { trigger in
+            derived = trigger * 2
+        }
+    }
+}
+
 // Models used for dependency preference exhaustivity tests.
 
 @Model
@@ -436,6 +451,45 @@ struct PreferenceStorageTests {
         for i in 1...5 {
             host.writer.count = i
             await tester.assert { host.node.preference.totalCount == i }
+        }
+    }
+
+    // Regression test: checkExhaustion must not deadlock when calling debugInfo() on a pending
+    // ValueUpdate while a background task concurrently holds the model lock.
+    //
+    // The deadlock path (pre-fix):
+    //   Assert loop holds TestAccess lock → checkExhaustion → debugInfo() closure
+    //   → propertyName(from:path:) → Mirror(reflecting: model.withAccess(nil))
+    //   → Context.subscript.read → tries to re-acquire TestAccess lock from different thread
+    //   (background BatchedCalls.drainLoop thread holds model lock and is blocked on TestAccess lock)
+    //
+    // Fixed by eagerly computing propertyName in didModify (outside the lock) so debugInfo()
+    // only interpolates a pre-captured String and never touches the model.
+    @Test func checkExhaustionDebugInfoDoesNotDeadlock() async {
+        let (model, tester) = ReactiveModel().andTester()
+        // Exhaustivity on (default): checkExhaustion fires after each assert and calls
+        // debugInfo() on any unasserted ValueUpdate — this is what triggered the deadlock.
+        for i in 1...5 {
+            model.trigger = i
+            // Assert only `trigger`; the background observer also writes `derived`.
+            // checkExhaustion finds the unasserted `derived` ValueUpdate and calls debugInfo().
+            // With the fix, debugInfo() no longer calls Mirror under the lock.
+            await tester.assert {
+                model.trigger == i
+                model.derived == i * 2
+            }
+        }
+    }
+
+    @Test(arguments: 1...100)
+    func checkExhaustionDebugInfoDoesNotDeadlockStress(_ run: Int) async {
+        let (model, tester) = ReactiveModel().andTester()
+        for i in 1...5 {
+            model.trigger = i
+            await tester.assert {
+                model.trigger == i
+                model.derived == i * 2
+            }
         }
     }
 }
