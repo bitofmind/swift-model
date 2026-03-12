@@ -182,11 +182,12 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         }
                     }
                 }
+                let capturedValue = frozenCopy(modelContext[path])
                 assertContext.accesses.append(.init(
                     path: \Root.self,
                     modelName: model.typeDescription,
                     propertyName: propertyName(from: model, path: path),
-                    value: String(customDumping: frozenCopy(modelContext[path])),
+                    value: { String(customDumping: capturedValue) },
                     apply: { _ in },
                     additionalCleanup: cleanup
                 ))
@@ -200,7 +201,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     path: fullPath,
                     modelName: model.typeDescription,
                     propertyName: propertyName(from: model, path: path),
-                    value: String(customDumping: value)
+                    value: { String(customDumping: value) }
                 ) {
                     $0[keyPath: fullPath] = value
                 })
@@ -361,14 +362,20 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     let isEqualIncludingIds = lock {
                         var expected = expectedState.frozenCopy
                         var last = lastState.frozenCopy
+                        // isApplyingSnapshot suppresses willAccessPreference/willAccessStorage
+                        // inside apply closures. Writing through a _preference/_metadata keypath
+                        // triggers willAccess*, which calls _swift_getKeyPath — a Swift runtime
+                        // operation that can deadlock when a runtime lock is already held here.
                         return threadLocals.withValue(true, at: \.includeInMirror) {
-                            passedAccesses.reduce(true) { result, access in
-                                access.apply(&expected)
-                                access.apply(&last)
-                                let e = expected[keyPath: access.path]
-                                let a = last[keyPath: access.path]
+                            threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+                                passedAccesses.reduce(true) { result, access in
+                                    access.apply(&expected)
+                                    access.apply(&last)
+                                    let e = expected[keyPath: access.path]
+                                    let a = last[keyPath: access.path]
 
-                                return result && (diff(e, a) == nil)
+                                    return result && (diff(e, a) == nil)
+                                }
                             }
                         }
                     }
@@ -439,8 +446,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                             } else {
                                 for access in failure.accesses {
                                     let predicate = access.propertyName.map {
-                                        "\(access.modelName).\($0) == \(access.value)"
-                                    } ?? access.value
+                                        "\(access.modelName).\($0) == \(access.value())"
+                                    } ?? access.value()
 
                                     fail("Failed to assert: \(predicate)", at: failure.predicate.fileAndLine)
 
@@ -738,14 +745,17 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             var path: PartialKeyPath<Root>
             var modelName: String
             var propertyName: String?
-            var value: String
+            // Lazy: evaluated only when building error messages (outside the model lock).
+            // Eagerly calling String(customDumping:) while holding NSRecursiveLock can hang
+            // due to Swift runtime conformance-cache contention.
+            var value: () -> String
 
             var apply: (inout Root) -> Void
             // Called during assertion clearing for accesses that need side-effect cleanup
             // beyond the standard valueUpdates path-based removal (e.g. dependency context storage).
             var additionalCleanup: (() -> Void)?
 
-            init(path: PartialKeyPath<Root>, modelName: String, propertyName: String?, value: String, apply: @escaping (inout Root) -> Void, additionalCleanup: (() -> Void)? = nil) {
+            init(path: PartialKeyPath<Root>, modelName: String, propertyName: String?, value: @escaping () -> String, apply: @escaping (inout Root) -> Void, additionalCleanup: (() -> Void)? = nil) {
                 self.path = path
                 self.modelName = modelName
                 self.propertyName = propertyName

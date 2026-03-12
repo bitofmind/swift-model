@@ -149,6 +149,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     override func willAccessStorage<V>(_ storage: ContextStorage<V>) {
+        // Skip all observation when applying Access closures to snapshot copies inside the
+        // isEqualIncludingIds lock. Keypath creation via _swift_getKeyPath can deadlock
+        // when the Swift runtime lock is held on another thread.
+        guard !threadLocals.isApplyingSnapshot else { return }
+
         // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
         let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: storage.key]
         modelContext.willAccess(readModel, at: untypedPath)?()
@@ -209,6 +214,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     override func willAccessPreference<V>(_ storage: PreferenceStorage<V>) {
+        // Skip all observation when applying Access closures to snapshot copies inside the
+        // isEqualIncludingIds lock. Keypath creation via _swift_getKeyPath can deadlock
+        // when the Swift runtime lock is held on another thread.
+        guard !threadLocals.isApplyingSnapshot else { return }
+
         // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
         let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[preferenceKey: storage.key]
         modelContext.willAccess(readModel, at: untypedPath)?()

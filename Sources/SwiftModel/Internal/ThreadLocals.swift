@@ -19,6 +19,13 @@ final class ThreadLocals: @unchecked Sendable {
     /// Reading `readModel[keyPath: \M[_metadata: storage]]` inside the TestAccess closure
     /// re-enters `willAccessStorage` through the context getter. This flag breaks that cycle.
     var isAccessingMetadataStorage = false
+    /// Set while `TestAccess` is applying `Access.apply` closures to snapshot copies inside
+    /// the `isEqualIncludingIds` lock. Writing through a `_preference` or `_metadata` keypath
+    /// triggers `willAccessPreference`/`willAccessStorage`, which tries to create new keypaths
+    /// via `_swift_getKeyPath` — a Swift-runtime operation that can deadlock when another
+    /// runtime lock is already held. This flag causes those re-entrant `willAccess*` calls
+    /// to return early, since snapshot comparison has no need for observation side effects.
+    var isApplyingSnapshot = false
 
     fileprivate init() {}
 

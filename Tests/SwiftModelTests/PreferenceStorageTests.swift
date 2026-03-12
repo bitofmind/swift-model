@@ -352,4 +352,20 @@ struct PreferenceStorageTests {
         model.worker.status = "running"
         await tester.assert { model.worker.status == "running" }
     }
+
+    // Regression test: asserting on a preference value must not deadlock.
+    // Writing through a preference keypath inside the TestAccess snapshot-comparison
+    // lock re-entered willAccessPreference, which tried to call propertyName(from:path:)
+    // → ModelContainer.visit → deadlock waiting on the already-held lock.
+    // Fixed by suppressing willAccess* calls while applying snapshot access closures.
+    @Test func assertOnPreferenceDoesNotDeadlock() async {
+        let (root, tester) = RootModel().andTester()
+        tester.exhaustivity = .off
+
+        root.branch.node.preference.totalCount = 3
+        await tester.assert { root.branch.node.preference.totalCount == 3 }
+
+        root.branch.node.preference.totalCount = 7
+        await tester.assert { root.branch.node.preference.totalCount == 7 }
+    }
 }
