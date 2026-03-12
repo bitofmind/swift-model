@@ -235,7 +235,7 @@ extension AnyContext {
     subscript<V>(preference storage: PreferenceStorage<V>) -> V {
         get {
             willAccessPreference(storage)
-            return preferenceStorage[storage.key]?.value as? V ?? storage.defaultValue
+            return lock { preferenceStorage[storage.key]?.value as? V ?? storage.defaultValue }
         }
         set {
             let changed = lock {
@@ -261,15 +261,28 @@ extension AnyContext {
     /// Uses `reduceHierarchy(for: [.self, .descendants])` so all descendants are visited.
     /// If `includeDependencies` is true, dependency model contexts are also included.
     func preferenceValue<V>(for storage: PreferenceStorage<V>) -> V {
+        // During snapshot comparison inside TestAccess, avoid walking the live context hierarchy.
+        // The hierarchy walk acquires the context lock, which can deadlock when called from a
+        // concurrent task while the TestAccess NSRecursiveLock is already held on another thread.
+        // Instead, return just this node's local stored contribution — sufficient for comparison.
+        if threadLocals.isApplyingSnapshot {
+            return lock { preferenceStorage[storage.key]?.value as? V ?? storage.defaultValue }
+        }
         let relation: ModelRelation = storage.includeDependencies
             ? [.self, .descendants, .dependencies]
             : [.self, .descendants]
-        return reduceHierarchy(for: relation, transform: \.self, into: storage.defaultValue) { result, ctx in
+        let result = reduceHierarchy(for: relation, transform: \.self, into: storage.defaultValue) { result, ctx in
             ctx.willAccessPreference(storage)
-            if let entry = ctx.preferenceStorage[storage.key], let value = entry.value as? V {
+            let entry = ctx.lock { ctx.preferenceStorage[storage.key] }
+            if let entry, let value = entry.value as? V {
                 storage.reduce(&result, value)
             }
         }
+        // Register the aggregated value with TestAccess after the full traversal is done.
+        // This avoids re-entering preferenceValue inside willAccessPreference callbacks,
+        // which would acquire child locks while the parent lock is held — a deadlock risk.
+        willAccessPreferenceValue(storage, value: result)
+        return result
     }
 
     /// Remove this node's preference contribution, returning it to the `defaultValue` for

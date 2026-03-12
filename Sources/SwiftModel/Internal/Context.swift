@@ -223,9 +223,22 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[preferenceKey: storage.key]
         modelContext.willAccess(readModel, at: untypedPath)?()
 
+        // The typed writable path for TestAccess is now handled by willAccessPreferenceValue,
+        // called after preferenceValue finishes aggregating with the computed value in hand.
+        // Registering it here (during reduceHierarchy traversal) would require reading back
+        // the value via model.context![path], which re-enters preferenceValue under a lock
+        // and can deadlock due to lock-ordering inversion with background tasks.
+    }
+
+    override func willAccessPreferenceValue<V>(_ storage: PreferenceStorage<V>, value: V) {
+        // Skip all observation when applying Access closures to snapshot copies inside the
+        // isEqualIncludingIds lock (same guard as willAccessPreference).
+        guard !threadLocals.isApplyingSnapshot else { return }
+
         // Typed writable path — drives TestAccess snapshot tracking.
-        // Tag the access as `.preference` so TestAccess records it under the correct exhaustivity area.
-        // Use the same re-entry guard as context storage to prevent infinite recursion.
+        // Called after preferenceValue has finished aggregating, with the computed value
+        // already in hand. This avoids re-entering preferenceValue (which acquires child
+        // locks) while the caller's context lock may still be held.
         guard !threadLocals.isAccessingMetadataStorage else { return }
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
         let mc = metadataModelContext()
@@ -233,8 +246,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             mc.willAccess(readModel, at: typedPath)
         }
         if let closure = closureOpt {
+            // Store the pre-computed aggregated value so the TestAccess willAccess closure
+            // can use it instead of re-reading via model.context![path] (which would
+            // re-enter preferenceValue under a lock and deadlock).
             threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
-                closure()
+                threadLocals.withValue(value as Any, at: \.precomputedPreferenceValue) {
+                    closure()
+                }
             }
         }
     }

@@ -26,6 +26,11 @@ final class ThreadLocals: @unchecked Sendable {
     /// runtime lock is already held. This flag causes those re-entrant `willAccess*` calls
     /// to return early, since snapshot comparison has no need for observation side effects.
     var isApplyingSnapshot = false
+    /// When non-nil, the TestAccess `willAccess` closure for a preference keypath should use
+    /// this pre-computed aggregated value instead of re-reading via `model.context![path]`.
+    /// Set by `Context.willAccessPreferenceValue` before invoking the TestAccess closure,
+    /// avoiding re-entry into `preferenceValue` (which would acquire child locks and deadlock).
+    var precomputedPreferenceValue: Any? = nil
 
     fileprivate init() {}
 

@@ -41,6 +41,23 @@ private struct RootModel {
     var branch: BranchModel = BranchModel()
 }
 
+// Models used for concurrent-write preference deadlock regression test.
+
+@Model
+private struct ConcurrentWriterModel {
+    var count: Int = 0
+    func onActivate() {
+        node.forEach(Observed { count }) { count in
+            node.preference.totalCount = count
+        }
+    }
+}
+
+@Model
+private struct ConcurrentWriterHost {
+    var writer: ConcurrentWriterModel = ConcurrentWriterModel()
+}
+
 // Models used for dependency preference exhaustivity tests.
 
 @Model
@@ -367,5 +384,58 @@ struct PreferenceStorageTests {
 
         root.branch.node.preference.totalCount = 7
         await tester.assert { root.branch.node.preference.totalCount == 7 }
+    }
+
+    // Regression test: reading an aggregated preference (which walks the context hierarchy
+    // under a lock) inside the TestAccess isEqualIncludingIds lock must not deadlock.
+    // The hierarchy walk in preferenceValue calls AnyContext.reduce → lock { children.values },
+    // which can contend with the TestAccess NSRecursiveLock held on a concurrent task.
+    // Fixed by short-circuiting preferenceValue to the local stored value when isApplyingSnapshot.
+    @Test func assertOnAggregatedPreferenceDoesNotDeadlock() async {
+        let (root, tester) = RootModel().andTester()
+        tester.exhaustivity = .off
+
+        // Set contributions at multiple levels so preferenceValue must walk descendants.
+        root.branch.node.preference.totalCount = 10
+        root.branch.leaf.node.preference.totalCount = 3
+        // Assert the aggregated value (root sees branch(10) + leaf(3) = 13).
+        await tester.assert { root.node.preference.totalCount == 13 }
+
+        root.branch.leaf.node.preference.totalCount = 5
+        await tester.assert { root.node.preference.totalCount == 15 }
+    }
+
+    // Regression test: a background task concurrently writing a child preference while
+    // the predicate reads the aggregated parent preference must not deadlock.
+    //
+    // The lock-ordering inversion:
+    //   Thread A (predicate): holds parent lock (from Context.subscript.read)
+    //                         → preferenceValue traversal tries to acquire child lock
+    //   Thread B (background): holds child lock (from preference write propagation)
+    //                          → didModifyPreference propagates upward, tries to acquire parent lock
+    //
+    // Fixed by moving TestAccess typed-path registration out of willAccessPreference (called
+    // during traversal under child locks) into willAccessPreferenceValue (called after
+    // the traversal completes with the pre-computed value), so the predicate read never
+    // acquires a model lock while the hierarchy walk holds other locks.
+    @Test func assertOnAggregatedPreferenceWithConcurrentWriteDoesNotDeadlock() async {
+        let (host, tester) = ConcurrentWriterHost().andTester()
+        tester.exhaustivity = .off
+        // Rapidly change count to trigger concurrent background preference writes
+        // while the assert predicate reads the aggregated preference value from the parent.
+        for i in 1...5 {
+            host.writer.count = i
+            await tester.assert { host.node.preference.totalCount == i }
+        }
+    }
+
+    @Test(arguments: 1...100)
+    func assertOnAggregatedPreferenceWithConcurrentWriteDoesNotDeadlockStress(_ run: Int) async {
+        let (host, tester) = ConcurrentWriterHost().andTester()
+        tester.exhaustivity = .off
+        for i in 1...5 {
+            host.writer.count = i
+            await tester.assert { host.node.preference.totalCount == i }
+        }
     }
 }

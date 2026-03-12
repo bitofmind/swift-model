@@ -194,8 +194,19 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             }
         }
 
+        let isPreference = capturedArea.map { $0.contains(.preference) } ?? false
+
         return {
-            let value = frozenCopy(model.context![path])
+            // For preference paths, use the pre-computed aggregated value if available.
+            // willAccessPreferenceValue sets threadLocals.precomputedPreferenceValue before
+            // invoking this closure so we don't re-read via model.context![path] — which
+            // re-enters preferenceValue under a lock and causes lock-ordering deadlocks.
+            let value: Value
+            if isPreference, let precomputed = threadLocals.precomputedPreferenceValue, let typed = precomputed as? Value {
+                value = frozenCopy(typed)
+            } else {
+                value = frozenCopy(model.context![path])
+            }
             for fullPath in fullPaths {
                 assertContext.accesses.append(.init(
                     path: fullPath,

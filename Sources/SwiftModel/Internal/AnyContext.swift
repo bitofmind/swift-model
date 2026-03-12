@@ -164,6 +164,12 @@ class AnyContext: @unchecked Sendable {
     /// Implementations (Context<M>) call `willAccess` for both observation paths.
     func willAccessPreference<V>(_ storage: PreferenceStorage<V>) {}
 
+    /// Called on the root context after `preferenceValue` finishes aggregating, with the
+    /// final computed value. Implementations (Context<M>) register the typed preference
+    /// keypath with TestAccess using the already-computed value, avoiding re-entry into
+    /// `preferenceValue` and the associated lock-ordering hazards.
+    func willAccessPreferenceValue<V>(_ storage: PreferenceStorage<V>, value: V) {}
+
     /// Called after a preference contribution is written or removed from this context.
     /// Implementations (Context<M>) fire notifications and propagate upward through parents.
     func didModifyPreference<V>(_ storage: PreferenceStorage<V>) {}
