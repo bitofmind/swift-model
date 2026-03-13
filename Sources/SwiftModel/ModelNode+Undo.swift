@@ -439,7 +439,7 @@ private func installPropertyUndoUnchecked<M: Model, T>(
     // rejected by the setter ("It is not allowed to add a destructed nor frozen model.").
     let baseline = UnsafeSendableBox(snapshotValue(context.model[keyPath: path], useInitialCopy: useInitialCopy))
 
-    let cancel = context.onModify(for: sendablePath) { hasEnded in
+    let cancel = context.onModify(for: sendablePath) { hasEnded, _ in
         guard !hasEnded else { return nil }
         guard !threadLocals.isRestoringState else { return nil }
 

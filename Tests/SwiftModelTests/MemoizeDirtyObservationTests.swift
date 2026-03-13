@@ -123,7 +123,7 @@ struct MemoizeDirtyObservationTests {
         let observedValues = LockIsolated<[Int]>([])
 
         // Use update() function to continuously observe, which properly handles re-tracking
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: nil,
             useWithObservationTracking: true,
@@ -134,7 +134,7 @@ struct MemoizeDirtyObservationTests {
             observationCount.withValue { $0 += 1 }
             observedValues.withValue { $0.append(value) }
         }
-        
+
         defer { cancellable() }
 
         // Wait for initial observation to complete
@@ -383,7 +383,7 @@ struct MemoizeDirtyObservationTests {
                 guard let context = model.context else { return nil }
                 
                 // Register onModify callback (this is what ViewAccess does for SwiftUI)
-                cancellable = context.onModify(for: path) { [weak self] finished in
+                cancellable = context.onModify(for: path) { [weak self] finished, _ in
                     guard let self else { return {} }
                     if !finished {
                         self.updateCount.withValue { $0 += 1 }

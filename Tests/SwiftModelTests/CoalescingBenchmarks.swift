@@ -13,7 +13,7 @@ struct CoalescingBenchmarks {
         let updateCount = LockIsolated(0)
         let mutationCount = 100
 
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: false,  // Don't count initial
             isSame: { $0 == $1 },
             useWithObservationTracking: false,
@@ -43,7 +43,7 @@ struct CoalescingBenchmarks {
         let updateCount = LockIsolated(0)
         let mutationCount = 100
 
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: false,
             isSame: { $0 == $1 },
             useWithObservationTracking: false,
@@ -77,7 +77,7 @@ struct CoalescingBenchmarks {
         let updateCount = LockIsolated(0)
         let mutationCount = 100
 
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: false,
             isSame: { $0 == $1 },
             useWithObservationTracking: true,
@@ -123,7 +123,7 @@ struct CoalescingBenchmarks {
             let updateCount = LockIsolated(0)
             let totalWorkTime = LockIsolated(0.0)
 
-            let cancellable = update(
+            let (cancellable, _) = update(
                 initial: false,
                 isSame: { $0 == $1 },
                 useWithObservationTracking: false,
@@ -156,7 +156,7 @@ struct CoalescingBenchmarks {
             let updateCount = LockIsolated(0)
             let totalWorkTime = LockIsolated(0.0)
 
-            let cancellable = update(
+            let (cancellable, _) = update(
                 initial: false,
                 isSame: { $0 == $1 },
                 useWithObservationTracking: false,
@@ -194,7 +194,7 @@ struct CoalescingBenchmarks {
             let updateCount = LockIsolated(0)
             let totalWorkTime = LockIsolated(0.0)
 
-            let cancellable = update(
+            let (cancellable, _) = update(
                 initial: false,
                 isSame: { $0 == $1 },
                 useWithObservationTracking: true,
@@ -313,7 +313,7 @@ struct CoalescingBenchmarks {
                 let updateCount = LockIsolated(0)
                 let totalWorkTime = LockIsolated(0.0)
 
-                let cancellable = update(
+                let (cancellable, _) = update(
                     initial: false,
                     isSame: { $0 == $1 },
                     useWithObservationTracking: config.useObservation,
@@ -427,7 +427,7 @@ struct CoalescingBenchmarks {
                 let model = CoalescingTestModel().withAnchor(options: config.useAC ? [.disableObservationRegistrar] : [])
                 let callbackCount = LockIsolated(0)
 
-                let cancellable = update(
+                let (cancellable, _) = update(
                     initial: false,
                     isSame: { $0 == $1 },
                     useWithObservationTracking: !config.useAC,

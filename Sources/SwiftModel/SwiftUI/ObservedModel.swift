@@ -171,7 +171,7 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
         if observer.accesses[path] == nil {
             lock.unlock()
 
-            let access = context.onModify(for: path) { [weak self] finished in
+            let access = context.onModify(for: path) { [weak self] finished, _ in
                 guard let self else {
                     return {}
                 }

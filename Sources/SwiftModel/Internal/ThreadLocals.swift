@@ -36,6 +36,10 @@ final class ThreadLocals: @unchecked Sendable {
     /// `TestAccess` can use it in `debugInfo` messages (e.g. `"context.isDarkMode"`)
     /// instead of falling back to `propertyName(from:path:)` which returns nil for synthetic paths.
     var storageName: String? = nil
+    /// When `true`, the `update(with:index:)` function skips the `isSame` duplicate-suppression
+    /// check and always fires `onUpdate`. Set by `Context.touch()` so that `Observed` callbacks
+    /// re-emit the current value even when it hasn't changed.
+    var forceObservation = false
 
     fileprivate init() {}
 

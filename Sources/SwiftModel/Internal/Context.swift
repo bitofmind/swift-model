@@ -6,7 +6,7 @@ import CustomDump
 
 final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
-    private(set) var modifyCallbacks: [PartialKeyPath<M>: [Int: (Bool) -> (() -> Void)?]] = [:]
+    private(set) var modifyCallbacks: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] = [:]
     let reference: Reference
     var readModel: M
     var modifyModel: M
@@ -91,7 +91,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
         callbacks.append {
             for cont in modifies {
-                cont(true)?()
+                cont(true, false)?()
             }
         }
 
@@ -138,7 +138,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         didModify()
         let mc = modelContext
         let snap = readModel
-        let modifyCallbacksForPath = modifyCallbacks[path]?.values.compactMap { $0(false) } ?? []
+        let modifyCallbacksForPath = modifyCallbacks[path]?.values.compactMap { $0(false, false) } ?? []
         callbacks.append {
             mc.invokeDidModify(snap, at: path)
             for c in modifyCallbacksForPath { c() }
@@ -337,7 +337,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         return mc
     }
 
-    func onModify<T>(for path: KeyPath<M, T>&Sendable, _ callback: @Sendable @escaping (Bool) -> (() -> Void)?) -> @Sendable () -> Void {
+    func onModify<T>(for path: KeyPath<M, T>&Sendable, _ callback: @Sendable @escaping (_ finished: Bool, _ force: Bool) -> (() -> Void)?) -> @Sendable () -> Void {
         guard !isDestructed else {
             return {}
         }
@@ -498,7 +498,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
             if let callbacks = self.modifyCallbacks[path] {
                 for callback in callbacks.values {
-                    if let postCallback = callback(false) {
+                    if let postCallback = callback(false, false) {
                         postCallbacks.append(postCallback)
                     }
                 }
@@ -506,6 +506,62 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             self.didModify(callbacks: &postCallbacks)
         }
         return postLockCallbacks
+    }
+
+    /// Forces observation notifications for `path` without changing the stored value.
+    ///
+    /// Normally, writing an `Equatable` property with the same value it already holds is a no-op —
+    /// no observers are notified. `touch` bypasses that optimisation: it fires all registered
+    /// callbacks for the backing storage of `path` as if the value had changed, even though the
+    /// value itself is unchanged.
+    ///
+    /// This is useful when external state that a property depends on has changed in a way that is
+    /// invisible to the equality check — for example, a reference-typed backing store that is
+    /// mutated in-place, or a computed property whose result depends on external state.
+    ///
+    /// - Parameter path: The public key path of the property whose observers should be notified.
+    ///   Typically the user-visible property path (e.g. `\.document`), not the backing storage path.
+    /// - Parameter modelContext: The model context used to invoke `@Observable` / TestAccess notifications.
+    func touch<V>(_ path: WritableKeyPath<M, V>&Sendable, modelContext: ModelContext<M>) {
+        // Use a PathCollector as the active access so that reading via the normal _read accessor
+        // triggers willAccess with the @_ModelTracked backing storage path(s).
+        // This avoids any frozen-copy issues that arise when writing through a computed setter.
+        let collector = PathCollector<M>()
+        usingActiveAccess(collector) {
+            _ = readModel[keyPath: path]
+        }
+        let backingPaths = collector.paths
+
+        lock {
+            guard !unprotectedIsDestructed else { return }
+            self.didModify()
+        }
+        // Notify @Observable / TestAccess for each discovered backing path using the
+        // type-erased invokers collected by PathCollector.
+        let model = lock(readModel)
+        for invoker in collector.invokers {
+            invoker(modelContext, model)
+        }
+        // Fire AccessCollector onModify callbacks keyed on the backing paths.
+        let postLockCallbacks: [() -> Void]? = lock {
+            var callbacks: [() -> Void] = []
+            for backingPath in backingPaths {
+                onPostTransaction(callbacks: &callbacks) { postCallbacks in
+                    if let cbs = self.modifyCallbacks[backingPath] {
+                        for callback in cbs.values {
+                            if let c = callback(false, true) { postCallbacks.append(c) }
+                        }
+                    }
+                    self.didModify(callbacks: &postCallbacks)
+                }
+            }
+            return callbacks.isEmpty ? nil : callbacks
+        }
+        // Set forceObservation so that Observed callbacks re-emit the current value
+        // even when it hasn't changed (bypassing the isSame duplicate-suppression check).
+        threadLocals.withValue(true, at: \.forceObservation) {
+            runPostLockCallbacks(postLockCallbacks)
+        }
     }
 
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
@@ -657,6 +713,36 @@ func _testing_keepLastSeenAround<T>(_ operation: () throws -> T) rethrows -> T {
 }
 
 let lastSeenTimeToLive: TimeInterval = 2
+
+/// A lightweight `ModelAccess` subclass used by `Context.touch` to discover the backing storage
+/// path(s) that correspond to a user-visible property path.
+///
+/// When `readModel[keyPath: publicPath]` is called inside `usingActiveAccess(collector)`, the
+/// `@_ModelTracked`-generated `_read` accessor invokes `willAccess(model, at: backingPath)` with
+/// the *backing* key path (e.g. `\._count`).  `PathCollector` records both the backing path and a
+/// type-erased closure that can later call `ModelContext.invokeDidModify` with the correct generic
+/// type, bypassing the need to open an existential.
+private final class PathCollector<M: Model>: ModelAccess {
+    /// Backing storage paths discovered via `willAccess`.
+    var paths: [PartialKeyPath<M>] = []
+    /// Type-erased closures; each calls `ModelContext.invokeDidModify(_:at:)` for one path.
+    var invokers: [(ModelContext<M>, M) -> Void] = []
+
+    init() { super.init(useWeakReference: false) }
+
+    override func willAccess<N: Model, T>(_ model: N, at path: KeyPath<N, T> & Sendable) -> (() -> Void)? {
+        // We only care about accesses on M itself.
+        guard let typedPath = path as? KeyPath<M, T> else { return nil }
+        paths.append(typedPath)
+        // Capture a type-erased invoker. The cast to `& Sendable` is safe here: the call-site
+        // guarantees `path` is Sendable (it arrives as `KeyPath<N, T> & Sendable`), and after
+        // the `as? KeyPath<M, T>` downcast we still have the same Sendable key path object.
+        // We use `unsafeBitCast` to reattach the Sendable marker without a dynamic check.
+        let sendablePath = unsafeBitCast(typedPath, to: (KeyPath<M, T> & Sendable).self)
+        invokers.append { mc, m in mc.invokeDidModify(m, at: sendablePath) }
+        return nil
+    }
+}
 
 /// Runs `callbacks` and then drains any `threadLocals.postLockFlushes` registered during the run.
 ///

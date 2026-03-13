@@ -367,6 +367,30 @@ public extension ModelNode {
         }
     }
 
+    /// Forces observation notifications for `path` without modifying the stored value.
+    ///
+    /// Normally, writing an `Equatable` property with the same value it already holds is a no-op —
+    /// no observers are notified. This is an intentional optimisation that avoids redundant work.
+    ///
+    /// `touch` bypasses that optimisation. It fires all registered observation callbacks for the
+    /// given property as if the value had changed, even though it hasn't. Use it when external
+    /// state that a property *depends on* has changed invisibly — for example:
+    ///
+    /// - A reference-typed backing store was mutated in-place
+    /// - A computed property's result depends on external state invisible to `==`
+    ///
+    /// ```swift
+    /// // External backing object mutated directly — equality check would suppress notification
+    /// externalDocument.unsafeReplace(newContent)
+    /// node.touch(\.document)   // Force dependents of `document` to re-read
+    /// ```
+    ///
+    /// - Parameter path: The key path of the property whose observers should be notified.
+    func touch<V>(_ path: WritableKeyPath<M, V> & Sendable) {
+        guard let context = _context else { return }
+        context.touch(path, modelContext: _$modelContext)
+    }
+
     private var isDestructed: Bool {
         if case let .reference(reference) = _$modelContext.source, reference.isDestructed, reference.context == nil {
             true

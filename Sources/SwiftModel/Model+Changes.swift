@@ -384,7 +384,7 @@ private extension Observed {
                 useWithObservationTracking = false
             }
 
-            let cancellable = update(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: coalesceUpdates) {
+            let (cancellable, _) = update(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: coalesceUpdates) {
                 access()
             } onUpdate: { value in
                 cont.yield(value)
@@ -513,11 +513,11 @@ private extension ModelNode {
         return context.lock {
 
             // First access: set up tracking with didModify callback
-            let cancellable = context.transaction {
+            let (cancellable, _) = context.transaction {
                 // Enable coalescing by default to batch multiple dependency changes during transactions
                 // Can be disabled via ModelOption.disableMemoizeCoalescing for testing
                 let useCoalescing = !context.options.contains(.disableMemoizeCoalescing)
-                
+
                 // Determine which observation path to use:
                 // - withObservationTracking requires coalescing (async execution via backgroundCall)
                 // - When coalescing is disabled, must use AccessCollector for synchronous observation
@@ -577,7 +577,7 @@ private extension ModelNode {
                                     context.onPostTransaction(callbacks: &postCallbacks) { callbacks in
                                         if let modifyCallbacks = context.modifyCallbacks[path] {
                                             for callback in modifyCallbacks.values {
-                                                if let postCallback = callback(false) {
+                                                if let postCallback = callback(false, false) {
                                                     callbacks.append(postCallback)
                                                 }
                                             }
@@ -609,7 +609,7 @@ private extension ModelNode {
                             context.onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
                                 if let modifyCallbacks = context.modifyCallbacks[path] {
                                     for callback in modifyCallbacks.values {
-                                        if let postCallback = callback(false) {
+                                        if let postCallback = callback(false, false) {
                                             postCallbacks.append(postCallback)
                                         }
                                     }
@@ -808,6 +808,10 @@ extension Model {
 /// // Later: cancel observation
 /// cancel()
 /// ```
+/// Returns a `(cancel, forceNextUpdate)` pair.
+/// - `cancel`: Call to unsubscribe from observations.
+/// - `forceNextUpdate`: Call to set the `forceNext` flag so the next `update(with:)` call
+///   bypasses `isSame`, even when the value hasn't changed. Used by `node.touch()`.
 internal func update<T: Sendable>(
     initial: Bool,
     isSame: (@Sendable (T, T) -> Bool)?,
@@ -816,7 +820,7 @@ internal func update<T: Sendable>(
     didModify: (@Sendable () -> Void)? = nil,
     access: @Sendable @escaping () -> T,
     onUpdate: @Sendable @escaping (T) -> Void
-) -> @Sendable () -> Void {
+) -> (cancel: @Sendable () -> Void, forceNextUpdate: @Sendable () -> Void) {
     // Versioning for stale update detection
     // `index` is incremented before each recomputation to invalidate in-flight updates
     let last = LockIsolated((value: T?.none, index: 0))
@@ -824,6 +828,11 @@ internal func update<T: Sendable>(
     // updateLock ensures only one update processes at a time, preventing race conditions
     // when multiple threads trigger updates simultaneously
     let updateLock = NSRecursiveLock()
+
+    // Shared force flag for this observer. Set to true by node.touch() (via either the
+    // threadLocals.forceObservation thread-local for the synchronous AccessCollector path,
+    // or the forceNext flag for the asynchronous withObservationTracking path).
+    let forceNext = LockIsolated(false)
     
     /// Core update logic that:
     /// 1. Checks if this update is stale (index mismatch) - prevents out-of-order updates
@@ -842,8 +851,15 @@ internal func update<T: Sendable>(
                     return false
                 }
 
-                // isSame check: skip if value hasn't actually changed
-                if let isSame {
+                // isSame check: skip if value hasn't actually changed.
+                // Bypass when:
+                // - threadLocals.forceObservation is set (synchronous AccessCollector path)
+                // - forceNext is set (asynchronous withObservationTracking path, set by touch)
+                let forced = threadLocals.forceObservation || forceNext.withValue { force in
+                    defer { force = false }
+                    return force
+                }
+                if let isSame, !forced {
                     if let last = last.value, isSame(last, value) {
                         return false  // Value unchanged, skip onUpdate
                     } else {
@@ -878,6 +894,9 @@ internal func update<T: Sendable>(
         let hasBeenCancelled = LockIsolated(false)
         let hasPendingUpdate = LockIsolated(false)
 
+        // Box for performUpdate so observe()'s onChange closure can reference it
+        let performUpdateBox = LockIsolated<(@Sendable () -> Void)?>(nil)
+
         @Sendable func observe() -> T {
             withObservationTracking {
                 access()
@@ -896,34 +915,9 @@ internal func update<T: Sendable>(
                         return true
                     }
                 }
-                
-                guard shouldSchedule else { return }
 
-                let performUpdate: @Sendable () -> Void = {
-                    let (value, index) = last.withValue { last in
-                        last.index = last.index &+ 1
+                guard shouldSchedule, let performUpdate = performUpdateBox.value else { return }
 
-                        // Clear hasPendingUpdate BEFORE observe() re-registers tracking.
-                        // Holding last's lock here ensures only one performUpdate runs at
-                        // a time, so clearing here is safe. Any mutation that fires onChange
-                        // during observe() will see hasPendingUpdate=false and schedule a new
-                        // performUpdate, which will block on last's lock until we finish.
-                        // Without this, the following race loses updates:
-                        //   1. observe() re-registers tracking
-                        //   2. Mutation fires the newly registered onChange
-                        //   3. onChange sees hasPendingUpdate=true (stale) → skips scheduling
-                        //   4. This performUpdate clears hasPendingUpdate → no new performUpdate
-                        //   5. Observer never gets the update
-                        hasPendingUpdate.setValue(false)
-
-                        return (observe(), last.index)
-                    }
-
-                    // update() compares value to last.value using isSame, which catches
-                    // any changes that happened during the gap between observations
-                    update(with: value, index: index)
-                }
-                
                 // Check if we're inside a transaction
                 if threadLocals.postTransactions != nil {
                     // Inside transaction: defer callback until transaction completes
@@ -939,13 +933,57 @@ internal func update<T: Sendable>(
             }
         }
 
+        let performUpdate: @Sendable () -> Void = {
+            let (value, index) = last.withValue { last in
+                last.index = last.index &+ 1
+
+                // Clear hasPendingUpdate BEFORE observe() re-registers tracking.
+                // Holding last's lock here ensures only one performUpdate runs at
+                // a time, so clearing here is safe. Any mutation that fires onChange
+                // during observe() will see hasPendingUpdate=false and schedule a new
+                // performUpdate, which will block on last's lock until we finish.
+                // Without this, the following race loses updates:
+                //   1. observe() re-registers tracking
+                //   2. Mutation fires the newly registered onChange
+                //   3. onChange sees hasPendingUpdate=true (stale) → skips scheduling
+                //   4. This performUpdate clears hasPendingUpdate → no new performUpdate
+                //   5. Observer never gets the update
+                hasPendingUpdate.setValue(false)
+
+                return (observe(), last.index)
+            }
+
+            // update() compares value to last.value using isSame, which catches
+            // any changes that happened during the gap between observations
+            update(with: value, index: index)
+        }
+        performUpdateBox.setValue(performUpdate)
+
         updateInitial(with: observe())
 
-        return {
-            hasBeenCancelled.withValue {
-                $0 = true
+        // node.touch() support for the withObservationTracking path:
+        // withObservationTracking's onChange fires only on actual value changes and is
+        // not triggered by touch(). We register secondary onModify callbacks (via a
+        // ForceObserver) that react only to force=true, set forceNext, and schedule
+        // performUpdate so the observer fires even without a value change.
+        // Run AFTER updateInitial so that any cache-based access() is warm and
+        // does not trigger extra recomputation in memoized properties.
+        let forceObserver = ForceObserver(onForce: { [weak performUpdateBox] in
+            forceNext.setValue(true)
+            guard let performUpdate = performUpdateBox?.value else { return }
+            backgroundCall(performUpdate)
+        })
+        usingActiveAccess(forceObserver) { _ = access() }
+
+        return (
+            cancel: {
+                hasBeenCancelled.withValue { $0 = true }
+                forceObserver.cancel()
+            },
+            forceNextUpdate: {
+                forceNext.setValue(true)
             }
-        }
+        )
     } else {
         // AccessCollector path (default, works on all OS versions and threads)
         let hasPendingUpdate = LockIsolated(false)
@@ -1015,9 +1053,14 @@ internal func update<T: Sendable>(
 
         updateInitial(with: value)
 
-        return {
-            collector.reset { }
-        }
+        return (
+            cancel: {
+                collector.reset { }
+            },
+            forceNextUpdate: {
+                forceNext.setValue(true)
+            }
+        )
     }
 }
 
@@ -1080,7 +1123,7 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
 
             if !isActive {
                 // Make sure to call this outside active lock to avoid dead-locks with context lock.
-                let cancellation = context.onModify(for: path) { finished in
+                let cancellation = context.onModify(for: path) { finished, _ in
                     if finished { return {} }
                     return self.onModify(self)
                 }
@@ -1091,6 +1134,44 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
             }
         }
 
+        return nil
+    }
+}
+
+/// A `ModelAccess` subclass used by the `withObservationTracking` path to support
+/// `node.touch()`. Registers `onModify` callbacks for each accessed path, but only
+/// invokes `onForce` when the callback is called with `force=true`. Normal writes
+/// (force=false) are ignored — they are already handled by `withObservationTracking`.
+private final class ForceObserver: ModelAccess, @unchecked Sendable {
+    let onForce: @Sendable () -> Void
+    let cancels = LockIsolated<[@Sendable () -> Void]>([])
+
+    init(onForce: @Sendable @escaping () -> Void) {
+        self.onForce = onForce
+        super.init(useWeakReference: false)
+    }
+
+    deinit { cancel() }
+
+    func cancel() {
+        let cs = cancels.withValue { cs in
+            defer { cs = [] }
+            return cs
+        }
+        for c in cs { c() }
+    }
+
+    override var shouldPropagateToChildren: Bool { false }
+
+    override func willAccess<M: Model, T>(_ model: M, at path: KeyPath<M, T> & Sendable) -> (() -> Void)? {
+        guard let context = model.context else { return nil }
+        let cancellation = context.onModify(for: path) { [weak self] finished, force in
+            if finished { return {} }
+            guard force, let self else { return nil }
+            self.onForce()
+            return nil
+        }
+        cancels.withValue { $0.append(cancellation) }
         return nil
     }
 }

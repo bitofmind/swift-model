@@ -534,6 +534,27 @@ for await count in countStream {
 }
 ```
 
+#### Silent writes for unchanged values
+
+For `Equatable` properties, writing the same value that is already stored is a no-op: no observers are notified and the property value is unchanged. This is an intentional optimisation — it prevents cascading re-renders and avoids unnecessary work when a value is conditionally set to what it already holds.
+
+```swift
+model.count = 5  // count is already 5 — observers are not notified
+model.count = 7  // count changed — observers are notified
+```
+
+#### Forcing observation with `node.touch(\.property)`
+
+Sometimes external state that a property *depends on* changes in a way that is invisible to the equality check — for example, a reference-typed backing store that is mutated in-place. In those cases, call `node.touch(\.property)` to notify all registered observers of that property as if its value had changed, without actually modifying it:
+
+```swift
+// Mutate external backing store directly — equality check would suppress notification
+externalDocument.unsafeReplace(newContent)
+node.touch(\.document)   // Force dependents of `document` to re-read
+```
+
+`node.touch(\.property)` fires the observation callbacks for the given property and bypasses the `Equatable` deduplication check, so `Observed` streams and SwiftUI views that depend on that property will re-evaluate even if the observed value compares equal to its previous result.
+
 ### Memoized Computed Properties
 
 SwiftModel provides `node.memoize()` for creating cached computed properties that automatically invalidate and recompute when their dependencies change. This is particularly useful for expensive computations.
@@ -1193,9 +1214,14 @@ By default the tester enforces exhaustivity across four categories — any unass
 - **`.tasks`** — all async tasks must complete or be cancelled before the tester deallocates
 - **`.probes`** — every installed `TestProbe` invocation must be consumed by `wasCalled`
 
-To focus a test on only some categories, assign a subset:
+To focus a test on only some categories, pass `exhaustivity` to `andTester` or assign it afterwards:
 
 ```swift
+// Set at creation time
+let (model, tester) = MyModel().andTester(exhaustivity: .off)
+let (model, tester) = MyModel().andTester(exhaustivity: [.state, .events])
+
+// Or assign after creation
 tester.exhaustivity = [.state, .events]  // ignore tasks and probes
 tester.exhaustivity = .off               // skip all exhaustion checks
 ```
