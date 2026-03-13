@@ -143,8 +143,7 @@ struct UpdateStreamTests {
     }
 
     @Test func testRace() async throws {
-        let (model, tester) = RaceModel().andTester()
-        tester.exhaustivity = .full.subtracting(.tasks)
+        let (model, tester) = RaceModel().andTester(exhaustivity: .full.subtracting(.tasks))
 
         Task {
             model.count = 7
@@ -159,8 +158,7 @@ struct UpdateStreamTests {
     }
 
     @Test func testRaceVariant() async throws {
-        let (model, tester) = RaceModel().andTester()
-        tester.exhaustivity = .full.subtracting(.tasks)
+        let (model, tester) = RaceModel().andTester(exhaustivity: .full.subtracting(.tasks))
 
         Task {
             model.count = 7
@@ -278,8 +276,7 @@ struct UpdateStreamTests {
     }
 
     @Test func testComputed() async throws {
-        let (model, tester) = ComputedModel().andTester()
-        tester.exhaustivity = .full.subtracting(.tasks)
+        let (model, tester) = ComputedModel().andTester(exhaustivity: .full.subtracting(.tasks))
 
         model.count1 = 7
         model.count2 = 4
@@ -293,8 +290,7 @@ struct UpdateStreamTests {
     }
 
     @Test func testNestedComputed() async throws {
-        let (model, tester) = NestedComputedModel().andTester()
-        tester.exhaustivity = .off
+        let (model, tester) = NestedComputedModel().andTester(exhaustivity: .off)
 
         model.computed = ComputedModel(count1: 4, count2: 8)
         model.computed?.count1 = 5
@@ -309,8 +305,7 @@ struct UpdateStreamTests {
     }
 
     @Test func testMemoize() async throws {
-        let (model, tester) = ComputedModel().andTester(options: [.disableMemoizeCoalescing])
-        tester.exhaustivity = .full.subtracting(.tasks)
+        let (model, tester) = ComputedModel().andTester(options: [.disableMemoizeCoalescing], exhaustivity: .full.subtracting(.tasks))
 
         #expect(model.memoizeComputed == 3)
         #expect(model.memoizeSquared == 1)

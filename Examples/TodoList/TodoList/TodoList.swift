@@ -1,6 +1,17 @@
 import SwiftModel
 import SwiftUI
 
+// MARK: - Preference Keys
+
+extension PreferenceKeys {
+    /// Each TodoItem contributes 1 when done, 0 when not.
+    /// The root reads the aggregate to show "X of Y completed" without
+    /// iterating the items array or holding a reference to each item.
+    var completedCount: PreferenceStorage<Int> {
+        .init(defaultValue: 0) { $0 += $1 }
+    }
+}
+
 // MARK: - Model
 
 /// A single to-do item.
@@ -11,6 +22,11 @@ import SwiftUI
     func onActivate() {
         // Track title and isDone for undo so renaming and toggling are undoable.
         node.trackUndo(\.title, \.isDone)
+        // Report completion status upward as a preference contribution.
+        // The root aggregates these without iterating the array directly.
+        node.forEach(Observed { isDone }) { done in
+            node.preference.completedCount = done ? 1 : 0
+        }
     }
 
     func toggleTapped() {
@@ -31,9 +47,16 @@ import SwiftUI
 /// A ``ModelUndoStack`` is injected as the ``ModelUndoSystem`` backend at anchor
 /// time, making ``ModelUndoSystem/canUndo`` and ``ModelUndoSystem/canRedo``
 /// observable model properties.
+///
+/// Also demonstrates preferences: each ``TodoItem`` reports its completion
+/// status upward via ``PreferenceKeys/completedCount``; the root reads the
+/// aggregate here without iterating `items` directly.
 @Model struct TodoListModel: Sendable {
     var items: [TodoItem] = []
     var newItemTitle: String = ""
+
+    /// Aggregate completion count reported upward by each TodoItem via preference.
+    var completedCount: Int { node.preference.completedCount }
 
     func onActivate() {
         // Only track `items` for undo — typing in the new-item field is ephemeral
@@ -73,6 +96,7 @@ struct TodoListView: View {
             .onMove { model.moveItems(from: $0, to: $1) }
         }
         .navigationTitle("To-Do List")
+        .navigationSubtitle(model.items.isEmpty ? "" : "\(model.completedCount) of \(model.items.count) completed")
         .toolbar {
 #if os(iOS)
             ToolbarItem(placement: .primaryAction) {

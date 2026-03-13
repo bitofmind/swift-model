@@ -229,6 +229,49 @@ struct BatchedCalls: @unchecked Sendable {
         }
     }
 
+    /// Suspends until all items currently in the queue have been processed, or until
+    /// the deadline (uptime nanoseconds) is reached — whichever comes first.
+    ///
+    /// Unlike `waitUntilIdle()`, this does NOT wait for the queue to fully drain —
+    /// it only waits for items that were enqueued BEFORE this call to complete.
+    /// This is safe to use under heavy concurrent load where other tasks continuously
+    /// add new work (causing `waitUntilIdle()` to hang indefinitely).
+    ///
+    /// Implemented by enqueuing a sentinel that resumes the continuation. Because
+    /// the queue is FIFO, the sentinel runs only after all previously-enqueued items.
+    /// Returns immediately if the queue is already idle.
+    func waitForCurrentItems(deadline: UInt64 = .max) async {
+        await withCheckedContinuation { cont in
+            let shouldResume = state.withValue { s -> Bool in
+                guard s != nil else { return true }
+                let resumed = LockIsolated(false)
+                s!.calls.append {
+                    resumed.withValue { r in
+                        guard !r else { return }
+                        r = true
+                        cont.resume()
+                    }
+                }
+                if deadline < .max {
+                    Task {
+                        // Sleep until deadline then resume if sentinel hasn't fired yet.
+                        let now = DispatchTime.now().uptimeNanoseconds
+                        if deadline > now {
+                            try? await Task.sleep(nanoseconds: deadline - now)
+                        }
+                        resumed.withValue { r in
+                            guard !r else { return }
+                            r = true
+                            cont.resume()
+                        }
+                    }
+                }
+                return false
+            }
+            if shouldResume { cont.resume() }
+        }
+    }
+
     // MARK: Enqueue
 
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {

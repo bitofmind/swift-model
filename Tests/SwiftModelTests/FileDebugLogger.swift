@@ -35,6 +35,11 @@ enum FileDebugLogger {
         return file
     }
     
+    /// Public interface to append a message to the current log file
+    static func log(_ message: String) {
+        append(message)
+    }
+
     /// Append a message to the current log file
     private static func append(_ message: String) {
         lock.lock()

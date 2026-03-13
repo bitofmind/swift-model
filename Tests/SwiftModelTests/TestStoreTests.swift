@@ -42,6 +42,20 @@ struct TestStoreTests {
         }
     }
 
+    // Regression test: asserting on a collection item then removing that item must not
+    // crash with a force-unwrap in the ModelContainer key path getter.
+    @Test func testAssertAfterRemovingCollectionItem() async {
+        let (parent, tester) = CollectionParent(items: [
+            CollectionItem(value: 1),
+            CollectionItem(value: 2),
+        ]).andTester(exhaustivity: .off)
+
+        await tester.assert { parent.items.count == 2 && parent.items[0].value == 1 }
+
+        parent.items.removeFirst()
+        await tester.assert { parent.items.count == 1 && parent.items[0].value == 2 }
+    }
+
     @Test func testChildOptionalLeaf() async throws {
         try await _testing_keepLastSeenAround {
             let (child, tester) = Child(leaf: Leaf(count: 5)).andTester()
@@ -69,6 +83,16 @@ struct TestStoreTests {
 @Model
 private struct Child {
     var leaf: Leaf?
+}
+
+@Model
+private struct CollectionItem {
+    var value: Int
+}
+
+@Model
+private struct CollectionParent {
+    var items: [CollectionItem] = []
 }
 
 struct ClosureTest {

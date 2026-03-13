@@ -8,8 +8,7 @@ struct DiagnosticMemoizeTest {
 
     /// Test WITH sleep: Wait for onChange before accessing memoized value
     @Test func testWithSleepBeforeAccess() async throws {
-        let (model, tester) = BasicMemoizeModel().andTester()
-        tester.exhaustivity = .off
+        let (model, tester) = BasicMemoizeModel().andTester(exhaustivity: .off)
 
         _ = model.doubled
         await tester.assert { model.accessCount == 1 }
@@ -27,8 +26,7 @@ struct DiagnosticMemoizeTest {
     /// With dual registrar implementation, background registrar fires synchronously,
     /// so we get fresh values immediately (no race condition).
     @Test func testWithoutSleep() async throws {
-        let (model, tester) = BasicMemoizeModel().andTester(options: [.disableMemoizeCoalescing])
-        tester.exhaustivity = .off
+        let (model, tester) = BasicMemoizeModel().andTester(options: [.disableMemoizeCoalescing], exhaustivity: .off)
 
         _ = model.doubled
         await tester.assert { model.accessCount == 1 }
@@ -42,8 +40,7 @@ struct DiagnosticMemoizeTest {
 
     /// Test using ModelTester.assert polling
     @Test func testWithTesterAssertPolling() async throws {
-        let (model, tester) = BasicMemoizeModel().andTester()
-        tester.exhaustivity = .off
+        let (model, tester) = BasicMemoizeModel().andTester(exhaustivity: .off)
 
         _ = model.doubled
         await tester.assert { model.accessCount == 1 }

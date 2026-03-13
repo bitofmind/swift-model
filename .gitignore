@@ -1,4 +1,5 @@
-.swiftpm
+.swiftpm/xcode
+.swiftpm/configuration
 .DS_Store
 Package.resolved
 xcuserdata/

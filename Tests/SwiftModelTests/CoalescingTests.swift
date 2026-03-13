@@ -20,7 +20,7 @@ struct CoalescingTests {
         let updateCount = LockIsolated(0)
         
         // Set up observer WITHOUT coalescing (default behavior)
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: false,  // Use AccessCollector
@@ -54,7 +54,7 @@ struct CoalescingTests {
         let lastValue = LockIsolated(0)
         
         // Set up observer WITH coalescing
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: false,  // Use AccessCollector
@@ -92,7 +92,7 @@ struct CoalescingTests {
         let model = TestModel().withAnchor()
         let updateCount = LockIsolated(0)
         
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: false,
@@ -144,7 +144,7 @@ struct CoalescingTests {
         let lastValue = LockIsolated(0)
         
         // Set up observer WITH coalescing
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: true,  // Use withObservationTracking
@@ -182,7 +182,7 @@ struct CoalescingTests {
         let model = TestModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: true,
@@ -227,7 +227,7 @@ struct CoalescingTests {
         let model = TestModel().withAnchor(options: [.disableObservationRegistrar])
         let observedValues = LockIsolated<[Int]>([])
         
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: false,
@@ -260,7 +260,7 @@ struct CoalescingTests {
         let model = TestModel().withAnchor(options: [])
         let observedValues = LockIsolated<[Int]>([])
         
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: true,
@@ -296,7 +296,7 @@ struct CoalescingTests {
         let model = TestModel().withAnchor()
         let updateCount = LockIsolated(0)
         
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: false,
             isSame: { $0 == $1 },
             useWithObservationTracking: false,
@@ -329,7 +329,7 @@ struct CoalescingTests {
         let model = TestModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: false,
             isSame: { $0 == $1 },
             useWithObservationTracking: true,
@@ -361,7 +361,7 @@ struct CoalescingTests {
         let model = TestModel().withAnchor()
         let updateCount = LockIsolated(0)
         
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: false,
             isSame: { $0 == $1 },
             useWithObservationTracking: false,
@@ -395,7 +395,7 @@ struct CoalescingTests {
         let modelNoCoalesce = TestModel().withAnchor()
         let countNoCoalesce = LockIsolated(0)
         
-        let cancel1 = update(
+        let (cancel1, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: false,
@@ -408,7 +408,7 @@ struct CoalescingTests {
         let modelCoalesce = TestModel().withAnchor()
         let countCoalesce = LockIsolated(0)
         
-        let cancel2 = update(
+        let (cancel2, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: false,
@@ -453,7 +453,7 @@ struct CoalescingTests {
         let model = NestedModel().withAnchor()
         let updateCount = LockIsolated(0)
         
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: false,
@@ -483,7 +483,7 @@ struct CoalescingTests {
         let model = NestedModel().withAnchor(options: [])
         let updateCount = LockIsolated(0)
         
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: true,
@@ -515,7 +515,7 @@ struct CoalescingTests {
         let updateCount = LockIsolated(0)
         let observedValues = LockIsolated<[Int]>([])
         
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: false,
@@ -588,7 +588,7 @@ struct CoalescingTests {
         let updateCount = LockIsolated(0)
         let observedValues = LockIsolated<[Int]>([])
         
-        let cancellable = update(
+        let (cancellable, _) = update(
             initial: true,
             isSame: { $0 == $1 },
             useWithObservationTracking: true,

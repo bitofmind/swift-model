@@ -34,8 +34,7 @@ struct ModelTesterSendableTests {
 
     /// Verifies that unwrap requires a @Sendable autoclosure.
     @Test @MainActor func testUnwrapAcceptsSendableClosures() async throws {
-        let (model, tester) = CounterModel().andTester()
-        tester.exhaustivity = .off
+        let (model, tester) = CounterModel().andTester(exhaustivity: .off)
         let value = try await tester.unwrap(model.count == 0 ? model.count : nil)
         #expect(value == 0)
     }

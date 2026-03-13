@@ -42,7 +42,9 @@ public extension MutableCollection where Self: ModelContainer, Element: Identifi
                     }
                 }
 
-                return collection.first { $0.id == id }!
+                // Fall back to a linear search; if the item has been removed,
+                // return the captured snapshot value so stale key paths don't crash.
+                return collection.first { $0.id == id } ?? element
             } set: { collection, value in
                 if index >= collection.startIndex && index < collection.endIndex {
                     let element = collection[index]

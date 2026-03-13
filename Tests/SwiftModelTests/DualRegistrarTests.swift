@@ -16,8 +16,7 @@ struct DualRegistrarTests {
 
     /// Test background thread modification → immediate background observer notification
     @Test func testBackgroundModificationImmediateBackgroundObserver() async throws {
-        let (model, tester) = TestModel().andTester(options: [])
-        tester.exhaustivity = .off
+        let (model, tester) = TestModel().andTester(options: [], exhaustivity: .off)
 
         let observerFired = LockIsolated(false)
 
@@ -72,8 +71,7 @@ struct DualRegistrarTests {
 
     /// Test main thread modification → both registrars notified immediately
     @Test func testMainThreadModificationBothRegistrars() async throws {
-        let (model, tester) = TestModel().andTester(options: [])
-        tester.exhaustivity = .off
+        let (model, tester) = TestModel().andTester(options: [], exhaustivity: .off)
 
         let mainObserverFired = LockIsolated(false)
         let backgroundObserverFired = LockIsolated(false)
@@ -151,8 +149,7 @@ struct DualRegistrarTests {
 
     /// Test that memoize works correctly with background observers
     @Test func testMemoizeWithBackgroundObserver() async throws {
-        let (model, tester) = MemoizeModel().andTester(options: [])
-        tester.exhaustivity = .off
+        let (model, tester) = MemoizeModel().andTester(options: [], exhaustivity: .off)
 
         let changeDetected = LockIsolated(false)
 

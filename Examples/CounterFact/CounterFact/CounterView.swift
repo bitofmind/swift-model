@@ -192,7 +192,7 @@ struct FactPromptView: View {
 }
 
 #Preview {
-    NavigationView {
+    NavigationStack {
         AppView(model: AppModel().withAnchor())
     }
 }

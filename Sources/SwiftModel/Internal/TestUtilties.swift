@@ -7,6 +7,17 @@ extension String {
         let indentation = String(repeating: " ", count: indent)
         return indentation + replacingOccurrences(of: "\n", with: "\n\(indentation)")
     }
+
+    /// Strips the getter/setter suffix that `#function` appends in some Swift versions.
+    /// In a computed property `var isDarkMode: ... { ... }`, `#function` captures the
+    /// bare name `"isDarkMode"`, so usually no stripping is needed. This guard handles
+    /// any edge-case where the compiler emits `"isDarkMode.getter"`.
+    var sanitizedPropertyName: String {
+        if let dot = firstIndex(of: ".") {
+            return String(self[..<dot])
+        }
+        return self
+    }
 }
 
 func diffMessage<T>(expected: T, actual: T, title: @autoclosure () -> String) -> String? {

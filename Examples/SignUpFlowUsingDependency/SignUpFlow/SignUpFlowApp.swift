@@ -7,9 +7,7 @@ struct CounterFactApp: App {
 
     var body: some Scene {
         WindowGroup {
-            NavigationView {
-                SignUpFlow(model: model)
-            }
+            SignUpFlow(model: model)
         }
     }
 }
