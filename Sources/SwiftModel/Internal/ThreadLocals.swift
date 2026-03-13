@@ -31,6 +31,11 @@ final class ThreadLocals: @unchecked Sendable {
     /// Set by `Context.willAccessPreferenceValue` before invoking the TestAccess closure,
     /// avoiding re-entry into `preferenceValue` (which would acquire child locks and deadlock).
     var precomputedPreferenceValue: Any? = nil
+    /// The human-readable property name of the context or preference storage key currently
+    /// being accessed/modified. Set by `Context<M>` around typed storage path calls so
+    /// `TestAccess` can use it in `debugInfo` messages (e.g. `"context.isDarkMode"`)
+    /// instead of falling back to `propertyName(from:path:)` which returns nil for synthetic paths.
+    var storageName: String? = nil
 
     fileprivate init() {}
 

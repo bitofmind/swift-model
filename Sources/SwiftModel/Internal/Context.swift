@@ -176,7 +176,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
         let mc = metadataModelContext()
         let closureOpt = threadLocals.withValue(.context, at: \.modificationArea) {
-            mc.willAccess(readModel, at: typedPath)
+            threadLocals.withValue(storage.name, at: \.storageName) {
+                mc.willAccess(readModel, at: typedPath)
+            }
         }
         if let closure = closureOpt {
             threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
@@ -204,7 +206,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         if !threadLocals.isAccessingMetadataStorage {
             threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
                 threadLocals.withValue(.context, at: \.modificationArea) {
-                    mc.invokeDidModify(readModel, at: typedPath)
+                    threadLocals.withValue(storage.name, at: \.storageName) {
+                        mc.invokeDidModify(readModel, at: typedPath)
+                    }
                 }
             }
         }
@@ -243,7 +247,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
         let mc = metadataModelContext()
         let closureOpt = threadLocals.withValue(.preference, at: \.modificationArea) {
-            mc.willAccess(readModel, at: typedPath)
+            threadLocals.withValue(storage.name, at: \.storageName) {
+                mc.willAccess(readModel, at: typedPath)
+            }
         }
         if let closure = closureOpt {
             // Store the pre-computed aggregated value so the TestAccess willAccess closure
@@ -269,7 +275,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         if !threadLocals.isAccessingMetadataStorage {
             threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
                 threadLocals.withValue(.preference, at: \.modificationArea) {
-                    mc.invokeDidModify(readModel, at: typedPath)
+                    threadLocals.withValue(storage.name, at: \.storageName) {
+                        mc.invokeDidModify(readModel, at: typedPath)
+                    }
                 }
             }
         }

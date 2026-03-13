@@ -49,6 +49,9 @@ public struct PreferenceStorage<Value: Sendable>: Hashable, Sendable {
     /// The starting value for aggregation (used when no contributions exist).
     public let defaultValue: Value
     let key: AnyHashableSendable
+    /// The property name captured from the `PreferenceKeys` call site via `#function`.
+    /// Used in test exhaustion failure messages to show `preference.totalCount` instead of `UNKNOWN`.
+    let name: String
     /// Combines a new contribution into the running aggregate.
     public let reduce: @Sendable (inout Value, Value) -> Void
     /// When `true`, contributions from dependency model contexts are also included in the aggregate.
@@ -67,6 +70,7 @@ public struct PreferenceStorage<Value: Sendable>: Hashable, Sendable {
     public init(
         defaultValue: Value,
         includeDependencies: Bool = false,
+        function: StaticString = #function,
         fileID: StaticString = #fileID,
         line: UInt = #line,
         column: UInt = #column,
@@ -74,6 +78,7 @@ public struct PreferenceStorage<Value: Sendable>: Hashable, Sendable {
     ) {
         self.defaultValue = defaultValue
         self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
+        self.name = "\(function)".sanitizedPropertyName
         self.reduce = reduce
         self.includeDependencies = includeDependencies
         self.isEqual = nil
@@ -91,10 +96,12 @@ public struct PreferenceStorage<Value: Sendable>: Hashable, Sendable {
         defaultValue: Value,
         key: K,
         includeDependencies: Bool = false,
+        function: StaticString = #function,
         reduce: @Sendable @escaping (inout Value, Value) -> Void
     ) {
         self.defaultValue = defaultValue
         self.key = AnyHashableSendable(key)
+        self.name = "\(function)".sanitizedPropertyName
         self.reduce = reduce
         self.includeDependencies = includeDependencies
         self.isEqual = nil
@@ -116,6 +123,7 @@ extension PreferenceStorage where Value: Equatable {
     public init(
         defaultValue: Value,
         includeDependencies: Bool = false,
+        function: StaticString = #function,
         fileID: StaticString = #fileID,
         line: UInt = #line,
         column: UInt = #column,
@@ -123,6 +131,7 @@ extension PreferenceStorage where Value: Equatable {
     ) {
         self.defaultValue = defaultValue
         self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
+        self.name = "\(function)".sanitizedPropertyName
         self.reduce = reduce
         self.includeDependencies = includeDependencies
         self.isEqual = { $0 == $1 }
@@ -140,10 +149,12 @@ extension PreferenceStorage where Value: Equatable {
         defaultValue: Value,
         key: K,
         includeDependencies: Bool = false,
+        function: StaticString = #function,
         reduce: @Sendable @escaping (inout Value, Value) -> Void
     ) {
         self.defaultValue = defaultValue
         self.key = AnyHashableSendable(key)
+        self.name = "\(function)".sanitizedPropertyName
         self.reduce = reduce
         self.includeDependencies = includeDependencies
         self.isEqual = { $0 == $1 }

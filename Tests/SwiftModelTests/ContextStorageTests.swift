@@ -557,4 +557,33 @@ struct MetadataEnvironmentTests {
         await tester.assert { model.child.service.status == "running" }
     }
 
+    // MARK: - Exhaustion failure message formatting
+
+    // Regression tests: unasserted context storage changes must name the key as
+    // "context.keyName" in the failure message, not "UNKNOWN".
+    // Verifies the #function capture in ContextStorage.init flows all the way to
+    // the "Context not exhausted" failure output.
+
+    @Test func contextExhaustionMessageContainsKeyName() async {
+        let (model, tester) = ChildModel().andTester()
+        tester.exhaustivity = .context
+        model.node.context.localFlag = true
+        await withKnownIssue {
+            await tester.assert { model.name == "child" }
+        } matching: { issue in
+            issue.comments.contains { $0.rawValue.contains("context.localFlag") }
+        }
+    }
+
+    @Test func contextExhaustionMessageOnDependencyModelContainsKeyName() async {
+        let (model, tester) = ConsumerModel().andTester()
+        tester.exhaustivity = .context
+        model.service.node.context.localFlag = true
+        await withKnownIssue {
+            await tester.assert { model.service.status == "idle" }
+        } matching: { issue in
+            issue.comments.contains { $0.rawValue.contains("context.localFlag") }
+        }
+    }
+
 }

@@ -145,9 +145,13 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     override func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
         guard let path = path as? WritableKeyPath<M, Value> else { return nil }
 
-        // Capture the modification area at the point of access (thread-local is set here
-        // but may be cleared by the time the returned closure is invoked).
+        // Capture the modification area and storage name at the point of access (thread-locals
+        // are set here but may be cleared by the time the returned closure is invoked).
         let capturedArea = threadLocals.modificationArea
+        // For context/preference storage paths, storageName carries the property name
+        // (e.g. "isDarkMode") captured via #function in the ContextKeys/PreferenceKeys declaration.
+        // propertyName(from:path:) returns nil for synthetic subscript paths, so we prefer this.
+        let capturedStorageName = threadLocals.storageName
 
         // rootPaths resolves the chain of WritableKeyPaths from Root down to this model.
         // It is nil only if the model has been detached from the hierarchy.
@@ -164,6 +168,16 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         guard let assertContext else { return nil }
 
         let fullPaths = rootPaths.map { $0.appending(path: path) }
+
+        // Build the display name for failure messages: "context.isDarkMode" / "preference.totalCount"
+        // or plain "propertyName" for regular @Model state properties.
+        let resolvedStorageName: String?
+        if let sn = capturedStorageName {
+            let pfx = capturedArea == .preference ? "preference" : capturedArea == .context ? "context" : nil
+            resolvedStorageName = pfx.map { "\($0).\(sn)" } ?? sn
+        } else {
+            resolvedStorageName = nil  // falls back to propertyName(from:path:) below
+        }
 
         // Dependency model context/preference storage: no root-relative path exists (the model
         // lives in dependencyContexts, not children). Return a dummy Access whose additionalCleanup
@@ -186,7 +200,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 assertContext.accesses.append(.init(
                     path: \Root.self,
                     modelName: model.typeDescription,
-                    propertyName: propertyName(from: model, path: path),
+                    propertyName: resolvedStorageName ?? propertyName(from: model, path: path),
                     value: { String(customDumping: capturedValue) },
                     apply: { _ in },
                     additionalCleanup: cleanup
@@ -211,7 +225,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 assertContext.accesses.append(.init(
                     path: fullPath,
                     modelName: model.typeDescription,
-                    propertyName: propertyName(from: model, path: path),
+                    propertyName: resolvedStorageName ?? propertyName(from: model, path: path),
                     value: { String(customDumping: value) }
                 ) {
                     $0[keyPath: fullPath] = value
@@ -242,19 +256,24 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
         let fullPaths = rootPaths.map { $0.appending(path: path) }
         let area = threadLocals.modificationArea ?? .state
+        // For context/preference storage, storageName carries the property name captured via
+        // #function in the ContextKeys/PreferenceKeys declaration (e.g. "isDarkMode").
+        // Fall back to propertyName(from:path:) for regular @Model properties.
+        let storageName = threadLocals.storageName
 
         // Dependency model context/preference storage: no root-relative path exists. Track the
         // update separately so checkExhaustion can report it if not asserted.
         if fullPaths.isEmpty, (area == .context || area == .preference), let modelContext = model.context {
             let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
-            let name = propertyName(from: model, path: path)
+            let name = storageName ?? propertyName(from: model, path: path)
+            let prefix = area == .preference ? "preference" : "context"
             return { [weak self] in
                 guard let self else { return }
                 let value = frozenCopy(modelContext[path])
                 self.lock {
                     let update = ValueUpdate(
                         apply: { _ in },  // dependency storage not in Root snapshot
-                        debugInfo: { "\(String(describing: M.self)).\(name ?? "UNKNOWN") == \(String(customDumping: value))" },
+                        debugInfo: { "\(String(describing: M.self)).\(prefix).\(name ?? "UNKNOWN") == \(String(customDumping: value))" },
                         area: area
                     )
                     if area == .preference {
@@ -266,14 +285,18 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             }
         }
 
-        let name = propertyName(from: model, path: path)
+        let name = storageName ?? propertyName(from: model, path: path)
+        let prefix: String? = area == .preference ? "preference" : area == .context ? "context" : nil
         return {
             let value = frozenCopy(model.context![path])
             self.lock {
                 for fullPath in fullPaths {
                     self.valueUpdates[fullPath] = ValueUpdate(
                         apply: { $0[keyPath: fullPath] = value },
-                        debugInfo: { "\(String(describing: M.self)).\(name ?? "UNKNOWN") == \(String(customDumping: value))" },
+                        debugInfo: {
+                            let prop = prefix.map { "\($0).\(name ?? "UNKNOWN")" } ?? (name ?? "UNKNOWN")
+                            return "\(String(describing: M.self)).\(prop) == \(String(customDumping: value))"
+                        },
                         area: area
                     )
 

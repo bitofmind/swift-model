@@ -492,4 +492,37 @@ struct PreferenceStorageTests {
             }
         }
     }
+
+    // MARK: - Exhaustion failure message formatting
+
+    // Regression tests: unasserted preference storage changes must name the key as
+    // "preference.keyName" in the failure message, not "UNKNOWN".
+    // Verifies the #function capture in PreferenceStorage.init flows all the way to
+    // the "Preference not exhausted" failure output.
+
+    @Test func preferenceExhaustionMessageContainsKeyName() async {
+        let (model, tester) = RootModel().andTester()
+        tester.exhaustivity = .off
+        model.branch.node.preference.totalCount = 5
+        // Assert something unrelated so exhaustion runs with the preference write pending.
+        // Re-enable exhaustion just for this assertion.
+        tester.exhaustivity = .preference
+        await withKnownIssue {
+            await tester.assert { model.branch.count == 0 }
+        } matching: { issue in
+            issue.comments.contains { $0.rawValue.contains("preference.totalCount") }
+        }
+    }
+
+    @Test func preferenceExhaustionMessageOnDependencyModelContainsKeyName() async {
+        let (model, tester) = CoordinatorModel().andTester()
+        tester.exhaustivity = .preference
+        model.worker.node.preference.totalCount = 3
+        // Assert something unrelated so the preference write is unasserted and exhaustion fires.
+        await withKnownIssue {
+            await tester.assert { model.worker.status == "idle" }
+        } matching: { issue in
+            issue.comments.contains { $0.rawValue.contains("preference.totalCount") }
+        }
+    }
 }

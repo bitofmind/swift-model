@@ -62,6 +62,9 @@ public struct ContextStorage<Value: Sendable>: Hashable, Sendable {
     /// The value returned when no storage entry has been set for this key.
     public let defaultValue: Value
     let key: AnyHashableSendable
+    /// The property name captured from the `ContextKeys` call site via `#function`.
+    /// Used in test exhaustion failure messages to show `context.isDarkMode` instead of `UNKNOWN`.
+    let name: String
     /// Controls whether the value propagates down the model hierarchy.
     public let propagation: StoragePropagation
     let onRemoval: (@Sendable (Value) -> Void)?
@@ -84,6 +87,7 @@ public struct ContextStorage<Value: Sendable>: Hashable, Sendable {
     public init(
         defaultValue: Value,
         propagation: StoragePropagation = .local,
+        function: StaticString = #function,
         fileID: StaticString = #fileID,
         line: UInt = #line,
         column: UInt = #column
@@ -91,6 +95,7 @@ public struct ContextStorage<Value: Sendable>: Hashable, Sendable {
         self.defaultValue = defaultValue
         self.propagation = propagation
         self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
+        self.name = "\(function)".sanitizedPropertyName
         self.onRemoval = nil
         self.isSystemStorage = false
         self.isEqual = nil
@@ -108,11 +113,13 @@ public struct ContextStorage<Value: Sendable>: Hashable, Sendable {
     public init<K: Hashable & Sendable>(
         defaultValue: Value,
         key: K,
-        propagation: StoragePropagation = .local
+        propagation: StoragePropagation = .local,
+        function: StaticString = #function
     ) {
         self.defaultValue = defaultValue
         self.propagation = propagation
         self.key = AnyHashableSendable(key)
+        self.name = "\(function)".sanitizedPropertyName
         self.onRemoval = nil
         self.isSystemStorage = false
         self.isEqual = nil
@@ -131,6 +138,7 @@ public struct ContextStorage<Value: Sendable>: Hashable, Sendable {
         self.defaultValue = defaultValue
         self.propagation = propagation
         self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
+        self.name = ""
         self.onRemoval = onRemoval
         self.isSystemStorage = isSystemStorage
         self.isEqual = nil
@@ -147,6 +155,7 @@ public struct ContextStorage<Value: Sendable>: Hashable, Sendable {
         self.defaultValue = defaultValue
         self.propagation = propagation
         self.key = AnyHashableSendable(key)
+        self.name = ""
         self.onRemoval = onRemoval
         self.isSystemStorage = isSystemStorage
         self.isEqual = nil
@@ -166,6 +175,7 @@ extension ContextStorage where Value: Equatable {
     public init(
         defaultValue: Value,
         propagation: StoragePropagation = .local,
+        function: StaticString = #function,
         fileID: StaticString = #fileID,
         line: UInt = #line,
         column: UInt = #column
@@ -173,6 +183,7 @@ extension ContextStorage where Value: Equatable {
         self.defaultValue = defaultValue
         self.propagation = propagation
         self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
+        self.name = "\(function)".sanitizedPropertyName
         self.onRemoval = nil
         self.isSystemStorage = false
         self.isEqual = { $0 == $1 }
@@ -187,11 +198,13 @@ extension ContextStorage where Value: Equatable {
     public init<K: Hashable & Sendable>(
         defaultValue: Value,
         key: K,
-        propagation: StoragePropagation = .local
+        propagation: StoragePropagation = .local,
+        function: StaticString = #function
     ) {
         self.defaultValue = defaultValue
         self.propagation = propagation
         self.key = AnyHashableSendable(key)
+        self.name = "\(function)".sanitizedPropertyName
         self.onRemoval = nil
         self.isSystemStorage = false
         self.isEqual = { $0 == $1 }
@@ -210,6 +223,7 @@ extension ContextStorage where Value: Equatable {
         self.defaultValue = defaultValue
         self.propagation = propagation
         self.key = AnyHashableSendable(FileAndLine(fileID: fileID, filePath: fileID, line: line, column: column))
+        self.name = ""
         self.onRemoval = onRemoval
         self.isSystemStorage = isSystemStorage
         self.isEqual = { $0 == $1 }
@@ -226,6 +240,7 @@ extension ContextStorage where Value: Equatable {
         self.defaultValue = defaultValue
         self.propagation = propagation
         self.key = AnyHashableSendable(key)
+        self.name = ""
         self.onRemoval = onRemoval
         self.isSystemStorage = isSystemStorage
         self.isEqual = { $0 == $1 }
