@@ -2,7 +2,7 @@ import ConcurrencyExtras
 
 // Sentinel thrown by `environmentValue(for:)` to short-circuit ancestor traversal.
 private struct EnvironmentValueFound: Error {
-    let value: Any
+    let value: Any&Sendable
 }
 
 // MARK: - StoragePropagation

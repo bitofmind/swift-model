@@ -29,6 +29,23 @@ import Observation
     }
 }
 
+/// Model with a memoized property depending on two stored properties.
+@Model private struct MemoTouchModel: Equatable {
+    var a: Int = 1
+    var b: Int = 2
+    var notifications: [Int] = []
+
+    var c: Int {
+        node.memoize(for: "c") { a + b }
+    }
+
+    func onActivate() {
+        node.forEach(Observed(initial: false, coalesceUpdates: false) { c }) { c in
+            notifications.append(c)
+        }
+    }
+}
+
 struct TouchTests {
 
     /// Verifies that writing the same Equatable value is silent by default (AccessCollector path).
@@ -100,6 +117,28 @@ struct TouchTests {
                 model.notified == true
                 model.count == 7
             }
+        }
+    }
+
+    /// Verifies that touch on a stored property propagates through a memoized computed property
+    /// to observers of that computed property, even when the memoized value is unchanged.
+    ///
+    /// touch(\.a) signals memoize's update() to bypass isSame on its next run (via forceNext).
+    /// When memoize's onUpdate fires, it runs under threadLocals.forceObservation=true, so
+    /// Observed { c } also bypasses its isSame check and delivers the notification.
+    @Test func testTouchPropagatesThroughMemoize() async {
+        let (model, tester) = MemoTouchModel().andTester(options: [.disableObservationRegistrar], exhaustivity: .off)
+
+        // Warm up the memoize cache — c == a + b == 3
+        await tester.assert { model.c == 3 }
+
+        // touch(\.a) — a hasn't changed (still 1), but observers of c should be notified
+        model.node.touch(\.a)
+
+        await tester.assert {
+            // c is still 3, but the notification fired because force propagates through memoize
+            model.notifications == [3]
+            model.c == 3
         }
     }
 }

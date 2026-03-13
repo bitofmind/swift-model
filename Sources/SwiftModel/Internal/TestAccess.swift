@@ -188,7 +188,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             return { [weak self] in
                 guard let self else { return }
                 let cleanup: () -> Void = { [weak self] in
-                    self?.lock {
+                    _ = self?.lock {
                         if area == .preference {
                             self?.dependencyPreferenceUpdates.removeValue(forKey: key)
                         } else {

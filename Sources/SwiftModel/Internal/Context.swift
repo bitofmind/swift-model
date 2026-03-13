@@ -722,7 +722,7 @@ let lastSeenTimeToLive: TimeInterval = 2
 /// the *backing* key path (e.g. `\._count`).  `PathCollector` records both the backing path and a
 /// type-erased closure that can later call `ModelContext.invokeDidModify` with the correct generic
 /// type, bypassing the need to open an existential.
-private final class PathCollector<M: Model>: ModelAccess {
+private final class PathCollector<M: Model>: ModelAccess, @unchecked Sendable {
     /// Backing storage paths discovered via `willAccess`.
     var paths: [PartialKeyPath<M>] = []
     /// Type-erased closures; each calls `ModelContext.invokeDidModify(_:at:)` for one path.

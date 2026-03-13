@@ -246,11 +246,11 @@ public struct TestPredicate {
     var values: @Sendable () -> (Any, Any)? = { nil }
 }
 
-public func == <T: Equatable>(lhs: @escaping @Sendable @autoclosure () -> T, rhs: @escaping @Sendable @autoclosure () -> T) -> TestPredicate {
+public func == <T: Equatable&Sendable>(lhs: @escaping @Sendable @autoclosure () -> T, rhs: @escaping @Sendable @autoclosure () -> T) -> TestPredicate {
     TestPredicate(predicate: { lhs() == rhs() }, values: { (lhs(), rhs()) })
 }
 
-public func == <T: Equatable>(lhs: @escaping @Sendable @autoclosure () -> T?, rhs: @escaping @Sendable @autoclosure () -> T) -> TestPredicate {
+public func == <T: Equatable&Sendable>(lhs: @escaping @Sendable @autoclosure () -> T?, rhs: @escaping @Sendable @autoclosure () -> T) -> TestPredicate {
     TestPredicate(predicate: { lhs() == rhs() }, values: { (lhs() as Any, rhs() as Any) })
 }
 
