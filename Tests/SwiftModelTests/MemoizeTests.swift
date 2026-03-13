@@ -10,8 +10,7 @@ struct MemoizeTests {
 
     @Test(arguments: UpdatePath.allCases)
     func testBasicMemoization(updatePath: UpdatePath) async throws {
-        let (model, tester) = BasicMemoizeModel().andTester(options: updatePath.options)
-        tester.exhaustivity = .off
+        let (model, tester) = BasicMemoizeModel().andTester(options: updatePath.options, exhaustivity: .off)
 
         // First access should compute
         let first = model.doubled
@@ -70,8 +69,7 @@ struct MemoizeTests {
     }
 
     @Test func testMemoizeWithEquatableSkipsIdenticalValues() async throws {
-        let (model, tester) = EquatableMemoizeModel().andTester()
-        tester.exhaustivity = .off
+        let (model, tester) = EquatableMemoizeModel().andTester(exhaustivity: .off)
 
         // Wait for initial observation
         await tester.assert { model.updates == [0] }
@@ -201,8 +199,7 @@ struct MemoizeTests {
     func testMemoizeWithChangingDependencies(updatePath: UpdatePath) async throws {
         // Only test withObservationTracking - AccessCollector + coalescing has known issues with dynamic dependencies
         // (tested separately in _WithAnchor variant without coalescing)
-        let (model, tester) = DynamicDependencyModel().andTester(options: updatePath.options)
-        tester.exhaustivity = .off
+        let (model, tester) = DynamicDependencyModel().andTester(options: updatePath.options, exhaustivity: .off)
 
         await tester.assert { model.conditional == 10 }  // Uses valueA
 
@@ -350,9 +347,8 @@ struct MemoizeTests {
     func testMemoizeWithBranchingDependencies(updatePath: UpdatePath) async throws {
         // Only test withObservationTracking - AccessCollector + coalescing has known issues with dynamic dependencies
         // (tested separately in _WithAnchor variant without coalescing)
-        let (model, tester) = DynamicDependencyModel().andTester(options: updatePath.options)
-        tester.exhaustivity = .off
-        
+        let (model, tester) = DynamicDependencyModel().andTester(options: updatePath.options, exhaustivity: .off)
+
         // Initial: useA=true, reads valueA (10)
         await tester.assert {
             model.conditional == 10
@@ -402,8 +398,7 @@ struct MemoizeTests {
     // (tested separately in non-parameterized variant with AccessCollector + no coalescing)
     @Test(arguments: [UpdatePath.withObservationTracking])
     func testMemoizeWithBranchingDependencies_WithAnchor(updatePath: UpdatePath) async throws {
-        let (model, tester) = DynamicDependencyModel().andTester(options: updatePath.options)
-        tester.exhaustivity = .off
+        let (model, tester) = DynamicDependencyModel().andTester(options: updatePath.options, exhaustivity: .off)
 
         // Initial: useA=true, reads valueA (10)
         await tester.assert { model.conditional == 10 }
@@ -466,8 +461,7 @@ struct MemoizeTests {
     /// Test nested memoize calls (memoize calling memoize)
     @Test
     func testNestedMemoizeCalls() async throws {
-        let (model, tester) = NestedMemoizeModel().andTester()
-        tester.exhaustivity = .off
+        let (model, tester) = NestedMemoizeModel().andTester(exhaustivity: .off)
 
         // First access to outer should work without crashing
         await tester.assert { model.outer == 10 }   // 0*2 + 10
@@ -543,8 +537,7 @@ struct MemoizeTests {
 
     @Test(arguments: UpdatePath.allCases)
     func testEquatableMemoizeSuppressesObserverNotifications(updatePath: UpdatePath) async throws {
-        let (model, tester) = EquatableSuppressionModel().andTester(options: updatePath.options)
-        tester.exhaustivity = .off
+        let (model, tester) = EquatableSuppressionModel().andTester(options: updatePath.options, exhaustivity: .off)
 
         // Wait for initial observation (product == 0)
         await tester.assert { model.notificationCount.value >= 1 }
@@ -599,8 +592,7 @@ struct MemoizeTests {
 
     @Test(arguments: UpdatePath.allCases)
     func testResetMemoizationThenImmediateReaccess(updatePath: UpdatePath) async throws {
-        let (model, tester) = ResetImmediateModel().andTester(options: updatePath.options)
-        tester.exhaustivity = .off
+        let (model, tester) = ResetImmediateModel().andTester(options: updatePath.options, exhaustivity: .off)
 
         // 1. First read: caches value, computeCount == 1
         await tester.assert { model.computed == 0 }

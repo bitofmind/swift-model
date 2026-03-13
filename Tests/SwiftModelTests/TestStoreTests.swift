@@ -48,8 +48,7 @@ struct TestStoreTests {
         let (parent, tester) = CollectionParent(items: [
             CollectionItem(value: 1),
             CollectionItem(value: 2),
-        ]).andTester()
-        tester.exhaustivity = .off
+        ]).andTester(exhaustivity: .off)
 
         await tester.assert { parent.items.count == 2 && parent.items[0].value == 1 }
 

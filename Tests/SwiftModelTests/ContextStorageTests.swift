@@ -429,8 +429,7 @@ struct MetadataEnvironmentTests {
     }
 
     @Test func testerAssertMetadataExhaustion() async {
-        let (model, tester) = ChildModel().andTester()
-        tester.exhaustivity = .off
+        let (model, tester) = ChildModel().andTester(exhaustivity: .off)
         // Write without asserting — with exhaustion off this should not fail.
         model.node.context.localFlag = true
         await tester.assert { model.node.context.localFlag == true }
@@ -451,8 +450,7 @@ struct MetadataEnvironmentTests {
 
     @Test func metadataExhaustivityIsSeparateFromState() async {
         // With only .state exhaustivity (no .metadata), unasserted metadata writes should NOT fail.
-        let (model, tester) = ChildModel().andTester()
-        tester.exhaustivity = .state
+        let (model, tester) = ChildModel().andTester(exhaustivity: .state)
 
         // Write metadata without asserting it.
         model.node.context.localFlag = true
@@ -465,8 +463,7 @@ struct MetadataEnvironmentTests {
 
     @Test func metadataExhaustivityCatchesUnassertedMetadataWrites() async {
         // With .metadata in exhaustivity, unasserted metadata writes SHOULD be caught.
-        let (model, tester) = ChildModel().andTester()
-        tester.exhaustivity = .context
+        let (model, tester) = ChildModel().andTester(exhaustivity: .context)
 
         model.node.context.localFlag = true
         // Assert something unrelated so the exhaustion check runs with the metadata write pending.
@@ -478,8 +475,7 @@ struct MetadataEnvironmentTests {
 
     @Test func stateExhaustivityDoesNotCoverMetadata() async {
         // With only .metadata exhaustivity (no .state), unasserted state changes should NOT fail.
-        let (model, tester) = ChildModel().andTester()
-        tester.exhaustivity = .context
+        let (model, tester) = ChildModel().andTester(exhaustivity: .context)
 
         // Write a regular property without asserting it.
         model.name = "changed"
@@ -502,8 +498,7 @@ struct MetadataEnvironmentTests {
     @Test func unassertedMetadataOnDependencyModelIsCaught() async {
         // With .metadata exhaustivity, an unasserted metadata write on a dependency model
         // should be reported just like one on a regular child model.
-        let (model, tester) = ConsumerModel().andTester()
-        tester.exhaustivity = .context
+        let (model, tester) = ConsumerModel().andTester(exhaustivity: .context)
         model.service.node.context.localFlag = true
         await withKnownIssue {
             await tester.assert { model.service.status == "idle" }
@@ -513,8 +508,7 @@ struct MetadataEnvironmentTests {
     @Test func metadataOnDependencyModelSeparateFromState() async {
         // With only .state exhaustivity, unasserted metadata on a dependency model
         // should NOT trigger a failure.
-        let (model, tester) = ConsumerModel().andTester()
-        tester.exhaustivity = .state
+        let (model, tester) = ConsumerModel().andTester(exhaustivity: .state)
         model.service.node.context.localFlag = true
         model.service.status = "running"
         await tester.assert { model.service.status == "running" }
@@ -539,8 +533,7 @@ struct MetadataEnvironmentTests {
     @Test func sharedDependencyMetadataCaughtWhenUnasserted() async {
         // With .metadata exhaustivity, an unasserted write via either the parent or the
         // child accessor should be caught — both resolve to the same shared context.
-        let (model, tester) = ParentConsumerModel().andTester()
-        tester.exhaustivity = .context
+        let (model, tester) = ParentConsumerModel().andTester(exhaustivity: .context)
         model.child.service.node.context.localFlag = true
         await withKnownIssue {
             await tester.assert { model.child.service.status == "idle" }
@@ -550,8 +543,7 @@ struct MetadataEnvironmentTests {
     @Test func sharedDependencyMetadataSeparateFromState() async {
         // With only .state exhaustivity, unasserted metadata on a shared dependency
         // should NOT trigger a failure.
-        let (model, tester) = ParentConsumerModel().andTester()
-        tester.exhaustivity = .state
+        let (model, tester) = ParentConsumerModel().andTester(exhaustivity: .state)
         model.child.service.node.context.localFlag = true
         model.child.service.status = "running"
         await tester.assert { model.child.service.status == "running" }
@@ -565,8 +557,7 @@ struct MetadataEnvironmentTests {
     // the "Context not exhausted" failure output.
 
     @Test func contextExhaustionMessageContainsKeyName() async {
-        let (model, tester) = ChildModel().andTester()
-        tester.exhaustivity = .context
+        let (model, tester) = ChildModel().andTester(exhaustivity: .context)
         model.node.context.localFlag = true
         await withKnownIssue {
             await tester.assert { model.name == "child" }
@@ -576,8 +567,7 @@ struct MetadataEnvironmentTests {
     }
 
     @Test func contextExhaustionMessageOnDependencyModelContainsKeyName() async {
-        let (model, tester) = ConsumerModel().andTester()
-        tester.exhaustivity = .context
+        let (model, tester) = ConsumerModel().andTester(exhaustivity: .context)
         model.service.node.context.localFlag = true
         await withKnownIssue {
             await tester.assert { model.service.status == "idle" }

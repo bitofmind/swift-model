@@ -313,8 +313,7 @@ struct PreferenceStorageTests {
 
     @Test func preferenceExhaustivityIsSeparateFromState() async {
         // With only .state exhaustivity (no .preference), unasserted preference writes should NOT fail.
-        let (model, tester) = LeafModel().andTester()
-        tester.exhaustivity = .state
+        let (model, tester) = LeafModel().andTester(exhaustivity: .state)
 
         // Write preference without asserting it.
         model.node.preference.totalCount = 5
@@ -327,8 +326,7 @@ struct PreferenceStorageTests {
 
     @Test func preferenceExhaustivityCatchesUnassertedWrites() async {
         // With .preference in exhaustivity, unasserted preference writes SHOULD be caught.
-        let (model, tester) = LeafModel().andTester()
-        tester.exhaustivity = .preference
+        let (model, tester) = LeafModel().andTester(exhaustivity: .preference)
 
         model.node.preference.totalCount = 5
         // Assert something unrelated — exhaustion should report "Preference not exhausted".
@@ -339,8 +337,7 @@ struct PreferenceStorageTests {
 
     @Test func stateExhaustivityDoesNotCoverPreference() async {
         // With only .preference exhaustivity (no .state), unasserted state changes should NOT fail.
-        let (model, tester) = LeafModel().andTester()
-        tester.exhaustivity = .preference
+        let (model, tester) = LeafModel().andTester(exhaustivity: .preference)
 
         // Write a regular property without asserting it.
         model.label = "changed"
@@ -352,7 +349,6 @@ struct PreferenceStorageTests {
     @Test func fullExhaustivityCatchesPreference() async {
         // .full includes .preference, so an unasserted preference write is caught.
         let (model, tester) = LeafModel().andTester()
-        tester.exhaustivity = .full
 
         model.node.preference.totalCount = 5
         await withKnownIssue {
@@ -369,8 +365,7 @@ struct PreferenceStorageTests {
     }
 
     @Test func unassertedPreferenceOnDependencyModelIsCaught() async {
-        let (model, tester) = CoordinatorModel().andTester()
-        tester.exhaustivity = .preference
+        let (model, tester) = CoordinatorModel().andTester(exhaustivity: .preference)
         model.worker.node.preference.totalCount = 3
         await withKnownIssue {
             await tester.assert { model.worker.status == "idle" }
@@ -378,8 +373,7 @@ struct PreferenceStorageTests {
     }
 
     @Test func preferenceOnDependencyModelSeparateFromState() async {
-        let (model, tester) = CoordinatorModel().andTester()
-        tester.exhaustivity = .state
+        let (model, tester) = CoordinatorModel().andTester(exhaustivity: .state)
         model.worker.node.preference.totalCount = 3
         model.worker.status = "running"
         await tester.assert { model.worker.status == "running" }
@@ -391,8 +385,7 @@ struct PreferenceStorageTests {
     // → ModelContainer.visit → deadlock waiting on the already-held lock.
     // Fixed by suppressing willAccess* calls while applying snapshot access closures.
     @Test func assertOnPreferenceDoesNotDeadlock() async {
-        let (root, tester) = RootModel().andTester()
-        tester.exhaustivity = .off
+        let (root, tester) = RootModel().andTester(exhaustivity: .off)
 
         root.branch.node.preference.totalCount = 3
         await tester.assert { root.branch.node.preference.totalCount == 3 }
@@ -407,8 +400,7 @@ struct PreferenceStorageTests {
     // which can contend with the TestAccess NSRecursiveLock held on a concurrent task.
     // Fixed by short-circuiting preferenceValue to the local stored value when isApplyingSnapshot.
     @Test func assertOnAggregatedPreferenceDoesNotDeadlock() async {
-        let (root, tester) = RootModel().andTester()
-        tester.exhaustivity = .off
+        let (root, tester) = RootModel().andTester(exhaustivity: .off)
 
         // Set contributions at multiple levels so preferenceValue must walk descendants.
         root.branch.node.preference.totalCount = 10
@@ -434,8 +426,7 @@ struct PreferenceStorageTests {
     // the traversal completes with the pre-computed value), so the predicate read never
     // acquires a model lock while the hierarchy walk holds other locks.
     @Test func assertOnAggregatedPreferenceWithConcurrentWriteDoesNotDeadlock() async {
-        let (host, tester) = ConcurrentWriterHost().andTester()
-        tester.exhaustivity = .off
+        let (host, tester) = ConcurrentWriterHost().andTester(exhaustivity: .off)
         // Rapidly change count to trigger concurrent background preference writes
         // while the assert predicate reads the aggregated preference value from the parent.
         for i in 1...5 {
@@ -446,8 +437,7 @@ struct PreferenceStorageTests {
 
     @Test(arguments: 1...100)
     func assertOnAggregatedPreferenceWithConcurrentWriteDoesNotDeadlockStress(_ run: Int) async {
-        let (host, tester) = ConcurrentWriterHost().andTester()
-        tester.exhaustivity = .off
+        let (host, tester) = ConcurrentWriterHost().andTester(exhaustivity: .off)
         for i in 1...5 {
             host.writer.count = i
             await tester.assert { host.node.preference.totalCount == i }
@@ -515,8 +505,7 @@ struct PreferenceStorageTests {
     }
 
     @Test func preferenceExhaustionMessageOnDependencyModelContainsKeyName() async {
-        let (model, tester) = CoordinatorModel().andTester()
-        tester.exhaustivity = .preference
+        let (model, tester) = CoordinatorModel().andTester(exhaustivity: .preference)
         model.worker.node.preference.totalCount = 3
         // Assert something unrelated so the preference write is unasserted and exhaustion fires.
         await withKnownIssue {
