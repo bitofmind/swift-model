@@ -1,5 +1,4 @@
 import Foundation
-import AsyncAlgorithms
 
 public extension ModelNode {
     ///  Register `perform` closure to be called when cancelled.

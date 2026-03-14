@@ -1,4 +1,5 @@
 import Foundation
+import AsyncAlgorithms
 import Dependencies
 
 /// The implementation interface for a model, providing access to async tasks, events,
