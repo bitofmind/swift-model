@@ -156,11 +156,13 @@ import SwiftModel
 }
 ``` 
 
-> Note that your model type is required to be a struct, even though its behavior is more like a reference type such as a class. This is required to unlock the powerful state tracking used in testing and debugging, and to avoid retain cycles that are common with reference types.
+> **`@Model` structs behave like SwiftUI's `@State`** — the struct is a lightweight handle into a reference-counted backing store. Writing `count += 1` doesn't mutate the struct; it writes through a context pointer to the shared store. This is why setters are non-mutating: you can write `model.count = 5` on a `let model`, and why `[weak self]` is both unnecessary and rejected by the compiler.
 
-### No Retain Cycles
+### No Retain Cycles — a structural guarantee
 
-Because models are structs (value types), SwiftModel eliminates the retain-cycle problem that affects class-based architectures. You never need `[weak self]` capture lists — the compiler won't even accept them since you cannot take a weak reference to a struct. More practically, you can freely store callback closures directly as `let` properties and capture `self` in any closure without risk of a memory leak:
+Models are structs, so the **compiler** makes retain cycles impossible: you cannot take a `weak` reference to a struct. `[weak self]` is a compile error, not a discipline. This is categorically stronger than class-based architectures (including TCA's `Store` and plain `@Observable` ViewModels) where avoiding retain cycles requires `[weak self]` discipline in every closure.
+
+In practice you can freely store callbacks as `let` properties and capture `self` without risk:
 
 ```swift
 @Model struct RecordMeetingModel {
@@ -184,7 +186,7 @@ Because models are structs (value types), SwiftModel eliminates the retain-cycle
 }
 ```
 
-This works because each `@Model` struct holds only a weak reference to its underlying context. The strong ownership lives in the model hierarchy (parent → child), so closures that capture `self` cannot create cycles.
+The strong ownership lives in the model hierarchy (parent → child). Closures that capture `self` capture a context pointer — not a strong object reference — so cycles are structurally impossible.
 
 ### Composition
 
@@ -570,7 +572,8 @@ let services = node.mapHierarchy(for: [.self, .descendants, .dependencies]) {
 
 A typical model will need to handle asynchronous work such as performing operations and listening on updates from its dependencies. It is also common to listen to model events and state changes that SwiftModel exposes as asynchronous streams.
 
->  SwiftModel is fully thread safe, and supports working with your models and their state from any task context. SwiftUI helpers such as `@ObservedModel` will make sure to only update views from the `@MainActor` that is required by SwiftUI.
+> **Works from any thread — no `@MainActor` required.**
+> Most Swift architectures push all model logic onto `@MainActor` to avoid data races. SwiftModel uses structural locking instead: every read and write is internally synchronised, so you can access your models freely from any `Task`, background queue, or test without actor hops. `@ObservedModel` handles the `@MainActor` hop that SwiftUI requires for view updates, so you never need to annotate your own model code with `@MainActor`. This also makes testing simpler — no `await MainActor.run { }` wrappers needed.
 
 ### Tasks
 
