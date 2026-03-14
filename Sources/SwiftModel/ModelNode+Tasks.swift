@@ -2,12 +2,30 @@ import Foundation
 import ConcurrencyExtras
 
 public extension ModelNode {
-    /// Perform a task for the life time of the model
-    /// - Parameter isDetached:If true, start task as detached (defaults to false).
-    /// - Parameter priority: The priority of the  task.
-    /// - Parameter operation: The operation to perform.
-    /// - Parameter catch: Called if the task throws an error
-    /// - Returns: A cancellable to optionally allow cancelling before deactivation.
+    /// Starts an async task tied to the model's lifetime.
+    ///
+    /// The task starts immediately and is automatically cancelled when the model is deactivated.
+    /// Call this from `onActivate()` to set up long-lived async work.
+    ///
+    /// ```swift
+    /// func onActivate() {
+    ///     node.task {
+    ///         let result = await fetchData()
+    ///         self.data = result
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// The returned `Cancellable` lets you cancel the task before the model deactivates. If the
+    /// task throws and you need to handle the error, use the overload with a `catch:` parameter.
+    ///
+    /// - Parameters:
+    ///   - isDetached: If `true`, starts the task as a detached task (not inheriting the caller's
+    ///     actor context). Defaults to `false`.
+    ///   - priority: The priority of the task. Defaults to `nil` (inherits from caller).
+    ///   - operation: The async work to perform.
+    ///   - catch: Called if `operation` throws an error.
+    /// - Returns: A `Cancellable` to cancel the task before the model deactivates.
     @discardableResult
     func task(isDetached: Bool = false, priority: TaskPriority? = nil, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async throws -> Void, `catch`: @escaping @Sendable (Error) -> Void) -> Cancellable {
         guard let context = enforcedContext() else { return EmptyCancellable() }
@@ -25,26 +43,54 @@ public extension ModelNode {
         }
     }
 
-    /// Perform a task for the life time of the model
-    /// - Parameter isDetached:If true, start task as detached (defaults to false).
-    /// - Parameter priority: The priority of the  task.
-    /// - Parameter operation: The operation to perform.
-    /// - Returns: A cancellable to optionally allow cancelling before deactivation.
+    /// Starts a non-throwing async task tied to the model's lifetime.
+    ///
+    /// Convenience overload of `task(isDetached:priority:operation:catch:)` for operations that
+    /// don't throw. The task is automatically cancelled when the model is deactivated.
+    ///
+    /// - Parameters:
+    ///   - isDetached: If `true`, starts the task as a detached task. Defaults to `false`.
+    ///   - priority: The priority of the task. Defaults to `nil` (inherits from caller).
+    ///   - operation: The async work to perform.
+    /// - Returns: A `Cancellable` to cancel the task before the model deactivates.
     @discardableResult
     func task(isDetached: Bool = false, priority: TaskPriority? = nil, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async -> Void) -> Cancellable {
         task(isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column, operation: operation, catch: { _ in })
     }
 
-    /// Iterate an async sequence for the life time of the model
+    /// Iterates an async sequence for the lifetime of the model.
     ///
-    /// - Parameter sequence: The sequence to iterate.
-    /// - Parameter cancelPrevious:  If true, will cancel any preciously async work initiated from`operation`, defaults to false
-    /// - Parameter abortIfOperationThrows: If true, any thrown error from`operation` will abort iteration and `onError` is called with the error, defaults to false
-    /// - Parameter isDetached:If true, start task as detached (defaults to false).
-    /// - Parameter priority: The priority of the  task.
-    /// - Parameter operation: The operation to perform for each element in the sequence.
-    /// - Parameter catch: Called if the sequence throws an error or if operation throws and error and abortIfOperationThrows == true
-    /// - Returns: A cancellable to optionally allow cancelling before deactivation.
+    /// For each element emitted by `sequence`, `operation` is called. Iteration stops when the
+    /// model is deactivated or the sequence finishes. Use this in `onActivate()` to react to
+    /// streams of values:
+    ///
+    /// ```swift
+    /// func onActivate() {
+    ///     // React to clock ticks
+    ///     node.forEach(node.continuousClock.timer(interval: .seconds(1))) { _ in
+    ///         elapsed += 1
+    ///     }
+    ///
+    ///     // React to child events
+    ///     node.forEach(node.event(fromType: ChildModel.self)) { event, child in
+    ///         handleEvent(event, from: child)
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - sequence: The async sequence to iterate.
+    ///   - cancelPrevious: If `true`, cancels any in-flight work from a previous call to
+    ///     `operation` before starting the next. Useful for "latest wins" semantics, e.g. search.
+    ///     Defaults to `false`.
+    ///   - abortIfOperationThrows: If `true`, a thrown error from `operation` stops iteration
+    ///     and calls `catch`. Defaults to `false`.
+    ///   - isDetached: If `true`, starts the underlying task as a detached task. Defaults to `false`.
+    ///   - priority: The priority of the task. Defaults to `nil` (inherits from caller).
+    ///   - operation: Called for each element in the sequence.
+    ///   - catch: Called if the sequence throws, or if `operation` throws and
+    ///     `abortIfOperationThrows` is `true`.
+    /// - Returns: A `Cancellable` to stop iteration before the model deactivates.
     @discardableResult
     func forEach<S: AsyncSequence&Sendable>(_ sequence: S, cancelPrevious: Bool = false, abortIfOperationThrows: Bool = false, isDetached: Bool = false, priority: TaskPriority? = nil, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @_inheritActorContext @_implicitSelfCapture perform operation: @escaping @Sendable (S.Element) async throws -> Void, `catch` onError: (@Sendable (Error) -> Void)? = nil) -> Cancellable where S.AsyncIterator: SendableMetatype, S.Element: Sendable {
         guard let context = enforcedContext() else { return EmptyCancellable() }

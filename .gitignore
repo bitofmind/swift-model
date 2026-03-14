@@ -1,3 +1,4 @@
+.internal/
 .swiftpm/xcode
 .swiftpm/configuration
 .DS_Store

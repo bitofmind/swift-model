@@ -45,23 +45,6 @@ func diffMessage<T>(expected: T, actual: T, title: @autoclosure () -> String) ->
     return nil
 }
 
-func _XCTExpectFailure(failingBlock: () -> Void) {
-  #if DEBUG
-    guard
-      let XCTExpectedFailureOptions = NSClassFromString("XCTExpectedFailureOptions")
-        as Any as? NSObjectProtocol,
-      let options = XCTExpectedFailureOptions.perform(NSSelectorFromString("nonStrictOptions"))?.takeUnretainedValue()
-    else { return }
-
-    let XCTExpectFailureWithOptionsInBlock = unsafeBitCast(
-      dlsym(dlopen(nil, RTLD_LAZY), "XCTExpectFailureWithOptionsInBlock"),
-      to: (@convention(c) (String?, AnyObject, () -> Void) -> Void).self
-    )
-
-    XCTExpectFailureWithOptionsInBlock(nil, options, failingBlock)
-  #endif
-}
-
 
 func isEqual<T>(_ lhs: T, _ rhs: T) -> Bool? {
     guard let lhs = lhs as? any Equatable else {

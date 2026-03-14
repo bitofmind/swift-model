@@ -1,3 +1,4 @@
+#if canImport(ObjectiveC)
 @preconcurrency import Foundation
 import AsyncAlgorithms
 
@@ -99,3 +100,4 @@ private final class UndoManagerTarget: NSObject, @unchecked Sendable {
         if needsGroup { undoManager.endUndoGrouping() }
     }
 }
+#endif // canImport(ObjectiveC)

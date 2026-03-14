@@ -1,50 +1,73 @@
 import Foundation
 import Dependencies
 
-/// A type that models the state and logic that drives e.g. SwiftUI views
+/// A type that models the state and logic that drives SwiftUI views.
 ///
-/// > Important: You typically never confirms to `Model`directly instead you use the
-/// `@Model` macro that will provided the required conformance and behavior.
+/// Conform to `Model` via the `@Model` macro, which generates the required storage and
+/// observation tracking:
 ///
-///     @Model struct MyModel {
-///         var count = 0
+/// ```swift
+/// @Model struct CounterModel {
+///     var count = 0
+///
+///     func incrementTapped() { count += 1 }
+/// }
+/// ```
+///
+/// > Important: Models must be `struct` types. Classes are not supported.
+///
+/// ## Using a model in SwiftUI
+///
+/// On iOS 17+ / macOS 14+, models automatically conform to `Observable` and can be used
+/// directly with `@State` or passed as properties. On earlier platforms, use `@ObservedModel`:
+///
+/// ```swift
+/// struct CounterView: View {
+///     @ObservedModel var model: CounterModel
+///
+///     var body: some View {
+///         Button("\(model.count)") { model.incrementTapped() }
 ///     }
+/// }
+/// ```
 ///
-/// > Important: Models are required to be a `struct` to allow many of the powerful state
-/// tracking that is used in tests and debugging.
-/// 
-/// To access a model state and methods from a view it should be declared using `@ObservedModel`:
+/// ## Anchoring
 ///
-///     struct MyView: View {
-///         @ObservedModel var model: MyModel
+/// The root model must be anchored before use. Anchoring activates the model hierarchy and
+/// calls each model's `onActivate()`:
 ///
-///         var body: some View {
-///             Text("count \(model.count)")
+/// ```swift
+/// struct MyApp: App {
+///     var body: some Scene {
+///         WindowGroup {
+///             ContentView(model: AppModel().withAnchor())
 ///         }
 ///     }
+/// }
+/// ```
 ///
-/// > In iOS 17, tvOS 17, macOS 14 and watchOS 10.0, `@ObservedModel` is not required, instead
-/// your models will automatically conform to the `Observable` protocol.
-///
-/// Further the root model needs to anchored to be activated and function properly:
-///
-///     struct MyApp: App {
-///         var body: some Scene {
-///             WindowGroup {
-///                 MyView(model: MyModel().withAnchor())
-///             }
-///         }
-///     }
-///
-/// > A model is always identifiable, either by providing your own id or using a automatically generated identity id
+/// A model is always `Identifiable`. Provide your own `id` property or use the automatically
+/// generated `ModelID`.
 public protocol Model: ModelContainer, Identifiable, Sendable {
     /// The type of events that this model can send
     associatedtype Event = ()
 
-    /// Will be called once a model becomes part of a anchored model hierarchy.
-    /// > Any parent will always be activated before its children to allow the parent to set up listener on child events and value changes
-    /// 
-    /// > Any remaining children will always be deactivated (cancelled) just after its parent deactivation to allow the parent to access and tear down listeners on child events and value changes.
+    /// Called once when the model is activated (becomes part of an anchored hierarchy).
+    ///
+    /// Use `onActivate()` to start async tasks, subscribe to events, and set up reactive
+    /// observations. All work started here is automatically cancelled when the model is removed
+    /// from the hierarchy.
+    ///
+    /// Parents are always activated before their children, and children are deactivated before
+    /// their parents — so a parent can safely observe child events and tear them down in order.
+    ///
+    /// ```swift
+    /// func onActivate() {
+    ///     node.forEach(node.continuousClock.timer(interval: .seconds(1))) { _ in
+    ///         elapsed += 1
+    ///     }
+    /// }
+    /// ```
     func onActivate()
 
     /// Framework internal. Do not use directly — use `node` instead.
