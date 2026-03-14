@@ -1,0 +1,436 @@
+# SwiftModel
+
+> A Swift library for composing models that drive SwiftUI views. Models are value-type structs with reference semantics — powerful, testable, and free of retain cycles.
+
+SwiftModel takes inspiration from The Composable Architecture but removes the reducer/action/effect indirection. Methods are actions. Async work is plain `async`/`await` managed by the runtime. Testing is exhaustive by default.
+
+---
+
+## ⚠️ Common Mistakes (read first)
+
+- **Do NOT use `class` with `@Model`** — structs only. `@Model class Foo` is a compile error.
+- **Do NOT use bare `Task { }`** inside model methods — use `node.task { }` so the work is lifetime-managed and visible to `ModelTester`.
+- **Do NOT write `[weak self]`** in closures that capture a model — the compiler rejects it on structs and it is never needed. The struct holds only a weak reference to its context; closures that capture `self` are safe by definition.
+- **Do NOT call `node.*` from views, parent models, or tests** — `node` is the model's own runtime interface, only valid from inside the model's implementation (`onActivate()`, methods, extensions).
+- **Do NOT call `node.*` before the model is active** — the model must be anchored (via `withAnchor()` or `andTester()`) before `node` operations do anything. Calling `node.*` on an unanchored model silently returns defaults or does nothing.
+- **Do NOT call `withAnchor()` more than once** on the same model instance.
+- **Do NOT use `@ObservableObject` or `@Published`** — SwiftModel replaces these entirely.
+- **Do NOT use `@Bindable`** with `@Model` types — Apple restricts `@Bindable` to classes. Use `@ObservedModel` for bindings.
+- **Do NOT expect `mutating`** on model methods — setters and methods write through the context reference, not the struct. `let model = MyModel().withAnchor()` is fully mutable.
+- **Do NOT add child models as context values** unless the model is already live (anchored). Context storage does not activate models.
+
+---
+
+## Core Concepts
+
+### `@Model` — value type with reference semantics
+
+`@Model` is a macro applied to a **struct**. It generates observation tracking and context wiring. The struct variable is a lightweight handle (a typed pointer) into a reference-counted context that holds the real state.
+
+Think of it like SwiftUI's `@State`: `model.count += 1` does not mutate the struct — it writes through the `_context` pointer to the backing store. This is why:
+- `let model` and `var model` are equally mutable
+- Copying the struct (`let copy = model`) gives another handle to the same live state
+- Passing a model to a function is cheap — pointer-sized
+
+```swift
+import SwiftModel
+
+@Model struct CounterModel {
+    var count = 0
+
+    func incrementTapped() {
+        count += 1
+    }
+
+    func fetchFact() {
+        node.task {
+            let fact = try await node.factClient.fetch(count)
+            self.fact = fact
+        } catch: { error in
+            alert = Alert(message: error.localizedDescription, title: "Error")
+        }
+    }
+}
+```
+
+### `node` — the runtime interface
+
+`node` is available on every `@Model` struct. It gives access to the SwiftModel runtime: tasks, dependencies, events, cancellation, memoization, hierarchy queries. Use it **only from inside the model's own implementation**.
+
+```swift
+node.task { }                         // start a lifetime-managed async task
+node.forEach(sequence) { value in }  // iterate an async sequence
+node.send(.myEvent)                   // send an event up the hierarchy
+node.cancelAll(for: key)              // cancel tasks by key
+node.context.myValue                  // read/write context (top-down)
+node.preference.myValue               // read/write preference (bottom-up)
+node[MyDependency.self]               // access a dependency
+node.myDep                            // shorthand if DependencyValues extended
+```
+
+### `onActivate()` — lifecycle entry point
+
+Called once when the model becomes part of an anchored hierarchy. Use it to start long-running tasks and set up observers. Parents activate before children.
+
+```swift
+func onActivate() {
+    // Load initial data
+    node.task {
+        items = await node.dataManager.loadItems()
+    }
+
+    // React to child events
+    node.forEach(node.event(fromType: ChildModel.self)) { event, child in
+        switch event {
+        case .didTapSave: save(child)
+        }
+    }
+
+    // React to property changes
+    node.forEach(Observed { searchQuery }, cancelPrevious: true) { query in
+        results = await search(query)
+    }
+}
+```
+
+`node.task { }` can also be called from any model method (not only `onActivate`) as long as the model is already active.
+
+### `withAnchor()` — anchoring the root model
+
+A model needs an anchor before any `node` operations work. The anchor holds a strong reference to the root context.
+
+```swift
+// In your App entry point:
+let model = AppModel().withAnchor()
+
+// With dependency overrides:
+let model = AppModel().withAnchor {
+    $0.factClient.fetch = { "\($0) is great!" }
+}
+
+// For previews:
+#Preview {
+    CounterView(model: CounterModel().withAnchor())
+}
+```
+
+### `@ObservedModel` — SwiftUI view integration
+
+Use `@ObservedModel` instead of `@ObservedObject`. It provides fine-grained observation (only re-renders when accessed properties change) and supports bindings.
+
+```swift
+struct CounterView: View {
+    @ObservedModel var model: CounterModel
+
+    var body: some View {
+        Stepper(value: $model.count) { Text("\(model.count)") }
+        Button("Fetch fact") { model.fetchFact() }
+    }
+}
+```
+
+---
+
+## Quick Start — Counter with fact
+
+```swift
+// Model
+@Model struct CounterModel {
+    var count = 0
+    var fact: String?
+
+    @ModelDependency var factClient: FactClient
+
+    func incrementTapped() { count += 1 }
+    func decrementTapped() { count -= 1 }
+
+    func factButtonTapped() {
+        node.task {
+            fact = try await factClient.fetch(count)
+        } catch: { _ in
+            fact = "Couldn't load fact."
+        }
+    }
+}
+
+// View
+struct CounterView: View {
+    @ObservedModel var model: CounterModel
+    var body: some View {
+        VStack {
+            HStack {
+                Button("-") { model.decrementTapped() }
+                Text("\(model.count)")
+                Button("+") { model.incrementTapped() }
+            }
+            Button("Fact") { model.factButtonTapped() }
+            if let fact = model.fact { Text(fact) }
+        }
+    }
+}
+
+// Entry point
+@main struct MyApp: App {
+    let model = CounterModel().withAnchor()
+    var body: some Scene {
+        WindowGroup { CounterView(model: model) }
+    }
+}
+```
+
+---
+
+## Testing
+
+Replace `withAnchor()` with `andTester()` to get a `ModelTester`. The tester is exhaustive by default — any state change, event, or task you didn't assert fails the test.
+
+```swift
+@Test func testIncrement() async {
+    let (model, tester) = CounterModel().andTester()
+    model.incrementTapped()
+    await tester.assert {
+        model.count == 1
+    }
+}
+
+@Test func testFetchFact() async {
+    let (model, tester) = CounterModel(count: 3).andTester {
+        $0.factClient.fetch = { "\($0) is a great number." }
+    }
+
+    model.factButtonTapped()
+
+    await tester.assert {
+        model.fact == "3 is a great number."
+    }
+}
+```
+
+The `==` operator inside `assert { }` gives pretty-printed diffs on failure. Any `Bool` expression also works.
+
+### Asserting events
+
+```swift
+await tester.assert {
+    model.didSend(.startMeeting)
+}
+```
+
+### Asserting callbacks (TestProbe)
+
+```swift
+let onSave = TestProbe()
+let (model, tester) = EditorModel(onSave: onSave.call).andTester()
+tester.install(onSave)
+
+model.saveButtonTapped()
+
+await tester.assert {
+    onSave.wasCalled(with: "expected content")
+}
+```
+
+> **Important:** Call `tester.install(probe)` — probes not installed are not checked for exhaustion.
+
+### Exhaustivity
+
+```swift
+tester.exhaustivity = [.state, .events]  // only check these two categories
+tester.exhaustivity = .off               // skip all checks
+tester.showSkippedAssertions = true      // print skipped without failing
+```
+
+Categories: `.state`, `.events`, `.tasks`, `.probes`, `.context`, `.preference`
+
+---
+
+## Key Patterns
+
+### Async tasks
+
+```swift
+// Fire-and-forget (auto-cancelled on deactivation)
+node.task {
+    await doWork()
+}
+
+// With error handling
+node.task {
+    let result = try await fetchData()
+    self.data = result
+} catch: { error in
+    self.errorMessage = error.localizedDescription
+}
+
+// Cancel previous call when called again (e.g. search-as-you-type)
+func search(_ query: String) {
+    node.task {
+        results = await node.searchClient.search(query)
+    }.cancelInFlight()
+}
+```
+
+### Observing state changes
+
+```swift
+// Re-run whenever `count` changes
+node.forEach(Observed { count }) { newCount in
+    isPrime = checkIsPrime(newCount)
+}
+
+// Cancel previous check when a new value arrives
+node.forEach(Observed { searchQuery }, cancelPrevious: true) { query in
+    results = try await node.search(query)
+}
+```
+
+### Dependencies
+
+```swift
+// Define
+extension DependencyValues {
+    var myClient: MyClient {
+        get { self[MyClient.self] }
+        set { self[MyClient.self] = newValue }
+    }
+}
+
+// Access inside model
+let result = await node.myClient.fetch()
+
+// Or with @ModelDependency property
+@Model struct MyModel {
+    @ModelDependency var myClient: MyClient
+}
+```
+
+### Events
+
+```swift
+// Sender (child model with typed Event)
+@Model struct ChildModel {
+    enum Event { case tapped, saved }
+    func tapped() { node.send(.tapped) }
+}
+
+// Receiver (parent model)
+func onActivate() {
+    node.forEach(node.event(fromType: ChildModel.self)) { event, child in
+        switch event {
+        case .tapped: handleTap(from: child)
+        case .saved: handleSave(from: child)
+        }
+    }
+}
+
+// Untyped / shared event enum
+node.send(AppEvent.logout)                         // send up to ancestors
+node.send(AppEvent.refresh, to: .descendants)      // send down
+node.forEach(node.event(of: AppEvent.logout)) { logout() }
+```
+
+### Navigation (stack)
+
+```swift
+@ModelContainer enum Path {
+    case detail(DetailModel)
+    case settings(SettingsModel)
+}
+
+@Model struct AppModel {
+    var path: [Path] = []
+
+    func showDetail(_ item: Item) {
+        path.append(.detail(DetailModel(item: item)))
+    }
+}
+```
+
+### Navigation (sheet / optional destination)
+
+```swift
+@ModelContainer enum Destination {
+    case settings(SettingsModel)
+    case alert(AlertModel)
+}
+
+@Model struct AppModel {
+    var destination: Destination?
+
+    func settingsTapped() {
+        destination = .settings(SettingsModel())
+    }
+}
+```
+
+### Context (top-down) and Preferences (bottom-up)
+
+```swift
+// Context — flows downward like @Environment
+extension ContextKeys {
+    var theme: ContextStorage<AppTheme> {
+        .init(defaultValue: .default, propagation: .environment)
+    }
+}
+node.context.theme = .dark        // write (visible to all descendants)
+let theme = node.context.theme    // read
+
+// Preferences — aggregate upward
+extension PreferenceKeys {
+    var hasUnsavedChanges: PreferenceStorage<Bool> {
+        .init(defaultValue: false) { $0 = $0 || $1 }
+    }
+}
+node.preference.hasUnsavedChanges = true     // leaf writes
+let dirty = node.preference.hasUnsavedChanges // ancestor reads aggregate
+```
+
+### Model as shared dependency
+
+```swift
+@Model struct AnalyticsService {
+    func track(_ event: String) { ... }
+}
+extension AnalyticsService: DependencyKey {
+    static let liveValue = AnalyticsService()
+    static let testValue = AnalyticsService()
+}
+extension DependencyValues {
+    var analytics: AnalyticsService {
+        get { self[AnalyticsService.self] }
+        set { self[AnalyticsService.self] = newValue }
+    }
+}
+// Access: node.analytics.track("event")
+// Override in tests: andTester { $0.analytics = MockAnalytics() }
+```
+
+### Composition with `@ModelContainer`
+
+Use `@ModelContainer` for enums and structs that hold models but are not models themselves:
+
+```swift
+@ModelContainer enum Destination {
+    case profile(ProfileModel)
+    case settings(SettingsModel)
+}
+```
+
+---
+
+## Key Types Reference
+
+| Type | Purpose |
+|---|---|
+| `@Model` | Applied to a struct to enable observation tracking and context wiring |
+| `@ModelContainer` | Applied to enum/struct containers that hold models but are not models themselves |
+| `@ModelDependency` | Property wrapper for accessing a dependency model via the context hierarchy |
+| `ModelNode` | Protocol providing the `node` property and all runtime operations |
+| `ModelAnchor` | Holds the root context alive; obtained via `withAnchor()` or `andAnchor()` |
+| `ModelTester` | Test harness with exhaustive side-effect checking; obtained via `andTester()` |
+| `TestProbe` | Captures callback invocations for assertion in `tester.assert { }` blocks |
+| `Observed` | Creates an `AsyncStream` that re-emits when tracked properties change |
+| `Exhaustivity` | OptionSet controlling which categories `ModelTester` enforces |
+| `ModelRelation` | OptionSet for hierarchy traversal: `.self`, `.ancestors`, `.descendants`, etc. |
+| `ContextStorage` | Descriptor for a top-down context value (declared in `ContextKeys` extension) |
+| `PreferenceStorage` | Descriptor for a bottom-up aggregated preference (declared in `PreferenceKeys` extension) |
