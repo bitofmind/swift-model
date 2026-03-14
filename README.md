@@ -122,6 +122,19 @@ Much like SwiftUI's composition of views, SwiftModel uses well-integrated modern
 
  > SwiftModel takes inspiration from similar architectures such as [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture), but aims to be less esoteric by using a more familiar style.
 
+### Why not just `@Observable`?
+
+Swift's `@Observable` macro makes a class observable, but it doesn't give you a model architecture. You still need to wire up lifetime management, testing, and dependency injection yourself:
+
+| | `@Observable` class | SwiftModel `@Model` |
+|---|---|---|
+| **Async work lifetime** | Manual `Task`; you cancel it yourself | `node.task` cancels automatically when the model deactivates |
+| **Self references** | `[weak self]` in every async closure | Not needed — and not allowed; the compiler rejects it |
+| **Testing** | No built-in harness; roll your own | `ModelTester` exhaustively asserts state, events, and concurrent tasks |
+| **Dependency injection** | Global `@Environment` only | Per-model overrides with `withDependencies` at any hierarchy level |
+
+If your app is a single screen with no async work and no tests, `@Observable` is fine. Once you add network calls, navigation, shared services, or the need to test async behaviour, you are rebuilding SwiftModel from scratch.
+
 ### Requirements
 
 SwiftModel requires Swift 5.9.2 (Xcode 15.1) that fixes compiler bugs around the new [init accessor](https://github.com/apple/swift-evolution/blob/main/proposals/0400-init-accessors.md) 
@@ -314,12 +327,12 @@ Multiple `withActivation` calls are additive — each closure runs in order when
 
 ### Sharing of Models
 
-A model is typically instantiated and assigned to one place in a model hierarchy, but sometimes it can be useful to share a model in different parts of a model hierarchy. 
+A model is typically instantiated and assigned to one place in the hierarchy, but the same *instance* can live at multiple points simultaneously. This is different from TCA's `@Shared`, which synchronises a *value type* across reducers — SwiftModel sharing is richer: the shared model has full lifecycle, sends and receives events, and runs `onActivate()` like any other model.
 
 SwiftModel supports sharing with the following implications:
 
 - A shared model will inherit the dependencies at its initial point of entry to the model hierarchy.
-- The shared model is activated on initial anchoring and deactivated once the last reference of the model is removed. 
+- The shared model is activated on initial anchoring and deactivated once the last reference of the model is removed.
 - An event sent from a shared model will be coalesced and receivers will only see a single event (even though it was sent from all its locations in the model hierarchy).
 - Similarly a shared model will only receive sent events at most once.
 
@@ -594,8 +607,25 @@ To start some asynchronous work that is tied to the life time of your model you 
       alert = Alert(message: "Couldn't load fact.", title: "Error")
     }
   }
-}  
+}
 ```
+
+### Error Handling
+
+`node.task` accepts an optional `catch:` closure for handling errors from the async body. The idiomatic pattern is to store the error as model state — typically an alert — so the view can present it:
+
+```swift
+node.task {
+    let data = try await node.apiClient.load()
+    result = data
+} catch: { error in
+    alert = Alert(message: error.localizedDescription, title: "Error")
+}
+```
+
+The `catch:` closure is called on the same context as the task body, so writing to model state is safe. If you omit `catch:`, unhandled errors are silently discarded — add the closure whenever the task can throw.
+
+For operations that should not show UI errors (fire-and-forget analytics, prefetch, etc.), omitting `catch:` is intentional.
 
 ### Observing State Changes
 
