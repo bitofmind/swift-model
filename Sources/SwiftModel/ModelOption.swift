@@ -1,19 +1,10 @@
 import Foundation
 
-/// Configuration options for model behavior.
-///
-/// Model options allow switching between different internal implementations
-/// and behaviors. Options are set when anchoring a model and propagate to
-/// all child models in the hierarchy.
-///
-/// Example:
-///
-///     let model = MyModel().withAnchor(options: [.disableObservationRegistrar])
-///
-public struct ModelOption: OptionSet, Sendable {
-    public let rawValue: Int
+// Internal configuration options for model behavior. Not part of the public API.
+struct ModelOption: OptionSet, Sendable {
+    let rawValue: Int
 
-    public init(rawValue: Int) {
+    init(rawValue: Int) {
         self.rawValue = rawValue
     }
 

@@ -23,8 +23,16 @@ import CustomDump
 /// effects cause an immediate test failure. Use `exhaustivity` to relax individual categories
 /// when needed.
 public final class ModelTester<M: Model> {
-    let access: TestAccess<M>
+    var access: TestAccess<M>
     let fileAndLine: FileAndLine
+
+    // Internal designated init — accepts options directly; avoids double-anchoring.
+    init(_ model: M, options: ModelOption, exhaustivity: Exhaustivity = .full, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
+        let fl = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
+        fileAndLine = fl
+        access = TestAccess(model: model, options: options, dependencies: dependencies, fileAndLine: fl)
+        access.lock { access.exhaustivity = exhaustivity }
+    }
 
     /// Creates model tester for testing models.
     ///
@@ -35,15 +43,12 @@ public final class ModelTester<M: Model> {
     ///
     /// - Parameters:
     ///   - model: An un-anchored model to test.
-    ///   - options: Configuration options for the model. Defaults to `[]`.
     ///   - exhaustivity: Which side-effect categories must be explicitly asserted. Defaults to `.full`.
     ///   - dependencies: A closure for overriding dependencies that will be accessed by the model
     ///
     ///  - Note: It is often more convenient to use the `andTester()` method on a model.
-    public init(_ model: M, options: ModelOption = [], exhaustivity: Exhaustivity = .full, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
-        fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
-        access = TestAccess(model: model, options: options, dependencies: dependencies, fileAndLine: fileAndLine)
-        access.lock { access.exhaustivity = exhaustivity }
+    public convenience init(_ model: M, exhaustivity: Exhaustivity = .full, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
+        self.init(model, options: [], exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
     }
 
     /// The live model being tested. Use this to read state and invoke actions.
@@ -71,15 +76,24 @@ public extension Model {
     ///     }
     ///
     /// - Parameters:
-    ///   - options: Configuration options for the model. Defaults to `[]`.
     ///   - exhaustivity: Which side-effect categories must be explicitly asserted. Defaults to `.full`.
     ///   - dependencies: A closure for overriding dependencies that will be accessed by the model
-    func andTester(options: ModelOption = [], exhaustivity: Exhaustivity = .full, withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
+    func andTester(exhaustivity: Exhaustivity = .full, withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
+        assertInitialState(function: function)
+        let tester = ModelTester(self, exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
+        return (tester.model, tester)
+    }
+}
+
+// Internal overloads used by tests (via @testable import) to exercise specific option combinations.
+extension Model {
+    func andTester(options: ModelOption, exhaustivity: Exhaustivity = .full, withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
         assertInitialState(function: function)
         let tester = ModelTester(self, options: options, exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
         return (tester.model, tester)
     }
 }
+
 
 public extension Model {
     /// Asserts — inside a `tester.assert { }` block — that this model sent the given typed event.

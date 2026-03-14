@@ -320,7 +320,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         if lock({ exhaustivity.contains(area) }) {
             fail(message, at: fileAndLine)
         } else if lock({ showSkippedAssertions }) {
-            _XCTExpectFailure {
+            withExpectedIssue {
                 fail(message, at: fileAndLine)
             }
         }

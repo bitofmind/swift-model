@@ -41,6 +41,10 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
 
     private var _weak: Weak?
 
+    /// Retains an associated object (e.g. a ModelAnchor) for the lifetime of this access object.
+    /// Used by `withAnchor()` as a cross-platform alternative to `objc_setAssociatedObject`.
+    var retainedObject: AnyObject?
+
     var reference: ModelAccessReference {
         _weak ?? self
     }

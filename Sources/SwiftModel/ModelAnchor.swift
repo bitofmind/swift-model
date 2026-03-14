@@ -19,13 +19,12 @@ public extension Model {
     ///     })
     ///
     /// - Parameters:
-    ///   - options: Configuration options for the model. Defaults to `[]`.
     ///   - dependencies: A closure for overriding dependencies that will be accessed by the model
-    func withAnchor(options: ModelOption = [], function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> Self {
-        let (model, anchor) = andAnchor(options: options, function: function, andDependencies: dependencies)
-       
-        // Hold on to anchor as long as model is alive.
-        objc_setAssociatedObject(model.access!.reference, &anchorKey, anchor, .OBJC_ASSOCIATION_RETAIN)
+    func withAnchor(function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> Self {
+        let (model, anchor) = andAnchor(options: [], function: function, andDependencies: dependencies)
+
+        // Hold on to anchor as long as model's access object is alive.
+        model.access!.retainedObject = anchor
 
         return model
     }
@@ -50,12 +49,11 @@ public extension Model {
     ///     }
     ///
     /// - Parameters:
-    ///   - options: Configuration options for the model. Defaults to `[]`.
     ///   - dependencies: A closure for overriding dependencies that will be accessed by the model.
-    func andAnchor(options: ModelOption = [], function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
+    func andAnchor(function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
         assertInitialState(function: function)
 
-        let context = Context(model: self, lock: NSRecursiveLock(), options: options, dependencies: dependencies, parent: nil)
+        let context = Context(model: self, lock: NSRecursiveLock(), options: [], dependencies: dependencies, parent: nil)
 
         var model = self
         model.withContextAdded(context: context)
@@ -64,6 +62,26 @@ public extension Model {
         model.modelContext = ModelContext(context: context)
         model.modelContext.access = self.access ?? ModelAccess(useWeakReference: false)
 
+        return (model, ModelAnchor(context: context))
+    }
+}
+
+// Internal overloads used by tests (via @testable import) to exercise specific option combinations.
+extension Model {
+    func withAnchor(options: ModelOption, function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> Self {
+        let (model, anchor) = andAnchor(options: options, function: function, andDependencies: dependencies)
+        model.access!.retainedObject = anchor
+        return model
+    }
+
+    func andAnchor(options: ModelOption, function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
+        assertInitialState(function: function)
+        let context = Context(model: self, lock: NSRecursiveLock(), options: options, dependencies: dependencies, parent: nil)
+        var model = self
+        model.withContextAdded(context: context)
+        context.model.activate()
+        model.modelContext = ModelContext(context: context)
+        model.modelContext.access = self.access ?? ModelAccess(useWeakReference: false)
         return (model, ModelAnchor(context: context))
     }
 }
@@ -79,5 +97,3 @@ public class ModelAnchor<M: Model>: @unchecked Sendable {
         context.onRemoval()
     }
 }
-
-private nonisolated(unsafe) var anchorKey: Void?
