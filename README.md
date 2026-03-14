@@ -1,6 +1,104 @@
 # SwiftModel
 
-SwiftModel is a library for composing models that drive SwiftUI views, with powerful features and advanced tooling using a lightweight modern Swift style.
+Composable value-type models for SwiftUI. The structured architecture of TCA without reducers, action enums, or effect indirection.
+
+```swift
+@Model struct CounterModel {
+    var count = 0
+    func incrementTapped() { count += 1 }
+    func factButtonTapped() {
+        node.task {
+            let fact = try await node.factClient.fetch(count)
+            onFact(count, fact)
+        } catch: { error in
+            alert = Alert(message: error.localizedDescription)
+        }
+    }
+}
+```
+
+- No retain cycles — ever. Structs + weak context. The **compiler** enforces this, not a convention.
+- Exhaustive tests that check **final state**, not action sequences. Refactor freely without rewriting tests.
+- Built-in async lifecycle: `node.task { }` starts work tied to the model lifetime — auto-cancelled on deactivation.
+- Built-in undo/redo, hierarchy traversal, context and preference propagation.
+- Works from any thread. No `@MainActor` hops required in model logic.
+
+## Quick Start
+
+Add to `Package.swift`:
+
+```swift
+.package(url: "https://github.com/bitofmind/swift-model", from: "0.10.0")
+```
+
+Then build a model, a view, and an entry point — no boilerplate:
+
+```swift
+import SwiftModel
+import SwiftUI
+
+@Model struct CounterModel {
+    var count = 0
+    func decrementTapped() { count -= 1 }
+    func incrementTapped() { count += 1 }
+}
+
+struct CounterView: View {
+    @ObservedModel var model: CounterModel
+    var body: some View {
+        HStack {
+            Button("-") { model.decrementTapped() }
+            Text("\(model.count)")
+            Button("+") { model.incrementTapped() }
+        }
+    }
+}
+
+@main struct MyApp: App {
+    let model = CounterModel().withAnchor()
+    var body: some Scene {
+        WindowGroup { CounterView(model: model) }
+    }
+}
+```
+
+The same model is exhaustively testable with no extra setup:
+
+```swift
+import Testing
+
+@Test func testIncrement() async {
+    let (model, tester) = CounterModel().andTester()
+    model.incrementTapped()
+    await tester.assert {
+        model.count == 1
+    }
+}
+```
+
+Clone the repo and open `Examples/CounterFact` to run a complete app immediately.
+
+## How SwiftModel Compares
+
+| | Plain MVVM | TCA | **SwiftModel** |
+|---|---|---|---|
+| Boilerplate | Low | Very high | **Low** |
+| Retain cycles | Manual `[weak self]` | Low | **None — structural guarantee** |
+| Exhaustive testing | No | Yes (action-ordered) | **Yes (state-focused)** |
+| Refactor-resilient tests¹ | — | No | **Yes** |
+| Async lifecycle | Manual `Task` | Effects/Actions | **`node.task` + auto-cancel** |
+| Model events | Manual callbacks | Actions | **Typed streams, up/down hierarchy** |
+| Undo/Redo | DIY | DIY | **Built-in** |
+| Hierarchy queries | None | None | **Built-in** |
+| Context propagation | `@Environment` | None | **Model-layer context + preferences** |
+| Shared state | Manual | `@Shared` (value sync) | **Model dependency** |
+| Navigation | Manual | Navigation library | **Patterns (no extra lib)** |
+| Thread safety | `@MainActor` discipline | `@MainActor` discipline | **Lock-based, any thread** |
+| Learning curve | Minimal | Very steep | **Moderate** |
+
+¹ TCA tests encode action sequences — renaming an action case or splitting an effect breaks tests even if visible behaviour is unchanged. SwiftModel tests assert final state only.
+
+---
 
 - [What is SwiftModel](#what-is-swiftmodel)
 - [Models and Composition](#models-and-composition)
@@ -9,9 +107,10 @@ SwiftModel is a library for composing models that drive SwiftUI views, with powe
 - [Lifetime and Asynchronous Work](#lifetime-and-asynchronous-work)
 - [Undo and Redo](#undo-and-redo)
 - [Events](#events)
+- [Navigation](#navigation)
 - [Testing](#testing)
 
-## What is SwiftModel   
+## What is SwiftModel
 
 Much like SwiftUI's composition of views, SwiftModel uses well-integrated modern Swift tools for composing your app's different features into a hierarchy of models. Under the hood, SwiftModel keeps track of model state changes, dependencies, and ongoing asynchronous work. This results in several advantages:
 
@@ -20,8 +119,6 @@ Much like SwiftUI's composition of views, SwiftModel uses well-integrated modern
 - Exhaustive testing of state changes, events and concurrent operations.
 - Integrates fully with modern Swift concurrency with extended tools for powerful lifetime management.
 - Fine-grained observation of model state changes.
-
- > SwiftModel is an evolution of the [Swift One State](https://github.com/bitofmind/swift-one-state) library, where the introduction of Swift macros allows a more lightweight syntax. 
 
  > SwiftModel takes inspiration from similar architectures such as [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture), but aims to be less esoteric by using a more familiar style.
 
@@ -1167,6 +1264,118 @@ node.forEach(node.event(fromType: StandupDetail.self)) { event, standupDetail in
   }
 }
 ```
+
+## Navigation
+
+Navigation state is just model state. A modal sheet, a pushed screen, or a multi-destination flow is expressed as an optional or an enum child model — no wrappers, no navigation libraries required.
+
+### Modal / sheet navigation
+
+Declare a `Destination` enum annotated with `@ModelContainer` and `@CasePathable`, then hold an optional instance as model state:
+
+```swift
+@Model struct StandupDetail {
+    var standup: Standup
+    var destination: Destination?
+
+    @ModelContainer @CasePathable
+    @dynamicMemberLookup
+    enum Destination: Sendable {
+        case edit(StandupForm)
+        case deleteConfirmation
+    }
+
+    func editButtonTapped() {
+        destination = .edit(StandupForm(standup: standup))
+    }
+
+    func onActivate() {
+        node.forEach(node.event(fromType: StandupForm.self)) { event, form in
+            switch event {
+            case .save:
+                standup = form.standup
+                destination = nil
+            case .discard:
+                destination = nil
+            }
+        }
+    }
+}
+```
+
+In the view, use `.sheet(item:)` with a case key-path binding (requires [`swift-case-paths`](https://github.com/pointfreeco/swift-case-paths)):
+
+```swift
+struct StandupDetailView: View {
+    @ObservedModel var model: StandupDetail
+
+    var body: some View {
+        List { ... }
+            .sheet(item: $model.destination.edit) { form in
+                StandupFormView(model: form)
+            }
+    }
+}
+```
+
+Setting `destination = nil` dismisses any active sheet automatically.
+
+### Stack navigation
+
+Represent a navigation stack as an array of `@ModelContainer` enum cases. Each case carries the model for that screen:
+
+```swift
+@Model struct AppFeature {
+    var standupsList = StandupsList()
+    var path: [Path] = []
+
+    @ModelContainer @CasePathable
+    @dynamicMemberLookup
+    enum Path: Hashable, Sendable, Identifiable {
+        case detail(StandupDetail)
+        case record(RecordMeeting)
+        var id: AnyHashableSendable { ... }
+    }
+
+    func standupTapped(_ standup: Standup) {
+        path.append(.detail(StandupDetail(standup: standup)))
+    }
+}
+```
+
+In the view, bind `$model.path` to `NavigationStack`:
+
+```swift
+struct AppView: View {
+    @ObservedModel var model: AppFeature
+
+    var body: some View {
+        NavigationStack(path: $model.path) {
+            StandupsListView(model: model.standupsList)
+                .navigationDestination(for: AppFeature.Path.self) { path in
+                    switch path {
+                    case let .detail(model): StandupDetailView(model: model)
+                    case let .record(model): RecordMeetingView(model: model)
+                    }
+                }
+        }
+    }
+}
+```
+
+> `NavigationStack` requires path elements to be `Hashable`. The default `@Model` `Hashable` conformance is identity-based, so `path` works as shown. See `Examples/SignUpFlow/SignUpFlow.swift` for a complete stack navigation example including a `StackItem` wrapper for value-equality models.
+
+### Deep links and programmatic navigation
+
+Because navigation state is plain model state, programmatic navigation is a direct array mutation:
+
+```swift
+func handleDeepLink(_ url: URL) {
+    path = [.detail(StandupDetail(standup: loadStandup(from: url)))]
+}
+```
+
+No special deep-link handling infrastructure is needed — change the state, SwiftUI reflects it.
 
 ## Testing
 
