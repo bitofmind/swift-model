@@ -841,7 +841,7 @@ node.transaction {
 
 All mutations inside the block appear atomically to other threads. Observation callbacks (and `observeAnyModification()` emissions) are deferred until the transaction completes, so observers see only the final consistent state.
 
-> **No rollback on error**: if the closure throws, any mutations already applied inside the block are **not** rolled back. Wrap the transaction in a `do`/`catch` and handle partial-state recovery manually if needed.
+The closure is non-throwing by design — transactions have no rollback, so a throwing closure provides no safety guarantee. If you need conditional application, compute the new values first, then apply them inside the transaction.
 
 ### Observing Any Modification
 
@@ -1492,4 +1492,11 @@ When debugging, you can print skipped assertions without failing the test:
 ```swift
 tester.showSkippedAssertions = true
 ```
+
+### Refactor-Resilient Tests
+
+SwiftModel tests assert **final state**, not the sequence of actions or effects that produced it. This means you can freely restructure model internals — split a method, rename a case, change how async work is dispatched — and existing tests continue to pass as long as the observable outcome is unchanged.
+
+TCA tests encode the full action sequence: renaming an action case or splitting an effect requires rewriting tests even when visible behaviour is identical. SwiftModel has no action enum, so there is nothing to encode and nothing to break.
+
 
