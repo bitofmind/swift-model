@@ -277,43 +277,6 @@ public extension ModelNode {
     /// // Single notification at end of outermost transaction
     /// ```
     ///
-    /// ## Error Handling
-    ///
-    /// > Important: Transactions do **not** automatically rollback on error.
-    /// Mutations made before the error are retained.
-    ///
-    /// ```swift
-    /// model.value = 10
-    ///
-    /// do {
-    ///     try model.node.transaction {
-    ///         model.value = 20
-    ///         model.value = 30
-    ///         throw MyError()
-    ///     }
-    /// } catch {
-    ///     // model.value is now 30 (not rolled back to 10)
-    /// }
-    /// ```
-    ///
-    /// To handle errors safely:
-    /// ```swift
-    /// // Pattern 1: Pre-validate
-    /// guard isValid(newValue) else { return }
-    /// model.node.transaction {
-    ///     model.value = newValue
-    /// }
-    ///
-    /// // Pattern 2: Explicit reset on error
-    /// do {
-    ///     try model.node.transaction {
-    ///         model.update(data)
-    ///     }
-    /// } catch {
-    ///     model.reset()  // Explicit reset
-    /// }
-    /// ```
-    ///
     /// ## Best Practices
     ///
     /// **Use transactions for:**
@@ -357,7 +320,22 @@ public extension ModelNode {
     /// - Parameters:
     ///   - callback: The closure containing mutations to execute atomically
     /// - Returns: The value returned by the callback
-    /// - Throws: Rethrows any error thrown by the callback (without rollback)
+    func transaction<T>(_ callback: () -> T) -> T {
+        if let context = _context {
+            return ModelAccess.$isInModelTaskContext.withValue(true) {
+                context.transaction(callback)
+            }
+        } else {
+            return callback()
+        }
+    }
+
+    /// Batches multiple model mutations into a single atomic update with deferred notifications.
+    ///
+    /// - Deprecated: Transactions don't roll back on error, so a throwing closure provides no
+    ///   safety guarantee. Compute your values first, then apply them inside a non-throwing
+    ///   `transaction { }` closure.
+    @available(*, deprecated, message: "Transactions do not roll back on error. Compute values outside the transaction and apply them in a non-throwing closure.")
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
         if let context = _context {
             return try _withBatchedUpdates {
