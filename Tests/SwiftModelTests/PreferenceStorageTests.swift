@@ -73,6 +73,28 @@ private struct ReactiveModel {
     }
 }
 
+// Models used for checkExhaustion-while-lock-held deadlock regression test.
+// A parent model with a child that has a background observer — the child's
+// customMirror reads a @ModelTracked property which (with the old bug) would
+// try to re-acquire TestAccess.lock while it was already held, deadlocking
+// when the async continuation resumed on a different cooperative thread.
+
+@Model
+private struct ReactiveChild {
+    var value: Int = 0
+}
+
+@Model
+private struct ReactiveParent {
+    var child: ReactiveChild = ReactiveChild()
+    var tick: Int = 0
+    func onActivate() {
+        node.forEach(Observed { tick }) { tick in
+            child.value = tick
+        }
+    }
+}
+
 // Models used for dependency preference exhaustivity tests.
 
 @Model
@@ -479,6 +501,43 @@ struct PreferenceStorageTests {
             await tester.assert {
                 model.trigger == i
                 model.derived == i * 2
+            }
+        }
+    }
+
+    // Regression test: checkExhaustion must not deadlock when it is called after releasing
+    // the TestAccess lock and customDump walks a parent→child model hierarchy.
+    //
+    // The deadlock path (pre-fix):
+    //   assert() held TestAccess.lock → called checkExhaustion inside the lock
+    //   → diffMessage → customDump → customMirror on child model
+    //   → @ModelTracked getter → ModelContext.subscript.read → willAccess
+    //   → TestAccess.willAccess → rootPaths → tries to re-acquire TestAccess.lock
+    //   from the continuation thread (different from the lock-holder thread) → deadlock.
+    //
+    // Fixed by moving the checkExhaustion call outside the lock in assert().
+    @Test func checkExhaustionDiffDoesNotDeadlockWithChildModel() async {
+        let (model, tester) = ReactiveParent().andTester()
+        for i in 1...5 {
+            model.tick = i
+            // checkExhaustion runs after the assert passes. With the old code it held the
+            // lock while calling diffMessage on the root model (which includes the child),
+            // and the child's customMirror read triggered willAccess → rootPaths → deadlock.
+            await tester.assert {
+                model.tick == i
+                model.child.value == i
+            }
+        }
+    }
+
+    @Test(arguments: 1...100)
+    func checkExhaustionDiffDoesNotDeadlockWithChildModelStress(_ run: Int) async {
+        let (model, tester) = ReactiveParent().andTester()
+        for i in 1...5 {
+            model.tick = i
+            await tester.assert {
+                model.tick == i
+                model.child.value == i
             }
         }
     }

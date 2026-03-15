@@ -445,12 +445,18 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                             for (probe, value) in context.probes {
                                 probe.consume(value)
                             }
+                        }
 
-                            if enableExhaustionTest {
-                                // Step 4: Check that no other state changed without being
-                                // asserted. Diffs expectedState against lastState.
-                                checkExhaustion(at: fileAndLine, includeUpdates: true)
-                            }
+                        if enableExhaustionTest {
+                            // Step 4: Check that no other state changed without being
+                            // asserted. Diffs expectedState against lastState.
+                            // IMPORTANT: Must be called outside the lock. checkExhaustion calls
+                            // diffMessage/customDump which triggers customMirror on @Model types,
+                            // which reads @ModelTracked properties, which calls willAccess, which
+                            // acquires context.rootPaths — also guarded by the same lock. If we
+                            // are suspended via an async withValue and resume on a different thread,
+                            // the NSRecursiveLock is not re-entrant across threads and deadlocks.
+                            checkExhaustion(at: fileAndLine, includeUpdates: true)
                         }
 
                         return
@@ -458,77 +464,82 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 }
 
                 // Step 5 (timeout): Report failures.
+                // IMPORTANT: All reporting (diffMessage, customDump, fail) happens outside the lock.
+                // diffMessage/customDump triggers customMirror on @Model types, which reads
+                // @ModelTracked properties, which calls willAccess → rootPaths → tries to acquire
+                // this same lock from the continuation's thread — deadlock if already held.
                 if start.distance(to: DispatchTime.now().uptimeNanoseconds) > scaledTimeout {
-                    lock {
-                        for failure in failures {
-                            if let (lhs, rhs) = failure.predicate.values() {
-                                let propertyNames = failure.accesses.compactMap { access in
-                                    access.propertyName.map { "\(access.modelName).\($0)" }
-                                }.joined(separator: ", ")
+                    // Build all failure messages outside the lock so that diffMessage/customDump
+                    // cannot re-enter it via willAccess → rootPaths.
+                    var reports: [[(String, FileAndLine)]] = []
+                    for failure in failures {
+                        var messages: [(String, FileAndLine)] = []
+                        if let (lhs, rhs) = failure.predicate.values() {
+                            let propertyNames = failure.accesses.compactMap { access in
+                                access.propertyName.map { "\(access.modelName).\($0)" }
+                            }.joined(separator: ", ")
 
-                                for access in failure.accesses {
-                                    access.apply(&expectedState)
-                                }
+                            let title = "Failed to assert: \(propertyNames)"
+                            let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+                                diffMessage(expected: rhs, actual: lhs, title: title)
+                            }
+                            messages.append((message ?? title, failure.predicate.fileAndLine))
+                        } else {
+                            for access in failure.accesses {
+                                let pred = access.propertyName.map {
+                                    "\(access.modelName).\($0) == \(access.value())"
+                                } ?? access.value()
+                                messages.append(("Failed to assert: \(pred)", failure.predicate.fileAndLine))
+                            }
+                        }
 
-                                let title = "Failed to assert: \(propertyNames)"
-                                let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                                    diffMessage(expected: rhs, actual: lhs, title: title)
-                                }
-                                if let message {
-                                    fail(message, at: failure.predicate.fileAndLine)
-                                } else {
-                                    fail(title, at: failure.predicate.fileAndLine)
-                                }
+                        for event in failure.events {
+                            messages.append(("Failed to assert sending of: \(String(customDumping: event.event)) from \(event.context.typeDescription)", failure.predicate.fileAndLine))
+                        }
+
+                        for modelName in failure.modelsNoLongerPartOfTester {
+                            messages.append(("Model \(modelName) is no longer part of this tester", fileAndLine))
+                        }
+
+                        for (probe, value) in failure.probes {
+                            let preTitle = "Failed to assert calling of probe" + (probe.name.map { "\"\($0)\":" } ?? ":")
+                            let title = value is NoArgs ? preTitle :
+                                """
+                                \(preTitle)
+                                    \(String(customDumping: value))
+                                """
+
+                            if probe.isEmpty {
+                                messages.append((
+                                    """
+                                    \(title)
+
+                                    No available probe values
+                                    """, fileAndLine))
+                            } else if probe.count == 1, let message = threadLocals.withValue(true, at: \.includeChildrenInMirror, perform: { diffMessage(expected: value, actual: probe.values[0], title: "Probe does not match") }) {
+                                messages.append((message, fileAndLine))
                             } else {
-                                for access in failure.accesses {
-                                    let predicate = access.propertyName.map {
-                                        "\(access.modelName).\($0) == \(access.value())"
-                                    } ?? access.value()
-
-                                    fail("Failed to assert: \(predicate)", at: failure.predicate.fileAndLine)
-
-                                    access.apply(&expectedState)
-                                }
-                            }
-
-                            for event in failure.events {
-                                fail("Failed to assert sending of: \(String(customDumping: event.event)) from \(event.context.typeDescription)", at: failure.predicate.fileAndLine)
-                            }
-
-                            for modelName in failure.modelsNoLongerPartOfTester {
-                                fail("Model \(modelName) is no longer part of this tester", at: fileAndLine)
-                            }
-
-                            for (probe, value) in failure.probes {
-                                let preTitle = "Failed to assert calling of probe" + (probe.name.map { "\"\($0)\":" } ?? ":")
-                                let title = value is NoArgs ? preTitle :
-                                    """
-                                    \(preTitle)
-                                        \(String(customDumping: value))
-                                    """
-
-                                if probe.isEmpty {
-                                    fail(
-                                        """
-                                        \(title)
-
-                                        No available probe values
-                                        """, at: fileAndLine)
-                                } else if probe.count == 1, let message = threadLocals.withValue(true, at: \.includeChildrenInMirror, perform: { diffMessage(expected: value, actual: probe.values[0], title: "Probe does not match") }) {
-                                    fail(message, at: fileAndLine)
-                                } else {
-                                    fail(
+                                messages.append((
                                     """
                                     \(title)
 
                                     \(probe.count) Available probe values to assert:
                                         \(probe.values.map { String(customDumping: $0) }.joined(separator: "\n\t"))
-                                    """, at: fileAndLine)
-                                }
+                                    """, fileAndLine))
                             }
+                        }
 
-                            if failure.accesses.isEmpty, failure.events.isEmpty, failure.modelsNoLongerPartOfTester.isEmpty, failure.probes.isEmpty {
-                                fail("Failed to assert: ", at: failure.predicate.fileAndLine)
+                        if failure.accesses.isEmpty, failure.events.isEmpty, failure.modelsNoLongerPartOfTester.isEmpty, failure.probes.isEmpty {
+                            messages.append(("Failed to assert: ", failure.predicate.fileAndLine))
+                        }
+                        reports.append(messages)
+                    }
+
+                    // Now apply state mutations under the lock (no diffMessage/customDump here).
+                    lock {
+                        for failure in failures {
+                            for access in failure.accesses {
+                                access.apply(&expectedState)
                             }
                         }
 
@@ -544,6 +555,14 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                             probe.consume(value)
                         }
                     }
+
+                    // Emit failure reports outside the lock.
+                    for messages in reports {
+                        for (message, location) in messages {
+                            fail(message, at: location)
+                        }
+                    }
+
 
                     if enableExhaustionTest {
                         checkExhaustion(at: fileAndLine, includeUpdates: false)
