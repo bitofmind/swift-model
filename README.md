@@ -1498,12 +1498,14 @@ Assert that a model sent an event using `didSend(_:)` inside an `assert` block:
 
 ### Exhaustivity
 
-By default the tester enforces exhaustivity across four categories — any unasserted effect in any category fails the test when the tester is deallocated at the end of the test function:
+By default the tester enforces exhaustivity across six categories — any unasserted effect in any category fails the test when the tester is deallocated at the end of the test function:
 
 - **`.state`** — every state change must be consumed by an `assert` block
 - **`.events`** — every event sent via `node.send()` must be observed with `didSend(_:)`
 - **`.tasks`** — all async tasks must complete or be cancelled before the tester deallocates
 - **`.probes`** — every installed `TestProbe` invocation must be consumed by `wasCalled`
+- **`.context`** — every `node.context` write must be consumed by an `assert` block
+- **`.preference`** — every `node.preference` write must be consumed by an `assert` block
 
 To focus a test on only some categories, pass `exhaustivity` to `andTester` or assign it afterwards:
 

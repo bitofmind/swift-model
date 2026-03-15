@@ -64,20 +64,21 @@ public final class ModelTester<M: Model> {
 }
 
 public extension Model {
-    /// Create a model test using self and returns the model and the tester
+    /// Anchors the model, activates it, and returns it together with a `ModelTester` for exhaustive testing.
     ///
-    ///     let (appModel, tester) = AppModel().andTester())
+    /// ```swift
+    /// let (model, tester) = AppModel().andTester()
     ///
-    /// Or if you need to override some dependencies:
-    ///
-    ///     let (appModel, tester) = AppModel().andTester {
-    ///        $0.uuid = .incrementing
-    ///        $0.locale = Locale(identifier: "en_US")
-    ///     }
+    /// // With dependency overrides:
+    /// let (model, tester) = AppModel().andTester {
+    ///     $0.uuid = .incrementing
+    ///     $0.continuousClock = ImmediateClock()
+    /// }
+    /// ```
     ///
     /// - Parameters:
     ///   - exhaustivity: Which side-effect categories must be explicitly asserted. Defaults to `.full`.
-    ///   - dependencies: A closure for overriding dependencies that will be accessed by the model
+    ///   - withDependencies: A closure to override dependencies injected into the model.
     func andTester(exhaustivity: Exhaustivity = .full, withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
         assertInitialState(function: function)
         let tester = ModelTester(self, exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
@@ -183,6 +184,8 @@ public extension ModelTester {
 /// - `events`: events sent via `node.send()` must be asserted with `model.didSend(_:)`.
 /// - `tasks`: async tasks launched by the model must complete or be cancelled within the test.
 /// - `probes`: values emitted by installed `TestProbe` instances must be asserted.
+/// - `context`: writes to context storage via `node.context` must be asserted.
+/// - `preference`: writes to preference storage via `node.preference` must be asserted.
 ///
 /// Use `.off` to disable all checks, or compose individual members:
 ///
@@ -285,6 +288,11 @@ public extension ModelTester {
         await access.assert(timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
     }
 
+    /// Single-predicate convenience overload. Equivalent to `assert { predicate }` for a plain `Bool` expression.
+    ///
+    /// ```swift
+    /// await tester.assert(model.isLoading == false)
+    /// ```
     @_disfavoredOverload
     func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
@@ -292,6 +300,12 @@ public extension ModelTester {
         await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
     }
 
+    /// Single-predicate convenience overload for a `TestPredicate` (the result of `==` between two `Equatable` values).
+    /// Provides a pretty-printed diff on failure.
+    ///
+    /// ```swift
+    /// await tester.assert(model.count == 1)
+    /// ```
     func assert(_ predicate: TestPredicate, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
@@ -334,6 +348,11 @@ public extension ModelTester {
         await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
     }
 
+    /// Single-predicate convenience overload. Equivalent to `assert(timeout:) { predicate }` for a plain `Bool` expression.
+    ///
+    /// ```swift
+    /// await tester.assert(model.isLoading == false, timeout: .seconds(2))
+    /// ```
     @_disfavoredOverload
     func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
@@ -341,6 +360,12 @@ public extension ModelTester {
         await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
     }
 
+    /// Single-predicate convenience overload for a `TestPredicate` with an explicit `Duration` timeout.
+    /// Provides a pretty-printed diff on failure.
+    ///
+    /// ```swift
+    /// await tester.assert(model.count == 1, timeout: .seconds(2))
+    /// ```
     func assert(_ predicate: TestPredicate, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
