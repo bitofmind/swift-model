@@ -45,6 +45,7 @@ public extension ModelNode {
     /// Returns a stream of all events sent from this model or any of its descendants, typed as `Any`.
     ///
     /// Prefer the typed overloads (`event(ofType:)`, `event(fromType:)`) over this one.
+    /// Use this only when the event type is not known at compile time.
     func event() -> AsyncStream<Any&Sendable> {
         guard let context = enforcedContext() else { return .never }
         return context.events().map(\.event).eraseToStream()
@@ -87,7 +88,19 @@ public extension ModelNode {
         }.eraseToStream()
     }
 
-    /// Returns a sequence that emits when events of type `eventType` is sent from model or any of its descendants of the type `fromType`.
+    /// Returns a stream of events of type `Event` sent by models of type `FromModel` within this subtree.
+    ///
+    /// Combines the filters of `event(ofType:)` and `event(fromType:)`: only events whose type
+    /// matches `eventType` **and** whose sender matches `fromType` are emitted.
+    ///
+    /// Use this when a model type sends more than one event type (e.g. a shared generic event enum)
+    /// and you want to narrow by both the event type and the sender type:
+    ///
+    /// ```swift
+    /// node.forEach(node.event(ofType: NetworkEvent.self, fromType: FeedModel.self)) { event, feed in
+    ///     handleNetworkEvent(event, from: feed)
+    /// }
+    /// ```
     func event<Event: Sendable, FromModel: Sendable>(ofType eventType: Event.Type, fromType modelType: FromModel.Type) -> AsyncStream<(event: Event, model: FromModel)> {
         guard let context = enforcedContext() else { return .never }
         return context.events().compactMap {
@@ -98,7 +111,16 @@ public extension ModelNode {
 }
 
 public extension ModelNode {
-    /// Returns a sequence that emits when events equal to the provided `event` is sent from this model.
+    /// Returns a stream that emits `()` each time the specified event is sent from this model.
+    ///
+    /// Filters to exactly this sender (not descendants). Use `event(of:)` on a parent node if
+    /// you want to match from any descendant.
+    ///
+    /// ```swift
+    /// node.forEach(node.event(of: .saveTapped)) {
+    ///     await save()
+    /// }
+    /// ```
     func event(of event: M.Event) -> AsyncStream<()> where M.Event: Equatable&Sendable {
         guard let context = enforcedContext() else { return .never }
         return context.events().compactMap {
@@ -107,7 +129,17 @@ public extension ModelNode {
         }.eraseToStream()
     }
 
-    /// Returns a sequence that emits when events equal to the provided `event` is sent from this model or any of its descendants.
+    /// Returns a stream that emits `()` each time the specified event value is sent from this model or any descendant.
+    ///
+    /// Unlike `event(of:)` with no type parameter (which filters to this sender only), this
+    /// generic overload matches the event value anywhere in the subtree regardless of sender type.
+    ///
+    /// ```swift
+    /// // React whenever any descendant sends .loggedOut:
+    /// node.forEach(node.event(of: AppEvent.loggedOut)) {
+    ///     showLoginScreen()
+    /// }
+    /// ```
     func event<Event: Equatable&Sendable>(of event: Event) -> AsyncStream<()> {
         guard let context = enforcedContext() else { return .never }
         return context.events().compactMap {
@@ -116,9 +148,16 @@ public extension ModelNode {
         }.eraseToStream()
     }
 
-    /// Returns a sequence that emits when events equal to the provided `event` is sent from this model or any of its descendants.
+    /// Returns a stream that emits the sending model each time a specific event is sent by a model of type `FromModel`.
     ///
-    ///     forEach(events(of: .someEvent, fromType: ChildModel.self)) { model in ... }
+    /// Filters by both the event value and the sender's type. Each emission is the `FromModel`
+    /// instance that sent the event, useful when you need to act on the specific sender:
+    ///
+    /// ```swift
+    /// node.forEach(node.event(of: .deleteRequested, fromType: ItemModel.self)) { item in
+    ///     items.removeAll { $0 === item }
+    /// }
+    /// ```
     func event<FromModel: Model>(of event: FromModel.Event, fromType modelType: FromModel.Type) -> AsyncStream<FromModel> where FromModel.Event: Equatable&Sendable {
         guard let context = enforcedContext() else { return .never }
         return context.events().compactMap {
@@ -127,7 +166,16 @@ public extension ModelNode {
         }.eraseToStream()
     }
 
-    /// Returns a sequence that emits when events equal to the provided `event` is sent from this model or any of its descendants of type `fromType`.
+    /// Returns a stream that emits the sending model each time a specific event value is sent by a model of type `FromModel`.
+    ///
+    /// Use this when the event type is not `FromModel.Event` — for example when models send a
+    /// shared event enum that is not their own associated `Event` type:
+    ///
+    /// ```swift
+    /// node.forEach(node.event(of: SharedEvent.logout, fromType: SessionModel.self)) { session in
+    ///     handleLogout(from: session)
+    /// }
+    /// ```
     func event<Event: Equatable&Sendable, FromModel: Sendable>(of event: Event, fromType modelType: FromModel.Type) -> AsyncStream<FromModel> {
         guard let context = enforcedContext() else { return .never }
         return context.events().compactMap {
@@ -162,10 +210,17 @@ public struct ModelRelation: OptionSet, Sendable {
         self.rawValue = rawValue
     }
 
+    /// The model itself.
     public static let `self` = ModelRelation(rawValue: 1 << 0)
+    /// All ancestor models, from the direct parent up to the root.
     public static let ancestors = ModelRelation(rawValue: 1 << 1)
+    /// All descendant models, depth-first.
     public static let descendants = ModelRelation(rawValue: 1 << 2)
+    /// The model's direct parents only (not grandparents).
     public static let parent = ModelRelation(rawValue: 1 << 3)
+    /// The model's direct children only (not grandchildren).
     public static let children = ModelRelation(rawValue: 1 << 4)
+    /// Also include dependency models at each visited node. Combine with another option,
+    /// e.g. `[.self, .dependencies]`.
     public static let dependencies = ModelRelation(rawValue: 1 << 5)
 }
