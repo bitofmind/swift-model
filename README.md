@@ -1523,6 +1523,45 @@ When debugging, you can print skipped assertions without failing the test:
 tester.showSkippedAssertions = true
 ```
 
+### Time Control
+
+Models that use `node.continuousClock` for timers — such as polling loops or countdowns — are fully testable without real wall-clock delays. Inject a `TestClock` (from [swift-clocks](https://github.com/pointfreeco/swift-clocks)) via `andTester` and advance time explicitly in your test:
+
+```swift
+// Model under test
+@Model struct TimerModel {
+    var secondsElapsed = 0
+
+    func onActivate() {
+        node.forEach(node.continuousClock.timer(interval: .seconds(1))) { _ in
+            secondsElapsed += 1
+        }
+    }
+}
+
+// Test
+@Test func testTimer() async throws {
+    let clock = TestClock()
+    let (model, tester) = TimerModel().andTester {
+        $0.continuousClock = clock
+    }
+
+    await clock.advance(by: .seconds(1))
+    await tester.assert { model.secondsElapsed == 1 }
+
+    await clock.advance(by: .seconds(2))
+    await tester.assert { model.secondsElapsed == 3 }
+}
+```
+
+For tests that only care about the end result and not intermediate timer ticks, use `ImmediateClock()` instead. It fires all timer intervals synchronously, letting the model reach its final state without manual advancement:
+
+```swift
+let (model, tester) = TimerModel().andTester {
+    $0.continuousClock = ImmediateClock()
+}
+```
+
 ### Refactor-Resilient Tests
 
 SwiftModel tests assert **final state**, not the sequence of actions or effects that produced it. This means you can freely restructure model internals — split a method, rename a case, change how async work is dispatched — and existing tests continue to pass as long as the observable outcome is unchanged.
