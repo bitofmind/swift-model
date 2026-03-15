@@ -137,9 +137,7 @@ If your app is a single screen with no async work and no tests, `@Observable` is
 
 ### Requirements
 
-SwiftModel requires Swift 5.9.2 (Xcode 15.1) that fixes compiler bugs around the new [init accessor](https://github.com/apple/swift-evolution/blob/main/proposals/0400-init-accessors.md) 
-
-> Even more [init accessor](https://github.com/apple/swift-evolution/blob/main/proposals/0400-init-accessors.md) compiler fixes did land in Swift 5.10, but there still some remaining fixes that did not make it to 5.10. Until then @Model custom initializers might require accessing the underscored private members directly instead of the regular ones.
+SwiftModel requires **Swift 5.9.2 / Xcode 15.1** or later (macOS 11+, iOS 14+, tvOS 14+, watchOS 6+, Linux).
 
 ### Documentation
 
