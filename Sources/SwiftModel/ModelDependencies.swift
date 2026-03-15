@@ -1,6 +1,21 @@
 import Dependencies
 import ConcurrencyExtras
 
+/// A mutable container of dependency overrides passed to `andTester`, `withDependencies`, or `withAnchor`.
+///
+/// `ModelDependencies` wraps `swift-dependencies`' `DependencyValues` and adds tracking of
+/// any model-typed dependencies so they can be managed as part of the model hierarchy.
+///
+/// You interact with `ModelDependencies` through its `@dynamicMemberLookup` subscript, which
+/// mirrors the `DependencyValues` key path syntax:
+///
+/// ```swift
+/// let (model, tester) = AppModel().andTester {
+///     $0.uuid = .incrementing
+///     $0.continuousClock = ImmediateClock()
+///     $0.apiClient = .mock
+/// }
+/// ```
 @dynamicMemberLookup
 public struct ModelDependencies: Sendable {
     var dependencies: DependencyValues
