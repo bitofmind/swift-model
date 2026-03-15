@@ -1,5 +1,9 @@
 # SwiftModel
 
+[![Swift 5.9.2+](https://img.shields.io/badge/Swift-5.9.2%2B-orange.svg)](https://swift.org)
+[![Platforms](https://img.shields.io/badge/Platforms-macOS%2011%20%7C%20iOS%2014%20%7C%20tvOS%2014%20%7C%20watchOS%206%20%7C%20Linux-blue.svg)](https://swift.org)
+[![Swift Package Manager](https://img.shields.io/badge/SPM-compatible-brightgreen.svg)](https://swift.org/package-manager)
+
 Composable value-type models for SwiftUI. The structured architecture of TCA without reducers, action enums, or effect indirection.
 
 ```swift
@@ -336,7 +340,7 @@ SwiftModel supports sharing with the following implications:
 
 ### Debugging State Changes
 
-As SwiftModels keeps track of all model state changes, it supports printing of differences between previous and updated state. You can enable this for the lifetime of a model by adding a modifier: 
+As SwiftModels keeps track of all model state changes, it supports printing of differences between previous and updated state. You can enable this for the lifetime of a model by adding a modifier:
 
 ```swift
 AppModel()._withPrintChanges()
@@ -351,6 +355,8 @@ printTask.cancel()
 ```
 
 > Printing of changes are only active in `DEBUG` builds.
+
+> The leading underscore on `_printChanges` and `_withPrintChanges` is intentional — it mirrors the convention used by SwiftUI's own `_printChanges()` and TCA's `_printChanges()`. The underscore signals that this is a supported but debug-only tool that should not remain in production code. It is deliberately unsearchable to discourage leaving calls in shipping builds.
 
 ## SwiftUI Integration
 
@@ -1405,7 +1411,7 @@ await tester.assert {
 
 ### Asserting Callbacks
 
-Pass a `TestProbe` wherever the model expects a callback closure. Call `tester.install(probe)` to opt into exhaustion checking for it:
+Pass a `TestProbe` wherever the model expects a callback closure. Call `tester.install(probe)` to opt into exhaustion checking for it — omitting this call means probe invocations are not tracked and unexpected calls produce silent false-passes:
 
 ```swift
 @Test func testFactButtonTapped() async {
@@ -1518,5 +1524,14 @@ let (model, tester) = TimerModel().andTester {
 SwiftModel tests assert **final state**, not the sequence of actions or effects that produced it. This means you can freely restructure model internals — split a method, rename a case, change how async work is dispatched — and existing tests continue to pass as long as the observable outcome is unchanged.
 
 TCA tests encode the full action sequence: renaming an action case or splitting an effect requires rewriting tests even when visible behaviour is identical. SwiftModel has no action enum, so there is nothing to encode and nothing to break.
+
+## Examples
+
+The `Examples/` directory contains several complete apps at different levels of complexity. Two of them illustrate the same feature — a sign-up flow — implemented in two different ways, which is a useful teaching tool:
+
+- **`SignUpFlow`** — child models are passed directly from parent to child at construction time. Simple and explicit; ideal for shallow hierarchies where the model is only needed one or two levels deep.
+- **`SignUpFlowUsingDependency`** — the shared model is registered as a `@ModelDependency`. Any descendant can access it directly via `node` without constructor parameter drilling. Preferable when many nested models all need access to the same service.
+
+Use `SignUpFlow` as the default and reach for `SignUpFlowUsingDependency` when you find yourself threading the same model through three or more constructor parameters.
 
 
