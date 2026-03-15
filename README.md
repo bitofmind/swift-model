@@ -877,6 +877,8 @@ All mutations inside the block appear atomically to other threads. Observation c
 
 The closure is non-throwing by design — transactions have no rollback, so a throwing closure provides no safety guarantee. If you need conditional application, compute the new values first, then apply them inside the transaction.
 
+> `withAnimation { model.someProperty = newValue }` works as expected from any model method. SwiftModel's coalescing and observation are compatible with active `Transaction` objects, so animations driven by model mutations behave correctly without any special handling.
+
 ### Observing Any Modification
 
 `observeAnyModification()` returns a stream that emits whenever *any* state in a model or its descendants changes, without needing to specify which property. This is useful for cross-cutting concerns:
@@ -1583,4 +1585,13 @@ The `Examples/` directory contains several complete apps at different levels of 
 
 Use `SignUpFlow` as the default and reach for `SignUpFlowUsingDependency` when you find yourself threading the same model through three or more constructor parameters.
 
+## What SwiftModel Is Not
 
+- **Not a Redux store.** There is no global state atom, no dispatcher, and no reducer function. Each model owns its own state and communicates via direct method calls, typed events, or the dependency system.
+- **Not a global singleton.** Models are values in a hierarchy. Two features can have independent instances of the same model type without sharing state.
+- **Not a Combine wrapper.** SwiftModel uses `async`/`await` and `AsyncSequence` throughout. Combine integration exists via `node.onReceive(_:)` as a bridge for legacy publishers, not as the primary model.
+- **Not a navigation library.** Navigation is expressed as plain model state (optionals, arrays, enums). No routing DSL or coordinator object is required.
+
+---
+
+If you find a bug or have a feature idea, please [open an issue](https://github.com/bitofmind/swift-model/issues). If SwiftModel is useful to you, consider starring the repo — it helps others find it.
