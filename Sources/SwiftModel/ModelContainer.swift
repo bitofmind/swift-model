@@ -1,15 +1,22 @@
 import Foundation
 import IdentifiedCollections
 
-/// A conforming type will allow it's members to be visited by the provided visitor.
-/// For Custom types, such as nested struct or enums you would preferable used the
-/// @ModelContainer instead such as:
+/// A protocol for types that hold `@Model`-typed children and expose them for hierarchy traversal.
 ///
-///     @ModelContainer enum State {
-///         case unauthorized(LoginModel)
-///         case authorized(UserModel)
-///     }
+/// `ModelContainer` conformance is what lets SwiftModel walk into a property and manage its
+/// child models (activation, cancellation, event routing, observation, etc.).
 ///
+/// You rarely need to implement this protocol manually. Use the `@ModelContainer` macro instead:
+///
+/// ```swift
+/// @ModelContainer enum Destination {
+///     case login(LoginModel)
+///     case home(HomeModel)
+/// }
+/// ```
+///
+/// `Optional<M>`, `Array<M>`, `IdentifiedArray<M>`, and `Dictionary<Key, M>` already conform
+/// for any `ModelContainer`-conforming element type `M`.
 public protocol ModelContainer: Sendable {
     func visit(with visitor: inout ContainerVisitor<Self>)
 }
@@ -108,6 +115,11 @@ public extension ModelContainer {
         return \Self.[cursor: cursor]
     }
 
+    /// Creates a key path into this container keyed by the value's own type identity.
+    ///
+    /// Use this overload inside a `@ModelContainer` `visit` implementation when there is no
+    /// explicit `ID` to key on — for example, for an `Optional` whose element is not `Identifiable`.
+    /// The cursor is created from the runtime identity of `value`.
     func path<Value>(value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
         let cursor = ContainerCursor(id: anyHashable(from: value), get: { get($0)! }, set: set)
         return \Self.[cursor: cursor]
