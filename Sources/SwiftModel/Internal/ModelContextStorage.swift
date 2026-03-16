@@ -340,7 +340,7 @@ extension AnyContext {
             if !storage.isSystemStorage {
                 willAccessStorage(storage)
             }
-            return contextStorage[storage.key]?.value as? V ?? storage.defaultValue
+            return lock { contextStorage[storage.key]?.value as? V } ?? storage.defaultValue
         }
         set {
             let v = newValue
@@ -375,7 +375,9 @@ extension AnyContext {
         do {
             try reduceHierarchy(for: [.self, .ancestors], transform: \.self, into: ()) { _, ctx in
                 ctx.willAccessStorage(storage)
-                if let entry = ctx.contextStorage[storage.key], let value = entry.value as? V {
+                // Read under ctx's lock to avoid a data race with concurrent writes on that context.
+                let entry = ctx.lock { ctx.contextStorage[storage.key] }
+                if let entry, let value = entry.value as? V {
                     throw EnvironmentValueFound(value: value)
                 }
             }
