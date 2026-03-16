@@ -23,6 +23,20 @@ import Observation
 ///
 /// Properties are observable by default. Use `@ModelIgnored` to opt out, or store child models
 /// directly as properties — they are automatically managed as part of the model hierarchy.
+///
+/// ## Identity
+///
+/// The macro generates an `id: ModelID` property for `Identifiable` conformance. If you declare
+/// your own `id` property, the macro honours it and does **not** generate a `ModelID`-based one:
+///
+/// ```swift
+/// @Model struct TodoModel {
+///     let id: Int       // used as the Identifiable.id
+///     var title: String
+/// }
+/// ```
+///
+/// See ``Model`` for full details on model identity.
 @attached(extension, conformances: Model, Sendable, Identifiable, CustomReflectable, Observable, CustomStringConvertible, CustomDebugStringConvertible, names: named(customMirror), named(description), named(debugDescription))
 @attached(member, names: named(_$modelContext), named(_$contextInit), named(_context), named(_updateContext), named(node), named(isEqual), named(visit), named(==))
 @attached(memberAttribute)

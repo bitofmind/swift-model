@@ -8,9 +8,9 @@ import ConcurrencyExtras
 /// stored properties are mutated — and is used internally to track parent–child relationships,
 /// drive `Identifiable` conformance, and detect when two model values refer to the same live instance.
 ///
-/// You rarely need to interact with `ModelID` directly. Access it via `model.id` (provided by
-/// the synthesised `Identifiable` conformance) or `node.id`.
-public struct ModelID: Hashable, Sendable, CustomReflectable, CustomDebugStringConvertible {
+/// You rarely need to interact with `ModelID` directly. Access it via `model.id`, which is
+/// provided by the synthesised `Identifiable` conformance.
+public struct ModelID: Hashable, Sendable, CustomReflectable, CustomStringConvertible, CustomDebugStringConvertible {
     private var low: UInt32
     private var high: UInt16
 
@@ -18,9 +18,13 @@ public struct ModelID: Hashable, Sendable, CustomReflectable, CustomDebugStringC
         Mirror(self, children: [])
     }
 
-    public var debugDescription: String {
-        String(UInt64(high)<<32 | UInt64(low))
+    /// Returns the ID in the form `"ModelID(5)"`, making it clear in diffs and debug output
+    /// that this is the auto-generated instance identity rather than a user-declared property.
+    public var description: String {
+        "ModelID(\(UInt64(high) << 32 | UInt64(low)))"
     }
+
+    public var debugDescription: String { description }
 }
 
 extension ModelID {

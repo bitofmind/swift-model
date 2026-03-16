@@ -103,7 +103,7 @@ struct ModelMacroTests {
             extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: Sendable {
+            extension MyModel: @unchecked Sendable {
             }
 
             extension MyModel: Identifiable {
@@ -194,7 +194,7 @@ struct ModelMacroTests {
             extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: Sendable {
+            extension MyModel: @unchecked Sendable {
             }
 
             extension MyModel: Identifiable {
@@ -299,7 +299,7 @@ struct ModelMacroTests {
             extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: Sendable {
+            extension MyModel: @unchecked Sendable {
             }
 
             extension MyModel: Identifiable {
@@ -382,7 +382,7 @@ struct ModelMacroTests {
             extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: Sendable {
+            extension MyModel: @unchecked Sendable {
             }
 
             extension MyModel: Identifiable {
@@ -458,7 +458,7 @@ struct ModelMacroTests {
             extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: Sendable {
+            extension MyModel: @unchecked Sendable {
             }
 
             extension MyModel: Identifiable {

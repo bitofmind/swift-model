@@ -68,7 +68,7 @@ public struct ModelNode<M: Model> {
     }
 }
 
-extension ModelNode: Sendable where M: Sendable {}
+extension ModelNode: @unchecked Sendable {}
 
 public extension ModelNode {
     /// Typed access to per-node context storage via `@dynamicMemberLookup`.
