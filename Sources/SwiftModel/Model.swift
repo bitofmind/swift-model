@@ -46,8 +46,24 @@ import Dependencies
 /// }
 /// ```
 ///
-/// A model is always `Identifiable`. Provide your own `id` property or use the automatically
-/// generated `ModelID`.
+/// ## Identity
+///
+/// Every model is `Identifiable`. By default, `@Model` synthesises an `id` property backed by
+/// an auto-generated `ModelID` — a compact integer that is stable for the lifetime of the model
+/// in the hierarchy.
+///
+/// If you declare your own `id` property, the macro uses it instead:
+///
+/// ```swift
+/// @Model struct TodoModel {
+///     let id: Int          // your own stable identity
+///     var title: String
+/// }
+/// ```
+///
+/// > Note: Even when you provide your own `id`, SwiftModel still tracks the model instance
+/// > internally using a `ModelID`. Your `id` is used for `Identifiable` conformance
+/// > (e.g. `ForEach`, navigation stack paths) but is independent of the internal tracking.
 public protocol Model: ModelContainer, Identifiable, Sendable {
     /// The type of events that this model can send
     associatedtype Event = ()
@@ -78,7 +94,10 @@ public protocol Model: ModelContainer, Identifiable, Sendable {
 }
 
 public extension Model {
-    /// An automatically generated id
+    /// The model's identity, used for `Identifiable` conformance.
+    ///
+    /// This default implementation returns the auto-generated `ModelID`. It is shadowed when the
+    /// model type declares its own `id` property of a different type.
     var id: ModelID { modelID }
 
     func onActivate() { }
@@ -153,7 +172,7 @@ public extension Model {
     /// // ... do work ...
     /// printer.cancel()
     /// ```
-    func _withPrintChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Self where Self: Sendable {
+    func _withPrintChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Self {
         withActivation {
             $0._printChanges(name: name, to: printer)
         }

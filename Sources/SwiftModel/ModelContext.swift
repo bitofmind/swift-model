@@ -64,7 +64,7 @@ public struct ModelContext<M: Model> {
     public init() {}
 }
 
-extension ModelContext: Sendable where M: Sendable {}
+extension ModelContext: @unchecked Sendable {}
 
 extension ModelContext: Hashable {
     public static func == (lhs: ModelContext<M>, rhs: ModelContext<M>) -> Bool {

@@ -68,7 +68,7 @@ public extension Observed {
     }
 }
 
-public extension Model where Self: Sendable {
+public extension Model {
     /// Returns a stream that emits whenever any state in the model or any of its descendants changes.
     ///
     /// This is useful for cross-cutting concerns that need to react to *any* change in a subtree

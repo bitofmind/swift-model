@@ -35,7 +35,7 @@ extension ModelMacro: ExtensionMacro {
             }
 
             addConformance("Model", qualifiedName: "SwiftModel.Model")
-            addConformance("Sendable")
+            addConformance("Sendable", qualifiedName: "@unchecked Sendable")
             addConformance("Identifiable")
 
             let memberList = declaration.memberBlock.members.filter {

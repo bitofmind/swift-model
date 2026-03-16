@@ -73,7 +73,7 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
 }
 
 public extension Binding {
-    subscript<Subject: Model>(dynamicMember keyPath: KeyPath<Value, Subject>&Sendable) -> Binding<Subject> where Value: Sendable {
+    subscript<Subject: Model>(dynamicMember keyPath: KeyPath<Value, Subject>&Sendable) -> Binding<Subject> where Value: Model {
         Binding<Subject> {
             wrappedValue[keyPath: keyPath]
         } set: { _ in }
