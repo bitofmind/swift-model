@@ -99,6 +99,73 @@ extension Dictionary: ModelContainer where Value: ModelContainer {
     }
 }
 
+// MARK: - Hashable synthesis helpers
+
+/// Returns `true` if `lhs == rhs`, using value equality for `Equatable` types.
+///
+/// This overload is preferred by Swift's overload resolution when `T` conforms to `Equatable`,
+/// and is used by the `@ModelContainer` macro's synthesised `==` operator.
+public func _modelEqual<T: Equatable>(_ lhs: T, _ rhs: T) -> Bool {
+    lhs == rhs
+}
+
+/// Returns `true` if `lhs.id == rhs.id`, for `Identifiable` types that are not `Equatable`.
+///
+/// This is the fallback overload used by the `@ModelContainer` macro's synthesised `==` operator
+/// when the associated value type is not `Equatable` (e.g. a plain `@Model` struct).
+/// Marked disfavored so the `Equatable` overload wins when `T` conforms to both.
+@_disfavoredOverload
+public func _modelEqual<T: Identifiable>(_ lhs: T, _ rhs: T) -> Bool {
+    lhs.id == rhs.id
+}
+
+/// Returns `true` if all elements compare equal by id, for arrays of `Identifiable` types
+/// that are not `Equatable` (e.g. `[@Model]` arrays).
+/// Marked disfavored so the `Equatable` overload wins when `T` conforms to both.
+@_disfavoredOverload
+public func _modelEqual<T: Identifiable>(_ lhs: [T], _ rhs: [T]) -> Bool {
+    guard lhs.count == rhs.count else { return false }
+    return zip(lhs, rhs).allSatisfy { _modelEqual($0, $1) }
+}
+
+/// Feeds `value` into `hasher` using its full `Hashable` conformance.
+///
+/// This overload is preferred by Swift's overload resolution when `T` conforms to `Hashable`,
+/// and is used by the `@ModelContainer` macro's synthesised `hash(into:)`.
+public func _modelCombine<T: Hashable>(into hasher: inout Hasher, _ value: T) {
+    hasher.combine(value)
+}
+
+/// Feeds `value.id` into `hasher` for `Identifiable` types that are not `Hashable`.
+///
+/// This is the fallback overload used by the `@ModelContainer` macro's synthesised `hash(into:)`
+/// when the associated value type is not `Hashable` (e.g. a plain `@Model` struct).
+/// Marked disfavored so the `Hashable` overload wins when `T` conforms to both.
+@_disfavoredOverload
+public func _modelCombine<T: Identifiable>(into hasher: inout Hasher, _ value: T) {
+    hasher.combine(value.id)
+}
+
+/// Feeds each element's id into `hasher` for arrays of `Identifiable` types that are not `Hashable`
+/// (e.g. `[@Model]` arrays).
+/// Marked disfavored so the `Hashable` overload wins when `T` conforms to both.
+@_disfavoredOverload
+public func _modelCombine<T: Identifiable>(into hasher: inout Hasher, _ value: [T]) {
+    for element in value { _modelCombine(into: &hasher, element) }
+}
+
+/// Fallback for types that are neither `Equatable` nor `Identifiable` (e.g. closure/function types).
+/// Such values can never be meaningfully compared for equality, so this always returns `false`.
+public func _modelEqual<T>(_ lhs: T, _ rhs: T) -> Bool {
+    false
+}
+
+/// Fallback for types that are neither `Hashable` nor `Identifiable` (e.g. closure/function types).
+/// Combines a stable zero value; closures cannot be hashed in any meaningful way.
+public func _modelCombine<T>(into hasher: inout Hasher, _ value: T) {
+    hasher.combine(0)
+}
+
 public extension ModelContainer {
     func path<ID: Hashable, Value>(id: ID, get: @escaping @Sendable (Self) -> Value, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
         let cursor = ContainerCursor(id: id, get: get, set: set)

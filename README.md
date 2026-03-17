@@ -1368,12 +1368,14 @@ Represent a navigation stack as an array of `@ModelContainer` enum cases. Each c
     var standupsList = StandupsList()
     var path: [Path] = []
 
+    // Declare Hashable — @ModelContainer synthesises == and hash(into:).
+    // For @Model associated values, identity (.id) is used; for Equatable/Hashable
+    // value types, full value equality is used automatically.
     @ModelContainer @CasePathable
     @dynamicMemberLookup
-    enum Path: Hashable, Sendable, Identifiable {
+    enum Path: Hashable {
         case detail(StandupDetail)
         case record(RecordMeeting)
-        var id: AnyHashableSendable { ... }
     }
 
     func standupTapped(_ standup: Standup) {
@@ -1382,7 +1384,7 @@ Represent a navigation stack as an array of `@ModelContainer` enum cases. Each c
 }
 ```
 
-In the view, bind `$model.path` to `NavigationStack`:
+In the view, bind `$model.path` directly to `NavigationStack`:
 
 ```swift
 struct AppView: View {
@@ -1402,7 +1404,7 @@ struct AppView: View {
 }
 ```
 
-> `NavigationStack` requires path elements to be `Hashable`. The default `@Model` `Hashable` conformance is identity-based, so `path` works as shown. See `Examples/SignUpFlow/SignUpFlow.swift` for a complete stack navigation example including a `StackItem` wrapper for value-equality models.
+> `NavigationStack` requires path elements to be `Hashable`. When you declare `Hashable` on a `@ModelContainer` enum, the conformance is synthesised automatically: `@Model` associated values compare and hash by identity, and `Equatable`/`Hashable` value types use their natural equality.
 
 ### Deep links and programmatic navigation
 

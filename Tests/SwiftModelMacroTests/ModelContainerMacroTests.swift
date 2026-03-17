@@ -7,7 +7,7 @@ import MacroTesting
 
 @Suite(.macros([
     "ModelContainer": ModelContainerMacro.self,
-], record: .never))
+]))
 struct ModelContainerMacroTests {
     @Test func testStructModelContainer() {
         assertMacro {
@@ -139,6 +139,229 @@ struct ModelContainerMacroTests {
                                 if case let .doubleMix(value1, string: _) = root {
                                     let value2 = value
                                     root = .doubleMix(value1, string: value2)
+                                }
+                            })
+
+
+                    }
+                }
+
+              }
+            """
+        }
+    }
+
+    @Test func testHashableEnumModelContainer() {
+        assertMacro {
+            """
+            @ModelContainer enum Nav: Hashable {
+                case home
+                case detail(DetailModel)
+                case settings(SettingsModel)
+            }
+            """
+        } expansion: {
+            """
+            enum Nav: Hashable {
+                case home
+                case detail(DetailModel)
+                case settings(SettingsModel)
+
+                public func hash(into hasher: inout Hasher) {
+                    switch self {
+                    case .home:
+                    hasher.combine("home")
+                    case let .detail(v1):
+                    hasher.combine("detail")
+                    _modelCombine(into: &hasher, v1)
+                    case let .settings(v1):
+                    hasher.combine("settings")
+                    _modelCombine(into: &hasher, v1)
+                    }
+                }
+            }
+
+            extension Nav: SwiftModel.ModelContainer {
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    switch self {
+                    case .home:
+                        break
+                    case let .detail(value1):
+                        visitor.visitStatically(at: path(caseName: "detail", value: value1) { root in
+                                if case let .detail(value1) = root {
+                                    value1
+                                } else {
+                                    nil
+                                }
+                            } set: { root, value in
+                                if case  .detail(_) = root {
+                                    let value1 = value
+                                    root = .detail(value1)
+                                }
+                            })
+
+                    case let .settings(value1):
+                        visitor.visitStatically(at: path(caseName: "settings", value: value1) { root in
+                                if case let .settings(value1) = root {
+                                    value1
+                                } else {
+                                    nil
+                                }
+                            } set: { root, value in
+                                if case  .settings(_) = root {
+                                    let value1 = value
+                                    root = .settings(value1)
+                                }
+                            })
+
+
+                    }
+                }
+
+              }
+
+            extension Nav: Equatable {
+                public static func == (lhs: Self, rhs: Self) -> Bool {
+                    switch (lhs, rhs) {
+                    case (.home, .home):
+                        return true
+                    case let (.detail(l1), .detail(r1)):
+                        return _modelEqual(l1, r1)
+                    case let (.settings(l1), .settings(r1)):
+                        return _modelEqual(l1, r1)
+                    default:
+                        return false
+                    }
+                }
+            }
+            """
+        }
+    }
+
+    @Test func testHashableEnumWithNamedParams() {
+        assertMacro {
+            """
+            @ModelContainer enum Nav: Hashable {
+                case detail(model: DetailModel)
+                case edit(item: ItemModel, meta: MetaModel)
+            }
+            """
+        } expansion: {
+            """
+            enum Nav: Hashable {
+                case detail(model: DetailModel)
+                case edit(item: ItemModel, meta: MetaModel)
+
+                public func hash(into hasher: inout Hasher) {
+                    switch self {
+                    case let .detail(model: v1):
+                    hasher.combine("detail")
+                    _modelCombine(into: &hasher, v1)
+                    case let .edit(item: v1, meta: v2):
+                    hasher.combine("edit")
+                    _modelCombine(into: &hasher, v1)
+                        _modelCombine(into: &hasher, v2)
+                    }
+                }
+            }
+
+            extension Nav: SwiftModel.ModelContainer {
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    switch self {
+                    case let .detail(model: value1):
+                        visitor.visitStatically(at: path(caseName: "detail", value: value1) { root in
+                                if case let .detail(model: value1) = root {
+                                    value1
+                                } else {
+                                    nil
+                                }
+                            } set: { root, value in
+                                if case  .detail(model: _) = root {
+                                    let value1 = value
+                                    root = .detail(model: value1)
+                                }
+                            })
+
+                    case let .edit(item: value1, meta: value2):
+                        visitor.visitStatically(at: path(caseName: "edit.0", value: value1) { root in
+                                if case let .edit(item: value1, meta: _) = root {
+                                    value1
+                                } else {
+                                    nil
+                                }
+                            } set: { root, value in
+                                if case let .edit(item: _, meta: value2) = root {
+                                    let value1 = value
+                                    root = .edit(item: value1, meta: value2)
+                                }
+                            })
+
+                        visitor.visitStatically(at: path(caseName: "edit.1", value: value2) { root in
+                                if case let .edit(item: _, meta: value2) = root {
+                                    value2
+                                } else {
+                                    nil
+                                }
+                            } set: { root, value in
+                                if case let .edit(item: value1, meta: _) = root {
+                                    let value2 = value
+                                    root = .edit(item: value1, meta: value2)
+                                }
+                            })
+
+
+                    }
+                }
+
+              }
+
+            extension Nav: Equatable {
+                public static func == (lhs: Self, rhs: Self) -> Bool {
+                    switch (lhs, rhs) {
+                    case let (.detail(model: l1), .detail(model: r1)):
+                        return _modelEqual(l1, r1)
+                    case let (.edit(item: l1, meta: l2), .edit(item: r1, meta: r2)):
+                        return _modelEqual(l1, r1) && _modelEqual(l2, r2)
+                    default:
+                        return false
+                    }
+                }
+            }
+            """
+        }
+    }
+
+    @Test func testHashableNotSynthesisedWhenManualImplementation() {
+        assertMacro {
+            """
+            @ModelContainer enum Nav: Hashable {
+                case detail(DetailModel)
+                static func == (lhs: Self, rhs: Self) -> Bool { false }
+                func hash(into hasher: inout Hasher) {}
+            }
+            """
+        } expansion: {
+            """
+            enum Nav: Hashable {
+                case detail(DetailModel)
+                static func == (lhs: Self, rhs: Self) -> Bool { false }
+                func hash(into hasher: inout Hasher) {}
+            }
+
+            extension Nav: SwiftModel.ModelContainer {
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    switch self {
+                    case let .detail(value1):
+                        visitor.visitStatically(at: path(caseName: "detail", value: value1) { root in
+                                if case let .detail(value1) = root {
+                                    value1
+                                } else {
+                                    nil
+                                }
+                            } set: { root, value in
+                                if case  .detail(_) = root {
+                                    let value1 = value
+                                    root = .detail(value1)
                                 }
                             })
 

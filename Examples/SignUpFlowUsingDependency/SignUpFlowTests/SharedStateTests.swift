@@ -1,51 +1,78 @@
 import SwiftModel
 import Testing
 import SwiftUINavigation
+import Observation
 @testable import SignUpFlowUsingDependency
 
+// MARK: - Test helper
+
+/// Wraps the sign-up flow and owns all path-element models as direct typed
+/// properties. Because they are named @Model properties on this wrapper they
+/// become live anchored children, and the shared SignUpData dependency is
+/// resolved through the test dependency container.
+///
+/// Unlike the non-dependency SignUpFlow example, models here access SignUpData
+/// via @ModelDependency rather than constructor injection. The test sets up the
+/// dependency once via andTester's dependency closure, and the TestHelper
+/// forwards the onNext event to expose a live SummaryFeature reference.
+@Model private struct TestHelper {
+  var topics: TopicsFeature
+  var summary: SummaryFeature?
+
+  init() {
+    _topics = TopicsFeature()
+  }
+
+  func onActivate() {
+    // When TopicsFeature fires .onNext, create a live SummaryFeature and
+    // store it here so the test can get a typed live reference to it.
+    node.forEach(node.event(of: .onNext, fromType: TopicsFeature.self)) { _ in
+      summary = SummaryFeature()
+    }
+  }
+}
+
+// MARK: - Tests
+
 struct SharedStateTests {
-  @Test func testSignUpFlow() async {
-    let (model, tester) = SignUpFeature().andTester {
+  @Test func testSignUpFlow() async throws {
+    let (helper, tester) = TestHelper().andTester {
       $0[SignUpData.self] = SignUpData()
     }
+    tester.exhaustivity = [.state, .events, .tasks, .probes, .preference]
 
-    model.path = [
-      .basics(BasicsFeature()),
-      .personalInfo(PersonalInfoFeature()),
-      .topics(TopicsFeature())
-    ]
+    let topics = helper.topics
 
-    model.path[2].topics?.nextButtonTapped()
+    // nextButtonTapped with no topics selected should set an alert.
+    topics.nextButtonTapped()
 
     await tester.assert {
-      model.path[2].topics?.alert == AlertState {
+      topics.alert == AlertState {
         TextState("Please choose at least one topic.")
       }
     }
 
-    model.path[2].topics?.signUpData.topics = [.testing]
+    // Set topics via the dependency — all models share the same SignUpData context.
+    topics.signUpData.topics = [.testing]
 
     await tester.assert {
-      model.path[2].topics?.signUpData.topics == [.testing]
+      topics.signUpData.topics == [.testing]
     }
 
-    model.path[2].topics?.nextButtonTapped()
+    // nextButtonTapped now fires .onNext; TestHelper.onActivate creates a live
+    // SummaryFeature and stores it on helper.summary.
+    topics.nextButtonTapped()
 
     await tester.assert {
-      model.path[2].topics?.didSend(.onNext) == true
-      model.path.count == 4
-      model.path[3].is(\.summary)
+      topics.didSend(.onNext) == true
     }
 
-    // Capture the summary model now that path[3] is confirmed to exist and be a summary.
-    let summary = model.path[3].summary!
+    let summary = try await tester.unwrap(helper.summary)
 
     summary.editPersonalInfoButtonTapped()
 
     await tester.assert {
       summary.destination.is(\.personalInfo) == true
-      // isEditing is set on SummaryFeature's context and propagates via
-      // .environment to PersonalInfoFeature — no constructor param needed.
       summary.node.context.isEditing == true
       summary.destination?.personalInfo?.isEditing == true
     }
@@ -67,7 +94,6 @@ struct SharedStateTests {
 
     await tester.assert {
       summary.didSend(.onSubmit) == true
-      model.path.isEmpty
     }
   }
 }

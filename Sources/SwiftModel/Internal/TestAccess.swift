@@ -202,13 +202,30 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     modelName: model.typeDescription,
                     propertyName: resolvedStorageName ?? propertyName(from: model, path: path),
                     value: { String(customDumping: capturedValue) },
+                    capturedValue: { capturedValue },
                     apply: { _ in },
-                    additionalCleanup: cleanup
+                    additionalCleanup: cleanup,
+                    skipEqualityCheck: true
                 ))
             }
         }
 
         let isPreference = capturedArea.map { $0.contains(.preference) } ?? false
+        // Context and preference storage values live in AnyContext.contextStorage, not in the @Model
+        // struct fields. Writing them back to a frozen copy (no live context) is a silent no-op, so
+        // the isEqualIncludingIds round-trip check would always fail. Skip it for these accesses.
+        let isContextOrPreferenceStorage = capturedArea.map { $0.contains(.context) || $0.contains(.preference) } ?? false
+        // Model-typed properties (e.g. TestHelper.summary: SummaryFeature) carry a generation counter
+        // that increments on every child write. Comparing the full struct value in isEqualIncludingIds
+        // causes a false "not settled" result whenever a child property changes. Child accesses
+        // (e.g. SummaryFeature.destination) are always recorded alongside and check the leaf with IDs.
+        let isModelTypeValue = Value.self is any Model.Type
+        // ModelContainer-typed properties (Optional<M>, @ModelContainer enum cases) use ContainerCursor
+        // key paths that are only safe on the live hierarchy. Reading them on a frozenCopy snapshot
+        // crashes because frozenCopy transforms model identity and the cursor's identity key no longer
+        // matches. Leaf accesses within the container are recorded separately and provide the same
+        // in-flight detection guarantee.
+        let isContainerTypeValue = Value.self is any ModelContainer.Type
 
         return {
             // For preference paths, use the pre-computed aggregated value if available.
@@ -226,10 +243,13 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     path: fullPath,
                     modelName: model.typeDescription,
                     propertyName: resolvedStorageName ?? propertyName(from: model, path: path),
-                    value: { String(customDumping: value) }
-                ) {
-                    $0[keyPath: fullPath] = value
-                })
+                    value: { String(customDumping: value) },
+                    capturedValue: { value },
+                    apply: { $0[keyPath: fullPath] = value },
+                    skipEqualityCheck: isContextOrPreferenceStorage,
+                    isModelTypeValue: isModelTypeValue,
+                    isContainerTypeValue: isContainerTypeValue
+                ))
             }
         }
     }
@@ -295,7 +315,13 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         apply: { $0[keyPath: fullPath] = value },
                         debugInfo: {
                             let prop = prefix.map { "\($0).\(name ?? "UNKNOWN")" } ?? (name ?? "UNKNOWN")
-                            return "\(String(describing: M.self)).\(prop) == \(String(customDumping: value))"
+                            // Use includeInMirror so @Model child values show their fields and ModelID.
+                            // This makes it clear which instance was assigned (important when a child
+                            // model is replaced with a new instance that has the same field values).
+                            let valueDescription = threadLocals.withValue(true, at: \.includeInMirror) {
+                                String(customDumping: value)
+                            }
+                            return "\(String(describing: M.self)).\(prop) == \(valueDescription)"
                         },
                         area: area
                     )
@@ -397,22 +423,50 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     // match lastState (the live model). This guards against the predicate
                     // passing transiently while a backgroundCall batch is still committing
                     // changes (IDs would diverge because frozenCopy includes generation IDs).
-                    let isEqualIncludingIds = lock {
-                        var expected = expectedState.frozenCopy
-                        var last = lastState.frozenCopy
-                        // isApplyingSnapshot suppresses willAccessPreference/willAccessStorage
-                        // inside apply closures. Writing through a _preference/_metadata keypath
-                        // triggers willAccess*, which calls _swift_getKeyPath — a Swift runtime
-                        // operation that can deadlock when a runtime lock is already held here.
-                        return threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
-                            threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-                                passedAccesses.reduce(true) { result, access in
-                                    access.apply(&expected)
-                                    access.apply(&last)
-                                    let e = expected[keyPath: access.path]
+                    // frozenCopy walks Optional<M> children which calls _swift_getKeyPath to
+                    // create dynamic ContainerCursor key paths. _swift_getKeyPath needs the Swift
+                    // runtime lock — calling it while holding NSRecursiveLock deadlocks when the
+                    // runtime lock is contended. Compute frozenCopy outside the lock; expectedState
+                    // and lastState are value-type copies so this is safe.
+                    // isApplyingSnapshot suppresses willAccessPreference/willAccessStorage callbacks
+                    // and re-entrant observation triggered by releasing live child models during
+                    // the transform.
+                    let isEqualIncludingIds = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+                        let last = lastState.frozenCopy
+                        return lock {
+                            threadLocals.withValue(true, at: \.includeInMirror) {
+                                return passedAccesses.reduce(true) { result, access in
+                                    // Context/preference storage values live in AnyContext.contextStorage,
+                                    // not in the @Model struct fields. Writing them back to a frozen copy
+                                    // (which has no live context) is a silent no-op, so the round-trip
+                                    // read would return defaultValue instead of the asserted value —
+                                    // making isEqualIncludingIds always false and causing a hang.
+                                    // The predicate already verified these values on the live model,
+                                    // so we skip the frozen-copy equality check for them.
+                                    if access.skipEqualityCheck { return result }
+                                    // Skip container-level model accesses. When a model property (e.g.
+                                    // TestHelper.summary of type SummaryFeature) is accessed, its full
+                                    // struct value is captured including the generation counter. But the
+                                    // generation counter advances on every child write, so comparing the
+                                    // whole struct causes a false "not settled yet" when the child property
+                                    // we actually asserted has already settled. Child-level accesses
+                                    // (e.g. SummaryFeature.destination) are always recorded alongside the
+                                    // parent, and they check the actual leaf value with IDs — sufficient
+                                    // to detect genuine backgroundCall in-flight conditions.
+                                    if access.isModelTypeValue { return result }
+                                    // Skip ModelContainer-typed values (Optional<M>, @ModelContainer enums).
+                                    // These use ContainerCursor key paths whose getter does `get($0)!`.
+                                    // ContainerCursor paths are safe to traverse only on the live model
+                                    // hierarchy — reading them on a frozenCopy snapshot crashes because
+                                    // frozenCopy transforms model identity and the cursor no longer matches.
+                                    // Leaf accesses recorded within the container are checked independently.
+                                    if access.isContainerTypeValue { return result }
+                                    // Compare the predicate-time captured value against lastState directly.
+                                    // Using only `last` (which reflects the current live state) and comparing
+                                    // against the captured value is safe and sufficient: if the IDs match,
+                                    // the model has settled.
                                     let a = last[keyPath: access.path]
-
-                                    return result && (diff(e, a) == nil)
+                                    return result && (diff(access.capturedValue(), a) == nil)
                                 }
                             }
                         }
@@ -422,29 +476,43 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     // backgroundCall batch in flight. Wait for items currently queued to
                     // drain (FIFO sentinel), then retry. We use waitForCurrentItems rather
                     // than waitUntilIdle so we don't block on other tests' work under 100x load.
-                    // Guard the continue with a timeout check to prevent infinite looping when
-                    // IDs never converge (e.g. continuous mutations).
+                    // If the timeout has elapsed even here, fall through to the failure path so
+                    // the assert doesn't spin forever when isEqualIncludingIds is permanently false.
                     if !isEqualIncludingIds {
-                        if start.distance(to: DispatchTime.now().uptimeNanoseconds) <= scaledTimeout {
-                            await backgroundCall.waitForCurrentItems()
-                            await Task.yield()
-                            continue
+                        if start.distance(to: DispatchTime.now().uptimeNanoseconds) > scaledTimeout {
+                            // Let the outer timeout path run by injecting a synthetic failure so it
+                            // has something to report. The predicate actually passed, but we couldn't
+                            // confirm the model settled (IDs never converged). Report it as a failure.
+                            fail("State did not settle: model IDs kept diverging after the predicate passed. This may indicate a backgroundCall loop or an unresolvable ID mismatch.", at: fileAndLine)
+                            return
                         }
-                        // Timed out waiting for ID convergence — fall through to break.
+                        await backgroundCall.waitForCurrentItems()
+                        await Task.yield()
+                        continue
                     }
 
                     if isEqualIncludingIds {
                         // Step 3: Model has settled. Mark all asserted paths as handled,
                         // advance expectedState, and run the exhaustion check.
                         lock {
+                            // Sync expectedState to lastState for the asserted changes.
+                            // Applying access values (predicate-time frozen copies) would write
+                            // stale ModelContext.frozenCopy IDs into expectedState. Since
+                            // ModelContext.== compares by frozenCopy.id, any child write after
+                            // the predicate ran would cause expectedState != lastState in the
+                            // structural diff, producing a false "not equal but no diff detected"
+                            // failure. Assigning lastState directly keeps all IDs in sync.
+                            // The exhaustion check relies on valueUpdates (layer-3) to catch
+                            // any unasserted changes, which is comprehensive: every property
+                            // write via @Model fires didModify and adds a valueUpdates entry.
+                            expectedState = lastState
+
                             for access in passedAccesses {
                                 // Clear the pending update — this path has been asserted.
                                 valueUpdates[access.path] = nil
                                 // For dependency context storage, run the additional cleanup (clears
                                 // dependencyMetadataUpdates for this storage key+context).
                                 access.additionalCleanup?()
-                                // Advance the baseline to include this asserted value.
-                                access.apply(&expectedState)
                             }
 
                             events.remove(atOffsets: context.eventsSent)
@@ -470,11 +538,112 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     }
                 }
 
-                // Timeout check: placed AFTER predicate evaluation so that a change
-                // arriving during waitForModification always gets one final predicate
-                // check before we give up. Using `while true` + break here (rather than
-                // a while-condition) is what guarantees that property.
-                if start.distance(to: DispatchTime.now().uptimeNanoseconds) > scaledTimeout { break }
+                // Step 5 (timeout): Report failures.
+                // IMPORTANT: All reporting (diffMessage, customDump, fail) happens outside the lock.
+                // diffMessage/customDump triggers customMirror on @Model types, which reads
+                // @ModelTracked properties, which calls willAccess → rootPaths → tries to acquire
+                // this same lock from the continuation's thread — deadlock if already held.
+                if start.distance(to: DispatchTime.now().uptimeNanoseconds) > scaledTimeout {
+                    // Build all failure messages outside the lock so that diffMessage/customDump
+                    // cannot re-enter it via willAccess → rootPaths.
+                    var reports: [[(String, FileAndLine)]] = []
+                    for failure in failures {
+                        var messages: [(String, FileAndLine)] = []
+                        if let (lhs, rhs) = failure.predicate.values() {
+                            let propertyNames = failure.accesses.compactMap { access in
+                                access.propertyName.map { "\(access.modelName).\($0)" }
+                            }.joined(separator: ", ")
+
+                            let title = "Failed to assert: \(propertyNames)"
+                            let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+                                diffMessage(expected: rhs, actual: lhs, title: title)
+                            }
+                            messages.append((message ?? title, failure.predicate.fileAndLine))
+                        } else {
+                            for access in failure.accesses {
+                                let pred = access.propertyName.map {
+                                    "\(access.modelName).\($0) == \(access.value())"
+                                } ?? access.value()
+                                messages.append(("Failed to assert: \(pred)", failure.predicate.fileAndLine))
+                            }
+                        }
+
+                        for event in failure.events {
+                            messages.append(("Failed to assert sending of: \(String(customDumping: event.event)) from \(event.context.typeDescription)", failure.predicate.fileAndLine))
+                        }
+
+                        for modelName in failure.modelsNoLongerPartOfTester {
+                            messages.append(("Model \(modelName) is no longer part of this tester", fileAndLine))
+                        }
+
+                        for (probe, value) in failure.probes {
+                            let preTitle = "Failed to assert calling of probe" + (probe.name.map { "\"\($0)\":" } ?? ":")
+                            let title = value is NoArgs ? preTitle :
+                                """
+                                \(preTitle)
+                                    \(String(customDumping: value))
+                                """
+
+                            if probe.isEmpty {
+                                messages.append((
+                                    """
+                                    \(title)
+
+                                    No available probe values
+                                    """, fileAndLine))
+                            } else if probe.count == 1, let message = threadLocals.withValue(true, at: \.includeChildrenInMirror, perform: { diffMessage(expected: value, actual: probe.values[0], title: "Probe does not match") }) {
+                                messages.append((message, fileAndLine))
+                            } else {
+                                messages.append((
+                                    """
+                                    \(title)
+
+                                    \(probe.count) Available probe values to assert:
+                                        \(probe.values.map { String(customDumping: $0) }.joined(separator: "\n\t"))
+                                    """, fileAndLine))
+                            }
+                        }
+
+                        if failure.accesses.isEmpty, failure.events.isEmpty, failure.modelsNoLongerPartOfTester.isEmpty, failure.probes.isEmpty {
+                            messages.append(("Failed to assert: ", failure.predicate.fileAndLine))
+                        }
+                        reports.append(messages)
+                    }
+
+                    // Now apply state mutations under the lock (no diffMessage/customDump here).
+                    lock {
+                        for failure in failures {
+                            for access in failure.accesses {
+                                access.apply(&expectedState)
+                            }
+                        }
+
+                        for access in passedAccesses {
+                            access.apply(&expectedState)
+                            valueUpdates[access.path] = nil
+                            access.additionalCleanup?()
+                        }
+
+                        events.remove(atOffsets: context.eventsSent)
+
+                        for (probe, value) in context.probes {
+                            probe.consume(value)
+                        }
+                    }
+
+                    // Emit failure reports outside the lock.
+                    for messages in reports {
+                        for (message, location) in messages {
+                            fail(message, at: location)
+                        }
+                    }
+
+
+                    if enableExhaustionTest {
+                        checkExhaustion(at: fileAndLine, includeUpdates: false)
+                    }
+                    return
+                }
 
                 // Step 6: Wait for the next modification event before re-checking.
                 let elapsed = start.distance(to: DispatchTime.now().uptimeNanoseconds)
@@ -679,12 +848,17 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
     // Checks that no state changed without being asserted (exhaustion check).
     //
-    // Three layers of checking:
+    // Two layers of checking:
     //   1. Diff expectedState vs lastState by value (without IDs) — catches structural changes.
-    //   2. Diff with IDs included — catches identity changes (e.g. child model replacements).
-    //   3. If states match by value, check valueUpdates for un-asserted paths not yet
-    //      visible in the struct diff (e.g. multiple writes to the same property that
-    //      ended up back at the same value, or writes to hidden/non-mirrored properties).
+    //   2. Check valueUpdates for un-asserted paths not visible in the struct diff (e.g. multiple
+    //      writes to the same property that ended up at the same value, writes to hidden/non-mirrored
+    //      properties, or model identity changes such as a replaced child model).
+    //
+    // Note: A layer-2 diff with IDs (includeInMirror) was removed. expectedState holds frozen-copy
+    // snapshots whose generation IDs are static; lastState has live IDs updated on every child write.
+    // Writes between predicate evaluation and checkExhaustion produce false "not equal but no diff"
+    // failures even when all asserted changes are accounted for. valueUpdates (which tracks every
+    // write via didModify) provides the same coverage without this false-positive hazard.
     //
     // At the end, resets expectedState = lastState so the next assert starts from a
     // clean baseline.
@@ -713,74 +887,117 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             }
         }
 
-        let (lastAsserted, actual) = lock { (expectedState, lastState) }
+        let (lastAsserted, actual, snapshotUpdates) = lock { (expectedState, lastState, valueUpdates) }
 
         let title = "State not exhausted"
-        // Layer 1: structural diff without IDs.
-        let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-            diffMessage(expected: lastAsserted, actual: actual, title: title)
-        }
-        if let message {
-            fail(message, for: .state, at: fileAndLine)
-        } else {
-            // Layer 2: diff with IDs included (catches identity/generation changes).
-            let message = threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
-                diffMessage(expected: lastAsserted, actual: actual, title: title)
-            }
 
-            if let message {
+        // Layer 1: structural diff — only on the timeout path (includeUpdates = false).
+        //
+        // On the success path (includeUpdates = true) expectedState was just set to lastState,
+        // so they should be identical. We skip the diff here because reading @Model child
+        // properties for the diff goes through live context references, which create a new
+        // frozenCopy on each read. Two frozenCopies of the same model at different times carry
+        // different generation IDs, so Equatable.== (lhs.id == rhs.id) returns false even
+        // for structurally identical values, producing spurious "not equal but no difference
+        // detected" failures. Layer-3 (valueUpdates) is the authoritative tracker for unasserted
+        // changes on the success path — every property write fires didModify and adds an entry.
+        //
+        // On the timeout path the diff is still useful: expectedState is built from access.apply
+        // calls which write concrete frozen-copy values for the failed predicates, and those values
+        // may differ structurally from lastState (e.g. a property changed after the predicate
+        // evaluated). In that case the diff correctly shows what changed.
+        //
+        // We use diff() directly rather than diffMessage() to avoid the isEqual() pre-check.
+        // diffMessage() calls Equatable.== before running the structural diff; for enum cases
+        // with function-typed associated values, == always returns false (functions are not
+        // comparable), even when the two snapshots are structurally identical. Calling diff()
+        // directly means we only report a failure when CustomDump can actually show a difference.
+        //
+        // We filter out diffs that CustomDump marks as "Not equal but no difference detected".
+        // This happens when a type's Equatable.== says the values differ but the mirror-based
+        // structural comparison finds no difference — which occurs for enum cases with function-
+        // typed associated values (functions cannot be compared for equality). In those cases
+        // the diff output is misleading; layer-3 (valueUpdates) provides the correct report.
+        //
+        // We use includeInMirror (shows both data fields and ModelID) so that a child model
+        // replaced with a new instance (same field values, different ModelID) is visible in the
+        // diff — the only observable change in that case is the id field.
+        if !includeUpdates {
+            let structuralDiff = threadLocals.withValue(true, at: \.includeInMirror) {
+                diff(lastAsserted, actual, format: .proportional)
+            }
+            if let structuralDiff, !structuralDiff.contains("Not equal but no difference detected") {
+                let message = "\(title): …\n\n\(structuralDiff.indent(by: 4))\n\n(Expected: −, Actual: +)"
                 fail(message, for: .state, at: fileAndLine)
-            } else if includeUpdates {
-                // Layer 3: check for pending valueUpdates not visible in the struct diff.
-                // Partition by area so state, context, and preference storage are each reported
-                // independently and respect their respective exhaustivity flags.
-                for area: Exhaustivity in [.state, .context, .preference] {
-                    let updates = valueUpdates.values.filter { $0.area == area }
-                    if !updates.isEmpty {
-                        let descriptions = updates.map { $0.debugInfo() }
-                        let areaTitle: String
-                        switch area {
-                        case .context: areaTitle = "Context not exhausted"
-                        case .preference: areaTitle = "Preference not exhausted"
-                        default: areaTitle = "State not exhausted"
-                        }
-                        fail("""
-                            \(areaTitle): …
-
-                            Modifications not asserted:
-
-                            \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
-                            """, for: area, at: fileAndLine)
-                    }
-                }
-
-                // Layer 3b: check for unasserted context/preference storage on dependency models.
-                // These are tracked separately because dependency models have no
-                // root-relative WritableKeyPath and cannot be put in valueUpdates.
-                let depMetaUpdates = lock { dependencyMetadataUpdates }
-                if !depMetaUpdates.isEmpty {
-                    let descriptions = depMetaUpdates.values.map { $0.debugInfo() }
-                    fail("""
-                        Context not exhausted: …
-
-                        Modifications not asserted:
-
-                        \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
-                        """, for: .context, at: fileAndLine)
-                }
-
-                let depPrefUpdates = lock { dependencyPreferenceUpdates }
-                if !depPrefUpdates.isEmpty {
-                    let descriptions = depPrefUpdates.values.map { $0.debugInfo() }
-                    fail("""
-                        Preference not exhausted: …
-
-                        Modifications not asserted:
-
-                        \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
-                        """, for: .preference, at: fileAndLine)
-                }
             }
+        }
+
+        // Layer 3: check for pending valueUpdates (unasserted property changes).
+        //
+        // This runs on both the success path (includeUpdates = true) and the timeout/deinit path
+        // (includeUpdates = false). On the success path, expectedState was just reset to lastState
+        // so any remaining valueUpdates entries represent changes that happened after the last
+        // asserted predicate. On the timeout/deinit path, they represent changes that were never
+        // asserted at all. In both cases layer-3 provides accurate, property-level failure messages
+        // without the false-positive risk of the structural diff.
+        //
+        // Note: layer-2 diff with IDs (includeInMirror for expectedState vs lastState) is omitted
+        // on the success path. expectedState is built from frozen copies that have static generation
+        // IDs, while lastState reflects the live model with dynamic IDs updated on every child write.
+        // Any child writes between predicate evaluation and checkExhaustion would cause false
+        // "not equal but no difference detected" failures in a layer-2 diff, even when the
+        // values are structurally identical and all asserted changes were accounted for.
+        // Model identity changes (child replaced) are covered by layer-3: every property write
+        // fires didModify and adds a valueUpdates entry, so genuinely unasserted replacements
+        // are caught there with a clear property-level description.
+
+        // Partition by area so state, context, and preference storage are each reported
+        // independently and respect their respective exhaustivity flags.
+        for area: Exhaustivity in [.state, .context, .preference] {
+            let updates = snapshotUpdates.values.filter { $0.area == area }
+            if !updates.isEmpty {
+                let descriptions = updates.map { $0.debugInfo() }
+                let areaTitle: String
+                switch area {
+                case .context: areaTitle = "Context not exhausted"
+                case .preference: areaTitle = "Preference not exhausted"
+                default: areaTitle = "State not exhausted"
+                }
+                fail("""
+                    \(areaTitle): …
+
+                    Modifications not asserted:
+
+                    \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
+                    """, for: area, at: fileAndLine)
+            }
+        }
+
+        // Layer 3b: check for unasserted context/preference storage on dependency models.
+        // These are tracked separately because dependency models have no
+        // root-relative WritableKeyPath and cannot be put in valueUpdates.
+        let depMetaUpdates = lock { dependencyMetadataUpdates }
+        if !depMetaUpdates.isEmpty {
+            let descriptions = depMetaUpdates.values.map { $0.debugInfo() }
+            fail("""
+                Context not exhausted: …
+
+                Modifications not asserted:
+
+                \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
+                """, for: .context, at: fileAndLine)
+        }
+
+        let depPrefUpdates = lock { dependencyPreferenceUpdates }
+        if !depPrefUpdates.isEmpty {
+            let descriptions = depPrefUpdates.values.map { $0.debugInfo() }
+            fail("""
+                Preference not exhausted: …
+
+                Modifications not asserted:
+
+                \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
+                """, for: .preference, at: fileAndLine)
         }
 
         // Reset the baseline so the next assert call starts from the current live state.
@@ -813,19 +1030,47 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             // Eagerly calling String(customDumping:) while holding NSRecursiveLock can hang
             // due to Swift runtime conformance-cache contention.
             var value: () -> String
+            // The raw captured value from predicate evaluation time (type-erased).
+            // Used by isEqualIncludingIds to compare against lastState without round-tripping
+            // through `expected` (which may have stale/nil containers that crash on write).
+            var capturedValue: () -> Any
 
             var apply: (inout Root) -> Void
             // Called during assertion clearing for accesses that need side-effect cleanup
             // beyond the standard valueUpdates path-based removal (e.g. dependency context storage).
             var additionalCleanup: (() -> Void)?
+            // True for context/preference storage accesses: their values live in AnyContext.contextStorage,
+            // not in the @Model struct fields. Writing them back to a frozen copy (which has no live context)
+            // is a silent no-op, so they cannot participate in the isEqualIncludingIds round-trip check.
+            // The predicate itself already verified the value is correct on the live model.
+            var skipEqualityCheck: Bool
+            // True when the Value type is itself a Model (e.g. TestHelper.summary: SummaryFeature).
+            // Container-model accesses include a generation counter that increments on every child write,
+            // so comparing the full struct value causes a false "not settled" result in isEqualIncludingIds
+            // whenever a child property changes. Child-property accesses (e.g. SummaryFeature.destination)
+            // are always recorded alongside the parent and check the actual leaf values with IDs — that is
+            // sufficient to detect genuine in-flight backgroundCall batches.
+            var isModelTypeValue: Bool
+            // True when the Value type conforms to ModelContainer (Optional<M>, @ModelContainer enum cases).
+            // These properties are accessed via ContainerCursor key paths — dynamic paths whose getter does
+            // `get($0)!` (force-unwrap). ContainerCursor paths are only safe to read on the live model
+            // hierarchy; reading them on a frozenCopy snapshot crashes because frozenCopy transforms
+            // model identity and the cursor's identity key no longer matches.
+            // Child-level accesses (e.g. SummaryFeature.destination.personalInfo leaf values) are always
+            // recorded alongside and are sufficient to detect in-flight backgroundCall batches.
+            var isContainerTypeValue: Bool
 
-            init(path: PartialKeyPath<Root>, modelName: String, propertyName: String?, value: @escaping () -> String, apply: @escaping (inout Root) -> Void, additionalCleanup: (() -> Void)? = nil) {
+            init(path: PartialKeyPath<Root>, modelName: String, propertyName: String?, value: @escaping () -> String, capturedValue: @escaping () -> Any, apply: @escaping (inout Root) -> Void, additionalCleanup: (() -> Void)? = nil, skipEqualityCheck: Bool = false, isModelTypeValue: Bool = false, isContainerTypeValue: Bool = false) {
                 self.path = path
                 self.modelName = modelName
                 self.propertyName = propertyName
                 self.value = value
+                self.capturedValue = capturedValue
                 self.apply = apply
                 self.additionalCleanup = additionalCleanup
+                self.skipEqualityCheck = skipEqualityCheck
+                self.isModelTypeValue = isModelTypeValue
+                self.isContainerTypeValue = isContainerTypeValue
             }
         }
 
@@ -877,7 +1122,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     }
 }
 
-struct UnwrapError: Error { }
+package struct UnwrapError: Error { package init() {} }
 
 class TesterAssertContextBase: @unchecked Sendable {
     func didSend<M: Model, Event>(event: Event, from context: Context<M>) -> Bool { fatalError() }

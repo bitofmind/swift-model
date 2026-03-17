@@ -42,40 +42,15 @@ extension SignUpData: DependencyKey {
   static let liveValue = SignUpData()
 }
 
-struct StackItem<Value: Identifiable>: Hashable  {
-  var value: Value
-
-  init(_ value: Value) {
-    self.value = value
-  }
-
-  static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.value.id == rhs.value.id
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine(value.id)
-  }
-}
-
-extension RangeReplaceableCollection where Element: Identifiable {
-  var stackItems: [StackItem<Element>] {
-    get { map { StackItem($0) } }
-    set { self = .init(newValue.map(\.value)) }
-  }
-}
-
-extension NavigationLink where Destination == Never {
-  init<P>(_ titleKey: LocalizedStringKey, item: P?) where Label == Text, P : Identifiable {
-    self.init(titleKey, value: item.map { StackItem($0) })
-  }
-}
-
 @Model
 struct SignUpFeature {
+  // @ModelContainer synthesises Hashable (using model .id for associated values),
+  // which is required by NavigationStack(path:).
+  // Identifiable (forwarding each case's model .id) makes [Path] conform to
+  // ModelContainer, which gives path elements live contexts in the model hierarchy.
   @ModelContainer @CasePathable
   @dynamicMemberLookup
-  enum Path: Identifiable  {
+  enum Path: Hashable, Identifiable {
     case basics(BasicsFeature)
     case personalInfo(PersonalInfoFeature)
     case summary(SummaryFeature)
@@ -108,19 +83,19 @@ struct SignUpFlow: View {
   @ObservedModel var model: SignUpFeature
 
   var body: some View {
-    NavigationStack(path: $model.path.stackItems) {
+    NavigationStack(path: $model.path) {
       Form {
         Section {
           Text("Welcome! Please sign up.")
           NavigationLink(
             "Sign up",
-            item: SignUpFeature.Path.basics(BasicsFeature())
+            value: SignUpFeature.Path.basics(BasicsFeature())
           )
         }
       }
       .navigationTitle("Sign up")
-      .navigationDestination(for: StackItem<SignUpFeature.Path>.self) { path in
-        switch path.value {
+      .navigationDestination(for: SignUpFeature.Path.self) { path in
+        switch path {
         case let .basics(model):
           BasicsStep(model: model)
         case let .personalInfo(model):
@@ -162,7 +137,7 @@ struct BasicsStep: View {
       ToolbarItem {
         NavigationLink(
           "Next",
-          item: SignUpFeature.Path.personalInfo(PersonalInfoFeature())
+          value: SignUpFeature.Path.personalInfo(PersonalInfoFeature())
         )
       }
     }
@@ -203,7 +178,7 @@ struct PersonalInfoStep: View {
         if !model.isEditing {
           NavigationLink(
             "Next",
-            item: SignUpFeature.Path.topics(TopicsFeature())
+            value: SignUpFeature.Path.topics(TopicsFeature())
           )
         } else {
           Button("Done") {

@@ -37,53 +37,19 @@ struct SignUpData {
   }
 }
 
-struct StackItem<Value: Identifiable>: Hashable  {
-  var value: Value
-
-  init(_ value: Value) {
-    self.value = value
-  }
-
-  static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.value.id == rhs.value.id
-  }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine(value.id)
-  }
-}
-
-extension RangeReplaceableCollection where Element: Identifiable {
-  var stackItems: [StackItem<Element>] {
-    get { map { StackItem($0) } }
-    set { self = .init(newValue.map(\.value)) }
-  }
-}
-
-extension NavigationLink where Destination == Never {
-  init<P>(_ titleKey: LocalizedStringKey, item: P?) where Label == Text, P : Identifiable {
-    self.init(titleKey, value: item.map { StackItem($0) })
-  }
-}
+// MARK: - SignUpFeature
 
 @Model
 struct SignUpFeature {
+  // @ModelContainer synthesises Hashable (using model .id for associated values),
+  // which is required by NavigationStack(path:).
   @ModelContainer @CasePathable
   @dynamicMemberLookup
-  enum Path: Identifiable  {
+  enum Path: Hashable {
     case basics(BasicsFeature)
     case personalInfo(PersonalInfoFeature)
     case summary(SummaryFeature)
     case topics(TopicsFeature)
-
-    var id: AnyHashable {
-      switch self {
-      case let .basics(model): model.id
-      case let .personalInfo(model): model.id
-      case let .summary(model): model.id
-      case let .topics(model): model.id
-      }
-    }
   }
 
   var path: [Path] = []
@@ -99,23 +65,25 @@ struct SignUpFeature {
   }
 }
 
+// MARK: - SignUpFlow view
+
 struct SignUpFlow: View {
   @ObservedModel var model: SignUpFeature
 
   var body: some View {
-    NavigationStack(path: $model.path.stackItems) {
+    NavigationStack(path: $model.path) {
       Form {
         Section {
           Text("Welcome! Please sign up.")
           NavigationLink(
             "Sign up",
-            item: SignUpFeature.Path.basics(BasicsFeature(signUpData: model.signUpData))
+            value: SignUpFeature.Path.basics(BasicsFeature(signUpData: model.signUpData))
           )
         }
       }
       .navigationTitle("Sign up")
-      .navigationDestination(for: StackItem<SignUpFeature.Path>.self) { path in
-        switch path.value {
+      .navigationDestination(for: SignUpFeature.Path.self) { path in
+        switch path {
         case let .basics(model):
           BasicsStep(model: model)
         case let .personalInfo(model):
@@ -157,7 +125,7 @@ struct BasicsStep: View {
       ToolbarItem {
         NavigationLink(
           "Next",
-          item: SignUpFeature.Path.personalInfo(PersonalInfoFeature(signUpData: model.signUpData))
+          value: SignUpFeature.Path.personalInfo(PersonalInfoFeature(signUpData: model.signUpData))
         )
       }
     }
@@ -198,7 +166,7 @@ struct PersonalInfoStep: View {
         if !model.isEditing {
           NavigationLink(
             "Next",
-            item: SignUpFeature.Path.topics(TopicsFeature(signUpData: model.signUpData))
+            value: SignUpFeature.Path.topics(TopicsFeature(signUpData: model.signUpData))
           )
         } else {
           Button("Done") {

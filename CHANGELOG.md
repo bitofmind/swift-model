@@ -6,6 +6,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+- **`@ModelContainer` Hashable synthesis** — declare `Hashable` on a `@ModelContainer` enum and the macro synthesises `==` and `hash(into:)` automatically. `@Model` associated values compare and hash by identity (`.id`); `Equatable`/`Hashable` value-type associated values use their natural equality. Manual `==` or `hash` implementations in the enum body suppress synthesis.
+
 ### Changed
 - Removed Apple-only `platforms:` restriction from `Package.swift` — Linux is now a supported platform.
 - Deleted diverged `Package@swift-5.9.swift` manifest (minimum requirement is Swift 5.9.2).
@@ -13,6 +16,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - Added `Sources/SwiftModel/Documentation.docc/` landing page for Swift Package Index hosted docs.
 - Added `.spi.yml` for Swift Package Index documentation generation.
 - Comprehensive `///` doc comments across all public API.
+- `ModelID` now prints its integer value in `description` for easier debugging.
+- `Model` is now `@unchecked Sendable` (locking discipline is maintained internally).
 
 ---
 

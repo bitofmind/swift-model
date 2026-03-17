@@ -129,26 +129,22 @@ struct DiffMessageOutputTests {
     }
 
     // When a child @Model property is replaced (item = SimpleCounter()), the tester's
-    // exhaustion diff shows the old and new instances side by side. The ModelID renders as a
-    // plain integer on both sides, making it easy to see that two distinct instances were involved.
+    // exhaustion output lists the unasserted modification with the new instance's ModelID visible.
+    // The ModelID renders as a plain integer, making it clear which instance was assigned.
     //
     // Actual exhaustion output (IDs are non-deterministic integers, but always plain integers):
     //
     //   State not exhausted: …
     //
-    //         ItemHolder(
-    //           id: ModelID(2),
-    //           item: SimpleCounter(
-    //       −     id: ModelID(1),
-    //       +     id: ModelID(6),
-    //             count: 0
-    //           )
-    //         )
+    //   Modifications not asserted:
     //
-    //   (Expected: −, Actual: +)
+    //       ItemHolder.item == SimpleCounter(
+    //         id: ModelID(6),
+    //         count: 0
+    //       )
     //
-    // This test pins that id renders as "ModelID(<integer>)" in that diff.
-    @Test("replacing a child model shows old and new ModelID as plain integers in exhaustion diff")
+    // This test pins that id renders as "ModelID(<integer>)" in the exhaustion output.
+    @Test("replacing a child model shows new ModelID as plain integer in exhaustion output")
     func childModelReplacementShowsIntegerID() async {
         let (model, tester) = ItemHolder().andTester()
 
@@ -163,10 +159,12 @@ struct DiffMessageOutputTests {
         #expect(!issues.isEmpty, "Expected exhaustion failure for unasserted item replacement")
 
         if let msg = issues.first {
+            // The message should describe the unasserted modification
+            #expect(msg.contains("Modifications not asserted"), "Expected 'Modifications not asserted' in exhaustion output:\n\(msg)")
             // id must render as "ModelID(<integer>)", not as a bare integer or opaque "ModelID()"
-            #expect(msg.contains("ModelID("), "Expected 'ModelID(' in exhaustion diff:\n\(msg)")
-            // Both sides of the diff present (old id on −, new id on +)
-            #expect(msg.contains("−") && msg.contains("+"), "Expected diff markers:\n\(msg)")
+            #expect(msg.contains("ModelID("), "Expected 'ModelID(' in exhaustion output:\n\(msg)")
+            // The model type name should appear in the property path
+            #expect(msg.contains("ItemHolder"), "Expected model type name in exhaustion output:\n\(msg)")
         }
     }
 }

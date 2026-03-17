@@ -51,7 +51,8 @@ public macro Model() = #externalMacro(module: "SwiftModelMacros", type: "ModelMa
 /// In practice you rarely need this macro directly: `Optional<M>` and `Array<M>` already conform
 /// to `ModelContainer` for any `@Model` type `M`. Use `@ModelContainer` only when creating your
 /// own container types.
-@attached(extension, conformances: ModelContainer, names: named(visit))
+@attached(extension, conformances: ModelContainer, Equatable, Hashable, names: named(visit), named(==), named(hash))
+@attached(member, names: named(==), named(hash))
 public macro ModelContainer() = #externalMacro(module: "SwiftModelMacros", type: "ModelContainerMacro")
 
 /// Internal macro applied by `@Model` to tracked (observable) properties.
