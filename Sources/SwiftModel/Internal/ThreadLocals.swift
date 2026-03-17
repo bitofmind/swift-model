@@ -40,6 +40,10 @@ final class ThreadLocals: @unchecked Sendable {
     /// check and always fires `onUpdate`. Set by `Context.touch()` so that `Observed` callbacks
     /// re-emit the current value even when it hasn't changed.
     var forceObservation = false
+    /// When non-nil, `invokeDidModify` defers `ObservationRegistrar` `willSet`/`didSet`
+    /// notifications into this array instead of firing them inline. Drained at `withBatchedUpdates`
+    /// scope exit. Non-nil only while a `withBatchedUpdates` scope is active on this thread.
+    var pendingObservationNotifications: [() -> Void]? = nil
 
     fileprivate init() {}
 

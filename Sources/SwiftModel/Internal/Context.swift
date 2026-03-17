@@ -211,33 +211,38 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     override func didModifyStorage<V>(_ storage: ContextStorage<V>) {
-        // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
-        let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: storage.key]
-        // Typed writable path — drives TestAccess didModify so writes are tracked for exhaustion.
-        // Tag the modification as `.metadata` so TestAccess records it under the correct area.
-        //
-        // Use a ModelContext with a known access: own readModel's access if set, or the nearest
-        // ancestor's access (handles dependency model contexts where own access is nil).
-        // Guard against re-entry via the same isAccessingMetadataStorage flag used in willAccessStorage.
-        let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
-        let mc = metadataModelContext()
+        // Batch all ObservationRegistrar willSet/didSet notifications so that the two
+        // invokeDidModify calls below (untyped + typed paths) fire only one drain at the end
+        // instead of one per call.
+        _withBatchedUpdates {
+            // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
+            let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: storage.key]
+            // Typed writable path — drives TestAccess didModify so writes are tracked for exhaustion.
+            // Tag the modification as `.metadata` so TestAccess records it under the correct area.
+            //
+            // Use a ModelContext with a known access: own readModel's access if set, or the nearest
+            // ancestor's access (handles dependency model contexts where own access is nil).
+            // Guard against re-entry via the same isAccessingMetadataStorage flag used in willAccessStorage.
+            let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
+            let mc = metadataModelContext()
 
-        lock { self.didModify() }
-        modelContext.invokeDidModify(readModel, at: untypedPath)
-        // Same re-entry guard as willAccessStorage: the TestAccess.didModify closure reads
-        // model.context![path] which goes through the context getter → willAccessStorage → loop.
-        if !threadLocals.isAccessingMetadataStorage {
-            threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
-                threadLocals.withValue(.context, at: \.modificationArea) {
-                    threadLocals.withValue(storage.name, at: \.storageName) {
-                        mc.invokeDidModify(readModel, at: typedPath)
+            lock { self.didModify() }
+            modelContext.invokeDidModify(readModel, at: untypedPath)
+            // Same re-entry guard as willAccessStorage: the TestAccess.didModify closure reads
+            // model.context![path] which goes through the context getter → willAccessStorage → loop.
+            if !threadLocals.isAccessingMetadataStorage {
+                threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
+                    threadLocals.withValue(.context, at: \.modificationArea) {
+                        threadLocals.withValue(storage.name, at: \.storageName) {
+                            mc.invokeDidModify(readModel, at: typedPath)
+                        }
                     }
                 }
             }
+            // Use the typed path for post-lock callbacks so modifyCallbacks keyed on it fire correctly.
+            let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
+            runPostLockCallbacks(postLockCallbacks)
         }
-        // Use the typed path for post-lock callbacks so modifyCallbacks keyed on it fire correctly.
-        let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
-        runPostLockCallbacks(postLockCallbacks)
     }
 
     override func willAccessPreference<V>(_ storage: PreferenceStorage<V>) {
@@ -287,34 +292,39 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     override func didModifyPreference<V>(_ storage: PreferenceStorage<V>) {
-        // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
-        let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[preferenceKey: storage.key]
-        // Typed writable path — drives TestAccess didModify so writes are tracked for exhaustion.
-        let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
-        let mc = metadataModelContext()
+        // Batch all registrar notifications across this context's two invokeDidModify calls
+        // AND the entire parent-chain walk (notifyPreferenceChange), so there is one drain
+        // at the end rather than one per context level.
+        _withBatchedUpdates {
+            // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
+            let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[preferenceKey: storage.key]
+            // Typed writable path — drives TestAccess didModify so writes are tracked for exhaustion.
+            let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
+            let mc = metadataModelContext()
 
-        lock { self.didModify() }
-        modelContext.invokeDidModify(readModel, at: untypedPath)
-        if !threadLocals.isAccessingMetadataStorage {
-            threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
-                threadLocals.withValue(.preference, at: \.modificationArea) {
-                    threadLocals.withValue(storage.name, at: \.storageName) {
-                        mc.invokeDidModify(readModel, at: typedPath)
+            lock { self.didModify() }
+            modelContext.invokeDidModify(readModel, at: untypedPath)
+            if !threadLocals.isAccessingMetadataStorage {
+                threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
+                    threadLocals.withValue(.preference, at: \.modificationArea) {
+                        threadLocals.withValue(storage.name, at: \.storageName) {
+                            mc.invokeDidModify(readModel, at: typedPath)
+                        }
                     }
                 }
             }
-        }
-        // Post-lock callbacks for this context.
-        let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
-        runPostLockCallbacks(postLockCallbacks)
+            // Post-lock callbacks for this context.
+            let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
+            runPostLockCallbacks(postLockCallbacks)
 
-        // Preferences are bottom-up: a child contribution change must invalidate ancestor observers.
-        // Use notifyPreferenceChange (not didModifyPreference) so that only the untyped observation
-        // path fires on ancestors — this prevents TestAccess from recording spurious ValueUpdate
-        // entries for ancestor nodes that never wrote their own preference contribution.
-        let parents = lock(self.parents)
-        for parent in parents {
-            parent.notifyPreferenceChange(storage)
+            // Preferences are bottom-up: a child contribution change must invalidate ancestor observers.
+            // Use notifyPreferenceChange (not didModifyPreference) so that only the untyped observation
+            // path fires on ancestors — this prevents TestAccess from recording spurious ValueUpdate
+            // entries for ancestor nodes that never wrote their own preference contribution.
+            let parents = lock(self.parents)
+            for parent in parents {
+                parent.notifyPreferenceChange(storage)
+            }
         }
     }
 

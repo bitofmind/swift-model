@@ -161,36 +161,140 @@ extension Model where Self: Observable {
 //
 // Note: This does NOT implement "coalescing" (deduplication). That logic lives in callers.
 //
-// Two instances are used:
-// - `mainCall`: runs callbacks on the MainActor (SwiftUI observation registrar delivery).
-//   Supports `drain()`/`drainIfOnMain()` and has an early-exit when already on main.
-// - `backgroundCall`: runs callbacks on a detached background task (Observed pipeline).
-//   Supports `isIdle`/`waitUntilIdle()` for the test assert loop.
-struct BatchedCalls: @unchecked Sendable {
-    struct State {
-        var task: Task<(), Never>
-        var calls: [@Sendable () -> Void]
-        /// One-shot callbacks fired when the task goes idle (after all calls drain and yield).
-        var onIdleCallbacks: [@Sendable () -> Void] = []
+// Two purpose-specific types are used:
+// - `MainCallQueue` / `mainCall`: runs callbacks on the MainActor (SwiftUI observation
+//   registrar delivery). Fast-paths when already on the main thread. Supports
+//   `drain()`/`drainIfOnMain()` for synchronous flush from main-thread code paths.
+// - `BackgroundCallQueue` / `backgroundCall`: runs callbacks on a detached background task
+//   (Observed pipeline). Never touches the main thread. Supports `isIdle`/`waitUntilIdle()`
+//   for the test assert loop.
+
+// MARK: - Shared State
+
+/// Internal queue state shared by both call-queue types.
+private struct CallQueueState {
+    var task: Task<(), Never>
+    var calls: [@Sendable () -> Void]
+    /// One-shot callbacks fired when the task goes idle (after all calls drain and yield).
+    var onIdleCallbacks: [@Sendable () -> Void] = []
+}
+
+// MARK: - Shared drain-loop
+
+/// The shared async drain loop body. Runs until the queue is empty, firing idle
+/// callbacks and executing each batch before yielding to the cooperative scheduler.
+private func callQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
+    while !Task.isCancelled {
+        let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
+            guard $0 != nil else { return ([], []) }
+            if $0!.calls.isEmpty {
+                $0!.task.cancel()
+                let idle = $0!.onIdleCallbacks
+                $0 = nil
+                return ([], idle)
+            }
+            let batch = $0!.calls
+            $0!.calls.removeAll()
+            return (batch, [])
+        }
+        for f in onIdle { f() }
+        guard !batch.isEmpty else { break }
+        for call in batch { call() }
+        await Task.yield()
     }
+}
 
-    private let state = LockIsolated<State?>(nil)
-    /// Called to spawn a new drain task. Receives the `state` lock so the loop can call `nextBatch`.
-    private let makeTask: @Sendable (LockIsolated<State?>) -> Task<(), Never>
-    /// When set, `callAsFunction` fast-paths by calling immediately instead of enqueuing.
-    private let shouldCallDirectly: @Sendable () -> Bool
+// MARK: - Shared idle/wait helpers (used by both queue types)
 
-    init(
-        makeTask: @escaping @Sendable (LockIsolated<State?>) -> Task<(), Never>,
-        shouldCallDirectly: @escaping @Sendable () -> Bool = { false }
-    ) {
-        self.makeTask = makeTask
-        self.shouldCallDirectly = shouldCallDirectly
+private func callQueueIsIdle(_ state: LockIsolated<CallQueueState?>) -> Bool {
+    state.value == nil
+}
+
+private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>) async {
+    await withCheckedContinuation { cont in
+        let shouldResume = state.withValue { s -> Bool in
+            if s != nil {
+                s!.onIdleCallbacks.append { cont.resume() }
+                return false
+            }
+            return true
+        }
+        if shouldResume { cont.resume() }
+    }
+}
+
+private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>, deadline: UInt64) async {
+    await withCheckedContinuation { cont in
+        let shouldResume = state.withValue { s -> Bool in
+            guard s != nil else { return true }
+            let resumed = LockIsolated(false)
+            s!.calls.append {
+                resumed.withValue { r in
+                    guard !r else { return }
+                    r = true
+                    cont.resume()
+                }
+            }
+            if deadline < .max {
+                Task {
+                    // Sleep until deadline then resume if sentinel hasn't fired yet.
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    if deadline > now {
+                        try? await Task.sleep(nanoseconds: deadline - now)
+                    }
+                    resumed.withValue { r in
+                        guard !r else { return }
+                        r = true
+                        cont.resume()
+                    }
+                }
+            }
+            return false
+        }
+        if shouldResume { cont.resume() }
+    }
+}
+
+// MARK: - MainCallQueue
+
+/// Delivers SwiftUI ObservationRegistrar notifications on the main actor.
+///
+/// Fast-paths when already on the main thread by calling the callback directly instead of
+/// enqueuing. Use `drain()`/`drainIfOnMain()` for a synchronous flush from main-thread
+/// code paths (e.g. after a model write, to flush any notifications enqueued from a
+/// background thread before this call).
+struct MainCallQueue: @unchecked Sendable {
+    private let state = LockIsolated<CallQueueState?>(nil)
+
+    // MARK: Enqueue
+
+    /// Enqueues `callback` for delivery on the main actor.
+    ///
+    /// If already on the main thread, `callback` is executed immediately (fast-path).
+    /// Otherwise it is enqueued and a `@MainActor` drain task is spawned if one is not
+    /// already running.
+    func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
+        guard !Thread.isMainThread else {
+            callback()
+            return
+        }
+        state.withValue {
+            if $0 == nil {
+                $0 = CallQueueState(task: Task(priority: .userInitiated) { @MainActor in
+                    await callQueueDrainLoop(state: self.state)
+                }, calls: [callback])
+            } else {
+                $0!.calls.append(callback)
+            }
+        }
     }
 
     // MARK: Drain (main-thread synchronous flush)
 
-    /// Synchronously drains all pending callbacks. Must only be called from the main thread.
+    /// Synchronously drains all pending callbacks on the main thread.
+    ///
+    /// This flushes any notifications that were enqueued from a background thread and are
+    /// waiting for the main actor. Must only be called from the main thread.
     func drain() {
         let calls: [@Sendable () -> Void] = state.withValue {
             guard $0 != nil else { return [] }
@@ -204,136 +308,103 @@ struct BatchedCalls: @unchecked Sendable {
         }
     }
 
+    /// Drains pending callbacks if currently on the main thread; no-op otherwise.
     func drainIfOnMain() {
         guard Thread.isMainThread else { return }
         drain()
     }
 
-    // MARK: Idle (background settle detection)
+    // MARK: Idle
 
     /// True when no drain task is currently running.
-    var isIdle: Bool { state.value == nil }
+    var isIdle: Bool { callQueueIsIdle(state) }
 
     /// Suspends until the drain task goes idle (all calls flushed including `Task.yield()`).
-    /// Returns immediately if already idle.
     func waitUntilIdle() async {
-        await withCheckedContinuation { cont in
-            let shouldResume = state.withValue { s -> Bool in
-                if s != nil {
-                    s!.onIdleCallbacks.append { cont.resume() }
-                    return false
-                }
-                return true
-            }
-            if shouldResume { cont.resume() }
-        }
+        await callQueueWaitUntilIdle(state)
     }
 
-    /// Suspends until all items currently in the queue have been processed, or until
-    /// the deadline (uptime nanoseconds) is reached — whichever comes first.
-    ///
-    /// Unlike `waitUntilIdle()`, this does NOT wait for the queue to fully drain —
-    /// it only waits for items that were enqueued BEFORE this call to complete.
-    /// This is safe to use under heavy concurrent load where other tasks continuously
-    /// add new work (causing `waitUntilIdle()` to hang indefinitely).
-    ///
-    /// Implemented by enqueuing a sentinel that resumes the continuation. Because
-    /// the queue is FIFO, the sentinel runs only after all previously-enqueued items.
-    /// Returns immediately if the queue is already idle.
+    /// Suspends until all items currently in the queue have been processed, or the deadline passes.
     func waitForCurrentItems(deadline: UInt64 = .max) async {
-        await withCheckedContinuation { cont in
-            let shouldResume = state.withValue { s -> Bool in
-                guard s != nil else { return true }
-                let resumed = LockIsolated(false)
-                s!.calls.append {
-                    resumed.withValue { r in
-                        guard !r else { return }
-                        r = true
-                        cont.resume()
-                    }
-                }
-                if deadline < .max {
-                    Task {
-                        // Sleep until deadline then resume if sentinel hasn't fired yet.
-                        let now = DispatchTime.now().uptimeNanoseconds
-                        if deadline > now {
-                            try? await Task.sleep(nanoseconds: deadline - now)
-                        }
-                        resumed.withValue { r in
-                            guard !r else { return }
-                            r = true
-                            cont.resume()
-                        }
-                    }
-                }
-                return false
-            }
-            if shouldResume { cont.resume() }
-        }
+        await callQueueWaitForCurrentItems(state, deadline: deadline)
     }
+}
+
+// MARK: - BackgroundCallQueue
+
+/// Delivers Observed pipeline updates on a detached background task.
+///
+/// Never touches the main thread. Use `isIdle`/`waitUntilIdle()`/`waitForCurrentItems()`
+/// in tests to wait for the pipeline to settle.
+struct BackgroundCallQueue: @unchecked Sendable {
+    private let state = LockIsolated<CallQueueState?>(nil)
 
     // MARK: Enqueue
 
+    /// Enqueues `callback` for delivery on a detached background task.
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
-        guard !shouldCallDirectly() else {
-            callback()
-            return
-        }
         state.withValue {
             if $0 == nil {
-                $0 = State(task: makeTask(state), calls: [callback])
+                $0 = CallQueueState(task: Task.detached(priority: .userInitiated) {
+                    await callQueueDrainLoop(state: self.state)
+                }, calls: [callback])
             } else {
                 $0!.calls.append(callback)
             }
         }
     }
 
-    // MARK: Drain loop
+    // MARK: Idle
 
-    /// The shared async drain loop body. Runs until the queue is empty, firing idle
-    /// callbacks and executing each batch before yielding to the cooperative scheduler.
-    static func drainLoop(state: LockIsolated<State?>) async {
-        while !Task.isCancelled {
-            let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
-                guard $0 != nil else { return ([], []) }
-                if $0!.calls.isEmpty {
-                    $0!.task.cancel()
-                    let idle = $0!.onIdleCallbacks
-                    $0 = nil
-                    return ([], idle)
-                }
-                let batch = $0!.calls
-                $0!.calls.removeAll()
-                return (batch, [])
-            }
-            for f in onIdle { f() }
-            guard !batch.isEmpty else { break }
-            for call in batch { call() }
-            await Task.yield()
-        }
+    /// True when no drain task is currently running.
+    var isIdle: Bool { callQueueIsIdle(state) }
+
+    /// Suspends until the drain task goes idle (all calls flushed including `Task.yield()`).
+    func waitUntilIdle() async {
+        await callQueueWaitUntilIdle(state)
+    }
+
+    /// Suspends until all items currently in the queue have been processed, or the deadline passes.
+    func waitForCurrentItems(deadline: UInt64 = .max) async {
+        await callQueueWaitForCurrentItems(state, deadline: deadline)
     }
 }
+
+// MARK: - Global instances
 
 /// Delivers SwiftUI ObservationRegistrar notifications on the main actor.
 /// Fast-paths when already on the main thread (calls directly without enqueuing).
 /// Use `drain()`/`drainIfOnMain()` for synchronous flush from main-thread code paths.
-let mainCall = BatchedCalls(
-    makeTask: { state in
-        Task(priority: .userInitiated) { @MainActor in
-            await BatchedCalls.drainLoop(state: state)
-        }
-    },
-    shouldCallDirectly: { Thread.isMainThread }
-)
+let mainCall = MainCallQueue()
 
 /// Delivers Observed pipeline updates on a background thread.
 /// Use `isIdle`/`waitUntilIdle()` in tests to wait for the pipeline to settle.
-let backgroundCall = BatchedCalls(
-    makeTask: { state in
-        Task.detached(priority: .userInitiated) {
-            await BatchedCalls.drainLoop(state: state)
-        }
+let backgroundCall = BackgroundCallQueue()
+
+// MARK: - Batched observation updates
+
+/// Defers `ObservationRegistrar` `willSet`/`didSet` notifications during bulk writes.
+///
+/// Within the `body` closure, every call to `invokeDidModify` that would normally fire
+/// registrar notifications inline instead appends those notifications to a thread-local
+/// pending list. When `body` returns, all deferred notifications fire in order, followed
+/// by a single `mainCall.drainIfOnMain()`.
+///
+/// `activeAccess` (`TestAccess`/`AccessCollector`) callbacks still fire per-write as usual —
+/// only the registrar notifications are deferred.
+///
+/// Nesting is handled correctly: if a `withBatchedUpdates` scope is already active on this
+/// thread, the inner call simply runs `body` directly without creating a second batch.
+func _withBatchedUpdates<T>(_ body: () throws -> T) rethrows -> T {
+    guard threadLocals.pendingObservationNotifications == nil else {
+        return try body()
     }
-)
-
-
+    threadLocals.pendingObservationNotifications = []
+    defer {
+        let pending = threadLocals.pendingObservationNotifications!
+        threadLocals.pendingObservationNotifications = nil
+        for notification in pending { notification() }
+        mainCall.drainIfOnMain()
+    }
+    return try body()
+}

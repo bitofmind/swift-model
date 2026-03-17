@@ -151,19 +151,31 @@ extension ModelContext {
     }
 
 
-    /// Performs all post-modify observation notifications inline.
+    /// Performs all post-modify observation notifications inline (or deferred when batching).
     /// Called directly from Context._modify/transaction and any other post-modify site.
     func invokeDidModify<T>(_ model: M, at path: KeyPath<M, T>&Sendable) {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, context.isObservable, let observable = model as? any Observable&Model {
-            observable.willSet(path: path, from: context)
-            defer {
-                observable.didSet(path: path, from: context)
+            if threadLocals.pendingObservationNotifications != nil {
+                // Batched: defer registrar notifications; fire activeAccess immediately
+                // (TestAccess/AccessCollector need per-write granularity).
+                activeAccess?.didModify(model, at: path)?()
+                threadLocals.pendingObservationNotifications!.append {
+                    observable.willSet(path: path, from: context)
+                    observable.didSet(path: path, from: context)
+                }
+            } else {
+                // Normal: fire inline.
+                observable.willSet(path: path, from: context)
+                defer { observable.didSet(path: path, from: context) }
+                activeAccess?.didModify(model, at: path)?()
+                mainCall.drainIfOnMain()
             }
-            activeAccess?.didModify(model, at: path)?()
         } else {
             activeAccess?.didModify(model, at: path)?()
+            if threadLocals.pendingObservationNotifications == nil {
+                mainCall.drainIfOnMain()
+            }
         }
-        mainCall.drainIfOnMain()
     }
 
 }

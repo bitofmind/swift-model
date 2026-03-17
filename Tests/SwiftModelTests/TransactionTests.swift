@@ -212,6 +212,38 @@ struct TransactionTests {
         #expect(notifiedValues.value == [0, 100])
     }
 
+    // MARK: - Observation Batching
+
+    /// Verifies that observation notifications are deferred during a transaction and fire only
+    /// once at the end rather than once per write — tested on both observation paths.
+    @Test(arguments: ObservationPath.allCases)
+    func testTransactionBatchesNotifications(path: ObservationPath) async throws {
+        let model = RegistrarBatchingModel().withAnchor(options: path.options)
+
+        let notificationCount = LockIsolated(0)
+        model.node.forEach(Observed(coalesceUpdates: false) { model.value }) { _ in
+            notificationCount.withValue { $0 += 1 }
+        }
+        // Wait for initial fire.
+        try await waitUntil(notificationCount.value == 1)
+
+        // Without transaction: 3 writes → 3 notifications (+ 1 initial = 4 total).
+        model.value = 1
+        model.value = 2
+        model.value = 3
+        try await waitUntil(notificationCount.value == 4)
+        #expect(notificationCount.value == 4)
+
+        // With transaction: 3 writes → 1 notification (total becomes 5).
+        model.node.transaction {
+            model.value = 10
+            model.value = 20
+            model.value = 30
+        }
+        try await waitUntil(notificationCount.value == 5)
+        #expect(notificationCount.value == 5, "Transaction should batch notifications into one")
+    }
+
     // MARK: - Error Handling
 
     @Test func testTransactionRollback() async throws {
@@ -272,6 +304,10 @@ struct TransactionTests {
 }
 
 @Model private struct RollbackModel {
+    var value = 0
+}
+
+@Model private struct RegistrarBatchingModel {
     var value = 0
 }
 

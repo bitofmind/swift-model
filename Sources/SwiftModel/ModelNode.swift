@@ -359,8 +359,10 @@ public extension ModelNode {
     /// - Throws: Rethrows any error thrown by the callback (without rollback)
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
         if let context = _context {
-            return try ModelAccess.$isInModelTaskContext.withValue(true) {
-                try context.transaction(callback)
+            return try _withBatchedUpdates {
+                try ModelAccess.$isInModelTaskContext.withValue(true) {
+                    try context.transaction(callback)
+                }
             }
         } else {
             return try callback()
