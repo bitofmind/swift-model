@@ -118,7 +118,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             }
         }
 
-        guard !_XCTIsTesting || AnyContext.keepLastSeenAround else {
+        guard !isTesting || AnyContext.keepLastSeenAround else {
             reference.destruct(nil)
             return
         }
@@ -360,7 +360,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // Dependency model context: readModel.modelContext.access is nil.
         // Walk parents to find a context that has a propagating access (e.g. TestAccess).
         let ancestorAccess = lock {
-            parents.lazy.compactMap { $0.anyModelAccess }.first
+            parents.compactMap { $0.anyModelAccess }.first
         }
         guard let ancestorAccess, ancestorAccess.shouldPropagateToChildren else {
             return readModel.modelContext

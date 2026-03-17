@@ -48,6 +48,8 @@ import ConcurrencyExtras
     }
   }
 
+  // @ModelContainer synthesises Hashable: Equatable/Hashable types (StandupDetail.ID, Meeting,
+  // Standup) use value equality; @Model types (RecordMeeting) fall back to identity via .id.
   @ModelContainer @CasePathable
   @dynamicMemberLookup
   enum Path: Hashable, Sendable, Identifiable {
@@ -61,14 +63,6 @@ import ConcurrencyExtras
       case let .meeting(meeting, standup: standup): AnyHashableSendable([AnyHashableSendable(meeting.id), AnyHashableSendable(standup.id)])
       case let .record(record): AnyHashableSendable(record.id)
       }
-    }
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-      lhs.id == rhs.id
-    }
-    
-    func hash(into hasher: inout Hasher) {
-      hasher.combine(id)
     }
   }
 }
