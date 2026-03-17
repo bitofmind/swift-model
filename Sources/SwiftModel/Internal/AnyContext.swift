@@ -73,6 +73,14 @@ class AnyContext: @unchecked Sendable {
     }
     var contextStorage: [AnyHashableSendable: ContextStorageEntry] = [:]
 
+    /// The DependencyValues captured at this context's initialization time, after all dependency
+    /// overrides from withDependencies closures have been applied.
+    ///
+    /// Used by dependency(for:) to ensure dep resolution uses this context's own deps, not
+    /// whatever happens to be in DependencyValues._current (which may belong to an ancestor
+    /// context when this context is accessed from a background task).
+    var capturedDependencies: DependencyValues = .init()
+
     // Bottom-up preference storage. Each context holds its own contribution; the aggregate
     // is computed by walking descendants. Keyed by AnyHashableSendable (source location or
     // explicit key from PreferenceStorage).
@@ -662,13 +670,18 @@ class AnyContext: @unchecked Sendable {
                 return value
             }
 
-            return Dependencies.withDependencies(from: self, { _ in }) {
+            // Use capturedDependencies (not withDependencies(from: self)) to avoid the merge
+            // where DependencyValues._current wins. When accessed from a background task
+            // originating from an ancestor context, _current carries the ancestor's deps —
+            // overwriting any overrides set on this context. By installing this context's own
+            // captured deps, the lookup always uses the correct, override-respecting values.
+            return DependencyValues.$_current.withValue(capturedDependencies) {
                 let value = Dependency(keyPath).wrappedValue
                 if var model = value as? any Model {
                     if model.anyContext === self {
                         reportIssue("Recursive dependency detected")
                     }
-                    
+
                     withPostActions { postActions in
                         setupModelDependency(&model, cacheKey: keyPath, postSetups: &postActions)
                         dependencyCache[keyPath] = model
@@ -689,7 +702,9 @@ class AnyContext: @unchecked Sendable {
                 return value
             }
 
-            return Dependencies.withDependencies(from: self, { _ in }) {
+            // Same rationale as the keyPath overload above: use capturedDependencies directly
+            // so that ancestor task-locals don't overwrite this context's dep overrides.
+            return DependencyValues.$_current.withValue(capturedDependencies) {
                 let value = Dependency(type).wrappedValue
                 if var model = value as? any Model {
                     if model.anyContext === self {

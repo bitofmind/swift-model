@@ -964,6 +964,16 @@ internal func update<T: Sendable>(
         }
 
         let performUpdate: @Sendable () -> Void = {
+            // Guard against executing after cancellation (e.g. when the model has been
+            // removed from the hierarchy). The onChange handler also checks this flag,
+            // but there is a race window where:
+            //   1. onChange fires and sees hasBeenCancelled=false → schedules performUpdate
+            //   2. Model is deactivated → cancellable() sets hasBeenCancelled=true
+            //   3. drainLoop executes the already-queued performUpdate
+            // Without this guard, step 3 would call access() on a deactivated model,
+            // potentially walking freed ancestor contexts (use-after-free in reduceHierarchy).
+            if hasBeenCancelled.value { return }
+
             let (value, index) = last.withValue { last in
                 last.index = last.index &+ 1
 

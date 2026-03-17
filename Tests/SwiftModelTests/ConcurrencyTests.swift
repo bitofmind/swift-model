@@ -8,6 +8,7 @@ import Foundation
 private extension ContextKeys {
     var concurrentInt: ContextStorage<Int> { .init(defaultValue: 0) }
     var concurrentString: ContextStorage<String> { .init(defaultValue: "initial", propagation: .environment) }
+    var environmentSet: ContextStorage<Set<Int>> { .init(defaultValue: [], propagation: .environment) }
 }
 
 private extension PreferenceKeys {
@@ -19,6 +20,31 @@ private extension PreferenceKeys {
 @Model
 private struct ConcurrentLeaf {
     var value: Int = 0
+}
+
+/// A child model that has a memoized property reading an environment ContextStorage key.
+/// Analogous to SegmentModel.hasExperience, which calls node.memoize { activeExperienceSegments.contains(...) }
+/// where activeExperienceSegments is an environment ContextStorage value.
+@Model
+private struct MemoizeLeaf {
+    let id: Int
+
+    // Memoized computed property that reads an environment key from the ancestor chain.
+    // When the environment set is mutated, this property's memoize observer fires an
+    // async performUpdate via BatchedCalls.drainLoop on a background thread.
+    var isContained: Bool {
+        node.memoize {
+            node.context.environmentSet.contains(id)
+        }
+    }
+}
+
+/// Container that holds a dynamic list of MemoizeLeaf children.
+/// The environmentSet key is written on this container, so the leaf children
+/// inherit it via the environment propagation path (reduceHierarchy ancestor walk).
+@Model
+private struct MemoizeContainer {
+    var leaves: [MemoizeLeaf] = []
 }
 
 @Model
@@ -215,6 +241,75 @@ struct ConcurrencyTests {
                     #expect(v >= 0)
                 }
             }
+        }
+    }
+
+    // MARK: - memoize: use-after-free when model removed while callback is queued
+
+    /// Regression test for a use-after-free crash in BatchedCalls.drainLoop when a model is
+    /// removed from the hierarchy while a pending memoize update callback is queued.
+    ///
+    /// The crash path (before the fix in Model+Changes.swift):
+    ///   1. MemoizeLeaf.isContained is accessed, setting up a memoize observer on the
+    ///      environment `environmentSet` key (environment propagation = ancestor walk).
+    ///   2. The container's environmentSet is mutated rapidly → withObservationTracking's onChange
+    ///      fires, sees hasBeenCancelled=false, schedules `performUpdate` via backgroundCall.
+    ///   3. Concurrently, the leaf is removed from the container → onRemoval() calls
+    ///      entry.cancellable?() which sets hasBeenCancelled=true.
+    ///   4. BatchedCalls.drainLoop on the background thread executes the queued performUpdate.
+    ///   5. performUpdate called observe() → access() → isContained getter →
+    ///      environmentValue(for:) → reduceHierarchy walks freed ancestor contexts →
+    ///      objc_msgSend on a deallocated AnyContext → CRASH.
+    ///
+    /// The fix: add `if hasBeenCancelled.value { return }` at the top of performUpdate so
+    /// that step 4 is a no-op when the model has already been deactivated.
+    @Test func memoizeCallbackDoesNotFireAfterModelRemoved() async {
+        let container = MemoizeContainer(leaves: [
+            MemoizeLeaf(id: 1),
+            MemoizeLeaf(id: 2),
+        ]).withAnchor()
+
+        // Warm up the memoize observers on all leaves. This registers the withObservationTracking
+        // or AccessCollector callback for environmentSet on each leaf's context.
+        _ = container.leaves[0].isContained
+        _ = container.leaves[1].isContained
+
+        // Run many iterations to reliably hit the race window.
+        let iterations = 200
+        await withTaskGroup(of: Void.self) { group in
+            // Writer task: rapidly mutates the environment set on the container.
+            // Each mutation fires onChange for any registered memoize observer, scheduling
+            // a backgroundCall(performUpdate) on the drain loop.
+            group.addTask {
+                for i in 0..<iterations {
+                    container.node.context.environmentSet = Set([i % 3])
+                }
+            }
+
+            // Removal task: concurrently removes one leaf from the container mid-flight.
+            // This triggers onRemoval() → entry.cancellable?() → hasBeenCancelled = true.
+            // Without the fix, a queued performUpdate fires after cancellation and crashes.
+            group.addTask {
+                // Give the writer a small head start so some updates are already queued.
+                for _ in 0..<5 { await Task.yield() }
+                if !container.leaves.isEmpty {
+                    container.leaves.removeFirst()
+                }
+                // Keep writing to ensure the drain loop flushes during removal.
+                for i in 0..<iterations {
+                    container.node.context.environmentSet = Set([(iterations + i) % 3])
+                }
+            }
+        }
+
+        // After both tasks finish, let the drain loop flush any remaining callbacks.
+        // Any pending performUpdate on the removed leaf must be a no-op (not a crash).
+        for _ in 0..<10 { await Task.yield() }
+
+        // Sanity: the remaining leaf must still be responsive.
+        if !container.leaves.isEmpty {
+            let v = container.leaves[0].isContained
+            #expect(v == true || v == false) // just checking it doesn't crash
         }
     }
 

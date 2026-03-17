@@ -14,6 +14,22 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     @Dependency(\.uuid) private var dependencies
 
+    /// Installs this context's captured DependencyValues as the current task-local,
+    /// unconditionally replacing whatever the caller's task-local currently holds.
+    ///
+    /// `withDependencies(from: self)` merges `self.initialValues.merging(_current)` where
+    /// the *current* task-local wins. That is correct when propagating deps from a parent
+    /// to a freshly-created child context — but wrong when a background task launched from
+    /// an *ancestor* context is creating children: the ancestor's task-local overwrites the
+    /// intermediate context's dep override. This function bypasses the merge by directly
+    /// installing `capturedDependencies` as `_current`, so the child context inherits
+    /// exactly this context's deps without interference from any outer task-local.
+    func withOwnDependencies<R>(_ operation: () throws -> R) rethrows -> R {
+        try DependencyValues.$_current.withValue(capturedDependencies) {
+            try operation()
+        }
+    }
+
     init(model: M, lock: NSRecursiveLock, options: ModelOption, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
         if model.lifetime != .initial {
             reportIssue("It is not allowed to add an already anchored or fozen model, instead create new instance.")
@@ -45,6 +61,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             dependencyModels = contextDependencies.models
         } operation: {
             _dependencies = Dependency(\.uuid)
+            capturedDependencies = DependencyValues._current
         }
 
         readModel.withContextAdded(context: self)
@@ -52,11 +69,17 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         modifyModel = readModel
         reference.setContext(self)
 
-        withPostActions { postActions in
-            for (key, model) in dependencyModels {
-                var model = model
-                setupModelDependency(&model, cacheKey: nil, postSetups: &postActions)
-                dependencyCache[key] = model
+        // Use withOwnDependencies so that setupModelDependency's Context<D>.init sees
+        // self.capturedDependencies as _current, not the caller's task-local. Without this,
+        // a background task from an ancestor context would contaminate the model-dep context
+        // with the ancestor's DependencyValues via the withDependencies(from: parent) merge.
+        withOwnDependencies {
+            withPostActions { postActions in
+                for (key, model) in dependencyModels {
+                    var model = model
+                    setupModelDependency(&model, cacheKey: nil, postSetups: &postActions)
+                    dependencyCache[key] = model
+                }
             }
         }
     }
@@ -612,7 +635,18 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 children[containerPath, default: [:]][modelRef] = child
                 return child
             } else {
-                let child = Context<Child>(model: childModel, lock: lock, options: self.options, dependencies: { _ in }, parent: self)
+                // Ensure that DependencyValues._current reflects this context's own captured
+                // DependencyValues before creating the child context. Context.init calls
+                // Use withOwnDependencies (not withDependencies(from: self)) to ensure the
+                // child context captures this context's exact DependencyValues without merging
+                // with the caller's task-local. withDependencies(from:) does:
+                //   self.deps.merging(DependencyValues._current)  ← _current wins
+                // so if a background task launched from an *ancestor* context is executing here,
+                // its task-local would overwrite this context's dep overrides. By unconditionally
+                // replacing _current with self's deps, the child correctly inherits this context.
+                let child = withOwnDependencies {
+                    Context<Child>(model: childModel, lock: lock, options: self.options, dependencies: { _ in }, parent: self)
+                }
                 children[containerPath, default: [:]][modelRef] = child
                 return child
             }
