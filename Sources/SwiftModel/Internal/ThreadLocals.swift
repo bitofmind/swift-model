@@ -44,6 +44,13 @@ final class ThreadLocals: @unchecked Sendable {
     /// notifications into this array instead of firing them inline. Drained at `withBatchedUpdates`
     /// scope exit. Non-nil only while a `withBatchedUpdates` scope is active on this thread.
     var pendingObservationNotifications: [() -> Void]? = nil
+    /// Set to `true` immediately before `observe()` is called inside `performUpdate` for the
+    /// `withObservationTracking` path. Allows memoize's inner access closure to detect that it
+    /// is being called from an async `performUpdate` (rather than from `forceObserver` setup or
+    /// the dirty-path synchronous read), so it can always call `produce()` and re-register
+    /// `withObservationTracking` tracking — even when `isDirty=false` due to a concurrent
+    /// `onUpdate` clearing it before this `performUpdate`'s `observe()` runs.
+    var isInsideAsyncPerformUpdate = false
 
     fileprivate init() {}
 

@@ -522,6 +522,12 @@ private extension ModelNode {
         // First access: set up tracking
         return context.lock {
 
+            // Double-check: another thread may have set up tracking between our nil check above
+            // and acquiring the lock here.
+            if let existingEntry = context._memoizeCache[key] {
+                return existingEntry.value as! T
+            }
+
             // First access: set up tracking with didModify callback
             let (cancellable, forceNextUpdate) = context.transaction {
                 // Enable coalescing by default to batch multiple dependency changes during transactions
@@ -541,8 +547,24 @@ private extension ModelNode {
                     useCoalescing: useCoalescing,
                     didModify: didModifyCallback
                 ) {
-                    // Check if cache has fresh value (from dirty path)
-                    // This prevents double computation when dirty path already updated the cache
+                    // When called from a coalesced performUpdate (either the withObservationTracking
+                    // or AccessCollector path): always call produce() so that dependency tracking
+                    // is re-registered.
+                    //
+                    // Race this fixes: onUpdate() can clear isDirty before a subsequently-scheduled
+                    // performUpdate's access() runs (backgroundCall executes concurrently with
+                    // mutations on Swift's cooperative thread pool). If we short-circuit to the
+                    // cached value, withObservationTracking/AccessCollector tracks nothing and the
+                    // subscription is silently lost for all remaining mutations.
+                    //
+                    // We detect "called from coalesced performUpdate" via
+                    // threadLocals.isInsideAsyncPerformUpdate, set to true only around the
+                    // performUpdate's access() call. This avoids spurious extra computes from
+                    // other access() call sites (forceObserver setup, initial registration,
+                    // dirty-path sync reads).
+                    if threadLocals.isInsideAsyncPerformUpdate {
+                        return produce()
+                    }
                     let entry = context.lock({ context._memoizeCache[key] })
                     if let entry = entry, !entry.isDirty {
                         return entry.value as! T
@@ -561,6 +583,15 @@ private extension ModelNode {
                         // would be silently swallowed even though memoize's update() already decided
                         // to fire onUpdate due to forceNext.
                         if let isSame, let prevValue, !threadLocals.forceObservation, isSame(value, prevValue) {
+                            // Value is unchanged, but we still need to clear isDirty so the cache
+                            // is clean after performUpdate re-establishes tracking via observe().
+                            // Without this, isDirty stays true indefinitely when the recomputed value
+                            // equals the cached value, causing every subsequent performUpdate to see
+                            // isDirty=true and call produce() again, but never clearing the flag.
+                            if var currentEntry = context._memoizeCache[key], currentEntry.isDirty {
+                                currentEntry.isDirty = false
+                                context._memoizeCache[key] = currentEntry
+                            }
                             return
                         }
 
@@ -990,7 +1021,15 @@ internal func update<T: Sendable>(
                 //   5. Observer never gets the update
                 hasPendingUpdate.setValue(false)
 
-                return (observe(), last.index)
+                // Signal to memoize's inner access closure that this observe() call is
+                // coming from performUpdate. The closure uses this to always call produce()
+                // and re-register withObservationTracking — even when isDirty=false — to
+                // prevent the race where onUpdate clears isDirty before observe() runs,
+                // which would cause withObservationTracking to track nothing (lost subscription).
+                let v = threadLocals.withValue(true, at: \.isInsideAsyncPerformUpdate) {
+                    observe()
+                }
+                return (v, last.index)
             }
 
             // update() compares value to last.value using isSame, which catches
@@ -1060,9 +1099,15 @@ internal func update<T: Sendable>(
                         hasPendingUpdate.setValue(false)
                     }
 
+                    // Signal to memoize's inner access closure that this access() call is coming
+                    // from a coalesced performUpdate. See the withObservationTracking path for
+                    // the full explanation — the same race (isDirty cleared before performUpdate's
+                    // access() runs) applies here with the AccessCollector coalescing path.
                     let value = collector.reset {
                         usingActiveAccess(collector) {
-                            access()
+                            threadLocals.withValue(true, at: \.isInsideAsyncPerformUpdate) {
+                                access()
+                            }
                         }
                     }
 

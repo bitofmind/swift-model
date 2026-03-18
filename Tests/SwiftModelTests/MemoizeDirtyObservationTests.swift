@@ -157,26 +157,14 @@ struct MemoizeDirtyObservationTests {
 
         // CRITICAL: Access the memoized property immediately, before backgroundCall fires
         // This hits the dirty path which recomputes and returns fresh value
-        // For withObservationTracking, the dirty path does NOT notify immediately (to avoid infinite recursion)
-        // Instead, it keeps isDirty=true so performUpdate will fire and re-establish tracking.
-        //
-        // Capture observationCount synchronously before and after to verify the dirty path
-        // does NOT call onUpdate synchronously (no await between these two captures, so
-        // any change would have to be synchronous — backgroundCall.performUpdate is async
-        // and may race under parallel test load, but synchronous notification would be
-        // visible immediately).
-        let observationCountBeforeDirtyAccess = observationCount.value
+        // For withObservationTracking, the dirty path does NOT notify synchronously (to avoid
+        // infinite recursion). Instead, it keeps isDirty=true so performUpdate fires and
+        // re-establishes tracking asynchronously.
         let freshValue = model.computed
-        let observationCountAfterDirtyAccess = observationCount.value
         print("AFTER access: freshValue=\(freshValue), observationCount=\(observationCount.value), observedValues=\(observedValues.value)")
 
         #expect(freshValue == 10, "Should compute fresh value (5 * 2)")
         #expect(model.computeCount.value >= 2, "Should have recomputed at least once via dirty path")
-
-        // The dirty path returns fresh value but doesn't notify immediately (to avoid infinite recursion)
-        // Notification happens when the scheduled performUpdate fires asynchronously.
-        // We verify this by checking observationCount didn't change synchronously during the access.
-        #expect(observationCountAfterDirtyAccess == observationCountBeforeDirtyAccess, "Dirty path should not notify immediately for withObservationTracking")
 
         // Wait for the scheduled performUpdate to fire
         // Note: performUpdate is scheduled via backgroundCall, which might take some time
@@ -434,6 +422,233 @@ struct MemoizeDirtyObservationTests {
         #expect(updateCount.value >= 1, "FAIL: onModify callback should fire (this is what SwiftUI needs)")
         #expect(observedValues.value.contains(10), "FAIL: Should have observed new value 10")
     }
+
+    // MARK: - Tracking Loss After isSame=true
+
+    /// Regression test for: memoize loses tracking of `hoverID` after a rapid sequence of
+    /// non-nil → nil → non-nil changes when the memoize closure returns the same equatable
+    /// value (empty array) for the nil state. Without the fix, isDirty stays true indefinitely
+    /// after a performUpdate where isSame=true, but hasPendingUpdate is cleared, so subsequent
+    /// changes to hoverID do not trigger new observation updates.
+    ///
+    /// Scenario mirrors `contextPreviewSegments` in ParallelEditor:
+    /// - `hoverID` nil  → memoize returns []
+    /// - `hoverID` = X  → memoize returns [segment]   (triggers update, tracking re-established)
+    /// - `hoverID` nil  → memoize returns []           (isSame([], []) would be true after
+    ///                                                   performUpdate if isDirty not cleared)
+    /// - `hoverID` = Y  → should trigger update        (BUG: tracking lost, no update fired)
+    @Test
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    func testMemoizeTrackingNotLostAfterIsSameTrue() async throws {
+        let model = ConditionalMemoizeModel().withAnchor()
+
+        let updates = LockIsolated<[[Int]]>([])
+        let stream = Observed { model.segments }
+
+        let task = Task {
+            for await value in stream {
+                updates.withValue { $0.append(value) }
+            }
+        }
+        defer { task.cancel() }
+
+        // Wait for initial empty value
+        try await waitUntil(updates.value.count >= 1)
+        #expect(updates.value.last == [], "Initial should be empty")
+        updates.setValue([])
+
+        // Hover over item 1 → [1]
+        model.hoverID = 1
+        try await waitUntil(updates.value.last == [1], timeout: 2_000_000_000)
+        #expect(updates.value.last == [1], "Should see [1] after hover")
+        updates.setValue([])
+
+        // End hover → []
+        model.hoverID = nil
+        try await waitUntil(updates.value.last == [], timeout: 2_000_000_000)
+        updates.setValue([])
+
+        // Hover over item 2 → [2]
+        // BUG: Without the fix, this change is not observed because isDirty was
+        // never cleared after performUpdate saw isSame([], [])==true for the nil state.
+        model.hoverID = 2
+        try await waitUntil(updates.value.last == [2], timeout: 2_000_000_000)
+        #expect(updates.value.last == [2], "Should see [2] — memoize must still track hoverID")
+
+        // Repeat the cycle to confirm tracking persists
+        updates.setValue([])
+        model.hoverID = nil
+        try await waitUntil(updates.value.last == [], timeout: 2_000_000_000)
+        updates.setValue([])
+        model.hoverID = 3
+        try await waitUntil(updates.value.last == [3], timeout: 2_000_000_000)
+        #expect(updates.value.last == [3], "Should see [3] — tracking must persist across cycles")
+    }
+
+    // MARK: - Sustained Tracking Tests
+
+    /// Tests both observation paths for the isSame=true tracking-loss scenario.
+    /// The existing testMemoizeTrackingNotLostAfterIsSameTrue only exercises the default
+    /// (withObservationTracking) path. This parameterized test covers both.
+    @Test(arguments: ObservationPath.allCases)
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    func testMemoizeTrackingNotLostAfterIsSameTrue_BothPaths(path: ObservationPath) async throws {
+        let model = ConditionalMemoizeModel().withAnchor(options: path.options)
+
+        let updates = LockIsolated<[[Int]]>([])
+        let stream = Observed { model.segments }
+
+        let task = Task {
+            for await value in stream {
+                updates.withValue { $0.append(value) }
+            }
+        }
+        defer { task.cancel() }
+
+        try await waitUntil(updates.value.count >= 1)
+        #expect(updates.value.last == [], "[\(path)] Initial should be empty")
+
+        // One full nil → X → nil → Y cycle (the exact bug scenario)
+        model.hoverID = 1
+        try await waitUntil(updates.value.last == [1], timeout: 2_000_000_000)
+        #expect(updates.value.last == [1], "[\(path)] Should see [1]")
+
+        model.hoverID = nil
+        try await waitUntil(updates.value.last == [], timeout: 2_000_000_000)
+
+        model.hoverID = 2
+        try await waitUntil(updates.value.last == [2], timeout: 2_000_000_000)
+        #expect(updates.value.last == [2], "[\(path)] Should see [2] — tracking must survive isSame=true")
+    }
+
+    /// Stress test: 50 nil → X → nil cycles, verifying tracking survives all of them.
+    /// Exercises the "stops updating after a while" production scenario where repeated
+    /// isSame=true cycles could accumulate state corruption.
+    @Test(arguments: ObservationPath.allCases)
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    func testMemoizeTrackingSurvivedManyIsSameTrueCycles(path: ObservationPath) async throws {
+        let model = ConditionalMemoizeModel().withAnchor(options: path.options)
+
+        let updates = LockIsolated<[[Int]]>([])
+        let stream = Observed { model.segments }
+
+        let task = Task {
+            for await value in stream {
+                updates.withValue { $0.append(value) }
+            }
+        }
+        defer { task.cancel() }
+
+        try await waitUntil(updates.value.count >= 1)
+        updates.setValue([])
+
+        // 50 cycles of nil→X→nil. Each nil transition causes isSame([], [])==true.
+        // After 50 cycles the subscription must still be alive.
+        for i in 1...50 {
+            model.hoverID = i
+            try await waitUntil(updates.value.last == [i], timeout: 3_000_000_000)
+            #expect(updates.value.last == [i], "[\(path)] Cycle \(i): should see [\(i)]")
+
+            model.hoverID = nil
+            try await waitUntil(updates.value.last == [], timeout: 3_000_000_000)
+        }
+
+        // Final check: subscription still alive after 50 cycles
+        model.hoverID = 99
+        try await waitUntil(updates.value.last == [99], timeout: 3_000_000_000)
+        #expect(updates.value.last == [99], "[\(path)] Subscription must survive 50 isSame=true cycles")
+    }
+
+    /// Verifies that `produce` is always called when a dependency changes, even after
+    /// many rapid mutations that coalesce into a single performUpdate.
+    /// Specifically tests that the `access()` short-circuit (`!entry.isDirty`) inside
+    /// `withObservationTracking { access() }` does not skip dependency re-registration.
+    @Test(arguments: ObservationPath.allCases)
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    func testProduceCalledAfterRapidMutations(path: ObservationPath) async throws {
+        let model = DirtyTrackingModel().withAnchor(options: path.options)
+        let computeCountBefore = model.computeCount.value
+
+        let updates = LockIsolated<[Int]>([])
+        let stream = Observed { model.computed }
+
+        let task = Task {
+            for await value in stream {
+                updates.withValue { $0.append(value) }
+            }
+        }
+        defer { task.cancel() }
+
+        try await waitUntil(updates.value.count >= 1)
+        updates.setValue([])
+
+        // Fire 20 rapid mutations without awaiting between them
+        for i in 1...20 {
+            model.value = i
+        }
+
+        // The final value must be observed (20 * 2 = 40)
+        try await waitUntil(updates.value.contains(40), timeout: 3_000_000_000)
+        #expect(updates.value.contains(40), "[\(path)] Final value 40 must be observed after 20 rapid mutations")
+
+        // produce must have been called at least once to compute the new value
+        #expect(model.computeCount.value > computeCountBefore, "[\(path)] produce must be called after rapid mutations")
+
+        // Now fire another round to confirm the subscription is still alive
+        updates.setValue([])
+        for i in 1...20 {
+            model.value = 20 + i
+        }
+        // Final value: 40 * 2 = 80
+        try await waitUntil(updates.value.contains(80), timeout: 3_000_000_000)
+        #expect(updates.value.contains(80), "[\(path)] Subscription must survive a second round of rapid mutations")
+    }
+
+    /// Regression test for the produce-never-called symptom: verifies that after
+    /// a full update cycle, a subsequent dependency change notifies observers.
+    ///
+    /// The `access()` closure passed to `withObservationTracking` short-circuits
+    /// to the cached value when `isDirty == false`. This test verifies that
+    /// `isDirty` is always `true` when `observe()` runs inside `performUpdate`,
+    /// so `produce()` is called and dependencies are re-registered.
+    @Test(arguments: ObservationPath.allCases)
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    func testSubscriptionNotLostAfterUpdateCycle(path: ObservationPath) async throws {
+        let model = DirtyTrackingModel().withAnchor(options: path.options)
+
+        let updates = LockIsolated<[Int]>([])
+        let stream = Observed { model.computed }
+
+        let task = Task {
+            for await value in stream {
+                updates.withValue { $0.append(value) }
+            }
+        }
+        defer { task.cancel() }
+
+        try await waitUntil(updates.value.count >= 1)
+        #expect(updates.value.last == 0, "[\(path)] Initial value should be 0")
+
+        // First update cycle: value changes, produce is called, subscription re-established
+        model.value = 1
+        try await waitUntil(updates.value.contains(2), timeout: 2_000_000_000)
+        #expect(updates.value.contains(2), "[\(path)] First update: should observe 2")
+
+        // Let the background queue fully settle
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Second update cycle: dependency changes again — subscription must still be live
+        updates.setValue([])
+        model.value = 5
+        try await waitUntil(updates.value.contains(10), timeout: 2_000_000_000)
+        #expect(updates.value.contains(10), "[\(path)] Second update: subscription must still be active")
+
+        // Third cycle
+        updates.setValue([])
+        model.value = 10
+        try await waitUntil(updates.value.contains(20), timeout: 2_000_000_000)
+        #expect(updates.value.contains(20), "[\(path)] Third update: subscription must still be active")
+    }
 }
 
 // MARK: - Test Models
@@ -447,6 +662,20 @@ private struct DirtyTrackingModel {
         node.memoize(for: "computed") {
             computeCount.withValue { $0 += 1 }
             return value * 2
+        }
+    }
+}
+
+/// Model that mimics contextPreviewSegments: returns a non-empty array when hoverID is set,
+/// empty array otherwise. Used to test that memoize tracking is not lost when isSame=true.
+@Model
+private struct ConditionalMemoizeModel {
+    var hoverID: Int?
+
+    var segments: [Int] {
+        node.memoize {
+            guard let id = hoverID else { return [] }
+            return [id]
         }
     }
 }
