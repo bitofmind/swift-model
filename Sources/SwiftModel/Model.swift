@@ -114,27 +114,37 @@ public extension Model {
         }, function: function)
     }
 
-    /// Enables printing of state diffs for the entire lifetime of this model.
+    /// Observes this model's entire state tree and prints debug output whenever anything changes.
     ///
-    /// Equivalent to calling `model._printChanges()` in `onActivate()`, but applied as a
-    /// modifier before anchoring. Only active in `DEBUG` builds.
+    /// Apply as a modifier before anchoring the model. Only active in `DEBUG` builds.
     ///
     /// ```swift
-    /// AppModel()._withPrintChanges(name: "App").withAnchor()
+    /// AppModel().withDebug().withAnchor()
+    /// AppModel().withDebug([.triggers, .changes]).withAnchor()
+    /// AppModel().withDebug([.changes(), .name("App"), .printer(myStream)]).withAnchor()
     /// ```
     ///
-    /// To enable printing only temporarily, use `_printChanges()` on the live model node instead,
-    /// which returns a `Cancellable` you can cancel when you're done:
+    /// To enable debugging only temporarily on a live model, use `debug()` on the model
+    /// directly, which returns a `Cancellable` you can cancel when you're done:
     ///
     /// ```swift
-    /// let printer = model._printChanges()
+    /// let cancel = model.debug()
     /// // ... do work ...
-    /// printer.cancel()
+    /// cancel.cancel()
     /// ```
-    func _withPrintChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Self where Self: Sendable {
+    func withDebug(_ options: DebugOptions = [.changes()]) -> Self where Self: Sendable {
         withActivation {
-            $0._printChanges(name: name, to: printer)
+            $0.debug(options)
         }
+    }
+
+    /// - Deprecated: Use ``withDebug()`` instead.
+    @available(*, deprecated, renamed: "withDebug()")
+    func _withPrintChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Self where Self: Sendable {
+        var opts: [DebugOption] = [.changes()]
+        if let name { opts.append(.name(name)) }
+        if !(printer is PrintTextOutputStream) { opts.append(.printer(printer)) }
+        return withDebug(DebugOptions(opts))
     }
 
     /// Prints a message each time this model is activated or deactivated.

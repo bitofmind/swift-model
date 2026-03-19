@@ -48,9 +48,15 @@ extension NSLock {
 }
 
 extension Optional where Wrapped: AnyObject {
+    // Returns a closure with a weak capture so the strong reference doesn't prevent deallocation.
     var waitUntilNil: () async -> Void {
         { [weak self] in
+            let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
             while self != nil {
+                if DispatchTime.now().uptimeNanoseconds > deadline {
+                    reportIssue("waitUntilRemoved timed out after 5s — model was not released. Check for retain cycles.")
+                    return
+                }
                 await Task.yield()
             }
             // After the object is released, teardown closures dispatched during
@@ -63,20 +69,20 @@ extension Optional where Wrapped: AnyObject {
 }
 
 extension Model {
-    var waitUntilRemoved: () async -> Void {
-        context.waitUntilNil
+    func waitUntilRemoved() async {
+        await context.waitUntilNil()
     }
 }
 
 extension ModelNode {
-    var waitUntilRemoved: () async -> Void {
-        _context.waitUntilNil
+    func waitUntilRemoved() async {
+        await _context.waitUntilNil()
     }
 }
 
 extension Context {
-    var waitUntilRemoved: () async -> Void {
-        reference.context.waitUntilNil
+    func waitUntilRemoved() async {
+        await reference.context.waitUntilNil()
     }
 }
 

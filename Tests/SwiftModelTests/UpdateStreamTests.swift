@@ -325,6 +325,134 @@ struct UpdateStreamTests {
             model.count2 == 4
         }
     }
+
+    // MARK: - Returning model structs directly from Observed closure
+
+    /// Observed { child } (returns model struct, not a property read) should fire when any
+    /// property of child changes, using onAnyModification as the subscription fallback.
+    @Test(arguments: UpdatePath.allCases)
+    func testObservedReturningChildModelDirectly(updatePath: UpdatePath) async throws {
+        let (model, tester) = ReturnModelModel().andTester(options: updatePath.options, exhaustivity: .off)
+
+        await tester.assert { model.childSnapshots.count == 1 }
+
+        model.child.count = 5
+        await tester.assert { model.childSnapshots.last?.count == 5 }
+
+        model.child.count = 10
+        await tester.assert { model.childSnapshots.last?.count == 10 }
+    }
+
+    /// Observed { self } — a parent observing a child model directly (not via property read)
+    /// should fire when any child property changes. Uses a parent/child setup to avoid the
+    /// self-modification feedback loop that would occur with direct self-observation + append.
+    @Test(arguments: UpdatePath.allCases)
+    func testObservedReturningSelf(updatePath: UpdatePath) async throws {
+        let (model, tester) = SelfObserverParent().andTester(options: updatePath.options, exhaustivity: .off)
+
+        await tester.assert { model.observedCounts.count == 1 }
+
+        model.observed.count = 7
+        await tester.assert { model.observedCounts.last == 7 }
+
+        model.observed.count = 42
+        await tester.assert { model.observedCounts.last == 42 }
+    }
+
+    /// Observed { (child1, child2) } — returning two models in a tuple should fire
+    /// when either child changes, using onAnyModification on both as the fallback.
+    @Test(arguments: UpdatePath.allCases)
+    func testObservedReturningTupleOfModels(updatePath: UpdatePath) async throws {
+        let (model, tester) = TupleObserverModel().andTester(options: updatePath.options, exhaustivity: .off)
+
+        await tester.assert { model.snapshots.count == 1 }
+
+        model.a.count = 3
+        await tester.assert { model.snapshots.last?.0 == 3 }
+
+        model.b.count = 7
+        await tester.assert { model.snapshots.last?.1 == 7 }
+    }
+
+    /// Observed { optionalChild } — returning an optional model directly should fire
+    /// when the optional's properties change.
+    @Test(arguments: UpdatePath.allCases)
+    func testObservedReturningOptionalModel(updatePath: UpdatePath) async throws {
+        let (model, tester) = OptionalObserverModel().andTester(options: updatePath.options, exhaustivity: .off)
+
+        // Initially nil — no initial emission from the model itself
+        model.child = ChildModel()
+        await tester.assert { model.observedCounts.last == 0 }
+
+        model.child!.count = 5
+        await tester.assert { model.observedCounts.last == 5 }
+    }
+
+    /// Observed { [child1, child2] } — returning an array of models directly should fire
+    /// when any element's properties change.
+    @Test(arguments: UpdatePath.allCases)
+    func testObservedReturningArrayOfModels(updatePath: UpdatePath) async throws {
+        let (model, tester) = ArrayObserverModel().andTester(options: updatePath.options, exhaustivity: .off)
+
+        await tester.assert { model.snapshots.count == 1 }
+
+        model.children[0].count = 10
+        await tester.assert { model.snapshots.last?[0] == 10 }
+
+        model.children[1].count = 20
+        await tester.assert { model.snapshots.last?[1] == 20 }
+    }
+
+    /// Observed { child } where the returned model is swapped for a different instance — the
+    /// observer should unsubscribe from the old model and subscribe to the new one.
+    @Test(arguments: UpdatePath.allCases)
+    func testObservedReturningSwappedModel(updatePath: UpdatePath) async throws {
+        let (model, tester) = SwapObserverModel().andTester(options: updatePath.options, exhaustivity: .off)
+
+        await tester.assert { model.snapshots.count == 1 }
+
+        // Mutate the currently observed child
+        model.active.count = 5
+        await tester.assert { model.snapshots.last == 5 }
+
+        // Swap to a different child instance
+        model.useSecond = true
+        await tester.assert { model.snapshots.last == 0 }
+
+        // Mutations on the new child should fire; old child should be unsubscribed
+        model.active.count = 9
+        await tester.assert { model.snapshots.last == 9 }
+    }
+}
+
+/// Observes a child model returned directly (not via property read) from the Observed closure.
+@Model private struct ReturnModelModel {
+    var child = ChildModel()
+    var childSnapshots: [ChildModel] = []
+
+    func onActivate() {
+        node.forEach(Observed(initial: true) { child }) { snap in
+            childSnapshots.append(snap)
+        }
+    }
+}
+
+/// A simple observable model used as the child in self-observation tests.
+@Model private struct SelfObservingModel {
+    var count = 0
+}
+
+/// A parent model that observes its child by returning it directly from the Observed closure
+/// (equivalent to `Observed { self }` but from outside, avoiding self-modification loops).
+@Model private struct SelfObserverParent {
+    var observed = SelfObservingModel()
+    var observedCounts: [Int] = []
+
+    func onActivate() {
+        node.forEach(Observed(initial: true) { observed }) { snap in
+            observedCounts.append(snap.count)
+        }
+    }
 }
 
 @Model private struct ValuesModel {
@@ -429,3 +557,66 @@ struct UpdateStreamTests {
         }
     }
 }
+/// Observes a tuple of two child models returned directly from the Observed closure.
+@Model private struct TupleObserverModel {
+    var a = ChildModel()
+    var b = ChildModel()
+    /// Stores (a.count, b.count) — plain Int values so assertions read captured values,
+    /// not live-context reads that would pass regardless of whether the closure fired.
+    var snapshots: [(Int, Int)] = []
+
+    func onActivate() {
+        node.forEach(Observed(initial: true) { (a, b) }) { snap in
+            snapshots.append((snap.0.count, snap.1.count))
+        }
+    }
+}
+
+/// Observes an optional child model returned directly from the Observed closure.
+@Model private struct OptionalObserverModel {
+    var child: ChildModel? = nil
+    var observedCounts: [Int] = []
+
+    func onActivate() {
+        node.forEach(Observed(initial: false) { child }) { snap in
+            observedCounts.append(snap?.count ?? -1)
+        }
+    }
+}
+
+/// Observes an array of child models returned directly from the Observed closure.
+@Model private struct ArrayObserverModel {
+    var children: [ChildModel] = [ChildModel(), ChildModel()]
+    /// Stores [child.count] — plain Int arrays so assertions read captured values,
+    /// not live-context reads that would pass regardless of whether the closure fired.
+    var snapshots: [[Int]] = []
+
+    func onActivate() {
+        node.forEach(Observed(initial: true) { children }) { snap in
+            snapshots.append(snap.map(\.count))
+        }
+    }
+}
+
+/// Observes a child that can be swapped at runtime, verifying that old subscriptions
+/// are cancelled and new ones established when the returned model changes.
+@Model private struct SwapObserverModel {
+    var first = ChildModel()
+    var second = ChildModel()
+    var useSecond = false
+    /// Stores snap.count — plain Int values so assertions read captured values,
+    /// not live-context reads that would pass regardless of whether the closure fired.
+    var snapshots: [Int] = []
+
+    var active: ChildModel {
+        get { useSecond ? second : first }
+        set { if useSecond { second = newValue } else { first = newValue } }
+    }
+
+    func onActivate() {
+        node.forEach(Observed(initial: true) { active }) { snap in
+            snapshots.append(snap.count)
+        }
+    }
+}
+

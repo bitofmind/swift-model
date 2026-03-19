@@ -22,10 +22,11 @@ public struct Observed<Element: Sendable>: AsyncSequence, Sendable {
     ///
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to true).
+    /// - Parameter debug: Debug options controlling trigger and change output. Only active in `DEBUG` builds.
     /// - Parameter access: closure providing the value to be observed
     @_disfavoredOverload
-    public init(initial: Bool = true, coalesceUpdates: Bool = true, _ access: @Sendable @escaping () -> Element) {
-        self.init(access: access, initial: initial, isSame: nil, coalesceUpdates: coalesceUpdates)
+    public init(initial: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions = [], _ access: @Sendable @escaping () -> Element) {
+        self.init(access: access, initial: initial, isSame: nil, coalesceUpdates: coalesceUpdates, debug: debug)
     }
 
     public func makeAsyncIterator() -> AsyncStream<Element>.Iterator {
@@ -39,9 +40,10 @@ public extension Observed where Element: Equatable {
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter removeDuplicates: Whether to filter out duplicate values (defaults to true).
     /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to true).
+    /// - Parameter debug: Debug options controlling trigger and change output. Only active in `DEBUG` builds.
     /// - Parameter access: closure providing the value to be observed
-    init(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, _ access: @Sendable @escaping () -> Element) {
-        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? (==) : nil, coalesceUpdates: coalesceUpdates).stream
+    init(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions = [], _ access: @Sendable @escaping () -> Element) {
+        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? (==) : nil, coalesceUpdates: coalesceUpdates, debug: debug).stream
     }
 }
 
@@ -51,9 +53,10 @@ public extension Observed {
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter removeDuplicates: Whether to filter out duplicate values (defaults to true).
     /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to true).
+    /// - Parameter debug: Debug options controlling trigger and change output. Only active in `DEBUG` builds.
     /// - Parameter access: closure providing the value to be observed
-    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, _ access: @Sendable @escaping () -> (repeat each T)) where Element == (repeat each T) {
-        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, coalesceUpdates: coalesceUpdates).stream
+    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions = [], _ access: @Sendable @escaping () -> (repeat each T)) where Element == (repeat each T) {
+        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, coalesceUpdates: coalesceUpdates, debug: debug).stream
     }
 
     /// Create as Observed stream observing changes of the value provided by  `access`
@@ -61,9 +64,10 @@ public extension Observed {
     /// - Parameter initial: Start by sending current initial value (defaults to true).
     /// - Parameter removeDuplicates: Whether to filter out duplicate values (defaults to true).
     /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to true).
+    /// - Parameter debug: Debug options controlling trigger and change output. Only active in `DEBUG` builds.
     /// - Parameter access: closure providing the value to be observed
-    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, _ access: @Sendable @escaping () -> (repeat each T)?) where Element == (repeat each T)? {
-        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, coalesceUpdates: coalesceUpdates).stream
+    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions = [], _ access: @Sendable @escaping () -> (repeat each T)?) where Element == (repeat each T)? {
+        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, coalesceUpdates: coalesceUpdates, debug: debug).stream
     }
 }
 
@@ -119,49 +123,6 @@ public extension Model where Self: Sendable {
         }
     }
 
-    /// Will start to print state changes until cancelled, but only in `DEBUG` configurations.
-    @discardableResult
-    func _printChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Cancellable {
-#if DEBUG
-        guard let context = enforcedContext() else { return EmptyCancellable() }
-        let previous = LockIsolated(context.model.frozenCopy)
-
-        let cancel = context.onAnyModification { hasEnded in
-            guard !hasEnded else { return nil }
-
-            let current = context.model
-            defer { previous.setValue(current.frozenCopy) }
-
-            var difference: String? = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                diff(previous.value, current)
-            }
-
-            if difference == nil {
-                difference = threadLocals.withValue(true, at: \.includeInMirror) {
-                    diff(previous.value, current)
-                }
-            }
-
-            guard let difference else { return nil }
-
-            return {
-                var printer = printer
-                printer.write("State did update for \(name ?? typeDescription):\n" + difference)
-            }
-        }
-        
-        return AnyCancellable(cancellations: context.cancellations, onCancel: cancel)
-#else
-       return EmptyCancellable()
-#endif
-    }
-}
-
-public struct PrintTextOutputStream: TextOutputStream, Sendable {
-    public init() {}
-    public func write(_ string: String) {
-        print(string)
-    }
 }
 
 public extension ModelNode {
@@ -243,8 +204,8 @@ public extension ModelNode {
     ///
     /// - Note: For `Equatable` types, use the overload that accepts `isSame` to avoid recomputing
     ///         when the value hasn't actually changed.
-    func memoize<T: Sendable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T) -> T {
-        memoize(for: key, produce: produce, isSame: nil)
+    func memoize<T: Sendable>(for key: some Hashable&Sendable, debug: DebugOptions = [], produce: @Sendable @escaping () -> T) -> T {
+        memoize(for: key, produce: produce, isSame: nil, debug: debug)
     }
 
     /// Caches the result of an expensive computation with automatic duplicate detection.
@@ -277,8 +238,8 @@ public extension ModelNode {
     /// model.query = "xyz"  // hasResults: false → false (no notification)
     /// model.items = [...]  // hasResults: false → true (notification sent!)
     /// ```
-    func memoize<T: Sendable&Equatable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T) -> T {
-        memoize(for: key, produce: produce, isSame: { $0 == $1 })
+    func memoize<T: Sendable&Equatable>(for key: some Hashable&Sendable, debug: DebugOptions = [], produce: @Sendable @escaping () -> T) -> T {
+        memoize(for: key, produce: produce, isSame: { $0 == $1 }, debug: debug)
     }
 
     /// Caches a tuple computation with automatic duplicate detection for each element.
@@ -288,8 +249,8 @@ public extension ModelNode {
     ///   - produce: A closure that computes the tuple value.
     ///
     /// - Returns: The cached tuple, or the result of `produce()` if not cached or dependencies changed.
-    func memoize<each T: Sendable&Equatable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> (repeat each T)) -> (repeat each T) {
-        memoize(for: key, produce: produce, isSame: isSame)
+    func memoize<each T: Sendable&Equatable>(for key: some Hashable&Sendable, debug: DebugOptions = [], produce: @Sendable @escaping () -> (repeat each T)) -> (repeat each T) {
+        memoize(for: key, produce: produce, isSame: isSame, debug: debug)
     }
 
     /// Caches a computation using source location as the cache key.
@@ -310,8 +271,8 @@ public extension ModelNode {
     ///
     /// - Parameter produce: A closure that computes the value.
     /// - Returns: The cached value, or the result of `produce()` if not cached or dependencies changed.
-    func memoize<T: Sendable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, produce: @Sendable @escaping () -> T) -> T {
-        memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), produce: produce)
+    func memoize<T: Sendable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, debug: DebugOptions = [], produce: @Sendable @escaping () -> T) -> T {
+        memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), debug: debug, produce: produce)
     }
 
     /// Caches an `Equatable` computation using source location as the cache key.
@@ -320,16 +281,16 @@ public extension ModelNode {
     ///
     /// - Parameter produce: A closure that computes the value.
     /// - Returns: The cached value, or the result of `produce()` if not cached or dependencies changed.
-    func memoize<T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, produce: @Sendable @escaping () -> T) -> T {
-        memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), produce: produce)
+    func memoize<T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, debug: DebugOptions = [], produce: @Sendable @escaping () -> T) -> T {
+        memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), debug: debug, produce: produce)
     }
 
     /// Caches a tuple computation using source location as the cache key.
     ///
     /// - Parameter produce: A closure that computes the tuple value.
     /// - Returns: The cached tuple, or the result of `produce()` if not cached or dependencies changed.
-    func memoize<each T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, produce: @Sendable @escaping () -> (repeat each T)) -> (repeat each T) {
-        memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), produce: produce)
+    func memoize<each T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, debug: DebugOptions = [], produce: @Sendable @escaping () -> (repeat each T)) -> (repeat each T) {
+        memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), debug: debug, produce: produce)
     }
 
     /// Explicitly clears the cached value for a memoized computation.
@@ -369,7 +330,7 @@ public extension ModelNode {
 }
 
 private extension Observed {
-    init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false) {
+    init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false, debug: DebugOptions = []) {
         stream = AsyncStream { cont in
             // Detect whether accessed models use ObservationRegistrar.
             // If any accessed model was created with .disableObservationRegistrar, the
@@ -384,15 +345,36 @@ private extension Observed {
                 useWithObservationTracking = false
             }
 
+#if DEBUG
+            if !debug.options.isEmpty {
+                let cancel = debugObserve(
+                    options: debug,
+                    label: "Observed",
+                    access: access,
+                    onUpdate: { value in cont.yield(value) }
+                ) { wrappedAccess, wrappedOnUpdate in
+                    let (cancellable, _) = update(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: coalesceUpdates) {
+                        wrappedAccess()
+                    } onUpdate: { value in wrappedOnUpdate(value) }
+                    return cancellable
+                }
+                cont.onTermination = { _ in cancel() }
+            } else {
+                let (cancellable, _) = update(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: coalesceUpdates) {
+                    access()
+                } onUpdate: { value in
+                    cont.yield(value)
+                }
+                cont.onTermination = { _ in cancellable() }
+            }
+#else
             let (cancellable, _) = update(initial: initial, isSame: isSame, useWithObservationTracking: useWithObservationTracking, useCoalescing: coalesceUpdates) {
                 access()
             } onUpdate: { value in
                 cont.yield(value)
             }
-
-            cont.onTermination = { _ in
-                cancellable()
-            }
+            cont.onTermination = { _ in cancellable() }
+#endif
         }
     }
 }
@@ -432,12 +414,24 @@ private extension ModelNode {
     ///
     /// The dirty tracking optimization provides immediate fresh values when cache is dirty,
     /// while still ensuring all external observers are notified via the onUpdate callback.
-    func memoize<T: Sendable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T, isSame: (@Sendable (T, T) -> Bool)?) -> T {
+    func memoize<T: Sendable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T, isSame: (@Sendable (T, T) -> Bool)?, debug: DebugOptions = []) -> T {
         guard let context = enforcedContext() else { return produce() }
 
         let key = AnyHashableSendable(key)
         let path: KeyPath<M, T>&Sendable = \M[memoizeKey: key]
-        
+
+#if DEBUG
+        // Set up debug observation once (only on first access, when cache entry doesn't yet exist).
+        // We do this before the external willAccess so that the debug collector can intercept
+        // property reads inside produce() during the first update() call.
+        // When debug == [] (the default), memoizeDebugSetup returns nils for zero overhead.
+        let debugLabel = "\(String(describing: M.self))[memoize: \"\(key.base)\"]"
+        let (debugPrint, debugPreviousValue, debugCollectorBox) = memoizeDebugSetup(
+            options: debug,
+            label: debugLabel
+        ) as ((@Sendable (T, T?) -> Void)?, LockIsolated<T?>?, LockIsolated<DebugAccessCollector?>?)
+#endif
+
         // External tracking: notify observers that this property is being accessed
         // This allows SwiftUI's ViewAccess to register callbacks for view invalidation
         _$modelContext.willAccess(context.model, at: path)?()
@@ -640,6 +634,19 @@ private extension ModelNode {
                             }
 
                             for callback in postCallbacks { callback() }
+
+#if DEBUG
+                            if let debugPrint, let debugPreviousValue {
+                                let prevForDirtyDebug = debugPreviousValue.withValue { prev -> T? in
+                                    defer { prev = typedValue }
+                                    return prev
+                                }
+                                // Skip if no previous value (initial setup hasn't run yet).
+                                if let prevForDirtyDebug {
+                                    debugPrint(typedValue, prevForDirtyDebug)
+                                }
+                            }
+#endif
                         }
 
                         context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
@@ -671,12 +678,40 @@ private extension ModelNode {
                     }
 
                     for plc in postLockCallbacks { plc() }
+
+#if DEBUG
+                    // Debug: print trigger and change info after each update.
+                    // `prevValue` here is the value before this update (may be nil on first call).
+                    if let debugPrint, let debugPreviousValue {
+                        let prevForDebug = debugPreviousValue.withValue { prev -> T? in
+                            defer { prev = value }
+                            return prev
+                        }
+                        // Skip the initial memoize setup call (prevForDebug == nil means
+                        // this is the first time we've seen a value — not a real update).
+                        // debugPreviousValue has now been set to `value` so the next call
+                        // will see the previous value correctly.
+                        if let prevForDebug {
+                            debugPrint(value, prevForDebug)
+                        }
+                    }
+#endif
                 }
             }
 
             // Wire up the forceNext box so that didModifyCallback can signal memoize's update()
             // to bypass isSame when a forced (touch) change arrives.
             forceNextBox.setValue(forceNextUpdate)
+
+#if DEBUG
+            // Register debug subscriptions for trigger tracking.
+            // We run produce() through the DebugAccessCollector separately (after update() has
+            // already run produce() via the AccessCollector) so that both collectors register
+            // onModify callbacks for the same set of dependencies.
+            if let collector = debugCollectorBox?.value {
+                _ = usingActiveAccess(collector) { produce() }
+            }
+#endif
 
             // Get the cached value that should have been set by onUpdate
             // In rare cases (e.g., if produce() calls resetMemoization), the entry might not exist
@@ -955,43 +990,83 @@ internal func update<T: Sendable>(
         // Box for performUpdate so observe()'s onChange closure can reference it
         let performUpdateBox = LockIsolated<(@Sendable () -> Void)?>(nil)
 
+        // Tracks `onAnyModification` subscriptions for models returned directly from access().
+        // These won't be picked up by withObservationTracking since no properties were read.
+        let activeReturnedModels = LockIsolated<[ObjectIdentifier: @Sendable () -> Void]>([:])
+
+        // Shared change handler used by both withObservationTracking.onChange and onAnyModification.
+        @Sendable func onObservedChange() {
+            if hasBeenCancelled.value { return }
+            didModify?(false)
+
+            let shouldSchedule = hasPendingUpdate.withValue { pending in
+                if pending {
+                    return false
+                } else {
+                    pending = true
+                    return true
+                }
+            }
+
+            guard shouldSchedule, let performUpdate = performUpdateBox.value else { return }
+
+            if threadLocals.postTransactions != nil {
+                threadLocals.postTransactions!.append { _ in
+                    backgroundCall(performUpdate)
+                }
+            } else {
+                backgroundCall(performUpdate)
+            }
+        }
+
+        // Subscribe to any models found in `value` that are returned directly from access().
+        @Sendable func subscribeReturnedModels(in value: T) {
+            let contexts = reflectForModels(value)
+            guard !contexts.isEmpty else { return }
+
+            let newIDs = Set(contexts.map { ObjectIdentifier($0) })
+
+            let toCancel = activeReturnedModels.withValue { models in
+                let removed = models.filter { !newIDs.contains($0.key) }
+                for id in removed.keys { models.removeValue(forKey: id) }
+                return removed.values
+            }
+            for cancel in toCancel { cancel() }
+
+            for context in contexts {
+                let id = ObjectIdentifier(context)
+                let isActive = activeReturnedModels.withValue { $0[id] != nil }
+                guard !isActive else { continue }
+
+                let cancellation = context.onAnyModification { [weak activeReturnedModels] finished in
+                    if finished {
+                        activeReturnedModels?.withValue { $0.removeValue(forKey: id) }
+                        return nil
+                    }
+                    // Bypass isSame: onAnyModification confirms the model changed, but isSame
+                    // reads via the live context and would compare current values against current
+                    // values (since stored copies share the same live context reference),
+                    // causing the update to be spuriously suppressed.
+                    forceNext.setValue(true)
+                    onObservedChange()
+                    return nil
+                }
+                activeReturnedModels.withValue { $0[id] = cancellation }
+            }
+        }
+
         @Sendable func observe() -> T {
-            withObservationTracking {
+            let value = withObservationTracking {
                 access()
             } onChange: {
-                if hasBeenCancelled.value { return }
-
                 // Call didModify immediately when dependency changes (for dirty tracking).
                 // onChange fires on the withObservationTracking path, which is always asynchronous,
                 // so threadLocals.forceObservation is never set here. Pass false for now;
                 // the async path uses ForceObserver + forceNext for touch propagation.
-                didModify?(false)
-
-                // Coalescing: skip if update already pending
-                let shouldSchedule = hasPendingUpdate.withValue { pending in
-                    if pending {
-                        return false  // Already have pending update
-                    } else {
-                        pending = true
-                        return true
-                    }
-                }
-
-                guard shouldSchedule, let performUpdate = performUpdateBox.value else { return }
-
-                // Check if we're inside a transaction
-                if threadLocals.postTransactions != nil {
-                    // Inside transaction: defer callback until transaction completes
-                    // This matches AccessCollector behavior and prevents 100x callback spam
-                    threadLocals.postTransactions!.append { callbacks in
-                        backgroundCall(performUpdate)
-                    }
-                } else {
-                    // Use backgroundCall to avoid synchronous recursion and break the call stack.
-                    // The hasPendingUpdate flag prevents excessive scheduling.
-                    backgroundCall(performUpdate)
-                }
+                onObservedChange()
             }
+            subscribeReturnedModels(in: value)
+            return value
         }
 
         let performUpdate: @Sendable () -> Void = {
@@ -1058,6 +1133,11 @@ internal func update<T: Sendable>(
             cancel: {
                 hasBeenCancelled.withValue { $0 = true }
                 forceObserver.cancel()
+                let cancels = activeReturnedModels.withValue { models in
+                    defer { models.removeAll() }
+                    return Array(models.values)
+                }
+                for cancel in cancels { cancel() }
             },
             forceNextUpdate: {
                 forceNext.setValue(true)
@@ -1069,8 +1149,15 @@ internal func update<T: Sendable>(
         
         let collector = AccessCollector { collector, force in
             // Call didModify immediately when dependency changes (for dirty tracking).
-            // `force` is true when the change was triggered by node.touch().
+            // `force` is true when the change was triggered by node.touch() or by
+            // subscribeToReturnedModels' onAnyModification (model property changed).
             didModify?(force)
+            // When force=true from subscribeToReturnedModels: bypass isSame so the update
+            // always fires. Models stored in last.value share the live context reference,
+            // so isSame would compare current values against current values — always equal.
+            if force {
+                forceNext.setValue(true)
+            }
 
             // Coalescing: skip if update already pending
             if useCoalescing {
@@ -1150,22 +1237,49 @@ internal func update<T: Sendable>(
     }
 }
 
+/// Walks `value` via `Mirror` with `collectingModelContexts` set, collecting all `AnyContext`
+/// values reachable in the value. `ModelContext.mirror(of:children:)` self-registers and returns
+/// empty children when `collectingModelContexts` is non-nil, acting as both the registration
+/// hook and the recursion terminator (so we don't recurse into a model's own sub-models).
+///
+/// Works correctly for compound return values: tuples, arrays, optionals, and any other
+/// non-model container — Mirror recurses explicitly, mirroring what `customDump`/`diff` do.
+private func reflectForModels<T>(_ value: T) -> [AnyContext] {
+    func walk(_ v: Any) {
+        let m = Mirror(reflecting: v)
+        for child in m.children {
+            walk(child.value)
+        }
+    }
+
+    return threadLocals.withValue([] as [AnyContext]?, at: \.collectingModelContexts) {
+        walk(value)
+        return threadLocals.collectingModelContexts ?? []
+    }
+}
+
 private final class AccessCollector: ModelAccess, @unchecked Sendable {
-    let onModify: @Sendable (AccessCollector, Bool) -> (() -> Void)?
+    let onModify: @Sendable (AccessCollector, Bool) -> (@Sendable () -> Void)?
     let active = LockIsolated<(active: [Key: @Sendable () -> Void], added: Set<Key>)>(([:], []))
+    /// Tracks `onAnyModification` subscriptions for models returned directly from the access
+    /// closure (i.e. not accessed via property reads). Keyed by `ObjectIdentifier(context)`.
+    let activeModels = LockIsolated<[ObjectIdentifier: @Sendable () -> Void]>([:])
 
     struct Key: Hashable, @unchecked Sendable {
         var id: ModelID
         var path: AnyKeyPath
     }
 
-    init(onModify: @Sendable @escaping (AccessCollector, Bool) -> (() -> Void)?) {
+    init(onModify: @Sendable @escaping (AccessCollector, Bool) -> (@Sendable () -> Void)?) {
         self.onModify = onModify
         super.init(useWeakReference: false)
     }
 
     deinit {
         for cancel in active.value.active.values {
+            cancel()
+        }
+        for cancel in activeModels.value.values {
             cancel()
         }
     }
@@ -1193,7 +1307,58 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
             cancel()
         }
 
+        // Subscribe to any models returned directly from the access closure (not via property reads).
+        // These models won't trigger `willAccess`, so we use `onAnyModification` as a fallback.
+        subscribeToReturnedModels(in: value)
+
         return value
+    }
+
+    /// Walks `value` via `Mirror` with `collectingModelContexts` set. Any `@Model` struct
+    /// encountered registers its context and returns empty children, so we only collect the
+    /// top-level models in the value (their children are covered by `onAnyModification`).
+    private func subscribeToReturnedModels<Value>(in value: Value) {
+        let contexts = reflectForModels(value)
+        guard !contexts.isEmpty else { return }
+
+        let newIDs = Set(contexts.map { ObjectIdentifier($0) })
+
+        // Cancel subscriptions for models no longer present in the return value.
+        let toCancel = activeModels.withValue { activeModels in
+            let removed = activeModels.filter { !newIDs.contains($0.key) }
+            for id in removed.keys { activeModels.removeValue(forKey: id) }
+            return removed.values
+        }
+        for cancel in toCancel { cancel() }
+
+        // Subscribe to models not yet tracked.
+        for context in contexts {
+            let id = ObjectIdentifier(context)
+            let isActive = activeModels.withValue { $0[id] != nil }
+            guard !isActive else { continue }
+
+            let cancellation = context.onAnyModification { [weak self] finished in
+                guard let self else { return nil }
+                if finished {
+                    self.activeModels.withValue { $0.removeValue(forKey: id) }
+                    return nil
+                }
+                // Always schedule asynchronously via backgroundCall rather than returning
+                // the callback directly. Returning it inline causes the post-lock machinery
+                // to execute it synchronously, which can trigger re-entrant property writes
+                // (e.g. onUpdate appending the observed model to an array → updateContext →
+                // addParent → onAnyModification fires again → infinite recursion).
+                // Pass force=true so the outer onModify closure sets forceNext=true,
+                // bypassing isSame when performUpdate runs. Models stored in last.value
+                // share the live context reference, so isSame always sees the current
+                // (already-updated) value and would spuriously suppress the update.
+                if let callback = self.onModify(self, true) {
+                    backgroundCall { callback() }
+                }
+                return nil
+            }
+            activeModels.withValue { $0[id] = cancellation }
+        }
     }
 
     override var shouldPropagateToChildren: Bool { false }

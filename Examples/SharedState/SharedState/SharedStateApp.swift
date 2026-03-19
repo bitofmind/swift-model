@@ -3,7 +3,7 @@ import SwiftModel
 
 @main
 struct CounterFactApp: App {
-    let model = SharedState()._withPrintChanges().withAnchor()
+    let model = SharedState().withDebug().withAnchor()
 
     var body: some Scene {
         WindowGroup {

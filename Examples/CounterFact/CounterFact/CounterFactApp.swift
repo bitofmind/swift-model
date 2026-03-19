@@ -4,7 +4,7 @@ import XCTestDynamicOverlay
 
 @main
 struct CounterFactApp: App {
-    let model = AppModel()._withPrintChanges().withAnchor()
+    let model = AppModel().withDebug().withAnchor()
 
     var body: some Scene {
         WindowGroup {

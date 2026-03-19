@@ -80,6 +80,15 @@ extension ModelContext: Hashable {
 
 public extension ModelContext {
     func mirror(of model: M, children: [(String, Any)]) -> Mirror {
+        // When collecting model contexts (e.g. to find models returned from an Observed/memoize
+        // access closure), register this context and return empty children so we don't recurse
+        // into the model's own sub-models — those will be picked up via onAnyModification.
+        if threadLocals.collectingModelContexts != nil {
+            if let ctx = context {
+                threadLocals.collectingModelContexts!.append(ctx)
+            }
+            return Mirror(model, children: [], displayStyle: .struct)
+        }
         if threadLocals.includeInMirror, !children.map(\.0).contains("id") {
             return Mirror(model, children: [("id", modelID)] + children, displayStyle: .struct)
         } else if threadLocals.includeInMirror || threadLocals.includeChildrenInMirror {

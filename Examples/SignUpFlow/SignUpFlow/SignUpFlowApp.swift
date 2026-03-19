@@ -3,7 +3,7 @@ import SwiftModel
 
 @main
 struct CounterFactApp: App {
-    @ObservedModel var model = SignUpFeature(signUpData: SignUpData())._withPrintChanges().withAnchor()
+    @ObservedModel var model = SignUpFeature(signUpData: SignUpData()).withDebug().withAnchor()
 
     var body: some Scene {
         WindowGroup {
