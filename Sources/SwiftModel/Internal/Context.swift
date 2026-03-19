@@ -32,7 +32,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     init(model: M, lock: NSRecursiveLock, options: ModelOption, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
         if model.lifetime != .initial {
-            reportIssue("It is not allowed to add an already anchored or fozen model, instead create new instance.")
+            reportIssue("It is not allowed to add an already anchored or frozen model, instead create a new instance.")
         }
 
         readModel = model.initialCopy

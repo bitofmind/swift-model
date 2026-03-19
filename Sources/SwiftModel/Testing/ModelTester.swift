@@ -25,6 +25,9 @@ import CustomDump
 public final class ModelTester<M: Model> {
     var access: TestAccess<M>
     let fileAndLine: FileAndLine
+    /// Set to `true` by `_ConcreteModelTestScope` after it has run cleanup,
+    /// so that `deinit` skips the duplicate work.
+    var cleanupHandledExternally = false
 
     // Internal designated init — accepts options directly; avoids double-anchoring.
     init(_ model: M, options: ModelOption, exhaustivity: Exhaustivity = .full, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
@@ -57,6 +60,7 @@ public final class ModelTester<M: Model> {
     }
 
     deinit {
+        guard !cleanupHandledExternally else { return }
         access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
         access.checkExhaustion(at: fileAndLine, includeUpdates: false, checkTasks: true)
         access.context.onRemoval()
@@ -123,7 +127,7 @@ public extension Model {
         }
 
         guard lifetime >= .active else {
-            reportIssue("Can only call didSend on models that is part of a ModelTester", filePath: filePath, line: line)
+            reportIssue("Can only call didSend on a model that is part of a ModelTester", filePath: filePath, line: line)
             return false
         }
 
@@ -219,6 +223,115 @@ public extension Exhaustivity {
     static let off: Self = []
     /// All categories are checked. This is the default.
     static let full: Self = [.state, .events, .tasks, .probes, .context, .preference]
+}
+
+public extension Exhaustivity {
+    /// Returns exhaustivity with the given categories added.
+    ///
+    /// ```swift
+    /// @Test(.modelTesting(exhaustivity: .off.adding(.state)))
+    /// ```
+    func adding(_ other: Self) -> Self { self.union(other) }
+
+    /// Returns exhaustivity with the given categories removed.
+    ///
+    /// ```swift
+    /// @Test(.modelTesting(exhaustivity: .full.removing(.events)))
+    /// ```
+    func removing(_ other: Self) -> Self { self.subtracting(other) }
+
+    /// Returns a modifier that adds the given categories to the inherited exhaustivity.
+    ///
+    /// When used in `@Test(.modelTesting(...))`, `@Suite(.modelTesting(...))`, or
+    /// `withExhaustivity(_:)`, the modifier is applied on top of the enclosing scope's
+    /// exhaustivity, composing rather than resetting it:
+    ///
+    /// ```swift
+    /// @Suite(.modelTesting(.removing(.events)))   // → .full − .events
+    /// struct MyTests {
+    ///     @Test(.modelTesting(.removing(.tasks))) // → (.full − .events) − .tasks
+    ///     func example() async {
+    ///         await withExhaustivity(.adding(.events)) { // → adds .events back
+    ///             ...
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    static func adding(_ other: Self) -> ExhaustivityModifier {
+        ExhaustivityModifier { $0.union(other) }
+    }
+
+    /// Returns a modifier that removes the given categories from the inherited exhaustivity.
+    ///
+    /// When used in `@Test(.modelTesting(...))`, `@Suite(.modelTesting(...))`, or
+    /// `withExhaustivity(_:)`, the modifier is applied on top of the enclosing scope's
+    /// exhaustivity, composing rather than resetting it:
+    ///
+    /// ```swift
+    /// @Suite(.modelTesting(.removing(.events)))   // → .full − .events
+    /// struct MyTests {
+    ///     @Test(.modelTesting(.removing(.tasks))) // → (.full − .events) − .tasks
+    ///     func example() async { }
+    /// }
+    /// ```
+    static func removing(_ other: Self) -> ExhaustivityModifier {
+        ExhaustivityModifier { $0.subtracting(other) }
+    }
+}
+
+/// A relative modification to an `Exhaustivity` value.
+///
+/// Use `Exhaustivity.adding(_:)` or `Exhaustivity.removing(_:)` to create a modifier. Pass it
+/// directly to `@Test(.modelTesting(...))`, `@Suite(.modelTesting(...))`, or `withExhaustivity(_:)`
+/// and it will be applied on top of the inherited exhaustivity rather than replacing it:
+///
+/// ```swift
+/// @Suite(.modelTesting(.removing(.events))) // removes events from .full
+/// struct MyTests {
+///     @Test(.modelTesting(.removing(.tasks))) // also removes tasks (composed)
+///     func example() async {
+///         await withExhaustivity(.adding(.events)) { // adds events back for this block
+///             ...
+///         }
+///     }
+/// }
+/// ```
+public struct ExhaustivityModifier: Sendable {
+    let transform: @Sendable (Exhaustivity) -> Exhaustivity
+
+    /// Creates a modifier from an explicit transform closure.
+    public init(_ transform: @escaping @Sendable (Exhaustivity) -> Exhaustivity) {
+        self.transform = transform
+    }
+
+    /// Applies this modifier to a base exhaustivity and returns the result.
+    public func apply(to base: Exhaustivity) -> Exhaustivity {
+        transform(base)
+    }
+
+    /// Returns a modifier that adds the given categories to the inherited exhaustivity.
+    ///
+    /// Equivalent to `Exhaustivity.adding(_:)`. Available as a static member so
+    /// leading-dot syntax works in any context that expects `ExhaustivityModifier`:
+    ///
+    /// ```swift
+    /// @Suite(.modelTesting(.adding(.events)))
+    /// ```
+    public static func adding(_ other: Exhaustivity) -> Self {
+        Self { $0.union(other) }
+    }
+
+    /// Returns a modifier that removes the given categories from the inherited exhaustivity.
+    ///
+    /// Equivalent to `Exhaustivity.removing(_:)`. Available as a static member so
+    /// leading-dot syntax works in any context that expects `ExhaustivityModifier`:
+    ///
+    /// ```swift
+    /// @Suite(.modelTesting(.removing(.events)))
+    /// ```
+    public static func removing(_ other: Exhaustivity) -> Self {
+        Self { $0.subtracting(other) }
+    }
 }
 
 @resultBuilder

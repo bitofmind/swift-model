@@ -577,7 +577,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         }
 
                         for (probe, value) in failure.probes {
-                            let preTitle = "Failed to assert calling of probe" + (probe.name.map { "\"\($0)\":" } ?? ":")
+                            let preTitle = "Failed to assert calling of probe" + (probe.name.map { " \"\($0)\":" } ?? ":")
                             let title = value is NoArgs ? preTitle :
                                 """
                                 \(preTitle)
@@ -599,13 +599,13 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                                     \(title)
 
                                     \(probe.count) Available probe values to assert:
-                                        \(probe.values.map { String(customDumping: $0) }.joined(separator: "\n\t"))
+                                        \(probe.values.map { String(customDumping: $0) }.joined(separator: "\n    "))
                                     """, fileAndLine))
                             }
                         }
 
                         if failure.accesses.isEmpty, failure.events.isEmpty, failure.modelsNoLongerPartOfTester.isEmpty, failure.probes.isEmpty {
-                            messages.append(("Failed to assert: ", failure.predicate.fileAndLine))
+                            messages.append(("Assertion failed", failure.predicate.fileAndLine))
                         }
                         reports.append(messages)
                     }
@@ -768,13 +768,17 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             }
 
             if start.distance(to: DispatchTime.now().uptimeNanoseconds) > scaledTimeout {
-                fail("Failed to unwrap value", at: fileAndLine)
+                fail("Failed to unwrap value of type \(T.self)", at: fileAndLine)
                 throw UnwrapError()
             }
 
             let elapsed = start.distance(to: DispatchTime.now().uptimeNanoseconds)
             let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
-            await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: 1_000_000)
+            // Cap the per-iteration wait to one poll round (1ms). The outer loop re-checks
+            // the timeout after each iteration, so we never need to block for `remaining`
+            // in one shot — that would delay timeout detection when the value stays nil.
+            let yieldRoundNs: UInt64 = 1_000_000
+            await waitForModification(timeoutNanoseconds: min(remaining, yieldRoundNs), yieldRoundNs: yieldRoundNs)
         }
     }
 
@@ -848,27 +852,16 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
     // Checks that no state changed without being asserted (exhaustion check).
     //
-    // Two layers of checking:
-    //   1. Diff expectedState vs lastState by value (without IDs) — catches structural changes.
-    //   2. Check valueUpdates for un-asserted paths not visible in the struct diff (e.g. multiple
-    //      writes to the same property that ended up at the same value, writes to hidden/non-mirrored
-    //      properties, or model identity changes such as a replaced child model).
-    //
-    // Note: A layer-2 diff with IDs (includeInMirror) was removed. expectedState holds frozen-copy
-    // snapshots whose generation IDs are static; lastState has live IDs updated on every child write.
-    // Writes between predicate evaluation and checkExhaustion produce false "not equal but no diff"
-    // failures even when all asserted changes are accounted for. valueUpdates (which tracks every
-    // write via didModify) provides the same coverage without this false-positive hazard.
-    //
     // At the end, resets expectedState = lastState so the next assert starts from a
     // clean baseline.
     func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false) {
         if checkTasks {
             for info in context.activeTasks {
-                fail("Models of type `\(info.modelName)` have \(info.fileAndLines.count) active tasks still running", for: .tasks, at: fileAndLine)
+                let taskWord = info.fileAndLines.count == 1 ? "task" : "tasks"
+                fail("Models of type `\(info.modelName)` have \(info.fileAndLines.count) active \(taskWord) still running", for: .tasks, at: fileAndLine)
 
                 for fileAndLine in info.fileAndLines {
-                    fail("Models of type `\(info.modelName)` have an active task still running", for: .tasks, at: fileAndLine)
+                    fail("Active task of `\(info.modelName)` still running (registered here)", for: .tasks, at: fileAndLine)
                 }
             }
         }
@@ -880,10 +873,14 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
         let probes = lock { self.probes }
         for probe in probes {
-            let name = probe.name.map { "\"\($0)\":" } ?? ""
+            let preTitle = "Failed to assert calling of probe" + (probe.name.map { " \"\($0)\":" } ?? ":")
             for value in probe.values {
-                let valueString = value is NoArgs ? "" : " with: \(String(customDumping: value))"
-                fail("Failed to assert calling of probe \(name)\(valueString)", for: .probes, at: fileAndLine)
+                let message = value is NoArgs ? preTitle :
+                    """
+                    \(preTitle)
+                        \(String(customDumping: value))
+                    """
+                fail(message, for: .probes, at: fileAndLine)
             }
         }
 
@@ -891,113 +888,116 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
         let title = "State not exhausted"
 
-        // Layer 1: structural diff — only on the timeout path (includeUpdates = false).
+        // Three layers of exhaustion checking.
         //
-        // On the success path (includeUpdates = true) expectedState was just set to lastState,
-        // so they should be identical. We skip the diff here because reading @Model child
-        // properties for the diff goes through live context references, which create a new
-        // frozenCopy on each read. Two frozenCopies of the same model at different times carry
-        // different generation IDs, so Equatable.== (lhs.id == rhs.id) returns false even
-        // for structurally identical values, producing spurious "not equal but no difference
-        // detected" failures. Layer-3 (valueUpdates) is the authoritative tracker for unasserted
-        // changes on the success path — every property write fires didModify and adds an entry.
+        // On the success path (includeUpdates = true), expectedState was just set to lastState
+        // so layers 1 and 2 would always produce identical values — skip straight to layer 3.
         //
-        // On the timeout path the diff is still useful: expectedState is built from access.apply
-        // calls which write concrete frozen-copy values for the failed predicates, and those values
-        // may differ structurally from lastState (e.g. a property changed after the predicate
-        // evaluated). In that case the diff correctly shows what changed.
+        // On the timeout/deinit path (includeUpdates = false), run the layers in order and
+        // stop at the first one that produces output. This mirrors the original behavior
+        // and avoids duplicate messages for the same change.
         //
-        // We use diff() directly rather than diffMessage() to avoid the isEqual() pre-check.
-        // diffMessage() calls Equatable.== before running the structural diff; for enum cases
-        // with function-typed associated values, == always returns false (functions are not
-        // comparable), even when the two snapshots are structurally identical. Calling diff()
-        // directly means we only report a failure when CustomDump can actually show a difference.
+        // Layer 1: structural diff without IDs (data fields only). Catches data changes cleanly
+        // without ModelID noise.
         //
-        // We filter out diffs that CustomDump marks as "Not equal but no difference detected".
-        // This happens when a type's Equatable.== says the values differ but the mirror-based
-        // structural comparison finds no difference — which occurs for enum cases with function-
-        // typed associated values (functions cannot be compared for equality). In those cases
-        // the diff output is misleading; layer-3 (valueUpdates) provides the correct report.
+        // Layer 2: structural diff with IDs included. Only runs if layer 1 produced nothing —
+        // meaning all data fields are identical. In that case the only possible difference is
+        // the implicit ModelID, which indicates a child model was replaced with a new instance
+        // that has the same field values.
         //
-        // We use includeInMirror (shows both data fields and ModelID) so that a child model
-        // replaced with a new instance (same field values, different ModelID) is visible in the
-        // diff — the only observable change in that case is the id field.
-        if !includeUpdates {
-            let structuralDiff = threadLocals.withValue(true, at: \.includeInMirror) {
-                diff(lastAsserted, actual, format: .proportional)
+        // Layer 3: valueUpdates — per-property unasserted changes. Runs on the success path
+        // always; on the timeout/deinit path only when layers 1 and 2 both produced nothing.
+        // (On success path it catches writes that happened after the last asserted predicate;
+        // on timeout path it catches changes invisible to the struct diff, e.g. multiple writes
+        // that returned to the same value.)
+        //
+        // We use diffMessage() for layers 1 and 2. It uses Equatable.== as a pre-check before
+        // running the structural diff, which filters out enum cases with function-typed associated
+        // values (where == always returns false but customDump shows no difference).
+
+        var reportedStateFailure = false
+
+        // Layer 1: diff without IDs (data fields only).
+        let layer1 = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+            diffMessage(expected: lastAsserted, actual: actual, title: title)
+        }
+        // Suppress "Not equal but no difference detected" from layer-1 too.
+        // Enum cases with function-typed associated values cause Equatable.== to return
+        // false (functions can't be compared) but customDump shows no visible difference.
+        if let message = layer1, !message.contains("Not equal but no difference detected") {
+            fail(message, for: .state, at: fileAndLine)
+            reportedStateFailure = true
+        } else {
+            // Layer 2: diff with IDs — only runs if layer 1 found nothing.
+            // Catches identity-only changes: child model replaced with a new instance
+            // that has the same field values, so only the implicit ModelID differs.
+            let layer2 = threadLocals.withValue(true, at: \.includeInMirror) {
+                diffMessage(expected: lastAsserted, actual: actual, title: title)
             }
-            if let structuralDiff, !structuralDiff.contains("Not equal but no difference detected") {
-                let message = "\(title): …\n\n\(structuralDiff.indent(by: 4))\n\n(Expected: −, Actual: +)"
+            // Suppress "Not equal but no difference detected" results from layer-2.
+            // This happens with enum cases that have function-typed associated values:
+            // Equatable.== returns false (functions can't be compared) but customDump
+            // shows no visible difference. These are false positives for the id-only diff.
+            if let message = layer2, !message.contains("Not equal but no difference detected") {
                 fail(message, for: .state, at: fileAndLine)
+                reportedStateFailure = true
             }
         }
 
-        // Layer 3: check for pending valueUpdates (unasserted property changes).
-        //
-        // This runs on both the success path (includeUpdates = true) and the timeout/deinit path
-        // (includeUpdates = false). On the success path, expectedState was just reset to lastState
-        // so any remaining valueUpdates entries represent changes that happened after the last
-        // asserted predicate. On the timeout/deinit path, they represent changes that were never
-        // asserted at all. In both cases layer-3 provides accurate, property-level failure messages
-        // without the false-positive risk of the structural diff.
-        //
-        // Note: layer-2 diff with IDs (includeInMirror for expectedState vs lastState) is omitted
-        // on the success path. expectedState is built from frozen copies that have static generation
-        // IDs, while lastState reflects the live model with dynamic IDs updated on every child write.
-        // Any child writes between predicate evaluation and checkExhaustion would cause false
-        // "not equal but no difference detected" failures in a layer-2 diff, even when the
-        // values are structurally identical and all asserted changes were accounted for.
-        // Model identity changes (child replaced) are covered by layer-3: every property write
-        // fires didModify and adds a valueUpdates entry, so genuinely unasserted replacements
-        // are caught there with a clear property-level description.
+        // Layer 3: valueUpdates — only when layers 1/2 didn't fire.
+        // On the success path, layers 1/2 produce no output because expectedState was
+        // just set to lastState. Layer 3 catches any writes that fired after that reset.
+        // On the timeout/deinit path, layer 3 catches changes invisible to the struct
+        // diff (e.g. multiple writes to the same property that ended at the same value).
+        if !reportedStateFailure {
+            // Partition by area so state, context, and preference storage are each reported
+            // independently and respect their respective exhaustivity flags.
+            for area: Exhaustivity in [.state, .context, .preference] {
+                let updates = snapshotUpdates.values.filter { $0.area == area }
+                if !updates.isEmpty {
+                    let descriptions = updates.map { $0.debugInfo() }
+                    let areaTitle: String
+                    switch area {
+                    case .context: areaTitle = "Context not exhausted"
+                    case .preference: areaTitle = "Preference not exhausted"
+                    default: areaTitle = "State not exhausted"
+                    }
+                    fail("""
+                        \(areaTitle): …
 
-        // Partition by area so state, context, and preference storage are each reported
-        // independently and respect their respective exhaustivity flags.
-        for area: Exhaustivity in [.state, .context, .preference] {
-            let updates = snapshotUpdates.values.filter { $0.area == area }
-            if !updates.isEmpty {
-                let descriptions = updates.map { $0.debugInfo() }
-                let areaTitle: String
-                switch area {
-                case .context: areaTitle = "Context not exhausted"
-                case .preference: areaTitle = "Preference not exhausted"
-                default: areaTitle = "State not exhausted"
+                        Modifications not asserted:
+
+                        \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
+                        """, for: area, at: fileAndLine)
                 }
+            }
+
+            // Layer 3b: unasserted context/preference storage on dependency models.
+            // These are tracked separately because dependency models have no
+            // root-relative WritableKeyPath and cannot be put in valueUpdates.
+            let depMetaUpdates = lock { dependencyMetadataUpdates }
+            if !depMetaUpdates.isEmpty {
+                let descriptions = depMetaUpdates.values.map { $0.debugInfo() }
                 fail("""
-                    \(areaTitle): …
+                    Context not exhausted: …
 
                     Modifications not asserted:
 
                     \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
-                    """, for: area, at: fileAndLine)
+                    """, for: .context, at: fileAndLine)
             }
-        }
 
-        // Layer 3b: check for unasserted context/preference storage on dependency models.
-        // These are tracked separately because dependency models have no
-        // root-relative WritableKeyPath and cannot be put in valueUpdates.
-        let depMetaUpdates = lock { dependencyMetadataUpdates }
-        if !depMetaUpdates.isEmpty {
-            let descriptions = depMetaUpdates.values.map { $0.debugInfo() }
-            fail("""
-                Context not exhausted: …
+            let depPrefUpdates = lock { dependencyPreferenceUpdates }
+            if !depPrefUpdates.isEmpty {
+                let descriptions = depPrefUpdates.values.map { $0.debugInfo() }
+                fail("""
+                    Preference not exhausted: …
 
-                Modifications not asserted:
+                    Modifications not asserted:
 
-                \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
-                """, for: .context, at: fileAndLine)
-        }
-
-        let depPrefUpdates = lock { dependencyPreferenceUpdates }
-        if !depPrefUpdates.isEmpty {
-            let descriptions = depPrefUpdates.values.map { $0.debugInfo() }
-            fail("""
-                Preference not exhausted: …
-
-                Modifications not asserted:
-
-                \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
-                """, for: .preference, at: fileAndLine)
+                    \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
+                    """, for: .preference, at: fileAndLine)
+            }
         }
 
         // Reset the baseline so the next assert call starts from the current live state.

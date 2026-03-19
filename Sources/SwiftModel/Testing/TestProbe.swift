@@ -31,8 +31,14 @@ public final class TestProbe: @unchecked Sendable {
     private var _values: [Any] = []
 
     /// Creates a probe, optionally named for clearer failure messages.
-    public init(_ name: String? = nil) {
+    ///
+    /// The probe automatically registers with the active `.modelTesting` test scope on creation,
+    /// so any calls to it will be caught by exhaustion checking. Pass `autoInstall: false` only
+    /// when creating probes inside shared test helpers that should not participate in exhaustion
+    /// unless the probe is explicitly passed to a model.
+    public init(_ name: String? = nil, autoInstall: Bool = true) {
         self.name = name
+        if autoInstall { autoInstallIfNeeded() }
     }
 }
 
@@ -61,6 +67,7 @@ public extension TestProbe {
         lock {
             _values.append((repeat each value))
         }
+        autoInstallIfNeeded()
     }
 
     /// Allows the probe to be used directly as a closure (e.g. `onSave: probe`).
@@ -69,6 +76,24 @@ public extension TestProbe {
         lock {
             _values.append((repeat each value))
         }
+        autoInstallIfNeeded()
+    }
+
+    private func autoInstallIfNeeded() {
+        guard let scope = _ModelTestingLocals.scope else { return }
+        scope.install([self])
+    }
+
+    /// Registers this probe with the active `.modelTesting` test scope.
+    ///
+    /// Probes created inside a `.modelTesting` test auto-register at `init` time, so calling
+    /// `install()` explicitly is only needed when a probe was created with `autoInstall: false`.
+    func install(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
+        guard let scope = _ModelTestingLocals.scope else {
+            reportIssue("install() must be called inside a @Test(.modelTesting) test function", fileID: fileID, filePath: filePath, line: line, column: column)
+            return
+        }
+        scope.install([self])
     }
 
     /// The number of times the probe has been called.
@@ -77,14 +102,20 @@ public extension TestProbe {
     /// `true` if the probe has never been called.
     var isEmpty: Bool { values.isEmpty }
 
-    /// Asserts — inside a `tester.assert { }` block — that the probe was called with the
-    /// given arguments. Matching uses `customDump` equality, so you get a readable diff on failure.
+    /// Asserts — inside a `tester.assert { }` or `expect { }` block — that the probe was called
+    /// with the given arguments. Matching uses `customDump` equality, so you get a readable diff on failure.
     ///
-    /// > Important: This method must be called inside a `ModelTester.assert` builder block.
+    /// ```swift
+    /// await expect {
+    ///     onLoad.wasCalled(with: "hello")
+    /// }
+    /// ```
+    ///
+    /// > Important: This method must be called inside a `ModelTester.assert` or `expect { }` builder block.
     ///   Calling it outside will report an issue and return `false`.
     func wasCalled<each S>(with value: repeat each S, filePath: StaticString = #filePath, line: UInt = #line) -> Bool {
         guard let context = TesterAssertContextBase.assertContext else {
-            reportIssue("Can only call wasCalled inside a ModelTester assert", filePath: filePath, line: line)
+            reportIssue("Can only call wasCalled inside a ModelTester assert or expect block", filePath: filePath, line: line)
             return false
         }
 
@@ -92,6 +123,7 @@ public extension TestProbe {
         context.probe(self, wasCalledWith: (repeat each value))
         return index(of: tuple) != nil
     }
+
 }
 
 extension TestProbe {

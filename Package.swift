@@ -10,6 +10,10 @@ let package = Package(
             name: "SwiftModel",
             targets: ["SwiftModel"]
         ),
+        .library(
+            name: "SwiftModelTesting",
+            targets: ["SwiftModelTesting"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.9.0"),
@@ -32,10 +36,18 @@ let package = Package(
             .product(name: "ConcurrencyExtras", package: "swift-concurrency-extras"),
             .product(name: "IssueReporting", package: "xctest-dynamic-overlay"),
         ]),
+        .target(
+            name: "SwiftModelTesting",
+            dependencies: [
+                "SwiftModel",
+                .product(name: "IssueReporting", package: "xctest-dynamic-overlay"),
+            ]
+        ),
         .testTarget(
             name: "SwiftModelTests",
             dependencies: [
                 "SwiftModel",
+                "SwiftModelTesting",
                 .product(name: "Dependencies", package: "swift-dependencies"),
                 .product(name: "InlineSnapshotTesting", package: "swift-snapshot-testing"),
             ]

@@ -79,7 +79,11 @@ extension Equatable {
 }
 
 func propertyName<M: Model, State>(from model: M, path: WritableKeyPath<M, State>) -> String? {
-    let names = Mirror(reflecting: model.withAccess(nil)).children.map(\.label)
+    // includeChildrenInMirror makes @Model expose its stored properties to Mirror,
+    // which is suppressed by default. Without it, children is always empty → "UNKNOWN".
+    let names = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+        Mirror(reflecting: model.withAccess(nil)).children.map(\.label)
+    }
     guard let index = model.visitIndex(of: path), names.count > index else { return nil }
     return names[index]
 }

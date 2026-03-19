@@ -147,7 +147,7 @@ public extension ModelContext {
             guard let context = modifyContext else {
                 if let initial {
                     guard newValue.isInitial else {
-                        reportIssue("It is not allowed to add an already anchored or frozen model, instead create new instance instead.")
+                        reportIssue("It is not allowed to add an already anchored or frozen model, instead create a new instance.")
                         return
                     }
 
@@ -162,7 +162,7 @@ public extension ModelContext {
             }
 
             guard newValue.isInitial || newValue.context != nil else {
-                reportIssue("It is not allowed to add a frozen model, instead create new instance instead or add an already anchored model.")
+                reportIssue("It is not allowed to add a frozen model, instead create a new instance or add an already anchored model.")
                 return
             }
 
@@ -205,7 +205,7 @@ public extension ModelContext {
             guard let context = modifyContext else {
                 if let initial {
                     guard newValue.isAllInitial else {
-                        reportIssue("It is not allowed to add an already anchored or frozen model, instead create new instance instead.")
+                        reportIssue("It is not allowed to add an already anchored or frozen model, instead create a new instance.")
                         return
                     }
 
