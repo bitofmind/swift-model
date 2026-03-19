@@ -133,7 +133,7 @@ struct TrackUndoAllTests {
 
     @Test func ignoredFieldChangeDoesNotCreateUndoEntry() async {
         let stack = makeStack()
-        var model = ModelWithIgnoredTrackAll().withAnchor(andDependencies: { $0.undoSystem.backend = stack })
+        var model = ModelWithIgnoredTrackAll().withAnchor { $0.undoSystem.backend = stack }
 
         model.ignored = "world"
         await Task.yield()

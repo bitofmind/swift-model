@@ -7,7 +7,7 @@ struct SharedModelTests {
     @Test func testBasicSharing() async {
         let testResult = TestResult()
         await waitUntilRemoved {
-            let parent = Parent().withAnchor() {
+            let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
 
@@ -22,7 +22,7 @@ struct SharedModelTests {
     @Test func testReassign() async {
         let testResult = TestResult()
         await waitUntilRemoved {
-            let parent = Parent().withAnchor() {
+            let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
 
@@ -41,7 +41,7 @@ struct SharedModelTests {
     @Test func testArray() async {
         let testResult = TestResult()
         await waitUntilRemoved {
-            let parent = Parent().withAnchor() {
+            let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
 
@@ -58,7 +58,7 @@ struct SharedModelTests {
     @Test func testArrayAlt() async {
         let testResult = TestResult()
         await waitUntilRemoved {
-            let parent = Parent().withAnchor() {
+            let parent = Parent().withAnchor {
                 $0.testResult = testResult
             }
 
@@ -79,7 +79,7 @@ struct SharedModelTests {
         let testResult = TestResult()
         await waitUntilRemoved {
             let leaf = Leaf()
-            let _ = Parent(child: Child(id: 1, leaf: leaf), children: [Child(id: 2, leaf: leaf)]).withAnchor() {
+            let _ = Parent(child: Child(id: 1, leaf: leaf), children: [Child(id: 2, leaf: leaf)]).withAnchor {
                 $0.testResult = testResult
             }
 
@@ -149,7 +149,7 @@ private struct Leaf: Equatable {
     }
 }
 
-@Model 
+@Model
 private struct EventParent {
     var child: EventChild = EventChild(id: 0)
     var children: [EventChild] = []

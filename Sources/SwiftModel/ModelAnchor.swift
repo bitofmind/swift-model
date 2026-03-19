@@ -2,11 +2,11 @@ import Foundation
 import Dependencies
 
 public extension Model {
-    /// An anchor keeps a model hierarchy active.
+    /// Anchors and activates the model, retaining the anchor for the lifetime of the model.
     ///
     /// Once a model is anchored, it and any its descendant models will be activated,
     /// and the model's `onActivate()` will be called.
-    /// Any new models added to the hierarchy will activated, and any models removed
+    /// Any new models added to the hierarchy will be activated, and any models removed
     /// will be deactivated.
     ///
     ///     AppView(model: AppModel().withAnchor())
@@ -18,10 +18,44 @@ public extension Model {
     ///        $0.locale = Locale(identifier: "en_US")
     ///     })
     ///
+    /// When called inside a `@Test(.modelTesting)` function, `withAnchor()` automatically
+    /// connects the model to the test scope — no `ModelTester` reference is needed.
+    ///
     /// - Parameters:
-    ///   - dependencies: A closure for overriding dependencies that will be accessed by the model
-    func withAnchor(function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> Self {
-        let (model, anchor) = andAnchor(options: [], function: function, andDependencies: dependencies)
+    ///   - dependencies: A closure for overriding dependencies that will be accessed by the model.
+    func withAnchor(
+        function: String = #function,
+        withDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in },
+        fileID: StaticString = #fileID,
+        filePath: StaticString = #filePath,
+        line: UInt = #line,
+        column: UInt = #column
+    ) -> Self {
+        // When called inside a @Test(.modelTesting) test, auto-connect to the test scope.
+        if let slot = _ModelTestingLocals.scope as? _PendingModelTestScope {
+            assertInitialState(function: function)
+            let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
+            // Merge dependencies: slot (trait-level) overrides are applied first,
+            // then withAnchor's own overrides, so per-call overrides win.
+            let slotDependencies = slot.dependencies
+            let mergedDependencies: (inout ModelDependencies) -> Void = { deps in
+                slotDependencies(&deps)
+                dependencies(&deps)
+            }
+            let tester = ModelTester(
+                self,
+                exhaustivity: slot.initialExhaustivity,
+                dependencies: mergedDependencies,
+                fileID: fileID,
+                filePath: filePath,
+                line: line,
+                column: column
+            )
+            let concrete = _ConcreteModelTestScope(tester: tester)
+            slot.register(concrete, at: fileAndLine)
+            return tester.model
+        }
+        let (model, anchor) = returningAnchor(options: [], function: function, withDependencies: dependencies)
 
         // Hold on to anchor as long as model's access object is alive.
         model.access!.retainedObject = anchor
@@ -29,28 +63,24 @@ public extension Model {
         return model
     }
 
-    /// An anchor keeps a model hierarchy active.
+    /// Anchors and activates the model, returning the anchor separately for explicit lifetime control.
     ///
-    /// Once a model is anchored, it and any its descendant models will be activated,
-    /// and the model's `onActivate()` will be called.
-    /// Any new models added to the hierarchy will activated, and any models removed
-    /// will be deactivated.
+    /// Use `returningAnchor()` when you need to control the anchor's lifetime independently — the
+    /// model hierarchy stays alive as long as you hold the returned `ModelAnchor`.
     ///
-    /// Use `andAnchor()` when you need to hold on to the anchor separately:
-    ///
-    ///     let (model, anchor) = AppModel().andAnchor()
+    ///     let (model, anchor) = AppModel().returningAnchor()
     ///     AppView(model: model)
     ///
     /// Or if you need to override some dependencies:
     ///
-    ///     let (model, anchor) = AppModel().andAnchor {
+    ///     let (model, anchor) = AppModel().returningAnchor {
     ///        $0.uuid = .incrementing
     ///        $0.locale = Locale(identifier: "en_US")
     ///     }
     ///
     /// - Parameters:
     ///   - dependencies: A closure for overriding dependencies that will be accessed by the model.
-    func andAnchor(function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
+    func returningAnchor(function: String = #function, withDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
         assertInitialState(function: function)
 
         let context = Context(model: self, lock: NSRecursiveLock(), options: [], dependencies: dependencies, parent: nil)
@@ -64,17 +94,23 @@ public extension Model {
 
         return (model, ModelAnchor(context: context))
     }
+
+    /// Deprecated: use `returningAnchor(withDependencies:)` instead.
+    @available(*, deprecated, renamed: "returningAnchor(withDependencies:)")
+    func andAnchor(function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
+        returningAnchor(function: function, withDependencies: dependencies)
+    }
 }
 
 // Internal overloads used by tests (via @testable import) to exercise specific option combinations.
 extension Model {
-    func withAnchor(options: ModelOption, function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> Self {
-        let (model, anchor) = andAnchor(options: options, function: function, andDependencies: dependencies)
+    func withAnchor(options: ModelOption, function: String = #function, withDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> Self {
+        let (model, anchor) = returningAnchor(options: options, function: function, withDependencies: dependencies)
         model.access!.retainedObject = anchor
         return model
     }
 
-    func andAnchor(options: ModelOption, function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
+    func returningAnchor(options: ModelOption, function: String = #function, withDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
         assertInitialState(function: function)
         let context = Context(model: self, lock: NSRecursiveLock(), options: options, dependencies: dependencies, parent: nil)
         var model = self

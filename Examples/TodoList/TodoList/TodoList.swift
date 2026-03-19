@@ -223,7 +223,7 @@ typealias TodoListRootView = TodoListView
 
 #Preview {
     let stack = ModelUndoStack()
-    let model = TodoListModel().withAnchor(andDependencies: { $0.undoSystem.backend = stack })
+    let model = TodoListModel().withAnchor(withDependencies: { $0.undoSystem.backend = stack })
     model.items = [
         TodoItem(title: "Buy groceries"),
         TodoItem(title: "Walk the dog", isDone: true),

@@ -65,7 +65,7 @@ extension ModelContext {
                 return nil
             }
 
-            reportIssue("Modifying an destructed model is not allowed and has no effect")
+            reportIssue("Modifying a destructed model is not allowed and has no effect")
             return nil
         }
     }
