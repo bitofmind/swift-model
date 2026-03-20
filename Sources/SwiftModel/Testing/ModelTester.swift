@@ -5,18 +5,9 @@ import CustomDump
 
 /// Drives a model through a test, providing exhaustive checking of state, events, tasks, and callbacks.
 ///
-/// Create a tester using `andTester()` on an unanchored model. The tester anchors the model,
-/// activates it, and then tracks every side effect it produces:
-///
-/// ```swift
-/// @Test func testIncrement() async {
-///     let (model, tester) = CounterModel().andTester()
-///     model.incrementTapped()
-///     await tester.assert {
-///         model.count == 1
-///     }
-/// }
-/// ```
+/// > Note: `ModelTester` is the lower-level testing API. Prefer `@Test(.modelTesting)` with
+///   `withAnchor()` and the global `expect { }` / `require(_:)` functions — they provide the
+///   same exhaustion checking with less boilerplate.
 ///
 /// When the tester is deallocated at the end of the test, it verifies that every state change,
 /// event, async task, and probe invocation has been explicitly asserted — so unexpected side
@@ -37,19 +28,17 @@ public final class ModelTester<M: Model> {
         access.lock { access.exhaustivity = exhaustivity }
     }
 
-    /// Creates model tester for testing models.
+    /// Creates a tester for the given model.
     ///
-    ///     ModelTester(AppModel()) {
-    ///        $0.uuid = .incrementing
-    ///        $0.locale = Locale(identifier: "en_US")
-    ///     }
+    /// > Deprecated: Use `@Test(.modelTesting)` with `model.withAnchor()` and the global
+    ///   `expect { }` / `require(_:)` functions instead. `ModelTester` remains available for
+    ///   programmatic use or when `SwiftModelTesting` is not imported.
     ///
     /// - Parameters:
     ///   - model: An un-anchored model to test.
     ///   - exhaustivity: Which side-effect categories must be explicitly asserted. Defaults to `.full`.
-    ///   - dependencies: A closure for overriding dependencies that will be accessed by the model
-    ///
-    ///  - Note: It is often more convenient to use the `andTester()` method on a model.
+    ///   - dependencies: A closure for overriding dependencies that will be accessed by the model.
+    @available(*, deprecated, message: "Use @Test(.modelTesting) with withAnchor() and the global expect { } / require(_:) functions instead.")
     public convenience init(_ model: M, exhaustivity: Exhaustivity = .full, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
         self.init(model, options: [], exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
     }
@@ -68,24 +57,26 @@ public final class ModelTester<M: Model> {
 }
 
 public extension Model {
-    /// Anchors the model, activates it, and returns it together with a `ModelTester` for exhaustive testing.
+    /// Anchors the model and returns it together with a `ModelTester` for exhaustive testing.
+    ///
+    /// > Deprecated: Use `@Test(.modelTesting)` (from `SwiftModelTesting`) with `model.withAnchor()`
+    ///   and the global `expect { }` / `require(_:)` functions instead:
     ///
     /// ```swift
-    /// let (model, tester) = AppModel().andTester()
-    ///
-    /// // With dependency overrides:
-    /// let (model, tester) = AppModel().andTester {
-    ///     $0.uuid = .incrementing
-    ///     $0.continuousClock = ImmediateClock()
+    /// @Test(.modelTesting) func example() async {
+    ///     let model = AppModel().withAnchor()
+    ///     model.incrementTapped()
+    ///     await expect { model.count == 1 }
     /// }
     /// ```
     ///
     /// - Parameters:
     ///   - exhaustivity: Which side-effect categories must be explicitly asserted. Defaults to `.full`.
     ///   - withDependencies: A closure to override dependencies injected into the model.
+    @available(*, deprecated, message: "Use @Test(.modelTesting) with withAnchor() and the global expect { } / require(_:) functions instead.")
     func andTester(exhaustivity: Exhaustivity = .full, withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
         assertInitialState(function: function)
-        let tester = ModelTester(self, exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
+        let tester = ModelTester(self, options: [], exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
         return (tester.model, tester)
     }
 }
@@ -167,11 +158,11 @@ public extension ModelTester {
         set { access.lock { access.showSkippedAssertions = newValue } }
     }
 
-    /// Installs one or more `TestProbe` instances into the tester.
+    /// Registers `TestProbe` instances for exhaustion checking.
     ///
-    /// Probes intercept specific async signals (e.g. a particular `Observed` stream or event type)
-    /// so you can assert on them in `assert` blocks. Installed probes participate in exhaustion
-    /// checking when `exhaustivity` includes `.probes`.
+    /// > Deprecated: Probes created inside a `@Test(.modelTesting)` test auto-register with the
+    ///   active scope on creation and on every call. Explicit `install()` is no longer needed.
+    @available(*, deprecated, message: "TestProbe auto-installs on creation and on every call. Explicit install() is no longer needed.")
     func install(_ probes: TestProbe...) {
         for probe in probes {
             access.install(probe)
@@ -370,7 +361,7 @@ func predicate(@AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) -
     return result.allSatisfy { $0.predicate() }
 }
 
-public struct TestPredicate {
+public struct TestPredicate: Sendable {
     var predicate: @Sendable () -> Bool
     var values: @Sendable () -> (Any, Any)? = { nil }
 }
@@ -387,26 +378,21 @@ public extension ModelTester {
     /// Waits for all pending model updates to propagate, then verifies that every predicate in
     /// the builder body is `true` and that no unasserted side-effects remain (subject to `exhaustivity`).
     ///
-    /// ```swift
-    /// await tester.assert {
-    ///     model.count == 1
-    ///     model.didSend(.increment)
-    /// }
-    /// ```
+    /// > Deprecated: Use the global `expect { }` function inside a `@Test(.modelTesting)` test instead.
     ///
     /// - Parameter timeout: Maximum nanoseconds to wait for the predicates to become true (default 1 s).
     /// - Parameter builder: A result-builder block of Boolean predicates. Use the `==` operator for
     ///   pretty-printed diff output on failure.
+    @available(*, deprecated, message: "Use the global expect { } function inside a @Test(.modelTesting) test instead.")
     func assert(timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) async {
         await access.assert(timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
     }
 
     /// Single-predicate convenience overload. Equivalent to `assert { predicate }` for a plain `Bool` expression.
     ///
-    /// ```swift
-    /// await tester.assert(model.isLoading == false)
-    /// ```
+    /// > Deprecated: Use the global `expect { }` function inside a `@Test(.modelTesting)` test instead.
     @_disfavoredOverload
+    @available(*, deprecated, message: "Use the global expect { } function inside a @Test(.modelTesting) test instead.")
     func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
@@ -416,9 +402,8 @@ public extension ModelTester {
     /// Single-predicate convenience overload for a `TestPredicate` (the result of `==` between two `Equatable` values).
     /// Provides a pretty-printed diff on failure.
     ///
-    /// ```swift
-    /// await tester.assert(model.count == 1)
-    /// ```
+    /// > Deprecated: Use the global `expect { }` function inside a `@Test(.modelTesting)` test instead.
+    @available(*, deprecated, message: "Use the global expect { } function inside a @Test(.modelTesting) test instead.")
     func assert(_ predicate: TestPredicate, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
@@ -427,16 +412,8 @@ public extension ModelTester {
 
     /// Waits for an optional expression to become non-`nil`, then returns the unwrapped value.
     ///
-    /// Fails and throws if the expression is still `nil` after `timeout` nanoseconds. Unlike
-    /// `assert`, exhaustion checking is **not** triggered by a successful unwrap — use a
-    /// subsequent `assert` to consume any pending side effects.
-    ///
-    /// ```swift
-    /// let detail = try await tester.unwrap(model.selectedItem)
-    /// await tester.assert {
-    ///     detail.name == "Expected"
-    /// }
-    /// ```
+    /// > Deprecated: Use the global `require(_:)` function inside a `@Test(.modelTesting)` test instead.
+    @available(*, deprecated, message: "Use the global require(_:) function inside a @Test(.modelTesting) test instead.")
     func unwrap<T>(_ unwrap: @escaping @Sendable @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T  {
         try await access.unwrap(unwrap, timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))
     }
@@ -444,53 +421,41 @@ public extension ModelTester {
 
 @available(macOS 13, iOS 16, watchOS 9, tvOS 16, *)
 public extension ModelTester {
-    /// Waits for all pending model updates to propagate, then verifies that every predicate in
-    /// the builder body is `true` and that no unasserted side-effects remain (subject to `exhaustivity`).
+    /// Waits for all pending model updates to propagate, then verifies predicates with a `Duration` timeout.
     ///
-    /// ```swift
-    /// await tester.assert(timeout: .seconds(2)) {
-    ///     model.count == 1
-    ///     model.didSend(.increment)
-    /// }
-    /// ```
-    ///
-    /// - Parameter timeout: Maximum time to wait for the predicates to become true (default 1 s).
-    /// - Parameter builder: A result-builder block of Boolean predicates. Use the `==` operator for
-    ///   pretty-printed diff output on failure.
+    /// > Deprecated: Use the global `expect(timeout:)` function inside a `@Test(.modelTesting)` test instead.
+    @available(*, deprecated, message: "Use the global expect(timeout:) function inside a @Test(.modelTesting) test instead.")
     func assert(timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) async {
         await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
     }
 
-    /// Single-predicate convenience overload. Equivalent to `assert(timeout:) { predicate }` for a plain `Bool` expression.
+    /// Single-predicate `Bool` overload with a `Duration` timeout.
     ///
-    /// ```swift
-    /// await tester.assert(model.isLoading == false, timeout: .seconds(2))
-    /// ```
+    /// > Deprecated: Use the global `expect(timeout:)` function inside a `@Test(.modelTesting)` test instead.
     @_disfavoredOverload
+    @available(*, deprecated, message: "Use the global expect(timeout:) function inside a @Test(.modelTesting) test instead.")
     func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
         await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
     }
 
-    /// Single-predicate convenience overload for a `TestPredicate` with an explicit `Duration` timeout.
-    /// Provides a pretty-printed diff on failure.
+    /// Single-predicate `TestPredicate` overload with a `Duration` timeout.
     ///
-    /// ```swift
-    /// await tester.assert(model.count == 1, timeout: .seconds(2))
-    /// ```
+    /// > Deprecated: Use the global `expect(timeout:)` function inside a `@Test(.modelTesting)` test instead.
+    @available(*, deprecated, message: "Use the global expect(timeout:) function inside a @Test(.modelTesting) test instead.")
     func assert(_ predicate: TestPredicate, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
         await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
     }
 
-    /// Waits for an optional expression to become non-`nil`, then returns the unwrapped value.
+    /// Waits for an optional to become non-`nil` with a `Duration` timeout.
     ///
-    /// Fails and throws if the expression is still `nil` after `timeout`. Unlike `assert`,
-    /// exhaustion checking is **not** triggered by a successful unwrap.
+    /// > Deprecated: Use the global `require(_:timeout:)` function inside a `@Test(.modelTesting)` test instead.
+    @available(*, deprecated, message: "Use the global require(_:timeout:) function inside a @Test(.modelTesting) test instead.")
     func unwrap<T>(_ unwrap: @escaping @Sendable @autoclosure () -> T?, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T {
-        try await self.unwrap(unwrap(), timeoutNanoseconds: timeout.toNanoseconds, fileID: fileID, filePath: filePath, line: line, column: column)
+        try await access.unwrap(unwrap, timeoutNanoseconds: timeout.toNanoseconds, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))
     }
 }
 

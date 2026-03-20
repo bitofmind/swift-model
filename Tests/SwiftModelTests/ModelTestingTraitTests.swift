@@ -80,7 +80,7 @@ struct ModelTestingTraitTests {
     func stateOnlyExhaustivity() async {
         let model = TraitCounter().withAnchor()
         model.increment()
-        await expect { model.count == 1 }
+        await expect(model.count == 1)
         // Event .incremented is sent but not asserted — OK because exhaustivity is [.state] only.
     }
 
@@ -106,12 +106,12 @@ struct ModelTestingTraitTests {
         }
     }
 
-    // probe.install() registers probe for exhaustion checking before it is ever called.
+    // TestProbe auto-registers for exhaustion checking on creation.
     // Allows the test to fail if the probe is never called at all.
     @Test func probeInstallRegistersForExhaustionCheck() async {
         let onLoad = TestProbe()
         let model = TraitLoader(onLoad: onLoad.call).withAnchor()
-        onLoad.install()  // register upfront — exhaustion will catch it if never called
+        // No explicit install() needed — probe auto-registers on creation.
         model.load(value: "world")
         await expect {
             model.item == "world"
@@ -149,7 +149,7 @@ struct ModelTestingTraitTests {
         let model = TraitCounter().withAnchor()
         model.increment()
         // State must be consumed (still in exhaustivity), event is excluded.
-        await expect { model.count == 1 }
+        await expect(model.count == 1)
         // .incremented event is not asserted — OK because events are removed from exhaustivity.
     }
 
@@ -158,7 +158,7 @@ struct ModelTestingTraitTests {
     func exhaustivityAddingState() async {
         let model = TraitCounter().withAnchor()
         model.increment()
-        await expect { model.count == 1 }
+        await expect(model.count == 1)
         // .incremented event not asserted — fine, events not in exhaustivity.
     }
 
@@ -168,7 +168,7 @@ struct ModelTestingTraitTests {
     func exhaustivityModifierRemovingEvents() async {
         let model = TraitCounter().withAnchor()
         model.increment()
-        await expect { model.count == 1 }
+        await expect(model.count == 1)
         // .incremented event is not asserted — removed from exhaustivity by modifier.
     }
 
@@ -226,7 +226,7 @@ struct NestedModifierTests {
     @Test func inheritsBaseline() async {
         let model = TraitCounter().withAnchor()
         model.increment()
-        await expect { model.count == 1 }
+        await expect(model.count == 1)
         // .incremented event not consumed — fine, events excluded by suite modifier.
     }
 

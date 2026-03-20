@@ -45,6 +45,50 @@ public func expect(
     )
 }
 
+/// Single-predicate convenience overload of `expect` for a plain `Bool` expression.
+///
+/// Equivalent to `await expect { someCondition }` but without the result-builder braces.
+///
+/// ```swift
+/// await expect(model.count == 1)
+/// ```
+///
+/// > Important: Must be called inside a `@Test(.modelTesting)` function.
+@_disfavoredOverload
+public func expect(
+    _ predicate: @escaping @Sendable @autoclosure () -> Bool,
+    timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column
+) async {
+    await expect(timeoutNanoseconds: timeout, fileID: fileID, filePath: filePath, line: line, column: column) {
+        predicate()
+    }
+}
+
+/// Single-predicate convenience overload of `expect` for a `TestPredicate` (result of `==`
+/// between two `Equatable` values). Provides a pretty-printed diff on failure.
+///
+/// ```swift
+/// await expect(model.count == 1)  // uses TestPredicate overload for rich diffs
+/// ```
+///
+/// > Important: Must be called inside a `@Test(.modelTesting)` function.
+public func expect(
+    _ predicate: TestPredicate,
+    timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column
+) async {
+    await expect(timeoutNanoseconds: timeout, fileID: fileID, filePath: filePath, line: line, column: column) {
+        predicate
+    }
+}
+
 /// Unwraps an optional value — within a `@Test(.modelTesting)` test — waiting for it to
 /// become non-nil within the timeout.
 ///
@@ -164,11 +208,149 @@ public func withExhaustivity(
     try await body()
 }
 
+// MARK: - withModelTesting scope function
+
+/// Creates an inline model-testing scope for exhaustive testing within a single test function.
+///
+/// Use `withModelTesting` instead of `@Test(.modelTesting)` when you need to assert on
+/// deallocation side-effects — because the scope tears the model down when the closure
+/// returns, before the test function exits.
+///
+/// ```swift
+/// @Test func testTeardown() async {
+///     let testResult = TestResult()
+///     await withModelTesting {
+///         let model = TrackedModel().withAnchor {
+///             $0.testResult = testResult
+///         }
+///         await expect { model.count == 0 }
+///     }
+///     // Model is torn down — onCancel callbacks have fired.
+///     #expect(testResult.value.contains("done"))
+/// }
+/// ```
+///
+/// `withAnchor()` called inside the closure automatically connects to the scope.
+/// Use the global `expect { }` and `require(_:)` functions to make assertions.
+/// Exhaustion is checked when the closure returns, then all background teardown work
+/// completes before `withModelTesting` itself returns.
+///
+/// When called inside `@Suite(.modelTesting)` or another `withModelTesting`, the exhaustivity
+/// defaults to `.full` regardless of the enclosing scope. Use the
+/// `withModelTesting(_ modifier:)` overload to compose with the outer exhaustivity.
+///
+/// Dependency overrides passed here are applied before any overrides in `withAnchor()`,
+/// so `withAnchor`-level overrides win (same precedence as `.modelTesting(dependencies:)`).
+///
+/// - Parameters:
+///   - exhaustivity: Which side-effect categories to check. Defaults to `.full`.
+///   - dependencies: A closure to override dependencies for all models anchored in this scope.
+///   - body: The test body. Call `withAnchor()` inside to connect a model to the scope.
+public func withModelTesting(
+    exhaustivity: Exhaustivity = .full,
+    dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in },
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column,
+    _ body: @Sendable () async throws -> Void
+) async rethrows {
+    try await _withModelTestingImpl(
+        modifier: ExhaustivityModifier { _ in exhaustivity },
+        dependencies: dependencies,
+        fileID: fileID, filePath: filePath, line: line, column: column,
+        body
+    )
+}
+
+/// Creates an inline model-testing scope with a relative exhaustivity modifier.
+///
+/// The modifier is applied on top of the enclosing scope's exhaustivity, so nested
+/// calls compose rather than reset:
+///
+/// ```swift
+/// @Suite(.modelTesting(.removing(.events)))
+/// struct MyTests {
+///     @Test func example() async {
+///         await withModelTesting(.removing(.tasks)) {
+///             // exhaustivity = .full − .events − .tasks
+///             let model = MyModel().withAnchor()
+///             await expect { model.state == .ready }
+///         }
+///     }
+/// }
+/// ```
+///
+/// - Parameters:
+///   - modifier: Applied relative to the enclosing scope's exhaustivity.
+///   - dependencies: A closure to override dependencies for all models anchored in this scope.
+///   - body: The test body. Call `withAnchor()` inside to connect a model.
+public func withModelTesting(
+    _ modifier: ExhaustivityModifier,
+    dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in },
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column,
+    _ body: @Sendable () async throws -> Void
+) async rethrows {
+    try await _withModelTestingImpl(
+        modifier: modifier,
+        dependencies: dependencies,
+        fileID: fileID, filePath: filePath, line: line, column: column,
+        body
+    )
+}
+
+private func _withModelTestingImpl(
+    modifier: ExhaustivityModifier,
+    dependencies: @escaping @Sendable (inout ModelDependencies) -> Void,
+    fileID: StaticString,
+    filePath: StaticString,
+    line: UInt,
+    column: UInt,
+    _ body: @Sendable () async throws -> Void
+) async rethrows {
+    let parentExhaustivity = _ModelTestingLocals.scope?.exhaustivity ?? .full
+    let resolvedExhaustivity = modifier.apply(to: parentExhaustivity)
+    // Compose with parent scope's dependencies so inner scopes inherit outer ones.
+    // Inner dependencies are applied last so they win over the parent's (same precedence
+    // as withAnchor-level overrides winning over scope-level overrides).
+    let parentDependencies: @Sendable (inout ModelDependencies) -> Void
+    if let parentScope = _ModelTestingLocals.scope as? _PendingModelTestScope {
+        parentDependencies = parentScope.dependencies
+    } else {
+        parentDependencies = { _ in }
+    }
+    let mergedDependencies: @Sendable (inout ModelDependencies) -> Void = { deps in
+        parentDependencies(&deps)
+        dependencies(&deps)
+    }
+    let pending = _PendingModelTestScope(exhaustivity: resolvedExhaustivity, dependencies: mergedDependencies)
+    try await _ModelTestingLocals.$scope.withValue(pending) {
+        try await body()
+    }
+    // After the body completes, run exhaustion checks and wait for all background
+    // teardown work (onCancel callbacks, stream finalizations) to finish so that
+    // post-scope assertions see the final state.
+    if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
+        concrete.checkExhaustion(at: fl)
+        await concrete.waitForTeardown()
+    }
+}
+
 // MARK: - ModelTestingTrait
 
-/// The trait struct for `@Test(.modelTesting)`.
-@_documentation(visibility: private)
-public struct _ModelTestingTrait: Sendable {
+/// The trait that activates SwiftModel's testing infrastructure for a `@Test` or `@Suite`.
+///
+/// Use `.modelTesting` (or `.modelTesting(exhaustivity:)` / `.modelTesting(_:)`) as the
+/// trait argument. Calling `withAnchor()` inside the test body automatically connects the
+/// model and enables the global `expect { }`, `require(_:)`, and `withExhaustivity(_:_:)`
+/// functions.
+///
+/// You do not usually reference `ModelTestingTrait` by name — use the `.modelTesting`
+/// factory on `Trait` instead.
+public struct ModelTestingTrait: Sendable {
     /// The exhaustivity modifier applied relative to the enclosing scope's exhaustivity.
     let modifier: ExhaustivityModifier
     let dependencies: @Sendable (inout ModelDependencies) -> Void
@@ -179,8 +361,12 @@ public struct _ModelTestingTrait: Sendable {
     }
 }
 
+/// Backward-compatible typealias — removes the need for callers to update any explicit type references.
+@available(*, deprecated, renamed: "ModelTestingTrait")
+public typealias _ModelTestingTrait = ModelTestingTrait
+
 #if swift(>=6.1)
-extension _ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
+extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
     public var isRecursive: Bool { true }
 
     public func provideScope(
@@ -204,7 +390,7 @@ extension _ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
     }
 }
 #else
-extension _ModelTestingTrait: TestTrait, SuiteTrait {
+extension ModelTestingTrait: TestTrait, SuiteTrait {
     public var isRecursive: Bool { true }
 
     public func prepare(for test: Test) async throws {
@@ -215,7 +401,7 @@ extension _ModelTestingTrait: TestTrait, SuiteTrait {
 }
 #endif
 
-extension Trait where Self == _ModelTestingTrait {
+extension Trait where Self == ModelTestingTrait {
     /// Activates model testing infrastructure for the test function or suite.
     ///
     /// When applied to a `@Test` or `@Suite`, calling `withAnchor()` inside the test body

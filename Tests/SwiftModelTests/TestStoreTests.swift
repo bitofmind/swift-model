@@ -1,42 +1,40 @@
 import Testing
 @testable import SwiftModel
+import SwiftModelTesting
 import CustomDump
 import Observation
 
+@Suite(.modelTesting)
 struct TestStoreTests {
     @Test func testLeaf() async throws {
-        let (leaf, tester) = Leaf().andTester()
+        let leaf = Leaf().withAnchor()
 
         leaf.increment()
 
-        await tester.assert {
-            leaf.count == 1
-        }
+        await expect(leaf.count == 1)
     }
 
     @Test func testChild() async throws {
-        let (child, tester) = Child(leaf: Leaf()).andTester()
+        let child = Child(leaf: Leaf()).withAnchor()
 
-        let leaf = try await tester.unwrap(child.leaf)
+        let leaf = try await require(child.leaf)
 
-        await tester.assert(leaf.count == 0)
-
-        leaf.increment()
-        await tester.assert(leaf.count == 1)
+        await expect(leaf.count == 0)
 
         leaf.increment()
-        await tester.assert {
-            leaf.count == 2
-        }
+        await expect(leaf.count == 1)
+
+        leaf.increment()
+        await expect(leaf.count == 2)
     }
 
     @Test func testChildLeafModify() async throws {
-        let (child, tester) = Child(leaf: Leaf(count: 5)).andTester()
+        let child = Child(leaf: Leaf(count: 5)).withAnchor()
 
-        let leaf = try await tester.unwrap(child.leaf)
+        let leaf = try await require(child.leaf)
         #expect(leaf.access != nil)
         child.leaf = Leaf(count: 6, isEnabled: true)
-        await tester.assert {
+        await expect {
             child.leaf?.count == 6
             child.leaf?.isEnabled == true
         }
@@ -44,39 +42,38 @@ struct TestStoreTests {
 
     // Regression test: asserting on a collection item then removing that item must not
     // crash with a force-unwrap in the ModelContainer key path getter.
-    @Test func testAssertAfterRemovingCollectionItem() async {
-        let (parent, tester) = CollectionParent(items: [
+    @Test(.modelTesting(exhaustivity: .off)) func testAssertAfterRemovingCollectionItem() async {
+        let parent = CollectionParent(items: [
             CollectionItem(value: 1),
             CollectionItem(value: 2),
-        ]).andTester(exhaustivity: .off)
+        ]).withAnchor()
 
-        await tester.assert { parent.items.count == 2 && parent.items[0].value == 1 }
+        await expect(parent.items.count == 2 && parent.items[0].value == 1)
 
         parent.items.removeFirst()
-        await tester.assert { parent.items.count == 1 && parent.items[0].value == 2 }
+        await expect(parent.items.count == 1 && parent.items[0].value == 2)
     }
 
     @Test func testChildOptionalLeaf() async throws {
         try await _testing_keepLastSeenAround {
-            let (child, tester) = Child(leaf: Leaf(count: 5)).andTester()
+            let child = Child(leaf: Leaf(count: 5)).withAnchor()
 
-            let prevLeaf = try await tester.unwrap(child.leaf)
+            let prevLeaf = try await require(child.leaf)
 
             prevLeaf.count = 9
-            await tester.assert(prevLeaf.count == 9)
+            await expect(prevLeaf.count == 9)
 
             child.leaf = nil
-            await tester.assert(child.leaf == nil)
+            await expect(child.leaf == nil)
 
             child.leaf = Leaf(count: 6, isEnabled: true)
-            await tester.assert {
+            await expect {
                 child.leaf?.count == 6
                 child.leaf?.isEnabled == true
             }
 
             #expect(prevLeaf.count == 9)
         }
-
     }
 }
 
@@ -86,13 +83,13 @@ private struct Child {
 }
 
 @Model
-private struct CollectionItem {
-    var value: Int
+private struct CollectionParent {
+    var items: [CollectionItem]
 }
 
 @Model
-private struct CollectionParent {
-    var items: [CollectionItem] = []
+private struct CollectionItem {
+    var value: Int
 }
 
 struct ClosureTest {

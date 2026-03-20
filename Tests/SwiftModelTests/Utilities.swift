@@ -2,6 +2,7 @@
 import ConcurrencyExtras
 import Dependencies
 import Foundation
+import IssueReporting
 
 @propertyWrapper
 final class Locked<Value> {
@@ -50,7 +51,12 @@ extension NSLock {
 extension Optional where Wrapped: AnyObject {
     var waitUntilNil: () async -> Void {
         { [weak self] in
+            let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
             while self != nil {
+                if DispatchTime.now().uptimeNanoseconds > deadline {
+                    reportIssue("waitUntilRemoved timed out after 5s — model was not released. Check for retain cycles.")
+                    return
+                }
                 await Task.yield()
             }
             // After the object is released, teardown closures dispatched during
@@ -161,6 +167,21 @@ func waitUntil(
             try await Task.sleep(nanoseconds: pollInterval)
         }
     }
+}
+
+// MARK: - Non-deprecated bridge helpers for @testable import tests
+
+/// Non-deprecated bridge for tests using @testable import SwiftModel.
+/// Calls `tester.access.assert` directly, bypassing the deprecated `tester.assert` public API.
+func assertNow<M: Model>(_ tester: ModelTester<M>, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: @escaping @Sendable () -> AssertBuilder.Result = { [] }) async {
+    let fl = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
+    await tester.access.assert(timeoutNanoseconds: timeout, at: fl, predicates: builder())
+}
+
+/// Non-deprecated bridge for unwrap, calling `tester.access.unwrap` directly.
+func unwrapNow<M: Model, T>(_ tester: ModelTester<M>, _ expression: @escaping @Sendable @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T {
+    let fl = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
+    return try await tester.access.unwrap(expression, timeoutNanoseconds: timeout, at: fl)
 }
 
 /// Test parameter for validating both observation mechanisms

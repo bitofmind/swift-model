@@ -1,29 +1,31 @@
 import Testing
 import AsyncAlgorithms
-@testable import SwiftModel
+import SwiftModel
+import SwiftModelTesting
 import Foundation
 
+@Suite(.modelTesting)
 struct EventTests {
     @Test func testEvent() async throws {
-        let (model, tester) = Child().andTester()
+        let model = Child().withAnchor()
 
-        await tester.assert {
+        await expect {
             model.didSend(.basic)
             model.didSend(.third)
         }
     }
     
     @Test func testModelEvents() async throws {
-        let (model, tester) = EventModel().andTester()
+        let model = EventModel().withAnchor()
 
-        await tester.assert(model.count == 3)
+        await expect(model.count == 3)
 
         model.testNode.send(.empty)
         model.increment()
         model.increment()
         model.testNode.send(.empty)
 
-        await tester.assert() {
+        await expect {
             model.count == 3 + 1 + 1
             model.receivedEvents == [.empty, .count(4) , .count(5), .empty]
 
@@ -35,13 +37,13 @@ struct EventTests {
     }
 
     @Test func testChildEvents() async throws {
-        let (parent, tester) = ParentModel().andTester()
+        let parent = ParentModel().withAnchor()
         let child = parent.child
 
-        await tester.assert(child.id == 1)
+        await expect(child.id == 1)
         child.testNode.send(.count(3))
 
-        await tester.assert {
+        await expect {
             parent.receivedEvents == [.count(3)]
             parent.receivedIds == [10 + child.id]
             child.didSend(.count(3))
@@ -50,7 +52,7 @@ struct EventTests {
         let childAlt = parent.childAlt
         childAlt.testNode.send(.count(9))
 
-        await tester.assert {
+        await expect {
             parent.receivedEvents.count == 2
             parent.receivedEvents.last == .count(9)
             parent.receivedIds.last == (30 + childAlt.id)
@@ -58,12 +60,12 @@ struct EventTests {
         }
 
         parent.setOptChild(id: 5)
-        await tester.assert(parent.optChild == ChildModel(id: 5))
+        await expect(parent.optChild == ChildModel(id: 5))
 
-        let optChild = try await tester.unwrap(parent.optChild)
+        let optChild = try await require(parent.optChild)
         optChild.testNode.send(.count(7))
 
-        await tester.assert {
+        await expect {
             parent.receivedEvents.count == 3
             parent.receivedEvents.last == .count(7)
             parent.receivedIds.last == 20 + optChild.id
@@ -73,13 +75,13 @@ struct EventTests {
         parent.addChild(id: 8)
         parent.addChild(id: 3)
 
-        await tester.assert(parent.children == [ChildModel(id: 8), ChildModel(id: 3)])
+        await expect(parent.children == [ChildModel(id: 8), ChildModel(id: 3)])
         let child1 = parent.children[0]
         let child2 = parent.children[1]
 
         child2.testNode.send(.count(1))
 
-        await tester.assert {
+        await expect {
             parent.receivedEvents.count == 4
             parent.receivedEvents.last == .count(1)
             parent.receivedIds.last == 40 + child2.id
@@ -89,7 +91,7 @@ struct EventTests {
         child1.testNode.send(.empty)
         child2.testNode.send(.count(2))
 
-        await tester.assert {
+        await expect {
             parent.receivedEvents.count == 6
             parent.receivedEvents.suffix(2) ==  [.empty, .count(2)]
             parent.receivedIds.suffix(2) ==  [40 + child1.id, 40 + child2.id]

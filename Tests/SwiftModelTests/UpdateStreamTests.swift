@@ -1,20 +1,22 @@
 import Testing
 @testable import SwiftModel
+import SwiftModelTesting
 import Observation
 
+@Suite(.modelTesting)
 struct UpdateStreamTests {
     @Test(arguments: ObservationPath.allCases)
     func testChangeOf(observationPath: ObservationPath) async throws {
-        let (model, tester) = ValuesModel(initial: false, recursive: false).andTester(options: observationPath.options)
+        let model = ValuesModel(initial: false, recursive: false).withAnchor(options: observationPath.options)
 
         model.count += 5
-        await tester.assert {
+        await expect {
             model.count == 5
             model.counts == [5]
         }
 
         model.count += 3
-        await tester.assert {
+        await expect {
             model.count == 8
             model.counts == [5, 8]
         }
@@ -22,7 +24,7 @@ struct UpdateStreamTests {
 
     @Test(arguments: ObservationPath.allCases)
     func testChangeOfConcurrency(observationPath: ObservationPath) async throws {
-        let (model, tester) = ValuesModel(initial: false, recursive: false).andTester(options: observationPath.options)
+        let model = ValuesModel(initial: false, recursive: false).withAnchor(options: observationPath.options)
 
         let range = 1...10
         await Task.detached {
@@ -40,7 +42,7 @@ struct UpdateStreamTests {
         // Give time for background observation callbacks to process
         try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         
-        await tester.assert(timeout: .seconds(5)) {
+        await expect(timeoutNanoseconds: 5_000_000_000) {
             model.count == range.count
             model.counts.count > 0
             model.counts == model.counts.sorted()
@@ -50,9 +52,9 @@ struct UpdateStreamTests {
 
     @Test(arguments: UpdatePath.allCases)
     func testChangeOfChild(updatePath: UpdatePath) async throws {
-        let (model, tester) = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).andTester(options: updatePath.options)
+        let model = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).withAnchor(options: updatePath.options)
 
-        await tester.assert {
+        await expect {
             model.child.count == 2
             model.childCounts == [2]
             model.counts == [0]
@@ -60,13 +62,13 @@ struct UpdateStreamTests {
         }
 
         model.child.count += 5
-        await tester.assert {
+        await expect {
             model.child.count == 7
             model.childCounts == [2, 7]
         }
 
         model.child.count += 3
-        await tester.assert {
+        await expect {
             model.child.count == 10
             model.childCounts == [2, 7, 10]
         }
@@ -74,9 +76,9 @@ struct UpdateStreamTests {
 
     @Test(arguments: UpdatePath.allCases)
     func testChangeOfChildWhereChildIsUpdated(updatePath: UpdatePath) async throws {
-        let (model, tester) = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).andTester(options: updatePath.options)
+        let model = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).withAnchor(options: updatePath.options)
 
-        await tester.assert {
+        await expect {
             model.child.count == 2
             model.childCounts == [2]
             model.counts == [0]
@@ -84,7 +86,7 @@ struct UpdateStreamTests {
         }
         
         model.child = ChildModel(count: 4)
-        await tester.assert {
+        await expect {
             model.child.count == 4
             model.childCounts == [2, 4]
         }
@@ -92,7 +94,7 @@ struct UpdateStreamTests {
 
     @Test
     func testChangeOfChildConcurrency() async throws {
-        let (model, tester) = ValuesModel(child: ChildModel(count: 0), initial: false, recursive: false).andTester()
+        let model = ValuesModel(child: ChildModel(count: 0), initial: false, recursive: false).withAnchor(options: [])
 
         let range = 1...10
         await Task.detached {
@@ -112,7 +114,7 @@ struct UpdateStreamTests {
         // Give time for background observation callbacks to process
         try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         
-        await tester.assert(timeout: .seconds(5)) {
+        await expect(timeoutNanoseconds: 5_000_000_000) {
             model.child.count == range.count
             model.childCounts.count > 0
             model.childCounts == model.childCounts.sorted()
@@ -121,29 +123,30 @@ struct UpdateStreamTests {
     }
 
     @Test func testChangeOfOptChildWhereChildIsUpdated() async throws {
-        let (model, tester) = ValuesModel(initial: false, recursive: false).andTester()
+        let model = ValuesModel(initial: false, recursive: false).withAnchor(options: [])
 
         model.optChild = ChildModel(count: 4)
-        await tester.assert {
+        await expect {
             model.optChild?.count == 4
             model.optChildCounts == [4]
         }
 
         model.optChild = nil
-        await tester.assert {
+        await expect {
             model.optChild?.count == nil
             model.optChildCounts == [4, nil]
         }
 
         model.optChild = ChildModel(count: 7)
-        await tester.assert {
+        await expect {
             model.optChild?.count == 7
             model.optChildCounts == [4, nil, 7]
         }
     }
 
-    @Test func testRace() async throws {
-        let (model, tester) = RaceModel().andTester(exhaustivity: .full.subtracting(.tasks))
+    @Test(.modelTesting(exhaustivity: .full.subtracting(.tasks)))
+    func testRace() async throws {
+        let model = RaceModel().withAnchor()
 
         Task {
             model.count = 7
@@ -151,14 +154,15 @@ struct UpdateStreamTests {
 
         model.collectCounts()
 
-        await tester.assert {
+        await expect {
             model.counts.last == 7
             model.count == 7
         }
     }
 
-    @Test func testRaceVariant() async throws {
-        let (model, tester) = RaceModel().andTester(exhaustivity: .full.subtracting(.tasks))
+    @Test(.modelTesting(exhaustivity: .full.subtracting(.tasks)))
+    func testRaceVariant() async throws {
+        let model = RaceModel().withAnchor()
 
         Task {
             model.count = 7
@@ -168,23 +172,23 @@ struct UpdateStreamTests {
             model.collectCounts()
         }
         
-        await tester.assert {
+        await expect {
             model.counts.last == 7
             model.count == 7
         }
     }
 
     @Test func testRecursiveChild() async throws {
-        let (model, tester) = ValuesModel(initial: false, recursive: true).andTester()
+        let model = ValuesModel(initial: false, recursive: true).withAnchor(options: [])
 
-        await tester.assert {
+        await expect {
             model.child.count == 0
             model.childChanges == []
         }
 
         model.child.count += 1
 
-        await tester.assert {
+        await expect {
             model.child.count == 1
             model.childCounts == [1]
             model.childChanges == [1]
@@ -192,7 +196,7 @@ struct UpdateStreamTests {
 
         model.child.count += 5
 
-        await tester.assert {
+        await expect {
             model.child.count == 6
             model.childCounts == [1, 6]
             model.childChanges == [1, 6]
@@ -200,16 +204,16 @@ struct UpdateStreamTests {
     }
 
     @Test func testRecursiveOptChild() async throws {
-        let (model, tester) = ValuesModel(initial: false, recursive: true).andTester()
+        let model = ValuesModel(initial: false, recursive: true).withAnchor(options: [])
 
-        await tester.assert {
+        await expect {
             model.optChild == nil
             model.opChildChanges == []
         }
 
         model.optChild = ChildModel(count: 5)
 
-        await tester.assert {
+        await expect {
             model.optChild?.count == 5
             model.optChildCounts == [5]
             model.opChildChanges == [5]
@@ -217,7 +221,7 @@ struct UpdateStreamTests {
 
         model.optChild?.count += 1
 
-        await tester.assert {
+        await expect {
             model.optChild?.count == 6
             model.optChildCounts == [5, 6]
             model.opChildChanges == [5, 6]
@@ -225,7 +229,7 @@ struct UpdateStreamTests {
 
         model.optChild = nil
 
-        await tester.assert {
+        await expect {
             model.optChild == nil
             model.optChildCounts == [5, 6, nil]
             model.opChildChanges == [5, 6, nil]
@@ -233,55 +237,54 @@ struct UpdateStreamTests {
     }
 
     @Test func testRecursiveChildren() async throws {
-        let (model, tester) = ValuesModel(initial: false, recursive: true).andTester()
+        let model = ValuesModel(initial: false, recursive: true).withAnchor(options: [])
 
-        await tester.assert {
-            model.childrenCounts == []
-        }
+        await expect(model.childrenCounts == [])
 
         model.children.append(ChildModel(count: 5))
 
-        await tester.assert {
+        await expect {
             model.children.count == 1
             model.childrenCounts == [[5]]
         }
 
         model.children[0].count += 1
 
-        await tester.assert {
+        await expect {
             model.children[0].count == 6
             model.childrenCounts == [[5], [6]]
         }
 
         model.children.append(ChildModel(count: 10))
 
-        await tester.assert {
+        await expect {
             model.children.count == 2
             model.childrenCounts == [[5], [6], [6, 10]]
         }
 
         model.children.remove(at: 0)
 
-        await tester.assert {
+        await expect {
             model.children.count == 1
             model.childrenCounts == [[5], [6], [6, 10], [10]]
         }
 
         model.children.removeAll()
 
-        await tester.assert {
+        await expect {
             model.children.count == 0
             model.childrenCounts == [[5], [6], [6, 10], [10], []]
         }
     }
 
-    @Test func testComputed() async throws {
-        let (model, tester) = ComputedModel().andTester(exhaustivity: .full.subtracting(.tasks))
+    @Test(.modelTesting(exhaustivity: .full.subtracting(.tasks)))
+    func testComputed() async throws {
+        let model = ComputedModel().withAnchor(options: [])
 
         model.count1 = 7
         model.count2 = 4
 
-        await tester.assert {
+        await expect {
             model.computes == [3, 9, 11]
             model.squareds == [1, 49]
             model.count1 == 7
@@ -289,8 +292,9 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test func testNestedComputed() async throws {
-        let (model, tester) = NestedComputedModel().andTester(exhaustivity: .off)
+    @Test(.modelTesting(exhaustivity: .off))
+    func testNestedComputed() async throws {
+        let model = NestedComputedModel().withAnchor(options: [])
 
         model.computed = ComputedModel(count1: 4, count2: 8)
         model.computed?.count1 = 5
@@ -298,14 +302,15 @@ struct UpdateStreamTests {
         model.computed?.count2 = 5
         model.computed = nil
 
-        await tester.assert {
+        await expect {
             model.computes == [nil, 12, 13, 3, 6, nil]
             model.squareds == [nil, 16, 25, 1, nil]
         }
     }
 
-    @Test func testMemoize() async throws {
-        let (model, tester) = ComputedModel().andTester(options: [.disableMemoizeCoalescing], exhaustivity: .full.subtracting(.tasks))
+    @Test(.modelTesting(exhaustivity: .full.subtracting(.tasks)))
+    func testMemoize() async throws {
+        let model = ComputedModel().withAnchor(options: [.disableMemoizeCoalescing])
 
         #expect(model.memoizeComputed == 3)
         #expect(model.memoizeSquared == 1)
@@ -318,7 +323,7 @@ struct UpdateStreamTests {
         #expect(model.memoizeComputed == 11)
         #expect(model.memoizeSquared == 49)
 
-        await tester.assert {
+        await expect {
             model.computes == [3, 9, 11]
             model.squareds == [1, 49]
             model.count1 == 7

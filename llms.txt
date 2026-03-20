@@ -182,65 +182,71 @@ struct CounterView: View {
 
 ## Testing
 
-Replace `withAnchor()` with `andTester()` to get a `ModelTester`. The tester is exhaustive by default — any state change, event, or task you didn't assert fails the test.
+Use `@Test(.modelTesting)` (from `SwiftModelTesting`) together with `withAnchor()` and `expect { }`. The test scope is exhaustive by default — any state change, event, or task you didn't assert fails the test.
 
 ```swift
-@Test func testIncrement() async {
-    let (model, tester) = CounterModel().andTester()
-    model.incrementTapped()
-    await tester.assert {
-        model.count == 1
-    }
-}
+import SwiftModelTesting
 
-@Test func testFetchFact() async {
-    let (model, tester) = CounterModel(count: 3).andTester {
-        $0.factClient.fetch = { "\($0) is a great number." }
+@Suite(.modelTesting)
+struct CounterTests {
+    @Test func testIncrement() async {
+        let model = CounterModel().withAnchor()
+        model.incrementTapped()
+        await expect(model.count == 1)
     }
 
-    model.factButtonTapped()
-
-    await tester.assert {
-        model.fact == "3 is a great number."
+    @Test func testFetchFact() async {
+        let model = CounterModel(count: 3).withAnchor {
+            $0.factClient.fetch = { "\($0) is a great number." }
+        }
+        model.factButtonTapped()
+        await expect(model.fact == "3 is a great number.")
     }
 }
 ```
 
-The `==` operator inside `assert { }` gives pretty-printed diffs on failure. Any `Bool` expression also works.
+`expect { }` waits until all predicates become true and gives pretty-printed diffs on failure. Any `Bool` expression works.
 
 ### Asserting events
 
 ```swift
-await tester.assert {
-    model.didSend(.startMeeting)
-}
+await expect(model.didSend(.startMeeting))
 ```
 
 ### Asserting callbacks (TestProbe)
 
 ```swift
 let onSave = TestProbe()
-let (model, tester) = EditorModel(onSave: onSave.call).andTester()
-tester.install(onSave)
+let model = EditorModel(onSave: onSave.call).withAnchor()
 
 model.saveButtonTapped()
 
-await tester.assert {
-    onSave.wasCalled(with: "expected content")
-}
+await expect(onSave.wasCalled(with: "expected content"))
 ```
 
-> **Important:** Call `tester.install(probe)` — probes not installed are not checked for exhaustion.
+`TestProbe` auto-registers in the `.modelTesting` scope — no explicit `install()` needed.
 
 ### Exhaustivity
 
+Control checking granularity at the suite or test level:
+
 ```swift
-tester.exhaustivity = [.state, .events]  // only check these two categories
-tester.exhaustivity = .off               // skip all checks
-tester.showSkippedAssertions = true      // print skipped without failing
+@Suite(.modelTesting(exhaustivity: .off))    // skip all checks for this suite
+struct LenientTests { ... }
+
+@Test(.modelTesting(exhaustivity: .preference))  // only check preference changes
+func testPreferenceOnly() async { ... }
 ```
 
 Categories: `.state`, `.events`, `.tasks`, `.probes`, `.context`, `.preference`
+
+### Dependency overrides
+
+```swift
+let model = MyModel().withAnchor {
+    $0.myClient.fetch = { "stub response" }
+}
+```
 
 ---
 
