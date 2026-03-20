@@ -370,15 +370,17 @@ func memoizeDebugSetup<T: Sendable>(
     let debugTriggerFormat = options.triggerFormat
     let debugChangeFormat = options.changeFormat
     let debugPrinterBox = PrinterBox(options.effectivePrinter)
-    let debugPendingTriggers = LockIsolated<[String]>([])
+    // Store lazy closures so that expensive operations (e.g. LCS diff) run in debugPrint,
+    // outside the context lock, rather than blocking it during the onModify callback.
+    let debugPendingTriggers = LockIsolated<[@Sendable () -> String]>([])
     let collectorBox = LockIsolated<DebugAccessCollector?>(nil)
 
     if let fmt = debugTriggerFormat {
         let collector = DebugAccessCollector(
             triggerFormat: fmt,
             isShallow: options.isShallow
-        ) { triggerDesc in
-            debugPendingTriggers.withValue { $0.append(triggerDesc) }
+        ) { lazy in
+            debugPendingTriggers.withValue { $0.append(lazy) }
         }
         collectorBox.setValue(collector)
     }
@@ -391,10 +393,13 @@ func memoizeDebugSetup<T: Sendable>(
         var lines: [String] = []
 
         if debugTriggerFormat != nil {
-            let triggers = debugPendingTriggers.withValue { ts -> [String] in
+            // Evaluate lazy trigger closures here — outside the context lock — so that
+            // expensive work (e.g. LCS snapshotLineDiff for .withDiff) doesn't block
+            // threads waiting on the context lock.
+            let triggers = debugPendingTriggers.withValue { ts -> [@Sendable () -> String] in
                 defer { ts.removeAll() }
                 return ts
-            }
+            }.map { $0() }
             if !triggers.isEmpty {
                 lines.append("\(label) triggered update:")
                 for t in triggers {
@@ -440,9 +445,11 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         var path: AnyKeyPath
     }
 
-    /// Called when a tracked dependency changes. Receives a human-readable description
-    /// like `"AppModel.filter"` or `"AppModel.filter: 3 → 4"`.
-    let onTrigger: @Sendable (String) -> Void
+    /// Called when a tracked dependency changes. Receives a lazy closure that produces
+    /// the human-readable description like `"AppModel.filter"` or `"AppModel.filter: 3 → 4"`.
+    /// The closure is evaluated lazily in `wrappedOnUpdate`/`debugPrint` — outside the context
+    /// lock — so that expensive operations (e.g. LCS diff) don't block other threads.
+    let onTrigger: @Sendable (@Sendable @escaping () -> String) -> Void
 
     /// Tracks live subscriptions keyed by (modelID, path).
     /// The `String?` slot holds the last-seen value string for the `.withValue` trigger format.
@@ -459,7 +466,7 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         triggerFormat: TriggerFormat,
         isShallow: Bool = false,
         rootModelID: ModelID? = nil,
-        onTrigger: @Sendable @escaping (String) -> Void
+        onTrigger: @Sendable @escaping (@Sendable @escaping () -> String) -> Void
     ) {
         self.triggerFormat = triggerFormat
         self.isShallow = isShallow
@@ -519,7 +526,10 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         case .withValue:
             initialValueStr = context.lock { String(customDumping: context.readModel[keyPath: path]) }
         case .withDiff:
-            initialValueStr = context.lock { dumpWithChildren(context.readModel[keyPath: path]) }
+            // During registration (not inside a context lock), read raw value under lock then
+            // dump outside. This is a one-time cost so brief contention is acceptable.
+            let initialRaw: T = context.lock { context.readModel[keyPath: path] }
+            initialValueStr = dumpWithChildren(initialRaw)
         case .name:
             initialValueStr = nil
         }
@@ -527,10 +537,11 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         let cancellation = context.onModify(for: path) { [weak self] finished, _ in
             guard !finished, let self else { return {} }
 
-            let triggerLabel: String
             switch fmt {
             case .name:
-                triggerLabel = baseLabel
+                // Lazy closure: trivial, just returns the pre-computed label.
+                self.onTrigger { baseLabel }
+                return nil
             case .withValue:
                 let newValueStr = context.lock { String(customDumping: context.readModel[keyPath: path]) }
                 // Atomically swap the stored value for old→new reporting.
@@ -539,29 +550,37 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                     subs[key]?.1 = newValueStr
                     return old
                 }
-                triggerLabel = "\(baseLabel): \(oldValueStr) → \(newValueStr)"
+                self.onTrigger { "\(baseLabel): \(oldValueStr) → \(newValueStr)" }
+                return nil
             case .withDiff:
+                // Compute the new-value string INSIDE the callback (while the context lock is held).
+                // dumpWithChildren is O(n·p) — fast enough (just struct property reads).
+                // The O(m×n) LCS snapshotLineDiff is the expensive part; it is deferred to the
+                // lazy closure evaluated in wrappedOnUpdate/debugPrint, which runs OUTSIDE the
+                // context lock, so it no longer blocks threads waiting on the same lock.
                 let newValueStr = context.lock { dumpWithChildren(context.readModel[keyPath: path]) }
-                // Atomically swap the stored value for old→new diff reporting.
+                // Atomically swap old → new under the subscriptions lock (separate from context lock).
                 let oldValueStr = self.subscriptions.withValue { subs -> String in
                     let old = subs[key]?.1 ?? "?"
                     subs[key]?.1 = newValueStr
                     return old
                 }
-                if let diffStr = snapshotLineDiff(oldValueStr, newValueStr) {
-                    // Indent the diff block so it sits visually under "dependency changed: label:".
-                    let indented = diffStr.components(separatedBy: "\n")
-                        .map { "  " + $0 }
-                        .joined(separator: "\n")
-                    triggerLabel = "\(baseLabel):\n\(indented)"
-                } else {
-                    // Values appear identical after dump — fall back to just the label.
-                    triggerLabel = baseLabel
+                // onTrigger is called synchronously here (inside the context lock) so that
+                // pendingTriggers is populated before wrappedOnUpdate reads it.
+                self.onTrigger { [oldValueStr, newValueStr, baseLabel] in
+                    if let diffStr = snapshotLineDiff(oldValueStr, newValueStr) {
+                        // Indent the diff block under "dependency changed: label:".
+                        let indented = diffStr.components(separatedBy: "\n")
+                            .map { "  " + $0 }
+                            .joined(separator: "\n")
+                        return "\(baseLabel):\n\(indented)"
+                    } else {
+                        // Values appear identical after dump — fall back to just the label.
+                        return baseLabel
+                    }
                 }
+                return nil
             }
-
-            self.onTrigger(triggerLabel)
-            return nil
         }
 
         subscriptions.withValue { $0[key] = (cancellation, initialValueStr) }
@@ -615,8 +634,10 @@ func debugObserve<T: Sendable>(
     let triggerFormat = options.triggerFormat
     let changeFormat = options.changeFormat
 
-    // Collect trigger descriptions fired by the DebugAccessCollector's onModify callbacks.
-    let pendingTriggers = LockIsolated<[String]>([])
+    // Collect lazy trigger closures fired by the DebugAccessCollector's onModify callbacks.
+    // Using closures (rather than pre-computed strings) defers expensive work (e.g. LCS diff)
+    // to wrappedOnUpdate, which runs outside the context lock.
+    let pendingTriggers = LockIsolated<[@Sendable () -> String]>([])
 
     let debugCollector: DebugAccessCollector?
     if let fmt = triggerFormat {
@@ -624,8 +645,8 @@ func debugObserve<T: Sendable>(
             triggerFormat: fmt,
             isShallow: options.isShallow,
             rootModelID: rootModelID
-        ) { triggerDesc in
-            pendingTriggers.withValue { $0.append(triggerDesc) }
+        ) { lazy in
+            pendingTriggers.withValue { $0.append(lazy) }
         }
         debugCollector = collector
     } else {
@@ -649,12 +670,12 @@ func debugObserve<T: Sendable>(
     let wrappedOnUpdate: @Sendable (T) -> Void = { value in
         var lines: [String] = []
 
-        // Trigger lines
+        // Trigger lines — evaluate lazy closures here, outside the context lock.
         if triggerFormat != nil {
-            let triggers = pendingTriggers.withValue { ts -> [String] in
+            let triggers = pendingTriggers.withValue { ts -> [@Sendable () -> String] in
                 defer { ts.removeAll() }
                 return ts
-            }
+            }.map { $0() }
             if !triggers.isEmpty {
                 lines.append("\(label) triggered update:")
                 for t in triggers {
