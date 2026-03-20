@@ -526,10 +526,12 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         case .withValue:
             initialValueStr = context.lock { String(customDumping: context.readModel[keyPath: path]) }
         case .withDiff:
-            // During registration (not inside a context lock), read raw value under lock then
-            // dump outside. This is a one-time cost so brief contention is acceptable.
-            let initialRaw: T = context.lock { context.readModel[keyPath: path] }
-            initialValueStr = dumpWithChildren(initialRaw)
+            // Freeze the value under the lock so the initial snapshot is consistent.
+            // `frozenCopy` marks all nested model structs to read from struct fields rather
+            // than the live context, so the subsequent `dumpWithChildren` outside the lock
+            // is safe and doesn't acquire any child/metadata context locks.
+            let initialFrozen: T = context.lock { frozenCopy(context.readModel[keyPath: path]) }
+            initialValueStr = dumpWithChildren(initialFrozen)
         case .name:
             initialValueStr = nil
         }
@@ -553,12 +555,17 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                 self.onTrigger { "\(baseLabel): \(oldValueStr) → \(newValueStr)" }
                 return nil
             case .withDiff:
-                // Compute the new-value string INSIDE the callback (while the context lock is held).
-                // dumpWithChildren is O(n·p) — fast enough (just struct property reads).
-                // The O(m×n) LCS snapshotLineDiff is the expensive part; it is deferred to the
-                // lazy closure evaluated in wrappedOnUpdate/debugPrint, which runs OUTSIDE the
-                // context lock, so it no longer blocks threads waiting on the same lock.
-                let newValueStr = context.lock { dumpWithChildren(context.readModel[keyPath: path]) }
+                // Freeze the value under the lock so `dumpWithChildren` sees a consistent snapshot.
+                // `frozenCopy` walks the model struct and sets each nested model's source to
+                // `.frozenCopy`, so property accesses on the result read directly from struct
+                // fields — no live context access, no child/metadata context lock acquisitions.
+                // This prevents the potential deadlock where `dumpWithChildren` on a live model
+                // tries to acquire a metadata context lock that another thread already holds while
+                // waiting for this same context lock.
+                let newFrozen: T = context.lock { frozenCopy(context.readModel[keyPath: path]) }
+                // `dumpWithChildren` on a frozen copy reads struct fields only — safe to call
+                // while still nominally inside the onModify callback window.
+                let newValueStr = dumpWithChildren(newFrozen)
                 // Atomically swap old → new under the subscriptions lock (separate from context lock).
                 let oldValueStr = self.subscriptions.withValue { subs -> String in
                     let old = subs[key]?.1 ?? "?"
