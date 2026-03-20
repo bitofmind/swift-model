@@ -89,9 +89,17 @@ public extension ModelContext {
             }
             return Mirror(model, children: [], displayStyle: .struct)
         }
-        if threadLocals.includeInMirror, !children.map(\.0).contains("id") {
+        if let depth = threadLocals.shallowMirrorDepth {
+            if depth == 0 {
+                threadLocals.shallowMirrorDepth = 1
+                return Mirror(model, children: children, displayStyle: .struct)
+            } else {
+                return Mirror(model, children: [], displayStyle: .struct)
+            }
+        }
+        if threadLocals.includeImplicitIDInMirror, !children.map(\.0).contains("id") {
             return Mirror(model, children: [("id", modelID)] + children, displayStyle: .struct)
-        } else if threadLocals.includeInMirror || threadLocals.includeChildrenInMirror {
+        } else if threadLocals.includeImplicitIDInMirror || threadLocals.includeChildrenInMirror {
             return Mirror(model, children: children, displayStyle: .struct)
         } else {
             // Return an empty mirror so LLDB doesn't expand properties below debugDescription

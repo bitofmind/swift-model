@@ -132,3 +132,12 @@ struct FileAndLine: Hashable, Sendable {
         hasher.combine(column)
     }
 }
+extension FileAndLine: CustomStringConvertible {
+    /// Returns `"filename.swift:line"` — the last path component of `fileID` plus the line number.
+    /// This is used as the memoize label when no explicit string key is provided.
+    var description: String {
+        let filename = fileID.description.split(separator: "/").last.map(String.init) ?? fileID.description
+        return "\(filename):\(line)"
+    }
+}
+

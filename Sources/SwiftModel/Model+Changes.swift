@@ -349,7 +349,7 @@ private extension Observed {
             if !debug.options.isEmpty {
                 let cancel = debugObserve(
                     options: debug,
-                    label: "Observed",
+                    label: debug.name ?? "Observed",
                     access: access,
                     onUpdate: { value in cont.yield(value) }
                 ) { wrappedAccess, wrappedOnUpdate in

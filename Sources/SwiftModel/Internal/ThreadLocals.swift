@@ -4,8 +4,13 @@ final class ThreadLocals: @unchecked Sendable {
     var postTransactions: [(inout [() -> Void]) -> Void]? = nil
     var forceDirectAccess = false
     var didReplaceModelWithDestructedOrFrozenCopy: () -> Void = {}
-    var includeInMirror = false
+    var includeImplicitIDInMirror = false
     var includeChildrenInMirror = false
+    /// When non-nil, `ModelContext.mirror(of:children:)` operates in shallow snapshot mode.
+    /// `0` means this is the root model — show its direct properties.
+    /// Any positive value means this is a descendant model — return an empty mirror (type name only).
+    /// Set via `threadLocals.withValue(0 as Int?, at: \.shallowMirrorDepth)` to scope to one snapshot.
+    var shallowMirrorDepth: Int? = nil
     var isRestoringState = false
     /// Closures registered to run after the current postLockCallbacks pass completes.
     /// Non-nil only while postLockCallbacks are executing. Use this to schedule work

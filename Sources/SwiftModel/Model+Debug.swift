@@ -178,9 +178,15 @@ public extension Model where Self: Sendable {
         // current live values of all properties including child models. We store rendered
         // strings rather than raw model values because child model structs share the live
         // context reference — comparing them directly would always appear equal.
+        // When `.shallow` is active, child models are rendered opaque (just their type name)
+        // so that changes deep inside a child don't produce a diff line.
+        let isShallow = options.isShallow
         @Sendable func snapshot(_ m: Self) -> String {
             threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                String(customDumping: m)
+                guard isShallow else { return String(customDumping: m) }
+                return threadLocals.withValue(0 as Int?, at: \.shallowMirrorDepth) {
+                    String(customDumping: m)
+                }
             }
         }
 
@@ -244,6 +250,7 @@ public extension Model where Self: Sendable {
         let cancel = debugObserve(
             options: options,
             label: label,
+            rootModelID: modelID,
             access: access,
             onUpdate: { _ in }
         ) { wrappedAccess, wrappedOnUpdate in
@@ -346,8 +353,8 @@ func memoizeDebugSetup<T: Sendable>(
 
     if let fmt = debugTriggerFormat {
         let collector = DebugAccessCollector(
-            propagateToChildren: !options.isShallow,
-            triggerFormat: fmt
+            triggerFormat: fmt,
+            isShallow: options.isShallow
         ) { triggerDesc in
             debugPendingTriggers.withValue { $0.append(triggerDesc) }
         }
@@ -403,7 +410,8 @@ func memoizeDebugSetup<T: Sendable>(
 /// Unlike `AccessCollector`, this class never re-registers subscriptions on `reset` —
 /// it is a one-shot observer tied to the lifetime of the debug observation.
 ///
-/// `shouldPropagateToChildren` is controlled by `DebugOptions.isShallow`.
+/// When `isShallow` is true, `shouldPropagateToChildren` returns `false` so the
+/// access collector does not recurse into child model properties.
 final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
     struct Key: Hashable, @unchecked Sendable {
         var id: ModelID
@@ -411,20 +419,29 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
     }
 
     /// Called when a tracked dependency changes. Receives a human-readable description
-    /// like `"AppModel.filter"` or `"AppModel.filter = \"ab\""`.
+    /// like `"AppModel.filter"` or `"AppModel.filter: 3 → 4"`.
     let onTrigger: @Sendable (String) -> Void
 
-    /// Whether to propagate observation into sub-models.
-    let propagateToChildren: Bool
-
     /// Tracks live subscriptions keyed by (modelID, path).
+    /// The `String?` slot holds the last-seen value string for the `.withValue` trigger format.
     let subscriptions = LockIsolated<[Key: (@Sendable () -> Void, String?)]>([:])
 
     let triggerFormat: TriggerFormat
+    let isShallow: Bool
+    /// When `isShallow` is true and this is non-nil, only properties on the root model
+    /// (the one whose ID matches) are registered as trigger dependencies. Properties on
+    /// child models are ignored so their changes don't produce trigger output.
+    let rootModelID: ModelID?
 
-    init(propagateToChildren: Bool, triggerFormat: TriggerFormat, onTrigger: @Sendable @escaping (String) -> Void) {
-        self.propagateToChildren = propagateToChildren
+    init(
+        triggerFormat: TriggerFormat,
+        isShallow: Bool = false,
+        rootModelID: ModelID? = nil,
+        onTrigger: @Sendable @escaping (String) -> Void
+    ) {
         self.triggerFormat = triggerFormat
+        self.isShallow = isShallow
+        self.rootModelID = rootModelID
         self.onTrigger = onTrigger
         super.init(useWeakReference: false)
     }
@@ -442,9 +459,14 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         for cancel in cancels { cancel() }
     }
 
-    override var shouldPropagateToChildren: Bool { propagateToChildren }
+    override var shouldPropagateToChildren: Bool { !isShallow }
 
     override func willAccess<M: Model, T>(_ model: M, at path: KeyPath<M, T> & Sendable) -> (() -> Void)? {
+        // In shallow mode, only track properties on the root model — skip child models.
+        // `usingActiveAccess` installs this collector globally so `willAccess` fires for
+        // every model; we filter here rather than relying on `shouldPropagateToChildren`.
+        if isShallow, let rootModelID, model.modelID != rootModelID { return nil }
+
         guard let context = model.context else { return nil }
 
         let key = Key(id: model.modelID, path: path)
@@ -453,12 +475,19 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         let alreadySubscribed = subscriptions.withValue { $0[key] != nil }
         guard !alreadySubscribed else { return nil }
 
-        // Capture label and initial value for trigger reporting.
         let modelType = String(describing: M.self)
         let propName = debugPropertyName(from: model, path: path)
         let baseLabel = propName.map { "\(modelType).\($0)" } ?? modelType
 
+        // Capture the current value string now so that on first trigger we have "old → new".
         let fmt = triggerFormat
+        let initialValueStr: String?
+        if case .withValue = fmt {
+            initialValueStr = context.lock { String(customDumping: context.readModel[keyPath: path]) }
+        } else {
+            initialValueStr = nil
+        }
+
         let cancellation = context.onModify(for: path) { [weak self] finished, _ in
             guard !finished, let self else { return {} }
 
@@ -467,25 +496,24 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
             case .name:
                 triggerLabel = baseLabel
             case .withValue:
-                let newValue = self.debugCurrentValue(context: context, path: path) ?? "?"
-                triggerLabel = "\(baseLabel) = \(newValue)"
+                let newValueStr = context.lock { String(customDumping: context.readModel[keyPath: path]) }
+                // Atomically swap the stored value for old→new reporting.
+                let oldValueStr = self.subscriptions.withValue { subs -> String in
+                    let old = subs[key]?.1 ?? "?"
+                    subs[key]?.1 = newValueStr
+                    return old
+                }
+                triggerLabel = "\(baseLabel): \(oldValueStr) → \(newValueStr)"
             }
 
             self.onTrigger(triggerLabel)
             return nil
         }
 
-        subscriptions.withValue { $0[key] = (cancellation, nil) }
+        subscriptions.withValue { $0[key] = (cancellation, initialValueStr) }
         return nil
     }
 
-    // MARK: - Helpers
-
-    /// Reads the current string representation of `model[keyPath: path]` from the live context.
-    private func debugCurrentValue<M: Model, T>(context: Context<M>, path: KeyPath<M, T>) -> String? {
-        let value = context.lock { context.readModel[keyPath: path] }
-        return String(customDumping: value)
-    }
 }
 
 /// Returns a human-readable property name for `path` on `model`, or nil for synthetic/subscript paths.
@@ -523,6 +551,7 @@ func debugPropertyName<M: Model, T>(from model: M, path: KeyPath<M, T>) -> Strin
 func debugObserve<T: Sendable>(
     options: DebugOptions,
     label: String,
+    rootModelID: ModelID? = nil,
     access: @Sendable @escaping () -> T,
     onUpdate: @Sendable @escaping (T) -> Void,
     setupObservation: (@Sendable @escaping () -> T, @Sendable @escaping (T) -> Void) -> @Sendable () -> Void
@@ -538,8 +567,9 @@ func debugObserve<T: Sendable>(
     let debugCollector: DebugAccessCollector?
     if let fmt = triggerFormat {
         let collector = DebugAccessCollector(
-            propagateToChildren: !options.isShallow,
-            triggerFormat: fmt
+            triggerFormat: fmt,
+            isShallow: options.isShallow,
+            rootModelID: rootModelID
         ) { triggerDesc in
             pendingTriggers.withValue { $0.append(triggerDesc) }
         }

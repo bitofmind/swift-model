@@ -402,7 +402,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         // inside apply closures. Writing through a _preference/_metadata keypath
                         // triggers willAccess*, which calls _swift_getKeyPath — a Swift runtime
                         // operation that can deadlock when a runtime lock is already held here.
-                        return threadLocals.withValue(true, at: \.includeInMirror) {
+                        return threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
                             threadLocals.withValue(true, at: \.isApplyingSnapshot) {
                                 passedAccesses.reduce(true) { result, access in
                                     access.apply(&expected)
@@ -715,7 +715,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             fail(message, for: .state, at: fileAndLine)
         } else {
             // Layer 2: diff with IDs included (catches identity/generation changes).
-            let message = threadLocals.withValue(true, at: \.includeInMirror) {
+            let message = threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
                 diffMessage(expected: lastAsserted, actual: actual, title: title)
             }
 

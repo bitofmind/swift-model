@@ -12,6 +12,13 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
 
     var shouldPropagateToChildren: Bool { false }
 
+    /// Returns the `ModelAccess` to install on a child model when propagating observation.
+    ///
+    /// The default implementation returns `self` when `shouldPropagateToChildren` is `true`,
+    /// or `nil` to stop propagation. Subclasses can override this to return a different
+    /// access instance (e.g. a depth-decremented wrapper) instead of `self`.
+    func propagatingAccess() -> ModelAccess? { shouldPropagateToChildren ? self : nil }
+
     @TaskLocal static var isInModelTaskContext = false
     @TaskLocal static var current: ModelAccess?
     @TaskLocal static var active: ModelAccess?
@@ -65,8 +72,8 @@ extension Model {
 
     func withAccessIfPropagateToChildren(_ access: ModelAccess?) -> Self {
         var model = self
-        if let access, access.shouldPropagateToChildren {
-            model.modelContext.access = access
+        if let childAccess = access?.propagatingAccess() {
+            model.modelContext.access = childAccess
         }
         return model
     }
