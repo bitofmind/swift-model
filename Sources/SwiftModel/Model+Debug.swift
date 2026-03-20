@@ -28,8 +28,14 @@ public struct DebugOptions: ExpressibleByArrayLiteral, Sendable {
     /// Print the name of each dependency that changed: `"AppModel.filter"`.
     public static let triggers: DebugOptions = [.triggers()]
 
-    /// Print each changed dependency with its new value: `"AppModel.filter = \"ab\""`.
+    /// Print each changed dependency with its old → new value: `"AppModel.filter: \"a\" → \"b\""`.
     public static let triggerValues: DebugOptions = [.triggers(.withValue)]
+
+    /// Print a structured diff of each dependency's value when it triggers.
+    ///
+    /// More verbose than `.triggerValues` but reveals exactly which property changed
+    /// inside a nested model — useful when `triggerValues` shows `TypeName() → TypeName()`.
+    public static let triggerDiffs: DebugOptions = [.triggers(.withDiff)]
 
     /// Print a diff of the observed value when it changes.
     public static let changes: DebugOptions = [.changes()]
@@ -84,13 +90,29 @@ public enum DebugOption: Sendable {
     case printer(any TextOutputStream & Sendable)
 }
 
+public extension DebugOption {
+    /// Shorthand for `.triggers()` — use when the default `.name` format is wanted.
+    /// Allows `[.triggers, .name("...")]` instead of `[.triggers(), .name("...")]`.
+    static var triggers: Self { .triggers() }
+
+    /// Shorthand for `.changes()` — use when the default `.diff` format is wanted.
+    /// Allows `[.changes, .name("...")]` instead of `[.changes(), .name("...")]`.
+    static var changes: Self { .changes() }
+}
+
 /// Controls how a changed dependency is described in `.triggers` output.
 public enum TriggerFormat: Sendable {
     /// Print only the property name: `"AppModel.filter"`.
     case name
 
-    /// Print the property name and its new value: `"AppModel.filter = \"ab\""`.
+    /// Print the property name and its old → new value: `"AppModel.filter: \"a\" → \"b\""`.
     case withValue
+
+    /// Print a `−`/`+` diff of the dependency value with all model sub-properties expanded.
+    ///
+    /// Especially useful when the dependency is itself a model — this reveals exactly which
+    /// nested property changed, rather than showing opaque `TypeName() → TypeName()`.
+    case withDiff
 }
 
 /// Controls how the updated observed/memoized value is displayed in `.changes` output.
@@ -481,10 +503,24 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
 
         // Capture the current value string now so that on first trigger we have "old → new".
         let fmt = triggerFormat
+
+        // Helper: dump `value` with model sub-properties expanded (includeChildrenInMirror=true)
+        // and with active access suppressed so dumping doesn't re-enter willAccess callbacks.
+        @Sendable func dumpWithChildren(_ value: T) -> String {
+            usingActiveAccess(nil) {
+                threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+                    String(customDumping: value)
+                }
+            }
+        }
+
         let initialValueStr: String?
-        if case .withValue = fmt {
+        switch fmt {
+        case .withValue:
             initialValueStr = context.lock { String(customDumping: context.readModel[keyPath: path]) }
-        } else {
+        case .withDiff:
+            initialValueStr = context.lock { dumpWithChildren(context.readModel[keyPath: path]) }
+        case .name:
             initialValueStr = nil
         }
 
@@ -504,6 +540,24 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                     return old
                 }
                 triggerLabel = "\(baseLabel): \(oldValueStr) → \(newValueStr)"
+            case .withDiff:
+                let newValueStr = context.lock { dumpWithChildren(context.readModel[keyPath: path]) }
+                // Atomically swap the stored value for old→new diff reporting.
+                let oldValueStr = self.subscriptions.withValue { subs -> String in
+                    let old = subs[key]?.1 ?? "?"
+                    subs[key]?.1 = newValueStr
+                    return old
+                }
+                if let diffStr = snapshotLineDiff(oldValueStr, newValueStr) {
+                    // Indent the diff block so it sits visually under "dependency changed: label:".
+                    let indented = diffStr.components(separatedBy: "\n")
+                        .map { "  " + $0 }
+                        .joined(separator: "\n")
+                    triggerLabel = "\(baseLabel):\n\(indented)"
+                } else {
+                    // Values appear identical after dump — fall back to just the label.
+                    triggerLabel = baseLabel
+                }
             }
 
             self.onTrigger(triggerLabel)

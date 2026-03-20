@@ -425,7 +425,7 @@ private extension ModelNode {
         // We do this before the external willAccess so that the debug collector can intercept
         // property reads inside produce() during the first update() call.
         // When debug == [] (the default), memoizeDebugSetup returns nils for zero overhead.
-        let debugLabel = "\(String(describing: M.self))[memoize: \"\(key.base)\"]"
+        let debugLabel = debug.name ?? "\(String(describing: M.self))[memoize: \"\(key.base)\"]"
         let (debugPrint, debugPreviousValue, debugCollectorBox) = memoizeDebugSetup(
             options: debug,
             label: debugLabel

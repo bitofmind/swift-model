@@ -731,6 +731,64 @@ struct DebugTests {
         }
     }
 
+    /// `.name()` overrides the auto-generated `ModelType[memoize: "key"]` label.
+    @Test func memoizeDebug_customName() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("myComputed") }) { output in
+            let debugOpts: DebugOptions = [.triggers, .name("myComputed"), .printer(output)]
+            let model = DebugCounter().withAnchor()
+            _ = model.node.memoize(for: "debugDoubled", debug: debugOpts, produce: { model.count * 2 })
+            model.count = 3
+        } result: {
+            """
+            myComputed triggered update:
+              dependency changed: DebugCounter.count
+
+            """
+        }
+    }
+
+    /// `.triggers(.withDiff)` shows a structured `−`/`+` diff of each dependency's value.
+    /// For primitive values the diff shows old/new lines; for model-typed values the full
+    /// sub-property tree is expanded so the exact change is visible.
+    @Test func debugTargeted_triggers_withDiff() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
+            let model = DebugCounter().withAnchor()
+            model.debug([.triggers(.withDiff), .name("Counter"), .printer(output)]) { model.count }
+            model.count = 5
+        } result: {
+            """
+            Counter triggered update:
+              dependency changed: DebugCounter.count:
+              - 0
+              + 5
+
+            """
+        }
+    }
+
+    /// `.triggers(.withDiff)` on a model-typed dependency expands the full sub-model state
+    /// with `includeChildrenInMirror = true`, so callers can see exactly which nested
+    /// property changed — rather than the useless `TypeName() → TypeName()` from `.withValue`.
+    @Test func debugTargeted_triggers_withDiff_modelValue() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Parent") }) { output in
+            let parent = DebugParent().withAnchor()
+            parent.debug([.triggers(.withDiff), .name("Parent"), .printer(output)]) { parent.child }
+            // Replace the whole child model so onModify(for: \DebugParent.child) fires.
+            parent.child = DebugCounter(count: 5)
+        } result: {
+            """
+            Parent triggered update:
+              dependency changed: DebugParent.child:
+                DebugCounter(
+              -   count: 0,
+              +   count: 5,
+                  name: "default"
+                )
+
+            """
+        }
+    }
+
     /// `.triggers(.withValue)` reports the old → new value of each changed dependency.
     @Test func memoizeDebug_triggersWithValue() async throws {
         try await assertOutputSnapshot(until: { $0.contains("debugDoubled") }) { output in
