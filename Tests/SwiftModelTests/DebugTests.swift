@@ -44,6 +44,18 @@ import Observation
     }
 }
 
+@Model struct DebugContextModel {
+    var value: Int = 0
+}
+
+extension ContextKeys {
+    var debugContextCount: ContextStorage<Int> { .init(defaultValue: 0) }
+}
+
+extension PreferenceKeys {
+    var debugPreferenceScore: PreferenceStorage<Int> { .init(defaultValue: 0) { $0 += $1 } }
+}
+
 // MARK: - Output capture helper
 
 /// A `TextOutputStream` that accumulates writes into a `LockIsolated` string.
@@ -840,6 +852,61 @@ struct DebugTests {
             +   count: 1,
                 name: "default"
               )
+
+            """
+        }
+    }
+
+    // MARK: Context storage triggers
+
+    /// Context storage changes appear as `ModelType.context.keyName` in trigger output.
+    @Test func debugTargeted_triggers_contextStorage_name() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Model") }) { output in
+            let model = DebugContextModel().withAnchor()
+            model.debug([.triggers(.name), .name("Model"), .printer(output)]) {
+                model.node.context.debugContextCount
+            }
+            model.node.context.debugContextCount = 5
+        } result: {
+            """
+            Model triggered update:
+              dependency changed: DebugContextModel.context.debugContextCount
+
+            """
+        }
+    }
+
+    /// Context storage changes include old → new value with `.withValue` format.
+    @Test func debugTargeted_triggers_contextStorage_withValue() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Model") }) { output in
+            let model = DebugContextModel().withAnchor()
+            model.debug([.triggers(.withValue), .name("Model"), .printer(output)]) {
+                model.node.context.debugContextCount
+            }
+            model.node.context.debugContextCount = 7
+        } result: {
+            """
+            Model triggered update:
+              dependency changed: DebugContextModel.context.debugContextCount: 0 → 7
+
+            """
+        }
+    }
+
+    // MARK: Preference triggers
+
+    /// Preference changes appear as `ModelType.preference.keyName` in trigger output.
+    @Test func debugTargeted_triggers_preference_name() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Model") }) { output in
+            let model = DebugContextModel().withAnchor()
+            model.debug([.triggers(.name), .name("Model"), .printer(output)]) {
+                model.node.preference.debugPreferenceScore
+            }
+            model.node.preference.debugPreferenceScore = 3
+        } result: {
+            """
+            Model triggered update:
+              dependency changed: DebugContextModel.preference.debugPreferenceScore
 
             """
         }

@@ -504,6 +504,12 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         let alreadySubscribed = subscriptions.withValue { $0[key] != nil }
         guard !alreadySubscribed else { return nil }
 
+        // Skip non-writable synthetic paths (untyped \M[environmentKey:] / \M[preferenceKey:]).
+        // These fire alongside typed WritableKeyPath companions but have no working post-lock
+        // callbacks — only the typed path's buildPostLockCallbacks fires. Registering them
+        // produces dead subscriptions that waste memory without ever triggering output.
+        guard path is WritableKeyPath<M, T> else { return nil }
+
         let modelType = String(describing: M.self)
         let propName = debugPropertyName(from: model, path: path)
         let baseLabel = propName.map { "\(modelType).\($0)" } ?? modelType
@@ -524,13 +530,18 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         let initialValueStr: String?
         switch fmt {
         case .withValue:
-            initialValueStr = context.lock { String(customDumping: context.readModel[keyPath: path]) }
+            // usingActiveAccess(nil) suppresses the DebugAccessCollector during the keypath read.
+            // Context/preference paths (_metadata, _preference) re-enter willAccessStorage/Preference
+            // via their getters; with no active access, mc.willAccess returns nil and the cycle is broken.
+            initialValueStr = usingActiveAccess(nil) {
+                context.lock { String(customDumping: context.readModel[keyPath: path]) }
+            }
         case .withDiff:
-            // Freeze the value under the lock so the initial snapshot is consistent.
-            // `frozenCopy` marks all nested model structs to read from struct fields rather
-            // than the live context, so the subsequent `dumpWithChildren` outside the lock
-            // is safe and doesn't acquire any child/metadata context locks.
-            let initialFrozen: T = context.lock { frozenCopy(context.readModel[keyPath: path]) }
+            // Same re-entry guard as .withValue: suppress active access while reading the keypath.
+            // frozenCopy prevents child/metadata lock deadlocks during the subsequent dumpWithChildren.
+            let initialFrozen: T = usingActiveAccess(nil) {
+                context.lock { frozenCopy(context.readModel[keyPath: path]) }
+            }
             initialValueStr = dumpWithChildren(initialFrozen)
         case .name:
             initialValueStr = nil
@@ -545,7 +556,9 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                 self.onTrigger { baseLabel }
                 return nil
             case .withValue:
-                let newValueStr = context.lock { String(customDumping: context.readModel[keyPath: path]) }
+                let newValueStr = usingActiveAccess(nil) {
+                    context.lock { String(customDumping: context.readModel[keyPath: path]) }
+                }
                 // Atomically swap the stored value for old→new reporting.
                 let oldValueStr = self.subscriptions.withValue { subs -> String in
                     let old = subs[key]?.1 ?? "?"
@@ -562,7 +575,9 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                 // This prevents the potential deadlock where `dumpWithChildren` on a live model
                 // tries to acquire a metadata context lock that another thread already holds while
                 // waiting for this same context lock.
-                let newFrozen: T = context.lock { frozenCopy(context.readModel[keyPath: path]) }
+                let newFrozen: T = usingActiveAccess(nil) {
+                    context.lock { frozenCopy(context.readModel[keyPath: path]) }
+                }
                 // `dumpWithChildren` on a frozen copy reads struct fields only — safe to call
                 // while still nominally inside the onModify callback window.
                 let newValueStr = dumpWithChildren(newFrozen)
@@ -598,7 +613,16 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
 
 /// Returns a human-readable property name for `path` on `model`, or nil for synthetic/subscript paths.
 func debugPropertyName<M: Model, T>(from model: M, path: KeyPath<M, T>) -> String? {
-    // Try WritableKeyPath first (covers @Model state properties).
+    // Context/preference typed path: storageName is set in thread-locals by
+    // willAccessStorage and willAccessPreferenceValue while the typed-path willAccess is running.
+    if let name = threadLocals.storageName, !name.isEmpty {
+        switch threadLocals.modificationArea {
+        case .context:    return "context.\(name)"
+        case .preference: return "preference.\(name)"
+        default: break
+        }
+    }
+    // Try WritableKeyPath via Mirror (covers @Model state properties).
     if let writablePath = path as? WritableKeyPath<M, T> {
         // Disable active access while using Mirror to avoid re-entering willAccess callbacks.
         // Also enable includeChildrenInMirror so the @Model struct's customMirror returns real
@@ -609,7 +633,7 @@ func debugPropertyName<M: Model, T>(from model: M, path: KeyPath<M, T>) -> Strin
             }
         }
     }
-    // Synthetic paths (memoize keys, environment, preference) have no mirror name.
+    // Synthetic paths (memoize keys, untyped environment/preference) have no mirror name.
     return nil
 }
 
