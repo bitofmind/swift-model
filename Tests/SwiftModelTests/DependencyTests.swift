@@ -1,5 +1,6 @@
 import Testing
 import SwiftModel
+import SwiftModelTesting
 import Observation
 import Dependencies
 
@@ -64,15 +65,12 @@ struct DependencyTests {
         #expect(childResult.value == "C1c1")
     }
 
-    @Test func testDependencyInTask() async {
+    @Test(.modelTesting(exhaustivity: .off)) func testDependencyInTask() async {
         let testResult = TestResult()
-        let (model, tester) = TaskModel().andTester {
+        let model = TaskModel().withAnchor {
             $0.testResult = testResult
         }
-        tester.exhaustivity = []
-        await tester.assert(timeoutNanoseconds: 5_000_000_000) {
-            model.taskDone == true
-        }
+        await expect(model.taskDone == true, timeoutNanoseconds: 5_000_000_000)
 
         #expect(testResult.value == "task")
     }

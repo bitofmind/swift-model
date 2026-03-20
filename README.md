@@ -70,13 +70,12 @@ The same model is exhaustively testable with no extra setup:
 
 ```swift
 import Testing
+import SwiftModelTesting
 
-@Test func testIncrement() async {
-    let (model, tester) = CounterModel().andTester()
+@Test(.modelTesting) func testIncrement() async {
+    let model = CounterModel().withAnchor()
     model.incrementTapped()
-    await tester.assert {
-        model.count == 1
-    }
+    await expect(model.count == 1)
 }
 ```
 
@@ -280,10 +279,10 @@ If a view is not called more than once, you can create the model with an anchor 
 }
 ```
 
-If you need to keep a reference to both the model and the anchor separately, use `andAnchor()`:
+If you need to keep a reference to both the model and the anchor separately, use `returningAnchor()`:
 
 ```swift
-let (model, anchor) = AppModel().andAnchor()
+let (model, anchor) = AppModel().returningAnchor()
 ```
 
 ### Model Life Stages
@@ -1424,61 +1423,58 @@ Because SwiftModel owns and tracks all of a model's state, events, and async tas
 
 ### Setup
 
-Replace `withAnchor()` with `andTester()` to get a `ModelTester` alongside the live model. You can override dependencies in the same call:
+Add the `.modelTesting` trait to `@Test` or `@Suite`, then call `withAnchor()` as usual inside the test body. Override dependencies in the `withAnchor` closure:
 
 ```swift
-@Test func testAddCounter() async {
-    let (model, tester) = AppModel().andTester {
+import Testing
+import SwiftModelTesting
+
+@Test(.modelTesting) func testAddCounter() async {
+    let model = AppModel().withAnchor {
         $0.factClient.fetch = { "\($0) is a good number." }
     }
 
     model.addButtonTapped()
 
-    await tester.assert {
-        model.counters.count == 1
-    }
+    await expect(model.counters.count == 1)
 }
 ```
 
 > Assertions must `await` because state and event propagation is asynchronous.
 
-The `assert` builder block accepts any number of predicates. Using `==` gives you a pretty-printed diff on failure; any other `Bool` expression also works:
+The `expect` builder block accepts any number of predicates. Using `==` gives you a pretty-printed diff on failure; any other `Bool` expression also works:
 
 ```swift
-await tester.assert {
+await expect {
     model.count == 42          // diff on failure
     model.isLoading == false   // diff on failure
     model.title.hasPrefix("A") // plain bool — no diff
 }
 ```
 
-Use `unwrap` to wait for an optional child model to appear before interacting with it:
+Use `require` to wait for an optional child model to appear before interacting with it:
 
 ```swift
-let row = try await tester.unwrap(model.counters.first)
+let row = try await require(model.counters.first)
 row.counter.incrementTapped()
-await tester.assert {
-    row.counter.count == 1
-}
+await expect(row.counter.count == 1)
 ```
 
 ### Asserting Callbacks
 
-Pass a `TestProbe` wherever the model expects a callback closure. Call `tester.install(probe)` to opt into exhaustion checking for it — omitting this call means probe invocations are not tracked and unexpected calls produce silent false-passes:
+Pass a `TestProbe` wherever the model expects a callback closure. Call `probe.install()` to opt into exhaustion checking for it — omitting this call means probe invocations are not tracked and unexpected calls produce silent false-passes:
 
 ```swift
-@Test func testFactButtonTapped() async {
+@Test(.modelTesting) func testFactButtonTapped() async {
     let onFact = TestProbe()
-    let (model, tester) = CounterModel(count: 2, onFact: onFact.call).andTester {
+    let model = CounterModel(count: 2, onFact: onFact.call).withAnchor {
         $0.factClient.fetch = { "\($0) is a good number." }
     }
-    tester.install(onFact)
+    onFact.install()
 
     model.factButtonTapped()
 
-    await tester.assert {
-        onFact.wasCalled(with: 2, "2 is a good number.")
-    }
+    await expect(onFact.wasCalled(with: 2, "2 is a good number."))
 }
 ```
 
@@ -1486,18 +1482,18 @@ Pass a `TestProbe` wherever the model expects a callback closure. Call `tester.i
 
 ### Asserting Events
 
-Assert that a model sent an event using `didSend(_:)` inside an `assert` block:
+Assert that a model sent an event using `didSend(_:)` inside an `expect` block:
 
 ```swift
-@Test func testContinueWithoutRecording() async throws {
-    let (model, tester) = StandupDetail(standup: .mock).andTester {
+@Test(.modelTesting) func testContinueWithoutRecording() async throws {
+    let model = StandupDetail(standup: .mock).withAnchor {
         $0.speechClient.authorizationStatus = { .denied }
     }
 
     model.startMeetingButtonTapped()
-    try await tester.unwrap(model.destination?.speechRecognitionDenied).continue()
+    try await require(model.destination?.speechRecognitionDenied).continue()
 
-    await tester.assert {
+    await expect {
         model.destination?.speechRecognitionDenied != nil
         model.didSend(.startMeeting)
     }
@@ -1506,36 +1502,41 @@ Assert that a model sent an event using `didSend(_:)` inside an `assert` block:
 
 ### Exhaustivity
 
-By default the tester enforces exhaustivity across six categories — any unasserted effect in any category fails the test when the tester is deallocated at the end of the test function:
+By default the trait enforces exhaustivity across six categories — any unasserted effect in any category fails the test at the end of the test function:
 
-- **`.state`** — every state change must be consumed by an `assert` block
+- **`.state`** — every state change must be consumed by an `expect` block
 - **`.events`** — every event sent via `node.send()` must be observed with `didSend(_:)`
-- **`.tasks`** — all async tasks must complete or be cancelled before the tester deallocates
+- **`.tasks`** — all async tasks must complete or be cancelled before the test ends
 - **`.probes`** — every installed `TestProbe` invocation must be consumed by `wasCalled`
-- **`.context`** — every `node.context` write must be consumed by an `assert` block
-- **`.preference`** — every `node.preference` write must be consumed by an `assert` block
+- **`.context`** — every `node.context` write must be consumed by an `expect` block
+- **`.preference`** — every `node.preference` write must be consumed by an `expect` block
 
-To focus a test on only some categories, pass `exhaustivity` to `andTester` or assign it afterwards:
+To focus a test on only some categories, pass an exhaustivity argument to `.modelTesting`:
 
 ```swift
-// Set at creation time
-let (model, tester) = MyModel().andTester(exhaustivity: .off)
-let (model, tester) = MyModel().andTester(exhaustivity: [.state, .events])
+// Absolute exhaustivity
+@Test(.modelTesting(exhaustivity: .off))
+@Test(.modelTesting(exhaustivity: [.state, .events]))
 
-// Or assign after creation
-tester.exhaustivity = [.state, .events]  // ignore tasks and probes
-tester.exhaustivity = .off               // skip all exhaustion checks
+// Relative modifier — composes with the enclosing suite's exhaustivity
+@Suite(.modelTesting(.removing(.events)))
+struct MyTests {
+    @Test(.modelTesting(.removing(.tasks)))  // → .full − .events − .tasks
+    func example() async { }
+}
 ```
 
-When debugging, you can print skipped assertions without failing the test:
+You can also temporarily change exhaustivity for part of a test body:
 
 ```swift
-tester.showSkippedAssertions = true
+await withExhaustivity(.off) {
+    model.triggerSideEffects()
+}
 ```
 
 ### Time Control
 
-Models that use `node.continuousClock` for timers — such as polling loops or countdowns — are fully testable without real wall-clock delays. Inject a `TestClock` (from [swift-clocks](https://github.com/pointfreeco/swift-clocks)) via `andTester` and advance time explicitly in your test:
+Models that use `node.continuousClock` for timers — such as polling loops or countdowns — are fully testable without real wall-clock delays. Inject a `TestClock` (from [swift-clocks](https://github.com/pointfreeco/swift-clocks)) via `withAnchor` and advance time explicitly in your test:
 
 ```swift
 // Model under test
@@ -1550,25 +1551,28 @@ Models that use `node.continuousClock` for timers — such as polling loops or c
 }
 
 // Test
-@Test func testTimer() async throws {
+@Test(.modelTesting) func testTimer() async throws {
     let clock = TestClock()
-    let (model, tester) = TimerModel().andTester {
+    let model = TimerModel().withAnchor {
         $0.continuousClock = clock
     }
 
     await clock.advance(by: .seconds(1))
-    await tester.assert { model.secondsElapsed == 1 }
+    await expect(model.secondsElapsed == 1)
 
     await clock.advance(by: .seconds(2))
-    await tester.assert { model.secondsElapsed == 3 }
+    await expect(model.secondsElapsed == 3)
 }
 ```
 
 For tests that only care about the end result and not intermediate timer ticks, use `ImmediateClock()` instead. It fires all timer intervals synchronously, letting the model reach its final state without manual advancement:
 
 ```swift
-let (model, tester) = TimerModel().andTester {
-    $0.continuousClock = ImmediateClock()
+@Test(.modelTesting(exhaustivity: .off)) func testTimerFinal() async {
+    let model = TimerModel().withAnchor {
+        $0.continuousClock = ImmediateClock()
+    }
+    await expect(model.secondsElapsed > 0)
 }
 ```
 

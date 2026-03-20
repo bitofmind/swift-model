@@ -2,6 +2,7 @@ import Observation
 import Testing
 import AsyncAlgorithms
 @testable import SwiftModel
+import SwiftModelTesting
 import Dependencies
 
 /// Tests covering the documented semantics of Model-as-dependency in SwiftModel.
@@ -35,18 +36,15 @@ struct ModelDependencyBehaviourTests {
     /// It IS visited when `.dependencies` is included in the relation.
     @Test func testReduceHierarchyVisitsDependencyWithDependenciesRelation() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = HostModel().andTester {
+        await withModelTesting {
+            let model = HostModel().withAnchor {
                 $0.testResult = testResult
                 $0[SimpleDep.self] = SimpleDep(tag: "svc")
             }
 
-            await tester.assert {
-                // Force dep activation first so it appears in mapHierarchy
-                model.dep.tag == "svc"
-            }
+            await expect(model.dep.tag == "svc")  // Force dep activation first so it appears in mapHierarchy
 
-            await tester.assert {
+            await expect {
                 // Normal descendants traversal does NOT include the dependency model
                 let withoutDeps = model.node.mapHierarchy(for: [.self, .descendants]) { $0 as? SimpleDep }
                 withoutDeps.isEmpty
@@ -56,30 +54,23 @@ struct ModelDependencyBehaviourTests {
                 withDeps.count == 1
                 withDeps.first?.tag == "svc"
             }
-
-            return model
         }
     }
 
     @Test func testMapHierarchyDoesNotVisitDependencyWithoutFlag() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = HostModel().andTester {
+        await withModelTesting {
+            let model = HostModel().withAnchor {
                 $0.testResult = testResult
                 $0[SimpleDep.self] = SimpleDep(tag: "hidden")
             }
 
-            await tester.assert {
-                // Force dep activation
-                model.dep.tag == "hidden"
-            }
+            await expect(model.dep.tag == "hidden")  // Force dep activation
 
-            await tester.assert {
+            await expect {
                 let found = model.node.mapHierarchy(for: [.self, .descendants]) { $0 as? SimpleDep }
                 found.isEmpty
             }
-
-            return model
         }
     }
 
@@ -89,18 +80,15 @@ struct ModelDependencyBehaviourTests {
     /// dependency contexts (they are treated as one-hop children in the traversal).
     @Test func testMapHierarchyWithDependenciesOnChildNode() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = ParentHostModel().andTester {
+        await withModelTesting {
+            let model = ParentHostModel().withAnchor {
                 $0.testResult = testResult
                 $0[SimpleDep.self] = SimpleDep(tag: "root-dep")
             }
 
-            await tester.assert {
-                // Force dep activation via child — this sets up the dependency context
-                model.child.dep.tag == "root-dep"
-            }
+            await expect(model.child.dep.tag == "root-dep")  // Force dep activation via child — this sets up the dependency context
 
-            await tester.assert {
+            await expect {
                 // From the parent node we can find the dep via child node since dep is
                 // on the child's context. .children is required to actually visit dep contexts.
                 let fromParent = model.node.mapHierarchy(for: [.self, .descendants, .dependencies]) { $0 as? SimpleDep }
@@ -111,8 +99,6 @@ struct ModelDependencyBehaviourTests {
                 fromChild.count == 1
                 fromChild.first?.tag == "root-dep"
             }
-
-            return model
         }
     }
 
@@ -122,28 +108,21 @@ struct ModelDependencyBehaviourTests {
     /// `.children` or `.descendants` (dependency contexts are treated as children in traversal).
     @Test func testEventReachesDependencyModelWhenRelationIncludesDependencies() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = HostModelWithEvents().andTester {
+        await withModelTesting(exhaustivity: .off) {
+            let model = HostModelWithEvents().withAnchor {
                 $0.testResult = testResult
                 $0[ListeningDep.self] = ListeningDep()
             }
 
             // Access dependency to ensure it's set up in the hierarchy
-            await tester.assert {
-                model.dep.lifetime == .active
-            }
+            await expect(model.dep.lifetime == .active)
 
             // Send an event including .children and .dependencies
             // Note: .children is required because dep contexts are visited as children.
             // Using just [.self, .dependencies] would NOT reach the dep context.
             model.node.send(HostEvent.ping, to: [.self, .children, .dependencies])
 
-            tester.exhaustivity = [.state, .tasks]
-            await tester.assert {
-                testResult.value.contains("ping-received")
-            }
-
-            return model
+            await expect(testResult.value.contains("ping-received"))
         }
         #expect(testResult.value.contains("ping-received"))
     }
@@ -151,25 +130,18 @@ struct ModelDependencyBehaviourTests {
     /// With the default relation `[.self, .ancestors]`, dependency models are NOT reached.
     @Test func testEventDoesNotReachDependencyModelWithDefaultRelation() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = HostModelWithEvents().andTester {
+        await withModelTesting(exhaustivity: .off) {
+            let model = HostModelWithEvents().withAnchor {
                 $0.testResult = testResult
                 $0[ListeningDep.self] = ListeningDep()
             }
 
-            await tester.assert {
-                model.dep.lifetime == .active
-            }
+            await expect(model.dep.lifetime == .active)
 
             // Default relation is [.self, .ancestors] — does NOT include .dependencies
             model.node.send(HostEvent.ping)
 
-            tester.exhaustivity = []
-            await tester.assert {
-                !testResult.value.contains("ping-received")
-            }
-
-            return model
+            await expect(!testResult.value.contains("ping-received"))
         }
     }
 
@@ -179,23 +151,16 @@ struct ModelDependencyBehaviourTests {
     /// travel up to the host because the dep's context has the host as a parent.
     @Test func testEventFromDependencyReachesHostAncestor() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = HostListeningForDepEvents().andTester {
+        await withModelTesting(exhaustivity: .off) {
+            let model = HostListeningForDepEvents().withAnchor {
                 $0.testResult = testResult
                 $0[SendingDep.self] = SendingDep()
             }
 
-            await tester.assert {
-                model.dep.lifetime == .active
-            }
+            await expect(model.dep.lifetime == .active)
             model.dep.triggerEvent()
 
-            tester.exhaustivity = [.state, .tasks]
-            await tester.assert {
-                testResult.value.contains("dep-event-received")
-            }
-
-            return model
+            await expect(testResult.value.contains("dep-event-received"))
         }
         #expect(testResult.value.contains("dep-event-received"))
     }
@@ -209,24 +174,20 @@ struct ModelDependencyBehaviourTests {
     @Test(arguments: ObservationPath.allCases)
     func testParentCanObserveDependencyModelProperty(observationPath: ObservationPath) async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = ObservingHostModel().andTester(options: observationPath.options) {
+        await withModelTesting {
+            let model = ObservingHostModel().withAnchor(options: observationPath.options) {
                 $0.testResult = testResult
                 $0[SimpleDep.self] = SimpleDep(tag: "initial")
             }
 
-            await tester.assert {
-                model.dep.tag == "initial"
-            }
+            await expect(model.dep.tag == "initial")
 
             model.dep.tag = "updated"
 
-            await tester.assert {
+            await expect {
                 model.dep.tag == "updated"
                 testResult.value.contains("tag=updated")
             }
-
-            return model
         }
         #expect(testResult.value.contains("tag=updated"))
     }
@@ -235,18 +196,16 @@ struct ModelDependencyBehaviourTests {
 
     @Test func testDependencyModelActivatedOnFirstAccess() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = HostModel().andTester {
+        await withModelTesting {
+            let model = HostModel().withAnchor {
                 $0.testResult = testResult
                 $0[SimpleDep.self] = SimpleDep(tag: "svc")
             }
 
-            await tester.assert {
+            await expect {
                 model.dep.tag == "svc"
                 testResult.value.contains("D:svc")
             }
-
-            return model
         }
         #expect(testResult.value.contains("D:svc"))
         #expect(testResult.value.contains("d:svc"))
@@ -258,13 +217,13 @@ struct ModelDependencyBehaviourTests {
     /// the same dependency context — it is activated once and deactivated once.
     @Test func testSharedDependencyActivatedOnceAcrossMultipleChildren() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = MultiChildHost().andTester {
+        await withModelTesting {
+            let model = MultiChildHost().withAnchor {
                 $0.testResult = testResult
                 $0[SimpleDep.self] = SimpleDep(tag: "shared")
             }
 
-            await tester.assert {
+            await expect {
                 // Both children see the same dep instance
                 model.child1.dep.tag == "shared"
                 model.child2.dep.tag == "shared"
@@ -273,12 +232,10 @@ struct ModelDependencyBehaviourTests {
             // Mutating via one child is visible on the other — they share a context
             model.child1.dep.tag = "updated"
 
-            await tester.assert {
+            await expect {
                 model.child2.dep.tag == "updated"
                 testResult.value.contains("tag-changed:updated")
             }
-
-            return model
         }
         // Activation is prefixed "D:", deactivation "d:".
         // The dep is activated with tag "shared" → "D:shared".

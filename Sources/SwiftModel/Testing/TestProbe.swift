@@ -3,26 +3,28 @@ import IssueReporting
 import CustomDump
 
 /// A recorder for callback invocations, used to assert that closures are called with the
-/// expected arguments inside a `ModelTester` test.
+/// expected arguments in a `@Test(.modelTesting)` test.
 ///
 /// Create a probe, pass it (or `probe.call`) as the callback closure, then assert inside
-/// `tester.assert` that it was called with the expected values:
+/// an `expect { }` block that it was called with the expected values:
 ///
 /// ```swift
-/// @Test func testFactButtonTapped() async {
+/// @Test(.modelTesting) func testFactButtonTapped() async {
 ///     let onFact = TestProbe()
-///     let (model, tester) = CounterModel(count: 2, onFact: onFact.call).andTester {
+///     let model = CounterModel(count: 2, onFact: onFact.call).withAnchor {
 ///         $0.factClient.fetch = { "\($0) is a good number." }
 ///     }
-///     tester.install(onFact)   // opt into exhaustion checking
 ///
 ///     model.factButtonTapped()
 ///
-///     await tester.assert {
+///     await expect {
 ///         onFact.wasCalled(with: 2, "2 is a good number.")
 ///     }
 /// }
 /// ```
+///
+/// The probe automatically registers with the active `.modelTesting` test scope on creation,
+/// so any calls to it will be caught by exhaustion checking.
 ///
 /// `TestProbe` is `@Sendable`-safe and can be passed into model closures without capture-list concerns.
 public final class TestProbe: @unchecked Sendable {
@@ -33,12 +35,10 @@ public final class TestProbe: @unchecked Sendable {
     /// Creates a probe, optionally named for clearer failure messages.
     ///
     /// The probe automatically registers with the active `.modelTesting` test scope on creation,
-    /// so any calls to it will be caught by exhaustion checking. Pass `autoInstall: false` only
-    /// when creating probes inside shared test helpers that should not participate in exhaustion
-    /// unless the probe is explicitly passed to a model.
-    public init(_ name: String? = nil, autoInstall: Bool = true) {
+    /// so any calls to it will be caught by exhaustion checking.
+    public init(_ name: String? = nil) {
         self.name = name
-        if autoInstall { autoInstallIfNeeded() }
+        autoInstallIfNeeded()
     }
 }
 
@@ -86,14 +86,21 @@ public extension TestProbe {
 
     /// Registers this probe with the active `.modelTesting` test scope.
     ///
-    /// Probes created inside a `.modelTesting` test auto-register at `init` time, so calling
-    /// `install()` explicitly is only needed when a probe was created with `autoInstall: false`.
+    /// - Note: This method is deprecated. Probes auto-register at `init` time and on every call,
+    ///   so explicit `install()` is never needed.
+    @available(*, deprecated, message: "TestProbe auto-installs on creation and on every call. Explicit install() is no longer needed.")
     func install(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
-        guard let scope = _ModelTestingLocals.scope else {
+        _install(fileID: fileID, filePath: filePath, line: line, column: column)
+    }
+
+    /// Internal non-deprecated entry point used by tests that need to exercise the
+    /// `install()` code path without triggering a deprecation warning at the call site.
+    func _install(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
+        if _ModelTestingLocals.scope == nil {
             reportIssue("install() must be called inside a @Test(.modelTesting) test function", fileID: fileID, filePath: filePath, line: line, column: column)
             return
         }
-        scope.install([self])
+        autoInstallIfNeeded()
     }
 
     /// The number of times the probe has been called.

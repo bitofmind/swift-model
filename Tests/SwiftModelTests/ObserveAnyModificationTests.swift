@@ -2,7 +2,9 @@ import Testing
 import AsyncAlgorithms
 import Observation
 @testable import SwiftModel
+import SwiftModelTesting
 
+@Suite(.modelTesting)
 struct ObserveAnyModificationTests {
 
     // MARK: - Basic emission
@@ -10,71 +12,54 @@ struct ObserveAnyModificationTests {
     /// Mutating a property emits from observeAnyModification().
     @Test func testEmitsOnPropertyMutation() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = TrackedModel().andTester {
-                $0.testResult = testResult
-            }
-
-            await tester.assert {
-                model.count == 0
-            }
-
-            model.count = 1
-
-            await tester.assert {
-                model.count == 1
-                testResult.value.contains("modified")
-            }
-
-            return model
+        let model = TrackedModel().withAnchor {
+            $0.testResult = testResult
         }
-        #expect(testResult.value.contains("modified"))
+
+        await expect(model.count == 0)
+
+        model.count = 1
+
+        await expect {
+            model.count == 1
+            testResult.value.contains("modified")
+        }
     }
 
     /// A single mutation emits exactly once.
     @Test func testSingleMutationEmitsOnce() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = TrackedModel().andTester {
-                $0.testResult = testResult
-            }
+        let model = TrackedModel().withAnchor {
+            $0.testResult = testResult
+        }
 
-            await tester.assert {
-                model.count == 0
-            }
+        await expect(model.count == 0)
 
-            model.count = 42
+        model.count = 42
 
-            await tester.assert {
-                model.count == 42
-                testResult.value.components(separatedBy: "modified").count - 1 == 1
-            }
-
-            return model
+        await expect {
+            model.count == 42
+            testResult.value.components(separatedBy: "modified").count - 1 == 1
         }
     }
 
     /// Each individual mutation outside a transaction produces its own emission.
     @Test func testEachMutationEmitsSeparately() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = TrackedModel().andTester {
-                $0.testResult = testResult
-            }
+        let model = TrackedModel().withAnchor {
+            $0.testResult = testResult
+        }
 
-            await tester.assert { model.count == 0 }
+        await expect(model.count == 0)
 
-            model.count = 1
-            model.count = 2
-            model.count = 3
+        model.count = 1
+        model.count = 2
+        model.count = 3
 
-            await tester.assert {
-                model.count == 3
-                // Three separate mutations → three emissions
-                testResult.value.components(separatedBy: "modified").count - 1 == 3
-            }
-
-            return model
+        await expect {
+            model.count == 3
+            // Three separate mutations → three emissions
+            testResult.value.components(separatedBy: "modified").count - 1 == 3
         }
     }
 
@@ -83,63 +68,65 @@ struct ObserveAnyModificationTests {
     /// Mutations in a child model are also visible from the parent's observeAnyModification().
     @Test func testEmitsForDescendantMutation() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = ParentTrackedModel().andTester {
-                $0.testResult = testResult
-            }
-
-            await tester.assert { model.child.count == 0 }
-
-            model.child.count = 42
-
-            await tester.assert {
-                model.child.count == 42
-                testResult.value.contains("parent-modified")
-            }
-
-            return model
+        let model = ParentTrackedModel().withAnchor {
+            $0.testResult = testResult
         }
-        #expect(testResult.value.contains("parent-modified"))
+
+        await expect(model.child.count == 0)
+
+        model.child.count = 42
+
+        await expect {
+            model.child.count == 42
+            testResult.value.contains("parent-modified")
+        }
     }
 
     // MARK: - Stream lifetime
 
-    /// The stream finishes when the model is deactivated (node goes out of scope).
-    @Test func testStreamFinishesOnDeactivation() async {
-        let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = TrackedModel().andTester {
-                $0.testResult = testResult
-            }
-
-            await tester.assert { model.count == 0 }
-            return model
-        }
-        // After deactivation the stream should have finished — onCancel records "done"
-        #expect(testResult.value.contains("done"))
-    }
+    // Note: testStreamFinishesOnDeactivation is in a separate struct below because it
+    // requires actual model deallocation (to test stream termination on deactivation),
+    // which is incompatible with @Suite(.modelTesting) — the suite scope holds a strong
+    // reference to the context for the full test duration, preventing deallocation.
 
     // MARK: - Dirty-tracking pattern
 
     /// A typical dirty-tracking pattern: set a flag whenever anything changes.
     @Test func testDirtyTrackingPattern() async {
         let testResult = TestResult()
-        await waitUntilRemoved {
-            let (model, tester) = DirtyTrackingModel().andTester {
+        let model = DirtyTrackingModel().withAnchor {
+            $0.testResult = testResult
+        }
+
+        await expect(!model.isDirty)
+
+        model.value = "changed"
+
+        await expect {
+            model.value == "changed"
+            model.isDirty
+        }
+    }
+}
+
+// MARK: - Stream lifetime (separate struct — requires actual deallocation)
+
+/// These tests verify stream lifetime and deactivation behavior.
+/// They use `withModelTesting` (not `@Suite(.modelTesting)`) because the scope must tear
+/// down the model before the test returns, allowing post-scope assertions on lifecycle state.
+struct ObserveAnyModificationLifetimeTests {
+
+    /// The stream finishes when the model is deactivated (node goes out of scope).
+    @Test func testStreamFinishesOnDeactivation() async {
+        let testResult = TestResult()
+        await withModelTesting {
+            let model = TrackedModel().withAnchor {
                 $0.testResult = testResult
             }
-
-            await tester.assert { !model.isDirty }
-
-            model.value = "changed"
-
-            await tester.assert {
-                model.value == "changed"
-                model.isDirty
-            }
-
-            return model
+            await expect(model.count == 0)
         }
+        // After deactivation the stream should have finished — onCancel records "done"
+        #expect(testResult.value.contains("done"))
     }
 }
 

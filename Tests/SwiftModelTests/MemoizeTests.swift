@@ -2,41 +2,37 @@ import Testing
 import Observation
 import ConcurrencyExtras
 @testable import SwiftModel
+import SwiftModelTesting
 
 /// Comprehensive tests for memoization behavior, particularly around performance and correctness
+@Suite(.modelTesting(exhaustivity: .off))
 struct MemoizeTests {
 
     // MARK: - Basic Functionality
 
     @Test(arguments: UpdatePath.allCases)
     func testBasicMemoization(updatePath: UpdatePath) async throws {
-        let (model, tester) = BasicMemoizeModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = BasicMemoizeModel().withAnchor(options: updatePath.options)
 
         // First access should compute
         let first = model.doubled
-        await tester.assert {
-            first == 0
-        }
+        await expect(first == 0)
         #expect(model.accessCount.value == 1, "First access")
         #expect(model.computeCount.value == 1, "First computation")
 
         // Second access should use cache (no recomputation)
         let second = model.doubled
-        await tester.assert {
-            second == 0
-        }
+        await expect(second == 0)
         #expect(model.accessCount.value == 2, "Second access")
         #expect(model.computeCount.value == 1, "No recomputation (cached)")
 
         // Change dependency
         model.value = 5
-        await tester.assert { model.value == 5 }
+        await expect(model.value == 5)
 
         // Access should recompute (wait for async onChange if needed)
-        await tester.assert(timeout: .seconds(5)) {
-            model.doubled == 10
-        }
-        
+        await expect(model.doubled == 10, timeoutNanoseconds: 5_000_000_000)
+
         // Verify it recomputed (accessCount will be higher due to polling)
         #expect(model.accessCount.value > 2, "Should have recomputed after value change")
         #expect(model.computeCount.value == 2, "Should have computed twice total")
@@ -69,14 +65,14 @@ struct MemoizeTests {
     }
 
     @Test func testMemoizeWithEquatableSkipsIdenticalValues() async throws {
-        let (model, tester) = EquatableMemoizeModel().andTester(exhaustivity: .off)
+        let model = EquatableMemoizeModel().withAnchor()
 
         // Wait for initial observation
-        await tester.assert { model.updates == [0] }
+        await expect(model.updates == [0])
 
         // Change dependencies - product changes from 0 to 1
         model.value = 1
-        await tester.assert(timeout: .seconds(2)) { model.updates.contains(1) }
+        await expect(model.updates.contains(1), timeoutNanoseconds: 2_000_000_000)
 
         // Change to same value (1 * 1 = 1, still 1)
         model.multiplier = 1
@@ -87,7 +83,7 @@ struct MemoizeTests {
 
         // Change to different value (1 * 2 = 2)
         model.multiplier = 2
-        await tester.assert(timeout: .seconds(2)) { model.updates.contains(2) }
+        await expect(model.updates.contains(2), timeoutNanoseconds: 2_000_000_000)
         // Verify we got key values (coalescing may skip intermediate values)
         #expect(model.updates.contains(0), "Should have initial value")
         #expect(model.updates.contains(2), "Should have final value")
@@ -199,25 +195,21 @@ struct MemoizeTests {
     func testMemoizeWithChangingDependencies(updatePath: UpdatePath) async throws {
         // Only test withObservationTracking - AccessCollector + coalescing has known issues with dynamic dependencies
         // (tested separately in _WithAnchor variant without coalescing)
-        let (model, tester) = DynamicDependencyModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = DynamicDependencyModel().withAnchor(options: updatePath.options)
 
-        await tester.assert { model.conditional == 10 }  // Uses valueA
+        await expect(model.conditional == 10)  // Uses valueA
 
         model.useA = false
-        await tester.assert(timeout: .seconds(2)) {
-            model.conditional == 20  // Uses valueB
-        }
+        await expect(model.conditional == 20, timeoutNanoseconds: 2_000_000_000)  // Uses valueB
 
         // Change valueA (not currently tracked)
         model.valueA = 100
-        await tester.assert { model.valueA == 100 }
-        await tester.assert { model.conditional == 20 }  // Should not change
+        await expect(model.valueA == 100)
+        await expect(model.conditional == 20)  // Should not change
 
         // Change valueB (currently tracked)
         model.valueB = 200
-        await tester.assert(timeout: .seconds(2)) {
-            model.conditional == 200  // Should update
-        }
+        await expect(model.conditional == 200, timeoutNanoseconds: 2_000_000_000)  // Should update
     }
 
     @Test
@@ -347,61 +339,52 @@ struct MemoizeTests {
     func testMemoizeWithBranchingDependencies(updatePath: UpdatePath) async throws {
         // Only test withObservationTracking - AccessCollector + coalescing has known issues with dynamic dependencies
         // (tested separately in _WithAnchor variant without coalescing)
-        let (model, tester) = DynamicDependencyModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = DynamicDependencyModel().withAnchor(options: updatePath.options)
 
         // Initial: useA=true, reads valueA (10)
-        await tester.assert {
-            model.conditional == 10
-        }
+        await expect(model.conditional == 10)
         let countAfterInit = model.computeCount.value
-        
+
         // Mutate valueA (currently observed path)
         model.valueA = 15
-        await tester.assert(timeout: .seconds(2)) {
-            model.conditional == 15
-        }
+        await expect(model.conditional == 15, timeoutNanoseconds: 2_000_000_000)
         let countAfterValueA = model.computeCount.value
         #expect(countAfterValueA > countAfterInit, "Should recompute when valueA changes")
-        
+
         // Mutate valueB (NOT observed) - MIGHT recompute due to async re-establishment
         model.valueB = 25
         // Value should still be 15 (using valueA, not valueB)
-        // Use tester.assert with explicit check rather than Task.sleep
-        await tester.assert { model.conditional == 15 }
+        await expect(model.conditional == 15)
         // Note: With withObservationTracking, onChange fires async via backgroundCall.
         // During re-establishment, the computation re-executes and may touch valueB
         // even though useA=true. This is a known limitation of async observation.
         // We verify the VALUE is correct (15), but can't guarantee zero extra computes.
-        
+
         // Switch branch to valueB
         model.useA = false
-        await tester.assert(timeout: .seconds(2)) {
-            model.conditional == 25  // Now using valueB
-        }
+        await expect(model.conditional == 25, timeoutNanoseconds: 2_000_000_000)  // Now using valueB
 
         // Mutate valueB (now observed path)
         model.valueB = 30
-        await tester.assert(timeout: .seconds(2)) {
-            model.conditional == 30
-        }
+        await expect(model.conditional == 30, timeoutNanoseconds: 2_000_000_000)
 
         // Mutate valueA (NOT observed anymore) - value should remain 30
         model.valueA = 99
-        await tester.assert { model.conditional == 30 }
+        await expect(model.conditional == 30)
         // Note: computeCount ordering assertions are omitted here — computeCount is LockIsolated
         // (not a @Model property) so it can't be observed. Under load the count may not have
         // incremented yet when tester.assert returns (value-settled != recompute-count-settled).
     }
     
-    /// Test memoize with branching dependencies using andTester
+    /// Test memoize with branching dependencies using withAnchor
     // Only test withObservationTracking - AccessCollector + coalescing has known issues with dynamic dependencies
     // (tested separately in non-parameterized variant with AccessCollector + no coalescing)
     @Test(arguments: [UpdatePath.withObservationTracking])
     func testMemoizeWithBranchingDependencies_WithAnchor(updatePath: UpdatePath) async throws {
-        let (model, tester) = DynamicDependencyModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = DynamicDependencyModel().withAnchor(options: updatePath.options)
 
         // Initial: useA=true, reads valueA (10)
-        await tester.assert { model.conditional == 10 }
+        await expect(model.conditional == 10)
         #expect(model.computeCount.value == 1)
 
         // Mutate valueA multiple times
@@ -410,14 +393,14 @@ struct MemoizeTests {
         model.valueA = 13
 
         // Wait for final value to propagate
-        await tester.assert(timeout: .seconds(2)) { model.conditional == 13 }
+        await expect(model.conditional == 13, timeoutNanoseconds: 2_000_000_000)
         #expect(model.computeCount.value >= 2, "Should have recomputed for valueA changes")
 
         // Switch branch
         model.useA = false
 
         // Wait for branch switch to propagate
-        await tester.assert(timeout: .seconds(2)) { model.conditional == 20 }
+        await expect(model.conditional == 20, timeoutNanoseconds: 2_000_000_000)
         // Note: computeCount ordering assertion omitted — computeCount is LockIsolated (not @Model)
         // so it may not have incremented yet when tester.assert returns under load.
 
@@ -427,7 +410,7 @@ struct MemoizeTests {
         model.valueB = 23
 
         // Wait for final value to propagate
-        await tester.assert(timeout: .seconds(2)) { model.conditional == 23 }
+        await expect(model.conditional == 23, timeoutNanoseconds: 2_000_000_000)
         // Note: With withObservationTracking, dependency re-establishment after a branch switch
         // is async. The coalescer may absorb multiple valueB mutations into zero extra recomputes
         // if the cache is already valid for the final value. The observable contract (correct value)
@@ -461,14 +444,14 @@ struct MemoizeTests {
     /// Test nested memoize calls (memoize calling memoize)
     @Test
     func testNestedMemoizeCalls() async throws {
-        let (model, tester) = NestedMemoizeModel().andTester(exhaustivity: .off)
+        let model = NestedMemoizeModel().withAnchor()
 
         // First access to outer should work without crashing
-        await tester.assert { model.outer == 10 }   // 0*2 + 10
+        await expect(model.outer == 10)   // 0*2 + 10
 
         // Change value and access again — inner = 5*2 = 10, outer = 10+10 = 20
         model.value = 5
-        await tester.assert(timeout: .seconds(2)) { model.outer == 20 }
+        await expect(model.outer == 20, timeoutNanoseconds: 2_000_000_000)
 
         #expect(model.inner == 10, "Inner should be 5*2")
         #expect(model.outer == 20, "Outer should be 10+10")
@@ -537,25 +520,23 @@ struct MemoizeTests {
 
     @Test(arguments: UpdatePath.allCases)
     func testEquatableMemoizeSuppressesObserverNotifications(updatePath: UpdatePath) async throws {
-        let (model, tester) = EquatableSuppressionModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = EquatableSuppressionModel().withAnchor(options: updatePath.options)
 
         // Wait for initial observation (product == 0)
-        await tester.assert { model.notificationCount.value >= 1 }
+        await expect(model.notificationCount.value >= 1)
         let countAfterInit = model.notificationCount.value
 
         // Change multiplier so product changes: 0 * 2 = 0, still 0 — should NOT notify
         model.multiplier = 2
-        await tester.assert { model.multiplier == 2 }
+        await expect(model.multiplier == 2)
         // Give any spurious notification a chance to arrive
-        await tester.assert { model.value == 0 }
+        await expect(model.value == 0)
         #expect(model.notificationCount.value == countAfterInit,
                 "Observer must NOT fire when Equatable value stays the same (0*2 == 0)")
 
         // Now change value so product actually changes: 1 * 2 = 2 — SHOULD notify
         model.value = 1
-        await tester.assert(timeout: .seconds(5)) {
-            model.notificationCount.value > countAfterInit
-        }
+        await expect(model.notificationCount.value > countAfterInit, timeoutNanoseconds: 5_000_000_000)
         #expect(model.notificationCount.value > countAfterInit,
                 "Observer must fire when Equatable value genuinely changes")
     }
@@ -592,24 +573,22 @@ struct MemoizeTests {
 
     @Test(arguments: UpdatePath.allCases)
     func testResetMemoizationThenImmediateReaccess(updatePath: UpdatePath) async throws {
-        let (model, tester) = ResetImmediateModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = ResetImmediateModel().withAnchor(options: updatePath.options)
 
         // 1. First read: caches value, computeCount == 1
-        await tester.assert { model.computed == 0 }
+        await expect(model.computed == 0)
         #expect(model.computeCount.value == 1, "Should compute once on first access")
 
         // 2. Reset cache (no dependency change)
         model.resetComputed()
-        await tester.assert { model.resetDone }
+        await expect(model.resetDone)
 
         // 3. Immediate re-access after reset: must recompute
-        await tester.assert(timeout: .seconds(5)) {
-            model.computed == 0
-        }
+        await expect(model.computed == 0, timeoutNanoseconds: 5_000_000_000)
         #expect(model.computeCount.value == 2, "Should recompute after reset")
 
         // 4. Third access without any mutation: cache should be valid again
-        await tester.assert { model.computed == 0 }
+        await expect(model.computed == 0)
         #expect(model.computeCount.value == 2, "Third access must use cache (no recompute)")
     }
 

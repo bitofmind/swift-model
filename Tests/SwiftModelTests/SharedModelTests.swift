@@ -1,4 +1,5 @@
 @testable import SwiftModel
+import SwiftModelTesting
 import Testing
 import ConcurrencyExtras
 import Observation
@@ -89,10 +90,10 @@ struct SharedModelTests {
         #expect(testResult.value == "PC1LC2pc1c2l")
     }
 
-    @Test func testEvents() async throws {
+    @Test(.modelTesting) func testEvents() async throws {
         let testResult = TestResult()
 
-        let (parent, tester) = EventParent().andTester {
+        let parent = EventParent().withAnchor {
             $0.testResult = testResult
         }
 
@@ -100,7 +101,7 @@ struct SharedModelTests {
         parent.sendEvent("p")
         parent.child.sendEvent("c")
 
-        await tester.assert {
+        await expect {
             parent.children.count == 1
             parent.didSend("p")
             parent.child.didSend("c")

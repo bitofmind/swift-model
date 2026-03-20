@@ -2,6 +2,7 @@ import Testing
 import ConcurrencyExtras
 import Observation
 @testable import SwiftModel
+import SwiftModelTesting
 
 // MARK: - Context keys
 
@@ -89,6 +90,7 @@ private struct AppRoot {
 
 // MARK: - Tests
 
+@Suite(.modelTesting(exhaustivity: .off))
 struct EnvironmentModelTests {
 
     // MARK: - Basic read/write (ancestor writes, descendant reads)
@@ -206,24 +208,20 @@ struct EnvironmentModelTests {
 
     /// Context model mutations are visible in ModelTester assertions.
     @Test func testerCanAssertContextModelState() async {
-        let (host, tester) = ThemeHost().andTester()
+        let host = ThemeHost().withAnchor()
 
         host.theme.colorScheme = "dark"
-        await tester.assert {
-            host.child.theme?.colorScheme == "dark"
-        }
+        await expect(host.child.theme?.colorScheme == "dark")
     }
 
     /// A method called on the context model is reflected in the tester assertion.
     /// Uses exhaustivity .off because ThemeHost re-writes context.theme as a side-effect
     /// when the child theme model is mutated; only the primary state change is asserted here.
-    @Test func testerAssertAfterContextModelMethodCall() async {
-        let (host, tester) = ThemeHost().andTester(exhaustivity: .off)
+    @Test(.modelTesting(exhaustivity: .off)) func testerAssertAfterContextModelMethodCall() async {
+        let host = ThemeHost().withAnchor()
 
         host.child.theme?.switchToNight()
-        await tester.assert {
-            host.theme.colorScheme == "dark"
-        }
+        await expect(host.theme.colorScheme == "dark")
     }
 
     // MARK: - Instance identity

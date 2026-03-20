@@ -27,6 +27,7 @@ package protocol _AnyModelTestScope: AnyObject, Sendable {
     func install(_ probes: [TestProbe])
     func checkExhaustion(at fileAndLine: FileAndLine)
     func cancelAndCleanup()
+    func waitForTeardown() async
     var exhaustivity: Exhaustivity { get set }
 }
 
@@ -124,6 +125,10 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
         concrete?.cancelAndCleanup()
     }
 
+    package func waitForTeardown() async {
+        await concrete?.waitForTeardown()
+    }
+
     package var exhaustivity: Exhaustivity {
         get { lock.withLock { _concrete?.exhaustivity ?? _exhaustivity } }
         set { lock.withLock {
@@ -193,6 +198,13 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         tester.cleanupHandledExternally = true
         tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
         tester.access.context.onRemoval()
+    }
+
+    package func waitForTeardown() async {
+        // Wait for the backgroundCall drain queue to finish processing any teardown
+        // side-effects (onCancel callbacks, stream finalizations) that were dispatched
+        // during onRemoval(). This ensures post-teardown assertions see final state.
+        await backgroundCall.waitUntilIdle()
     }
 
     package var exhaustivity: Exhaustivity {

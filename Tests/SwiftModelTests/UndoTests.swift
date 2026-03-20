@@ -3,9 +3,11 @@ import AsyncAlgorithms
 import ConcurrencyExtras
 import Observation
 @testable import SwiftModel
+import SwiftModelTesting
 
 // MARK: - trackUndo() (all fields) tests
 
+@Suite(.modelTesting)
 struct TrackUndoAllTests {
 
     func makeStack() -> ModelUndoStack { ModelUndoStack() }
@@ -14,28 +16,28 @@ struct TrackUndoAllTests {
 
     @Test func nameChangeCreatesUndoEntry() async {
         let stack = makeStack()
-        let (model, tester) = MultiFieldModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = MultiFieldModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.name = "Alice"
-        await tester.assert { model.name == "Alice" }
+        await expect(model.name == "Alice")
         #expect(stack.canUndo)
     }
 
     @Test func countChangeCreatesUndoEntry() async {
         let stack = makeStack()
-        let (model, tester) = MultiFieldModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = MultiFieldModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.count = 5
-        await tester.assert { model.count == 5 }
+        await expect(model.count == 5)
         #expect(stack.canUndo)
     }
 
     @Test func flagChangeCreatesUndoEntry() async {
         let stack = makeStack()
-        let (model, tester) = MultiFieldModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = MultiFieldModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.flag = true
-        await tester.assert { model.flag == true }
+        await expect(model.flag == true)
         #expect(stack.canUndo)
     }
 
@@ -43,33 +45,33 @@ struct TrackUndoAllTests {
 
     @Test func undoRevertsChange() async {
         let stack = makeStack()
-        let (model, tester) = MultiFieldModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = MultiFieldModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.name = "Bob"
-        await tester.assert { model.name == "Bob" }
+        await expect(model.name == "Bob")
 
         stack.undo()
-        await tester.assert { model.name == "" }
+        await expect(model.name == "")
         #expect(!stack.canUndo)
         #expect(stack.canRedo)
     }
 
     @Test func multipleUndoSteps() async {
         let stack = makeStack()
-        let (model, tester) = MultiFieldModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = MultiFieldModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.name = "First"
-        await tester.assert { model.name == "First" }
+        await expect(model.name == "First")
 
         model.count = 42
-        await tester.assert { model.count == 42 }
+        await expect(model.count == 42)
 
         stack.undo()
-        await tester.assert { model.count == 0 }
+        await expect(model.count == 0)
         #expect(model.name == "First")
 
         stack.undo()
-        await tester.assert { model.name == "" }
+        await expect(model.name == "")
         #expect(!stack.canUndo)
     }
 
@@ -77,16 +79,16 @@ struct TrackUndoAllTests {
 
     @Test func redoReAppliesUndoneChange() async {
         let stack = makeStack()
-        let (model, tester) = MultiFieldModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = MultiFieldModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.count = 7
-        await tester.assert { model.count == 7 }
+        await expect(model.count == 7)
 
         stack.undo()
-        await tester.assert { model.count == 0 }
+        await expect(model.count == 0)
 
         stack.redo()
-        await tester.assert { model.count == 7 }
+        await expect(model.count == 7)
         #expect(stack.canUndo)
         #expect(!stack.canRedo)
     }
@@ -95,24 +97,24 @@ struct TrackUndoAllTests {
 
     @Test func childModelChangeCreatesUndoEntryViaChild() async {
         let stack = makeStack()
-        let (model, tester) = ParentTrackAll().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = ParentTrackAll().withAnchor { $0.undoSystem.backend = stack }
 
         // EquatableChild registers trackUndo() in its onActivate, so changing its value
         // pushes an entry to the shared backend.
         model.child.value = 99
-        await tester.assert { model.child.value == 99 }
+        await expect(model.child.value == 99)
         #expect(stack.canUndo)
     }
 
     @Test func undoRevertsChildModelChangeViaChild() async {
         let stack = makeStack()
-        let (model, tester) = ParentTrackAll().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = ParentTrackAll().withAnchor { $0.undoSystem.backend = stack }
 
         model.child.value = 99
-        await tester.assert { model.child.value == 99 }
+        await expect(model.child.value == 99)
 
         stack.undo()
-        await tester.assert { model.child.value == 0 && model.node.undoSystem.canRedo == true }
+        await expect(model.child.value == 0 && model.node.undoSystem.canRedo == true)
     }
 
     @Test func parentTrackAllDoesNotTrackChildInternalProperties() async {
@@ -120,13 +122,13 @@ struct TrackUndoAllTests {
         // Changing child.value is tracked by EquatableChild's own trackUndo(), not the parent.
         // If EquatableChild were NOT to call trackUndo, changes to child.value would not be tracked.
         let stack = makeStack()
-        let (model, tester) = ParentTrackAll().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = ParentTrackAll().withAnchor { $0.undoSystem.backend = stack }
 
         model.title = "Hello"
-        await tester.assert { model.title == "Hello" }
+        await expect(model.title == "Hello")
         #expect(stack.canUndo)
         stack.undo()
-        await tester.assert { model.title == "" }
+        await expect(model.title == "")
     }
 
     // MARK: - @_ModelIgnored fields are not tracked
@@ -145,22 +147,22 @@ struct TrackUndoAllTests {
 
     @Test func undoOnEmptyStackIsNoop() async {
         let stack = makeStack()
-        let (model, tester) = MultiFieldModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = MultiFieldModel().withAnchor { $0.undoSystem.backend = stack }
 
         stack.undo()  // should not crash
-        await tester.assert { model.count == 0 }
+        await expect(model.count == 0)
         #expect(!stack.canUndo)
     }
 
     @Test func redoOnEmptyStackIsNoop() async {
         let stack = makeStack()
-        let (model, tester) = MultiFieldModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = MultiFieldModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.count = 1
-        await tester.assert { model.count == 1 }
+        await expect(model.count == 1)
 
         stack.redo()  // nothing to redo yet — should be a no-op
-        await tester.assert { model.count == 1 }
+        await expect(model.count == 1)
         #expect(!stack.canRedo)
     }
 
@@ -168,14 +170,14 @@ struct TrackUndoAllTests {
 
     @Test func undoDoesNotCreateNewUndoEntry() async {
         let stack = makeStack()
-        let (model, tester) = MultiFieldModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = MultiFieldModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.count = 3
-        await tester.assert { model.count == 3 }
+        await expect(model.count == 3)
         // 1 entry on stack
 
         stack.undo()
-        await tester.assert { model.count == 0 }
+        await expect(model.count == 0)
         // Undo should not re-push: stack now has 0 undo, 1 redo
         #expect(!stack.canUndo)
         #expect(stack.canRedo)
@@ -184,6 +186,7 @@ struct TrackUndoAllTests {
 
 // MARK: - trackUndo(_ paths:) (selective) tests
 
+@Suite(.modelTesting)
 struct TrackUndoSelectiveTests {
 
     func makeStack() -> ModelUndoStack { ModelUndoStack() }
@@ -192,10 +195,10 @@ struct TrackUndoSelectiveTests {
 
     @Test func trackedPathCreatesUndoEntry() async {
         let stack = makeStack()
-        let (model, tester) = SelectiveModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = SelectiveModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.tracked = "hello"
-        await tester.assert { model.tracked == "hello" }
+        await expect(model.tracked == "hello")
         #expect(stack.canUndo)
     }
 
@@ -203,10 +206,10 @@ struct TrackUndoSelectiveTests {
 
     @Test func excludedPathDoesNotCreateUndoEntry() async {
         let stack = makeStack()
-        let (model, tester) = SelectiveModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = SelectiveModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.excluded = "world"
-        await tester.assert { model.excluded == "world" }
+        await expect(model.excluded == "world")
         #expect(!stack.canUndo)
     }
 
@@ -214,13 +217,13 @@ struct TrackUndoSelectiveTests {
 
     @Test func undoRevertsTrackedPath() async {
         let stack = makeStack()
-        let (model, tester) = SelectiveModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = SelectiveModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.tracked = "before"
-        await tester.assert { model.tracked == "before" }
+        await expect(model.tracked == "before")
 
         stack.undo()
-        await tester.assert { model.tracked == "" }
+        await expect(model.tracked == "")
         #expect(!stack.canUndo)
         #expect(stack.canRedo)
     }
@@ -229,40 +232,40 @@ struct TrackUndoSelectiveTests {
         // trackUndo(\.tracked) only restores the tracked paths during undo.
         // Non-tracked fields (excluded) keep their current live values.
         let stack = makeStack()
-        let (model, tester) = SelectiveModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = SelectiveModel().withAnchor { $0.undoSystem.backend = stack }
 
         // Set tracked (creates undo entry)
         model.tracked = "T"
-        await tester.assert { model.tracked == "T" }
+        await expect(model.tracked == "T")
 
         // Change excluded — no new undo entry; it's ephemeral state
         model.excluded = "E"
-        await tester.assert { model.excluded == "E" }
+        await expect(model.excluded == "E")
 
         // Undo reverts tracked to "", but excluded stays at its live value "E"
         stack.undo()
-        await tester.assert { model.tracked == "" && model.excluded == "E" }
+        await expect(model.tracked == "" && model.excluded == "E")
     }
 
     // MARK: - Multiple tracked paths
 
     @Test func multiplePaths_bothCreateEntries() async {
         let stack = makeStack()
-        let (model, tester) = TwoTrackedModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = TwoTrackedModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.alpha = 1
-        await tester.assert { model.alpha == 1 }
+        await expect(model.alpha == 1)
         #expect(stack.canUndo)
 
         model.beta = 2
-        await tester.assert { model.beta == 2 }
+        await expect(model.beta == 2)
 
         stack.undo()
-        await tester.assert { model.beta == 0 }
+        await expect(model.beta == 0)
         #expect(model.alpha == 1)
 
         stack.undo()
-        await tester.assert { model.alpha == 0 }
+        await expect(model.alpha == 0)
         #expect(!stack.canUndo)
     }
 
@@ -270,17 +273,17 @@ struct TrackUndoSelectiveTests {
 
     @Test func redoReAppliesSelectiveChange() async {
         let stack = makeStack()
-        let (model, tester) = SelectiveModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = SelectiveModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.tracked = "hello"
-        await tester.assert { model.tracked == "hello" }
+        await expect(model.tracked == "hello")
 
         stack.undo()
-        await tester.assert { model.tracked == "" }
+        await expect(model.tracked == "")
         #expect(stack.canRedo)
 
         stack.redo()
-        await tester.assert { model.tracked == "hello" }
+        await expect(model.tracked == "hello")
         #expect(stack.canUndo)
         #expect(!stack.canRedo)
     }
@@ -289,16 +292,16 @@ struct TrackUndoSelectiveTests {
 
     @Test func newChangeAfterUndoClearsRedo() async {
         let stack = makeStack()
-        let (model, tester) = SelectiveModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = SelectiveModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.tracked = "A"
-        await tester.assert { model.tracked == "A" }
+        await expect(model.tracked == "A")
 
         stack.undo()
-        await tester.assert { model.tracked == "" && stack.canRedo == true }
+        await expect(model.tracked == "" && stack.canRedo == true)
 
         model.tracked = "B"
-        await tester.assert { model.tracked == "B" }
+        await expect(model.tracked == "B")
         #expect(!stack.canRedo)
         #expect(stack.canUndo)
     }
@@ -307,32 +310,32 @@ struct TrackUndoSelectiveTests {
 
     @Test func containerPath_itemPropertyChangeIsUndoable() async {
         let stack = makeStack()
-        let (model, tester) = ContainerTrackedModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = ContainerTrackedModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.items.append(EquatableChild(value: 0))
-        await tester.assert { model.items.count == 1 && stack.canUndo == true }
+        await expect(model.items.count == 1 && stack.canUndo == true)
 
         model.items[0].value = 42
-        await tester.assert { model.items.first?.value == 42 && stack.canUndo == true }
+        await expect(model.items.first?.value == 42 && stack.canUndo == true)
 
         stack.undo()
-        await tester.assert { model.items.first?.value == 0 }
+        await expect(model.items.first?.value == 0)
     }
 
     @Test func containerPath_undoRevertsContainerButNotExcluded() async {
         let stack = makeStack()
-        let (model, tester) = ContainerTrackedModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = ContainerTrackedModel().withAnchor { $0.undoSystem.backend = stack }
 
         model.items.append(EquatableChild(value: 1))
-        await tester.assert { model.items.count == 1 }
+        await expect(model.items.count == 1)
 
         // Change the excluded field — no new undo entry
         model.extra = "ephemeral"
-        await tester.assert { model.extra == "ephemeral" }
+        await expect(model.extra == "ephemeral")
 
         // Undo reverts items but leaves extra at its live value
         stack.undo()
-        await tester.assert { model.items.isEmpty && model.extra == "ephemeral" }
+        await expect(model.items.isEmpty && model.extra == "ephemeral")
     }
 }
 
@@ -343,11 +346,11 @@ struct TrackUndoSelectiveTests {
 /// ObservationRegistrar path (iOS 17+ `withObservationTracking`).
 ///
 /// These tests verify that undo/redo triggers model observation notifications by
-/// asserting on the model state directly via `tester.assert`. This works because
+/// asserting on the model state directly via `expect`. This works because
 /// `TestAccess.didModify` fires through the same `invokeDidModify` path as
 /// `AccessCollector` and `withObservationTracking` — so confirming the model state
 /// changed also confirms that async `Observed` streams would be notified.
-@Suite(.serialized)
+@Suite(.modelTesting, .serialized)
 struct UndoObservationTests {
 
     // MARK: - Direct property (trackUndo())
@@ -355,19 +358,18 @@ struct UndoObservationTests {
     @Test(arguments: UpdatePath.allCases)
     func undoNotifiesObserverOfDirectProperty(updatePath: UpdatePath) async throws {
         let stack = ModelUndoStack()
-        let (model, tester) = MultiFieldModel().andTester(
-            options: updatePath.options,
-            withDependencies: { $0.undoSystem.backend = stack }
-        )
+        let model = MultiFieldModel().withAnchor(options: updatePath.options) {
+            $0.undoSystem.backend = stack
+        }
 
         model.count = 42
-        await tester.assert {
+        await expect {
             model.count == 42
             model.node.undoSystem.canUndo == true
         }
 
         stack.undo()
-        await tester.assert {
+        await expect {
             model.count == 0
             model.node.undoSystem.canUndo == false
             model.node.undoSystem.canRedo == true
@@ -377,26 +379,25 @@ struct UndoObservationTests {
     @Test(arguments: UpdatePath.allCases)
     func redoNotifiesObserverOfDirectProperty(updatePath: UpdatePath) async throws {
         let stack = ModelUndoStack()
-        let (model, tester) = MultiFieldModel().andTester(
-            options: updatePath.options,
-            withDependencies: { $0.undoSystem.backend = stack }
-        )
+        let model = MultiFieldModel().withAnchor(options: updatePath.options) {
+            $0.undoSystem.backend = stack
+        }
 
         model.count = 7
-        await tester.assert {
+        await expect {
             model.count == 7
             model.node.undoSystem.canUndo == true
         }
 
         stack.undo()
-        await tester.assert {
+        await expect {
             model.count == 0
             model.node.undoSystem.canUndo == false
             model.node.undoSystem.canRedo == true
         }
 
         stack.redo()
-        await tester.assert {
+        await expect {
             model.count == 7
             model.node.undoSystem.canUndo == true
             model.node.undoSystem.canRedo == false
@@ -409,20 +410,19 @@ struct UndoObservationTests {
     func undoNotifiesObserverOfContainerItemProperty(updatePath: UpdatePath) async throws {
         let stack = ModelUndoStack()
         // Start with an item already in the model so the undo stack is clean from the start
-        let (model, tester) = ContainerTrackedModel(items: [EquatableChild(value: 0)]).andTester(
-            options: updatePath.options,
-            withDependencies: { $0.undoSystem.backend = stack }
-        )
+        let model = ContainerTrackedModel(items: [EquatableChild(value: 0)]).withAnchor(options: updatePath.options) {
+            $0.undoSystem.backend = stack
+        }
 
         model.items[0].value = 99
-        await tester.assert {
+        await expect {
             model.items[0].value == 99
             model.node.undoSystem.canUndo == true
         }
 
         // Undo the item value change — observer should see the revert
         stack.undo()
-        await tester.assert {
+        await expect {
             model.items[0].value == 0
             model.node.undoSystem.canUndo == false
             model.node.undoSystem.canRedo == true
@@ -432,26 +432,27 @@ struct UndoObservationTests {
 
 // MARK: - ModelUndoSystem observable state tests
 
+@Suite(.modelTesting)
 struct ModelUndoSystemTests {
 
     @Test func canUndoCanRedoUpdateReactively() async {
         let stack = ModelUndoStack()
-        let (model, tester) = MultiFieldModel().andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = MultiFieldModel().withAnchor { $0.undoSystem.backend = stack }
 
         // Initially no undo/redo available
         #expect(!model.node.undoSystem.canUndo)
         #expect(!model.node.undoSystem.canRedo)
 
         model.count = 1
-        await tester.assert { model.count == 1 }
+        await expect(model.count == 1)
 
         // Wait for canUndo to propagate through the async availability stream
-        await tester.assert { model.node.undoSystem.canUndo == true }
+        await expect(model.node.undoSystem.canUndo == true)
 
         stack.undo()
-        await tester.assert { model.count == 0 }
-        await tester.assert { model.node.undoSystem.canUndo == false }
-        await tester.assert { model.node.undoSystem.canRedo == true }
+        await expect(model.count == 0)
+        await expect(model.node.undoSystem.canUndo == false)
+        await expect(model.node.undoSystem.canRedo == true)
     }
 }
 
@@ -570,55 +571,53 @@ private struct DoubleTrackUndoExcludingModel {
 
 // MARK: - Double-registration guard tests
 
+@Suite(.modelTesting)
 struct TrackUndoDoubleRegistrationTests {
 
     /// Calling trackUndo() twice reports an issue and only installs one observer,
     /// so a single mutation produces exactly one undo entry (not two).
     @Test func doubleTrackUndoAllReportsIssue() async {
         let stack = ModelUndoStack()
-        let (model, tester) = DoubleTrackUndoAllModel()
-            .andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = DoubleTrackUndoAllModel().withAnchor { $0.undoSystem.backend = stack }
         withKnownIssue {
             model.trackAgain()
         }
         model.value = 1
-        await tester.assert { model.value == 1 }
+        await expect(model.value == 1)
         // Undo once — the stack should then be empty, proving only one entry was pushed
         #expect(stack.canUndo)
         stack.undo()
         #expect(!stack.canUndo)
-        await tester.assert { model.value == 0 }
+        await expect(model.value == 0)
     }
 
     /// Calling trackUndo(_:) twice reports an issue and only installs one observer.
     @Test func doubleTrackUndoSelectiveReportsIssue() async {
         let stack = ModelUndoStack()
-        let (model, tester) = DoubleTrackUndoSelectiveModel()
-            .andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = DoubleTrackUndoSelectiveModel().withAnchor { $0.undoSystem.backend = stack }
         withKnownIssue {
             model.trackAgain()
         }
         model.value = 1
-        await tester.assert { model.value == 1 }
+        await expect(model.value == 1)
         #expect(stack.canUndo)
         stack.undo()
         #expect(!stack.canUndo)
-        await tester.assert { model.value == 0 }
+        await expect(model.value == 0)
     }
 
     /// Calling trackUndo(excluding:) twice reports an issue and only installs one observer.
     @Test func doubleTrackUndoExcludingReportsIssue() async {
         let stack = ModelUndoStack()
-        let (model, tester) = DoubleTrackUndoExcludingModel()
-            .andTester(withDependencies: { $0.undoSystem.backend = stack })
+        let model = DoubleTrackUndoExcludingModel().withAnchor { $0.undoSystem.backend = stack }
         withKnownIssue {
             model.trackAgain()
         }
         model.value = 1
-        await tester.assert { model.value == 1 }
+        await expect(model.value == 1)
         #expect(stack.canUndo)
         stack.undo()
         #expect(!stack.canUndo)
-        await tester.assert { model.value == 0 }
+        await expect(model.value == 0)
     }
 }

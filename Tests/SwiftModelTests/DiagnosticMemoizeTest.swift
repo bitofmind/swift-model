@@ -1,24 +1,24 @@
 import Testing
 import Observation
 @testable import SwiftModel
+import SwiftModelTesting
 import ConcurrencyExtras
 
 /// Diagnostic tests to understand withObservationTracking + memoize interaction
+@Suite(.modelTesting(exhaustivity: .off))
 struct DiagnosticMemoizeTest {
 
     /// Test WITH sleep: Wait for onChange before accessing memoized value
     @Test func testWithSleepBeforeAccess() async throws {
-        let (model, tester) = BasicMemoizeModel().andTester(exhaustivity: .off)
+        let model = BasicMemoizeModel().withAnchor()
 
         _ = model.doubled
-        await tester.assert { model.accessCount == 1 }
+        await expect(model.accessCount == 1)
 
         model.value = 5
-        await tester.assert { model.value == 5 }
+        await expect(model.value == 5)
 
-        await tester.assert(timeout: .seconds(5)) {
-            model.doubled == 10
-        }
+        await expect(model.doubled == 10, timeoutNanoseconds: 5_000_000_000)
     }
 
     /// Test WITHOUT sleep: Access immediately after mutation.
@@ -26,13 +26,13 @@ struct DiagnosticMemoizeTest {
     /// With dual registrar implementation, background registrar fires synchronously,
     /// so we get fresh values immediately (no race condition).
     @Test func testWithoutSleep() async throws {
-        let (model, tester) = BasicMemoizeModel().andTester(options: [.disableMemoizeCoalescing], exhaustivity: .off)
+        let model = BasicMemoizeModel().withAnchor(options: [.disableMemoizeCoalescing])
 
         _ = model.doubled
-        await tester.assert { model.accessCount == 1 }
+        await expect(model.accessCount == 1)
 
         model.value = 5
-        await tester.assert { model.value == 5 }
+        await expect(model.value == 5)
 
         let result = model.doubled
         #expect(result == 10, "Expected fresh value with dual registrar implementation")
@@ -40,17 +40,15 @@ struct DiagnosticMemoizeTest {
 
     /// Test using ModelTester.assert polling
     @Test func testWithTesterAssertPolling() async throws {
-        let (model, tester) = BasicMemoizeModel().andTester(exhaustivity: .off)
+        let model = BasicMemoizeModel().withAnchor()
 
         _ = model.doubled
-        await tester.assert { model.accessCount == 1 }
+        await expect(model.accessCount == 1)
 
         model.value = 5
-        await tester.assert { model.value == 5 }
+        await expect(model.value == 5)
 
-        await tester.assert(timeout: .seconds(2)) {
-            model.doubled == 10
-        }
+        await expect(model.doubled == 10, timeoutNanoseconds: 2_000_000_000)
     }
 }
 

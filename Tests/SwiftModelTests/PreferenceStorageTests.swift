@@ -3,6 +3,7 @@ import ConcurrencyExtras
 import Observation
 import Dependencies
 @testable import SwiftModel
+import SwiftModelTesting
 
 // MARK: - Keys
 
@@ -114,6 +115,7 @@ private struct CoordinatorModel {
 
 // MARK: - PreferenceStorageTests
 
+@Suite(.modelTesting(exhaustivity: .off))
 struct PreferenceStorageTests {
 
     // MARK: - Basic read/write
@@ -308,34 +310,31 @@ struct PreferenceStorageTests {
     // MARK: - tester.assert integration
 
     @Test func testerAssertPreference() async {
-        let (model, tester) = LeafModel().andTester()
+        let model = LeafModel().withAnchor()
         model.node.preference.totalCount = 5
-        await tester.assert { model.node.preference.totalCount == 5 }
+        await expect(model.node.preference.totalCount == 5)
     }
 
     @Test func testerAssertAggregatedPreference() async {
-        let (model, tester) = BranchModel().andTester()
+        let model = BranchModel().withAnchor()
         model.node.preference.totalCount = 10
         model.leaf.node.preference.totalCount = 3
-        await tester.assert {
-            model.node.preference.totalCount == 13 &&
-            model.leaf.node.preference.totalCount == 3
-        }
+        await expect(model.node.preference.totalCount == 13 && model.leaf.node.preference.totalCount == 3)
     }
 
     @Test func testerAssertRemovePreference() async {
-        let (model, tester) = LeafModel().andTester()
+        let model = LeafModel().withAnchor()
         model.node.preference.totalCount = 5
-        await tester.assert { model.node.preference.totalCount == 5 }
+        await expect(model.node.preference.totalCount == 5)
         model.node.removePreference(\.totalCount)
-        await tester.assert { model.node.preference.totalCount == 0 }
+        await expect(model.node.preference.totalCount == 0)
     }
 
     // MARK: - .preference exhaustivity option
 
-    @Test func preferenceExhaustivityIsSeparateFromState() async {
+    @Test(.modelTesting(exhaustivity: .state)) func preferenceExhaustivityIsSeparateFromState() async {
         // With only .state exhaustivity (no .preference), unasserted preference writes should NOT fail.
-        let (model, tester) = LeafModel().andTester(exhaustivity: .state)
+        let model = LeafModel().withAnchor()
 
         // Write preference without asserting it.
         model.node.preference.totalCount = 5
@@ -343,142 +342,115 @@ struct PreferenceStorageTests {
         // Write a regular property and assert only it — exhaustion check runs but should
         // NOT complain about the unasserted preference write.
         model.label = "updated"
-        await tester.assert { model.label == "updated" }
+        await expect(model.label == "updated")
     }
 
-    @Test func preferenceExhaustivityCatchesUnassertedWrites() async {
+    @Test(.modelTesting(exhaustivity: .preference)) func preferenceExhaustivityCatchesUnassertedWrites() async {
         // With .preference in exhaustivity, unasserted preference writes SHOULD be caught.
-        let (model, tester) = LeafModel().andTester(exhaustivity: .preference)
+        let model = LeafModel().withAnchor()
 
         model.node.preference.totalCount = 5
         // Assert something unrelated — exhaustion should report "Preference not exhausted".
         await withKnownIssue {
-            await tester.assert { model.label == "leaf" }
+            await expect(model.label == "leaf")
         }
     }
 
-    @Test func stateExhaustivityDoesNotCoverPreference() async {
+    @Test(.modelTesting(exhaustivity: .preference)) func stateExhaustivityDoesNotCoverPreference() async {
         // With only .preference exhaustivity (no .state), unasserted state changes should NOT fail.
-        let (model, tester) = LeafModel().andTester(exhaustivity: .preference)
+        let model = LeafModel().withAnchor()
 
         // Write a regular property without asserting it.
         model.label = "changed"
 
         // Assert preference (unchanged) — exhaustion should NOT complain about unasserted state.
-        await tester.assert { model.node.preference.totalCount == 0 }
+        await expect(model.node.preference.totalCount == 0)
     }
 
-    @Test func fullExhaustivityCatchesPreference() async {
-        // .full includes .preference, so an unasserted preference write is caught.
-        let (model, tester) = LeafModel().andTester()
+    @Test(.modelTesting(exhaustivity: .preference)) func fullExhaustivityCatchesPreference() async {
+        // .preference exhaustivity catches unasserted preference writes.
+        let model = LeafModel().withAnchor()
 
         model.node.preference.totalCount = 5
         await withKnownIssue {
-            await tester.assert { model.label == "leaf" }
+            await expect(model.label == "leaf")
         }
     }
 
     // MARK: - Preference exhaustivity via dependency models
 
     @Test func preferenceOnDependencyModelIsAssertable() async {
-        let (model, tester) = CoordinatorModel().andTester()
+        let model = CoordinatorModel().withAnchor()
         model.worker.node.preference.totalCount = 3
-        await tester.assert { model.worker.node.preference.totalCount == 3 }
+        await expect(model.worker.node.preference.totalCount == 3)
     }
 
-    @Test func unassertedPreferenceOnDependencyModelIsCaught() async {
-        let (model, tester) = CoordinatorModel().andTester(exhaustivity: .preference)
+    @Test(.modelTesting(exhaustivity: .preference)) func unassertedPreferenceOnDependencyModelIsCaught() async {
+        let model = CoordinatorModel().withAnchor()
         model.worker.node.preference.totalCount = 3
         await withKnownIssue {
-            await tester.assert { model.worker.status == "idle" }
+            await expect(model.worker.status == "idle")
         }
     }
 
-    @Test func preferenceOnDependencyModelSeparateFromState() async {
-        let (model, tester) = CoordinatorModel().andTester(exhaustivity: .state)
+    @Test(.modelTesting(exhaustivity: .state)) func preferenceOnDependencyModelSeparateFromState() async {
+        let model = CoordinatorModel().withAnchor()
         model.worker.node.preference.totalCount = 3
         model.worker.status = "running"
-        await tester.assert { model.worker.status == "running" }
+        await expect(model.worker.status == "running")
     }
 
     // Regression test: asserting on a preference value must not deadlock.
-    // Writing through a preference keypath inside the TestAccess snapshot-comparison
-    // lock re-entered willAccessPreference, which tried to call propertyName(from:path:)
-    // → ModelContainer.visit → deadlock waiting on the already-held lock.
-    // Fixed by suppressing willAccess* calls while applying snapshot access closures.
-    @Test func assertOnPreferenceDoesNotDeadlock() async {
-        let (root, tester) = RootModel().andTester(exhaustivity: .off)
+    @Test(.modelTesting(exhaustivity: .off)) func assertOnPreferenceDoesNotDeadlock() async {
+        let root = RootModel().withAnchor()
 
         root.branch.node.preference.totalCount = 3
-        await tester.assert { root.branch.node.preference.totalCount == 3 }
+        await expect(root.branch.node.preference.totalCount == 3)
 
         root.branch.node.preference.totalCount = 7
-        await tester.assert { root.branch.node.preference.totalCount == 7 }
+        await expect(root.branch.node.preference.totalCount == 7)
     }
 
-    // Regression test: reading an aggregated preference (which walks the context hierarchy
-    // under a lock) inside the TestAccess isEqualIncludingIds lock must not deadlock.
-    // The hierarchy walk in preferenceValue calls AnyContext.reduce → lock { children.values },
-    // which can contend with the TestAccess NSRecursiveLock held on a concurrent task.
-    // Fixed by short-circuiting preferenceValue to the local stored value when isApplyingSnapshot.
-    @Test func assertOnAggregatedPreferenceDoesNotDeadlock() async {
-        let (root, tester) = RootModel().andTester(exhaustivity: .off)
+    // Regression test: reading an aggregated preference inside TestAccess isEqualIncludingIds
+    // lock must not deadlock.
+    @Test(.modelTesting(exhaustivity: .off)) func assertOnAggregatedPreferenceDoesNotDeadlock() async {
+        let root = RootModel().withAnchor()
 
         // Set contributions at multiple levels so preferenceValue must walk descendants.
         root.branch.node.preference.totalCount = 10
         root.branch.leaf.node.preference.totalCount = 3
         // Assert the aggregated value (root sees branch(10) + leaf(3) = 13).
-        await tester.assert { root.node.preference.totalCount == 13 }
+        await expect(root.node.preference.totalCount == 13)
 
         root.branch.leaf.node.preference.totalCount = 5
-        await tester.assert { root.node.preference.totalCount == 15 }
+        await expect(root.node.preference.totalCount == 15)
     }
 
     // Regression test: a background task concurrently writing a child preference while
     // the predicate reads the aggregated parent preference must not deadlock.
-    //
-    // The lock-ordering inversion:
-    //   Thread A (predicate): holds parent lock (from Context.subscript.read)
-    //                         → preferenceValue traversal tries to acquire child lock
-    //   Thread B (background): holds child lock (from preference write propagation)
-    //                          → didModifyPreference propagates upward, tries to acquire parent lock
-    //
-    // Fixed by moving TestAccess typed-path registration out of willAccessPreference (called
-    // during traversal under child locks) into willAccessPreferenceValue (called after
-    // the traversal completes with the pre-computed value), so the predicate read never
-    // acquires a model lock while the hierarchy walk holds other locks.
-    @Test func assertOnAggregatedPreferenceWithConcurrentWriteDoesNotDeadlock() async {
-        let (host, tester) = ConcurrentWriterHost().andTester(exhaustivity: .off)
+    @Test(.modelTesting(exhaustivity: .off)) func assertOnAggregatedPreferenceWithConcurrentWriteDoesNotDeadlock() async {
+        let host = ConcurrentWriterHost().withAnchor()
         // Rapidly change count to trigger concurrent background preference writes
         // while the assert predicate reads the aggregated preference value from the parent.
         for i in 1...5 {
             host.writer.count = i
-            await tester.assert { host.node.preference.totalCount == i }
+            await expect(host.node.preference.totalCount == i)
         }
     }
 
-    @Test(arguments: 1...100)
+    @Test(.modelTesting(exhaustivity: .off), arguments: 1...100)
     func assertOnAggregatedPreferenceWithConcurrentWriteDoesNotDeadlockStress(_ run: Int) async {
-        let (host, tester) = ConcurrentWriterHost().andTester(exhaustivity: .off)
+        let host = ConcurrentWriterHost().withAnchor()
         for i in 1...5 {
             host.writer.count = i
-            await tester.assert { host.node.preference.totalCount == i }
+            await expect(host.node.preference.totalCount == i)
         }
     }
 
     // Regression test: checkExhaustion must not deadlock when calling debugInfo() on a pending
     // ValueUpdate while a background task concurrently holds the model lock.
-    //
-    // The deadlock path (pre-fix):
-    //   Assert loop holds TestAccess lock → checkExhaustion → debugInfo() closure
-    //   → propertyName(from:path:) → Mirror(reflecting: model.withAccess(nil))
-    //   → Context.subscript.read → tries to re-acquire TestAccess lock from different thread
-    //   (background BatchedCalls.drainLoop thread holds model lock and is blocked on TestAccess lock)
-    //
-    // Fixed by eagerly computing propertyName in didModify (outside the lock) so debugInfo()
-    // only interpolates a pre-captured String and never touches the model.
     @Test func checkExhaustionDebugInfoDoesNotDeadlock() async {
-        let (model, tester) = ReactiveModel().andTester()
+        let model = ReactiveModel().withAnchor()
         // Exhaustivity on (default): checkExhaustion fires after each assert and calls
         // debugInfo() on any unasserted ValueUpdate — this is what triggered the deadlock.
         for i in 1...5 {
@@ -486,7 +458,7 @@ struct PreferenceStorageTests {
             // Assert only `trigger`; the background observer also writes `derived`.
             // checkExhaustion finds the unasserted `derived` ValueUpdate and calls debugInfo().
             // With the fix, debugInfo() no longer calls Mirror under the lock.
-            await tester.assert {
+            await expect {
                 model.trigger == i
                 model.derived == i * 2
             }
@@ -495,10 +467,10 @@ struct PreferenceStorageTests {
 
     @Test(arguments: 1...100)
     func checkExhaustionDebugInfoDoesNotDeadlockStress(_ run: Int) async {
-        let (model, tester) = ReactiveModel().andTester()
+        let model = ReactiveModel().withAnchor()
         for i in 1...5 {
             model.trigger = i
-            await tester.assert {
+            await expect {
                 model.trigger == i
                 model.derived == i * 2
             }
@@ -507,23 +479,14 @@ struct PreferenceStorageTests {
 
     // Regression test: checkExhaustion must not deadlock when it is called after releasing
     // the TestAccess lock and customDump walks a parent→child model hierarchy.
-    //
-    // The deadlock path (pre-fix):
-    //   assert() held TestAccess.lock → called checkExhaustion inside the lock
-    //   → diffMessage → customDump → customMirror on child model
-    //   → @ModelTracked getter → ModelContext.subscript.read → willAccess
-    //   → TestAccess.willAccess → rootPaths → tries to re-acquire TestAccess.lock
-    //   from the continuation thread (different from the lock-holder thread) → deadlock.
-    //
-    // Fixed by moving the checkExhaustion call outside the lock in assert().
     @Test func checkExhaustionDiffDoesNotDeadlockWithChildModel() async {
-        let (model, tester) = ReactiveParent().andTester()
+        let model = ReactiveParent().withAnchor()
         for i in 1...5 {
             model.tick = i
             // checkExhaustion runs after the assert passes. With the old code it held the
             // lock while calling diffMessage on the root model (which includes the child),
             // and the child's customMirror read triggered willAccess → rootPaths → deadlock.
-            await tester.assert {
+            await expect {
                 model.tick == i
                 model.child.value == i
             }
@@ -532,10 +495,10 @@ struct PreferenceStorageTests {
 
     @Test(arguments: 1...100)
     func checkExhaustionDiffDoesNotDeadlockWithChildModelStress(_ run: Int) async {
-        let (model, tester) = ReactiveParent().andTester()
+        let model = ReactiveParent().withAnchor()
         for i in 1...5 {
             model.tick = i
-            await tester.assert {
+            await expect {
                 model.tick == i
                 model.child.value == i
             }
@@ -549,26 +512,23 @@ struct PreferenceStorageTests {
     // Verifies the #function capture in PreferenceStorage.init flows all the way to
     // the "Preference not exhausted" failure output.
 
-    @Test func preferenceExhaustionMessageContainsKeyName() async {
-        let (model, tester) = RootModel().andTester()
-        tester.exhaustivity = .off
+    @Test(.modelTesting(exhaustivity: .preference)) func preferenceExhaustionMessageContainsKeyName() async {
+        let model = RootModel().withAnchor()
         model.branch.node.preference.totalCount = 5
         // Assert something unrelated so exhaustion runs with the preference write pending.
-        // Re-enable exhaustion just for this assertion.
-        tester.exhaustivity = .preference
         await withKnownIssue {
-            await tester.assert { model.branch.count == 0 }
+            await expect(model.branch.count == 0)
         } matching: { issue in
             issue.comments.contains { $0.rawValue.contains("preference.totalCount") }
         }
     }
 
-    @Test func preferenceExhaustionMessageOnDependencyModelContainsKeyName() async {
-        let (model, tester) = CoordinatorModel().andTester(exhaustivity: .preference)
+    @Test(.modelTesting(exhaustivity: .preference)) func preferenceExhaustionMessageOnDependencyModelContainsKeyName() async {
+        let model = CoordinatorModel().withAnchor()
         model.worker.node.preference.totalCount = 3
         // Assert something unrelated so the preference write is unasserted and exhaustion fires.
         await withKnownIssue {
-            await tester.assert { model.worker.status == "idle" }
+            await expect(model.worker.status == "idle")
         } matching: { issue in
             issue.comments.contains { $0.rawValue.contains("preference.totalCount") }
         }

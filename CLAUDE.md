@@ -44,7 +44,7 @@ The project uses Swift 6 (`swiftLanguageModes: [.v6]`). All code must be strict-
 - **`ModelAnchor`** / **`withAnchor()`**: Activates a model hierarchy and keeps it alive. `withAnchor()` stores the anchor on `ModelAccess.retainedObject`; `andAnchor()` returns it separately for explicit lifetime control.
 - **`Context`**: Internal reference type that backs each live model instance. Holds the lock, dependency overrides, child contexts, and task lifetime.
 - **`ModelAccess`**: Base class for all observation/access strategies (SwiftUI's `@Observable`, test access, etc.).
-- **`ModelTester`**: Test harness. Wraps a model with `TestAccess` and exhaustively tracks state changes, events, tasks, and probe calls. Create via `model.andTester()`.
+- **`ModelTester`**: Test harness. Wraps a model with `TestAccess` and exhaustively tracks state changes, events, tasks, and probe calls. Create via `model.andTester(options:)` (internal, requires `@testable import`) or use `withAnchor()` inside `@Test(.modelTesting)` (public API).
 - **`ModelOption`**: **Internal** `OptionSet` (not public API). Used only in tests via `@testable import` to enable specific behaviours like `disableObservationRegistrar` or `disableMemoizeCoalescing`.
 - **`DebugHook`**: **Internal** task-local hook for routing debug output during testing. Not part of the public API.
 
@@ -68,9 +68,64 @@ The project uses Swift 6 (`swiftLanguageModes: [.v6]`). All code must be strict-
 
 - Test framework: Swift Testing (`import Testing`), not XCTest.
 - UI tests: XCUIAutomation.
-- Use `model.andTester()` to get a `ModelTester`; call `await tester.assert { }` to consume expected side-effects.
 - Macro expansion tests live in `SwiftModelMacroTests/` and use `MacroTesting`.
-- Tests that exercise both observation mechanisms pass `options: .disableObservationRegistrar` to the internal `andTester(options:)` overload (requires `@testable import SwiftModel`).
+
+### Preferred pattern — `@Test(.modelTesting)` (most tests)
+
+Use `@Test(.modelTesting)` + `model.withAnchor()` + `expect { }` / `require(_:)` from `SwiftModelTesting`. This applies to both example tests and internal `@testable import` tests.
+
+```swift
+@Suite(.modelTesting)
+struct MyTests {
+    @Test func testSomething() async {
+        let model = MyModel().withAnchor()
+        model.doSomething()
+        await expect(model.value == "expected")
+    }
+}
+```
+
+- `expect { }` waits for all predicates to become true, similar to `assertNow`.
+- Per-suite exhaustivity: `@Suite(.modelTesting(exhaustivity: .off))` when individual tests use `#expect` directly (bypasses exhaustivity). Opt specific tests back in with `@Test(.modelTesting(exhaustivity: .preference))`.
+- Tests that exercise both observation mechanisms use `options: [.disableObservationRegistrar]` inside `withAnchor(options:)`.
+
+### `andTester` — only for specific cases
+
+`andTester(options:)` (requires `@testable import SwiftModel`) is reserved for two scenarios:
+
+1. **Post-deallocation verification**: Tests that need the model to actually be released to observe lifecycle behavior — teardown logs (`"d:tag"`), `onCancel` callbacks, stream termination. `@Suite(.modelTesting)` holds a strong reference for the full test duration, preventing deallocation. Use the `waitUntilRemoved` pattern:
+
+   ```swift
+   // Do NOT put this in @Suite(.modelTesting) — it would hold the context alive.
+   struct MyLifetimeTests {
+       @Test func testTeardown() async {
+           let testResult = TestResult()
+           await waitUntilRemoved {
+               let (model, tester) = MyModel().andTester(options: [], withDependencies: {
+                   $0.testResult = testResult
+               })
+               await assertNow(tester) { model.isActive }
+               return model
+           }
+           // Assert post-deallocation behavior
+           #expect(testResult.value.contains("d:tag"))
+       }
+   }
+   ```
+
+   Files currently in this category: `UniquelyReferencedTests`, `ModelDependencyTests`, `ModelDependencyBehaviourTests`, `ObserveAnyModificationLifetimeTests`.
+
+2. **Testing the testing framework itself**: `OutputSnapshotTests` directly invokes `tester.access.assert(timeoutNanoseconds:)` to capture and snapshot the failure messages produced by the framework. This requires direct access to the `TestAccess` internals.
+
+   Call `await assertNow(tester) { }` (free function in `Utilities.swift`) rather than `tester.assert { }` (deprecated public API).
+
+## Building and testing with MCP
+
+**ALWAYS use the xcode-tools MCP server for building and running tests. Never fall back to `swift build` or `swift test` in Bash.**
+
+- Use `BuildProject` to build.
+- Use `RunAllTests` to run the full suite, or `RunSomeTests` for specific tests.
+- **If a test target returns 0 results, it means it failed to compile — immediately call `GetBuildLog` to see the errors.**
 
 ## CI
 

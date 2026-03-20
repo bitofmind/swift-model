@@ -46,7 +46,7 @@ struct MemoryTests {
         do {
             let access = MemoryAccess(useWeakReference: true)
             modelAccess = access
-            let (parent, anchor) = Parent().withAccess(access).andAnchor()
+            let (parent, anchor) = Parent().withAccess(access).returningAnchor()
 
             parentRef = parent.context?.reference
             #expect(parentRef != nil)
@@ -79,7 +79,7 @@ struct MemoryTests {
         weak var childRef: Context<Child>.Reference?
         weak var objectRef: Object?
         do {
-            let (child, anchor) = Child(callback: {}, mutableCallback: {}).andAnchor()
+            let (child, anchor) = Child(callback: {}, mutableCallback: {}).returningAnchor()
 
             child.mutableCallback = {
                 child.callback()
@@ -132,7 +132,7 @@ struct MemoryTests {
         weak var childRef: Context<Child>.Reference?
         weak var objectRef: Object?
         do {
-            var (child, anchor) = Child(callback: {}, mutableCallback: {}).andAnchor()
+            var (child, anchor) = Child(callback: {}, mutableCallback: {}).returningAnchor()
             child.mutableCallback = { [child] in
                 child.callback()
                 _ = child.object
@@ -145,7 +145,7 @@ struct MemoryTests {
 
             // Replace
             let _ = anchor
-            (child, anchor) = Child(callback: {}, mutableCallback: {}).andAnchor()
+            (child, anchor) = Child(callback: {}, mutableCallback: {}).returningAnchor()
 
             await childRef.waitUntilNil()
 

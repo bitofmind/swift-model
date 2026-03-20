@@ -4,6 +4,7 @@ import ConcurrencyExtras
 import Foundation
 import Dependencies
 @testable import SwiftModel
+import SwiftModelTesting
 
 /// Tests for dual ObservationRegistrar pattern
 ///
@@ -12,11 +13,12 @@ import Dependencies
 /// 2. Main thread observers still work correctly
 /// 3. willSet is called properly before mutations where safe
 /// 4. SwiftUI pattern (main registrar) still gets dispatched updates
+@Suite(.modelTesting(exhaustivity: .off))
 struct DualRegistrarTests {
 
     /// Test background thread modification → immediate background observer notification
     @Test func testBackgroundModificationImmediateBackgroundObserver() async throws {
-        let (model, tester) = TestModel().andTester(options: [], exhaustivity: .off)
+        let model = TestModel().withAnchor()
 
         let observerFired = LockIsolated(false)
 
@@ -36,9 +38,7 @@ struct DualRegistrarTests {
         model.value = 42
 
         // Observer should fire immediately (synchronously on background registrar)
-        await tester.assert(timeout: .milliseconds(100)) {  // short: observer should fire without mainCall delay
-            observerFired.value
-        }
+        await expect(observerFired.value, timeoutNanoseconds: 100_000_000)  // short: observer should fire without mainCall delay
 
         #expect(observerFired.value, "Background observer should fire without mainCall delay")
     }
@@ -71,7 +71,7 @@ struct DualRegistrarTests {
 
     /// Test main thread modification → both registrars notified immediately
     @Test func testMainThreadModificationBothRegistrars() async throws {
-        let (model, tester) = TestModel().andTester(options: [], exhaustivity: .off)
+        let model = TestModel().withAnchor()
 
         let mainObserverFired = LockIsolated(false)
         let backgroundObserverFired = LockIsolated(false)
@@ -104,9 +104,7 @@ struct DualRegistrarTests {
         }
 
         // Both observers should fire immediately (main thread modification)
-        await tester.assert(timeout: .milliseconds(100)) {  // short: both observers should fire synchronously on main thread
-            mainObserverFired.value && backgroundObserverFired.value
-        }
+        await expect(mainObserverFired.value && backgroundObserverFired.value, timeoutNanoseconds: 100_000_000)  // short: both observers should fire synchronously on main thread
     }
 
     /// Same test as above but using old .withAnchor() style
@@ -149,7 +147,7 @@ struct DualRegistrarTests {
 
     /// Test that memoize works correctly with background observers
     @Test func testMemoizeWithBackgroundObserver() async throws {
-        let (model, tester) = MemoizeModel().andTester(options: [], exhaustivity: .off)
+        let model = MemoizeModel().withAnchor()
 
         let changeDetected = LockIsolated(false)
 
@@ -172,9 +170,7 @@ struct DualRegistrarTests {
         model.value = 5
 
         // Background observer should detect change without mainCall delay
-        await tester.assert(timeout: .milliseconds(100)) {  // short: background observer should fire without mainCall delay
-            changeDetected.value
-        }
+        await expect(changeDetected.value, timeoutNanoseconds: 100_000_000)  // short: background observer should fire without mainCall delay
 
         #expect(changeDetected.value, "Background observer should have detected change")
         #expect(model.accessCount.value >= 1, "Memoized property should have been accessed")
@@ -547,4 +543,3 @@ extension PureObservableModel: DependencyKey {
         observable.value
     }
 }
-
