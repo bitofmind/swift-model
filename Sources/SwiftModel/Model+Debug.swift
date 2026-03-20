@@ -78,7 +78,7 @@ public enum DebugOption: Sendable {
     case triggers(TriggerFormat = .name)
 
     /// Print the observed/memoized value when it changes.
-    case changes(ChangeFormat = .diff)
+    case changes(ChangeFormat = .diff())
 
     /// Don't propagate observation into sub-model properties.
     case shallow
@@ -100,6 +100,18 @@ public extension DebugOption {
     static var changes: Self { .changes() }
 }
 
+/// Controls how a diff is displayed when comparing old and new values.
+public enum DiffStyle: Sendable {
+    /// Show only changed lines and their structural ancestors (default).
+    case compact
+
+    /// Like `compact`, but replaces each omitted run with `… (N unchanged)`.
+    case collapsed
+
+    /// Show all context lines — the complete before/after representation.
+    case full
+}
+
 /// Controls how a changed dependency is described in `.triggers` output.
 public enum TriggerFormat: Sendable {
     /// Print only the property name: `"AppModel.filter"`.
@@ -112,16 +124,26 @@ public enum TriggerFormat: Sendable {
     ///
     /// Especially useful when the dependency is itself a model — this reveals exactly which
     /// nested property changed, rather than showing opaque `TypeName() → TypeName()`.
-    case withDiff
+    case withDiff(DiffStyle = .compact)
+}
+
+public extension TriggerFormat {
+    /// Shorthand for `.withDiff()` — uses the default `.compact` diff style.
+    static var withDiff: Self { .withDiff() }
 }
 
 /// Controls how the updated observed/memoized value is displayed in `.changes` output.
 public enum ChangeFormat: Sendable {
     /// Show a `−`/`+` diff between the old and new value.
-    case diff
+    case diff(DiffStyle = .compact)
 
     /// Show only the new value via `customDump`.
     case value
+}
+
+public extension ChangeFormat {
+    /// Shorthand for `.diff()` — uses the default `.compact` diff style.
+    static var diff: Self { .diff() }
 }
 
 // MARK: - PrintTextOutputStream
@@ -222,12 +244,12 @@ public extension Model where Self: Sendable {
             if let fmt = changeFormat {
                 let value = context.lock { context.readModel }
                 switch fmt {
-                case .diff:
+                case .diff(let style):
                     let prevSnap = previous.value
                     let newSnap = snapshot(value)
                     previous.setValue(newSnap)
                     if let prevSnap, prevSnap != newSnap,
-                       let d = snapshotLineDiff(prevSnap, newSnap) {
+                       let d = snapshotLineDiff(prevSnap, newSnap, style: style) {
                         printerBox.write("\(label) value changed:\n\(d)")
                     }
                 case .value:
@@ -302,7 +324,8 @@ public extension Model where Self: Sendable {
 /// Each output line is prefixed with `"  "` (unchanged context), `"- "` (removed),
 /// or `"+ "` (added). Uses LCS to find the minimal set of changes, so unchanged lines
 /// (e.g. a struct's other fields) appear as context rather than being fully replaced.
-private func snapshotLineDiff(_ prev: String, _ next: String) -> String? {
+/// The `style` controls how much context is included around the changed lines.
+private func snapshotLineDiff(_ prev: String, _ next: String, style: DiffStyle = .compact) -> String? {
     guard prev != next else { return nil }
     let pLines = prev.components(separatedBy: "\n")
     let nLines = next.components(separatedBy: "\n")
@@ -333,13 +356,126 @@ private func snapshotLineDiff(_ prev: String, _ next: String) -> String? {
         }
     }
 
-    return edits.reversed().map { edit -> String in
+    let rawDiff = edits.reversed().map { edit -> String in
         switch edit {
         case .context(let line): return "  \(line)"
         case .remove(let line):  return "- \(line)"
         case .add(let line):     return "+ \(line)"
         }
     }.joined(separator: "\n")
+
+    switch style {
+    case .compact:   return compactLineDiff(rawDiff)
+    case .collapsed: return collapsedLineDiff(rawDiff)
+    case .full:      return rawDiff
+    }
+}
+
+// MARK: - Diff line helpers
+
+/// Parsed representation of a single line in a raw `"  "/"- "/"+ "` diff.
+private struct ParsedDiffLine {
+    enum Kind { case context, remove, add }
+    let kind: Kind
+    let indent: Int     // leading-space count of the content (after stripping the 2-char prefix)
+    let content: String // content after stripping the 2-char prefix
+    let raw: String     // original line including the prefix
+
+    init(_ raw: String) {
+        let c: Substring
+        if raw.hasPrefix("- ")      { kind = .remove;  c = raw.dropFirst(2) }
+        else if raw.hasPrefix("+ ") { kind = .add;     c = raw.dropFirst(2) }
+        else                        { kind = .context; c = raw.dropFirst(2) }
+        indent = c.prefix(while: { $0 == " " }).count
+        content = String(c)
+        self.raw = raw
+    }
+}
+
+private func parseDiffLines(_ rawDiff: String) -> [ParsedDiffLine] {
+    rawDiff.components(separatedBy: "\n").map { ParsedDiffLine($0) }
+}
+
+/// Returns a boolean mask indicating which context lines are structural ancestors of at
+/// least one changed (+/−) line. Changed lines are always marked `true`.
+///
+/// A context line at indentation `I` is an ancestor of changed line C when:
+///   - `C.indent > I` (C is deeper / inside the block opened by L), **and**
+///   - no other context line at indent ≤ `I` sits strictly between L and C
+///     (which would mean they are in separate scopes).
+///
+/// This correctly keeps every opener/closer on the path from the root to a change,
+/// while discarding siblings and fully-unchanged sub-trees.
+private func ancestorKeepMask(_ lines: [ParsedDiffLine]) -> [Bool] {
+    let n = lines.count
+    let changedIndices = (0..<n).filter { lines[$0].kind != .context }
+    var keep = [Bool](repeating: true, count: n)
+    guard !changedIndices.isEmpty else { return keep }
+
+    for i in 0..<n where lines[i].kind == .context {
+        let I = lines[i].indent
+        var isAncestor = false
+        for c in changedIndices {
+            guard lines[c].indent > I else { continue }
+            let range = i < c ? (i + 1)..<c : (c + 1)..<i
+            let blocked = range.contains { j in
+                lines[j].kind == .context && lines[j].indent <= I
+            }
+            if !blocked { isAncestor = true; break }
+        }
+        keep[i] = isAncestor
+    }
+    return keep
+}
+
+/// Post-processes a raw diff to show only changed lines and their structural ancestors.
+private func compactLineDiff(_ rawDiff: String) -> String {
+    let lines = parseDiffLines(rawDiff)
+    let changedIndices = (0..<lines.count).filter { lines[$0].kind != .context }
+    guard !changedIndices.isEmpty else { return rawDiff }
+    let keep = ancestorKeepMask(lines)
+    return (0..<lines.count).filter { keep[$0] }.map { lines[$0].raw }.joined(separator: "\n")
+}
+
+/// Post-processes a raw diff like `compactLineDiff`, but replaces each contiguous run of
+/// discarded context lines with a single `… (N unchanged)` summary line.
+///
+/// `N` is the count of non-closing-bracket lines at the minimum indentation of the run,
+/// which approximates the number of sibling entries (properties or collection elements) omitted.
+private func collapsedLineDiff(_ rawDiff: String) -> String {
+    let lines = parseDiffLines(rawDiff)
+    let changedIndices = (0..<lines.count).filter { lines[$0].kind != .context }
+    guard !changedIndices.isEmpty else { return rawDiff }
+    let keep = ancestorKeepMask(lines)
+
+    var result: [String] = []
+    var i = 0
+    while i < lines.count {
+        if keep[i] || lines[i].kind != .context {
+            result.append(lines[i].raw)
+            i += 1
+        } else {
+            // Collect a contiguous run of discarded context lines.
+            let runStart = i
+            while i < lines.count && !keep[i] && lines[i].kind == .context { i += 1 }
+            let run = runStart..<i
+
+            // Find the minimum content-indentation in the run.
+            let minIndent = run.map { lines[$0].indent }.min()!
+
+            // Count non-closing lines at that minimum indent (each represents one sibling).
+            let count = run.filter { j in
+                guard lines[j].indent == minIndent else { return false }
+                let trimmed = lines[j].content.drop(while: { $0 == " " })
+                return !trimmed.hasPrefix(")") && !trimmed.hasPrefix("]") && !trimmed.hasPrefix("}")
+            }.count
+
+            if count > 0 {
+                result.append("  \(String(repeating: " ", count: minIndent))… (\(count) unchanged)")
+            }
+        }
+    }
+    return result.joined(separator: "\n")
 }
 
 // MARK: - memoizeDebugSetup
@@ -410,8 +546,13 @@ func memoizeDebugSetup<T: Sendable>(
 
         if let fmt = debugChangeFormat {
             switch fmt {
-            case .diff:
-                if let prev = previous, let d = diff(prev, value) {
+            case .diff(let style):
+                if let prev = previous, var d = diff(prev, value) {
+                    switch style {
+                    case .compact:   d = compactLineDiff(d)
+                    case .collapsed: d = collapsedLineDiff(d)
+                    case .full:      break
+                    }
                     lines.append("\(label) value changed:")
                     lines.append(d)
                 }
@@ -536,7 +677,7 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
             initialValueStr = usingActiveAccess(nil) {
                 context.lock { String(customDumping: context.readModel[keyPath: path]) }
             }
-        case .withDiff:
+        case .withDiff(_):
             // Same re-entry guard as .withValue: suppress active access while reading the keypath.
             // frozenCopy prevents child/metadata lock deadlocks during the subsequent dumpWithChildren.
             let initialFrozen: T = usingActiveAccess(nil) {
@@ -567,7 +708,7 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                 }
                 self.onTrigger { "\(baseLabel): \(oldValueStr) → \(newValueStr)" }
                 return nil
-            case .withDiff:
+            case .withDiff(let style):
                 // Freeze the value under the lock so `dumpWithChildren` sees a consistent snapshot.
                 // `frozenCopy` walks the model struct and sets each nested model's source to
                 // `.frozenCopy`, so property accesses on the result read directly from struct
@@ -589,8 +730,8 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                 }
                 // onTrigger is called synchronously here (inside the context lock) so that
                 // pendingTriggers is populated before wrappedOnUpdate reads it.
-                self.onTrigger { [oldValueStr, newValueStr, baseLabel] in
-                    if let diffStr = snapshotLineDiff(oldValueStr, newValueStr) {
+                self.onTrigger { [oldValueStr, newValueStr, baseLabel, style] in
+                    if let diffStr = snapshotLineDiff(oldValueStr, newValueStr, style: style) {
                         // Indent the diff block under "dependency changed: label:".
                         let indented = diffStr.components(separatedBy: "\n")
                             .map { "  " + $0 }
@@ -718,12 +859,12 @@ func debugObserve<T: Sendable>(
         // Change lines
         if let fmt = changeFormat {
             switch fmt {
-            case .diff:
+            case .diff(let style):
                 let prevSnap = previous.value
                 let newSnap = snapshot(value)
                 previous.setValue(newSnap)
                 if let prevSnap, prevSnap != newSnap {
-                    if let d = snapshotLineDiff(prevSnap, newSnap) {
+                    if let d = snapshotLineDiff(prevSnap, newSnap, style: style) {
                         lines.append("\(label) value changed:")
                         lines.append(d)
                     }

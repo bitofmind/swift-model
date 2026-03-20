@@ -247,6 +247,26 @@ AppModel().withDebug([.triggers(), .changes()]).withAnchor()
 AppModel().withDebug([.changes(), .name("App"), .printer(myStream)]).withAnchor()
 ```
 
+The trigger format can be `.name` (default), `.withValue` (old → new), or `.withDiff` (structured diff — useful when the trigger value is itself a model):
+
+```swift
+// "AppModel.filter: \"a\" → \"b\""
+AppModel().withDebug([.triggers(.withValue), .changes()]).withAnchor()
+
+// Full structured diff of the triggering property
+AppModel().withDebug([.triggers(.withDiff), .changes()]).withAnchor()
+```
+
+Diffs default to `.compact` style (only the changed lines and their structural ancestors). Pass a `DiffStyle` to change this:
+
+```swift
+// Show every unchanged sibling as "… (N unchanged)"
+model.debug([.changes(.diff(.collapsed))])
+
+// Show the full before/after context
+model.debug([.changes(.diff(.full))])
+```
+
 To debug a specific expression or enable debug output only temporarily on a live model, use `debug()` on the model directly — it returns a `Cancellable` you can cancel when done:
 
 ```swift

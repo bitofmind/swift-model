@@ -136,6 +136,41 @@ struct DebugTests {
               DebugCounter(
             -   count: 0,
             +   count: 1,
+              )
+
+            """
+        }
+    }
+
+    @Test func debugWholeSubtree_diff_collapsed() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
+            let model = DebugCounter().withAnchor()
+            model.debug([.changes(.diff(.collapsed)), .name("Counter"), .printer(output)])
+            model.count = 1
+        } result: {
+            """
+            Counter value changed:
+              DebugCounter(
+            -   count: 0,
+            +   count: 1,
+                … (1 unchanged)
+              )
+
+            """
+        }
+    }
+
+    @Test func debugWholeSubtree_diff_full() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
+            let model = DebugCounter().withAnchor()
+            model.debug([.changes(.diff(.full)), .name("Counter"), .printer(output)])
+            model.count = 1
+        } result: {
+            """
+            Counter value changed:
+              DebugCounter(
+            -   count: 0,
+            +   count: 1,
                 name: "default"
               )
 
@@ -159,9 +194,7 @@ struct DebugTests {
                 child: DebugCounter(
             -     count: 0,
             +     count: 5,
-                  name: "default"
                 ),
-                tag: "parent"
               )
 
             """
@@ -357,7 +390,6 @@ struct DebugTests {
               DebugCounter(
             -   count: 0,
             +   count: 4,
-                name: "default"
               )
 
             """
@@ -377,7 +409,6 @@ struct DebugTests {
               DebugCounter(
             -   count: 0,
             +   count: 7,
-                name: "default"
               )
 
             """
@@ -398,7 +429,6 @@ struct DebugTests {
               DebugCounter(
             -   count: 0,
             +   count: 11,
-                name: "default"
               )
 
             """
@@ -422,12 +452,7 @@ struct DebugTests {
                 DebugCounter(
             -     count: 0,
             +     count: 3,
-                  name: "default"
                 ),
-                DebugCounter(
-                  count: 0,
-                  name: "default"
-                )
               )
 
             """
@@ -469,7 +494,6 @@ struct DebugTests {
               DebugCounter(
             -   count: 0,
             +   count: 5,
-                name: "default"
               )
 
             """
@@ -488,14 +512,30 @@ struct DebugTests {
             """
             Arr value changed:
               [
-                [0]: DebugCounter(
-                  count: 0,
-                  name: "default"
-                ),
                 [1]: DebugCounter(
             -     count: 0,
             +     count: 7,
-                  name: "default"
+                )
+              ]
+
+            """
+        }
+    }
+
+    @Test func debugTargeted_changes_arrayReturn_collapsed() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Arr") }) { output in
+            let parent = DebugDualParent().withAnchor()
+            parent.debug([.changes(.diff(.collapsed)), .name("Arr"), .printer(output)]) { [parent.a, parent.b] }
+            parent.b.count = 7
+        } result: {
+            """
+            Arr value changed:
+              [
+                … (1 unchanged)
+                [1]: DebugCounter(
+            -     count: 0,
+            +     count: 7,
+                  … (1 unchanged)
                 )
               ]
 
@@ -520,7 +560,6 @@ struct DebugTests {
               DebugCounter(
             -   count: 0,
             +   count: 5,
-                name: "default"
               )
 
             """
@@ -537,7 +576,6 @@ struct DebugTests {
               DebugCounter(
             -   count: 5,
             +   count: 0,
-                name: "default"
               )
 
             """
@@ -554,7 +592,6 @@ struct DebugTests {
               DebugCounter(
             -   count: 0,
             +   count: 9,
-                name: "default"
               )
 
             """
@@ -599,7 +636,6 @@ struct DebugTests {
             """
             Parent value changed:
               DebugParent(
-                child: DebugCounter(),
             -   tag: "parent"
             +   tag: "updated"
               )
@@ -663,7 +699,6 @@ struct DebugTests {
               DebugCounter(
             -   count: 0,
             +   count: 1,
-                name: "default"
               )
 
             """
@@ -794,7 +829,6 @@ struct DebugTests {
                 DebugCounter(
               -   count: 0,
               +   count: 5,
-                  name: "default"
                 )
 
             """
@@ -850,7 +884,6 @@ struct DebugTests {
               DebugCounter(
             -   count: 0,
             +   count: 1,
-                name: "default"
               )
 
             """
