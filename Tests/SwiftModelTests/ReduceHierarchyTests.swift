@@ -56,6 +56,29 @@ import ConcurrencyExtras
     var children: [IndexedChild] = []
 }
 
+/// Models for testing the "find nearest ancestor of a given type" pattern — the canonical
+/// real-world use case (e.g. `var timelineModel: TimelineModel { node.memoize { ... } }`).
+@Model private struct AncestorContainer {
+    var leaves: [AncestorSearchLeaf] = []
+}
+
+@Model private struct AncestorSearchLeaf {
+    var nearestContainer: AncestorContainer? {
+        node.mapHierarchy(for: .ancestors) { $0 as? AncestorContainer }.first
+    }
+
+    var memoizedNearestContainer: AncestorContainer? {
+        node.memoize(for: "memoizedNearestContainer") { nearestContainer }
+    }
+}
+
+/// A permanent container that keeps `AncestorSearchLeaf` alive as a structural child.
+/// Used by the "disappears" test so the leaf retains at least one parent after being
+/// removed from `AncestorContainer`, preventing `onRemoval` from cancelling subscriptions.
+@Model private struct AncestorSearchLeafContainer {
+    var leaves: [AncestorSearchLeaf] = []
+}
+
 // MARK: - Tests
 
 /// Tests for `node.reduceHierarchy` and `node.mapHierarchy`.
@@ -65,8 +88,9 @@ import ConcurrencyExtras
 /// 2. Deduplication — models reachable via multiple paths are visited once
 /// 3. Type-casting in transform
 /// 4. Observation via AccessCollector path (disableObservationRegistrar)
-/// 5. Observation via withObservationTracking path (default)
-/// 6. Structural hierarchy changes (adding/removing children) — expected to NOT be observed
+/// 5. Structural hierarchy changes — re-evaluated because `reduceHierarchy` uses `observedParents`
+/// 6. withObservationTracking path (direct)
+/// 7. Memoized ancestor-type search re-evaluates on structural changes
 struct ReduceHierarchyTests {
 
     // MARK: - 1. Basic Traversal
@@ -480,5 +504,77 @@ struct ReduceHierarchyTests {
         // Give a short time for the onChange to fire
         try await Task.sleep(nanoseconds: 100_000_000)
         #expect(fired.value, "withObservationTracking onChange should fire when ancestor property accessed via mapHierarchy changes")
+    }
+
+    // MARK: - 7. Memoized ancestor-type search re-evaluates on structural changes
+    //
+    // The canonical real-world pattern: `node.memoize { node.mapHierarchy(for: .ancestors) { $0 as? T }.first }`.
+    // Because `reduceHierarchy` uses `observedParents` for upward traversal, the memoized
+    // result is properly invalidated whenever the ancestor chain changes structurally —
+    // whether a new ancestor appears or an existing one disappears.
+
+    @Test(arguments: [ObservationPath.accessCollector, .observationRegistrar])
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    func testMemoizedAncestorTypeSearchReEvaluatesWhenAncestorAppears(path: ObservationPath) async throws {
+        let target = AncestorContainer().withAnchor(options: path.options)
+        let leaf = AncestorSearchLeaf().withAnchor(options: path.options)
+
+        let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
+            leaf.memoizedNearestContainer != nil
+        }
+
+        let values = LockIsolated<[Bool]>([])
+        let task = Task {
+            for await v in observed {
+                values.withValue { $0.append(v) }
+            }
+        }
+        defer { task.cancel() }
+
+        try await waitUntil(values.value.count >= 1)
+        #expect(values.value.first == false, "No ancestor yet, memoized result should be nil")
+
+        // Adding the leaf to target gives it an AncestorContainer ancestor.
+        target.leaves.append(leaf)
+
+        try await waitUntil(values.value.contains(true), timeout: 2_000_000_000)
+        #expect(values.value.contains(true),
+                "[\(path)] Memoized ancestor-type search should re-evaluate when ancestor appears, got \(values.value)")
+    }
+
+    @Test(arguments: [ObservationPath.accessCollector, .observationRegistrar])
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    func testMemoizedAncestorTypeSearchReEvaluatesWhenAncestorDisappears(path: ObservationPath) async throws {
+        // `leafContainer` acts as a permanent structural parent for the leaf.
+        // When the leaf is later removed from `target`, leafContainer remains its parent,
+        // so `parents.isEmpty` stays false → `onRemoval` is NOT triggered → memoize
+        // subscriptions survive → the async `performUpdate` can deliver the new nil value.
+        let leafContainer = AncestorSearchLeafContainer().withAnchor(options: path.options)
+        let target = AncestorContainer().withAnchor(options: path.options)
+        leafContainer.leaves.append(AncestorSearchLeaf())
+        let leaf = leafContainer.leaves[0]  // live reference; leafContainer is its structural parent
+        target.leaves.append(leaf)          // leaf now has two parents: leafContainer + target
+
+        let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
+            leaf.memoizedNearestContainer != nil
+        }
+
+        let values = LockIsolated<[Bool]>([])
+        let task = Task {
+            for await v in observed {
+                values.withValue { $0.append(v) }
+            }
+        }
+        defer { task.cancel() }
+
+        try await waitUntil(values.value.count >= 1)
+        #expect(values.value.first == true, "Ancestor present, memoized result should be non-nil")
+
+        // Remove the leaf from the container — it no longer has AncestorContainer as an ancestor.
+        target.leaves.removeFirst()
+
+        try await waitUntil(values.value.contains(false), timeout: 2_000_000_000)
+        #expect(values.value.contains(false),
+                "[\(path)] Memoized ancestor-type search should re-evaluate when ancestor disappears, got \(values.value)")
     }
 }
