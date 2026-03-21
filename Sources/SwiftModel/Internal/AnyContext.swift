@@ -51,13 +51,19 @@ class AnyContext: @unchecked Sendable {
         var isDirty: Bool
         var onUpdate: (@Sendable (Any) -> Void)?  // Callback to trigger observation updates
         var usesAsyncTracking: Bool  // True if using withObservationTracking (async), false if using AccessCollector (sync)
+        /// Type-erased identity comparison built once on first access via buildObservationIsSame.
+        var isSame: (@Sendable (Any, Any) -> Bool)?
+        /// ObjectIdentifier of T — asserts same key is never reused with a different type.
+        var typeID: ObjectIdentifier
 
-        init(value: Any & Sendable, cancellable: (@Sendable () -> Void)? = nil, isDirty: Bool = false, onUpdate: (@Sendable (Any) -> Void)? = nil, usesAsyncTracking: Bool = false) {
+        init(value: Any & Sendable, cancellable: (@Sendable () -> Void)? = nil, isDirty: Bool = false, onUpdate: (@Sendable (Any) -> Void)? = nil, usesAsyncTracking: Bool = false, isSame: (@Sendable (Any, Any) -> Bool)? = nil, typeID: ObjectIdentifier = ObjectIdentifier(Never.self)) {
             self.value = value
             self.cancellable = cancellable
             self.isDirty = isDirty
             self.onUpdate = onUpdate
             self.usesAsyncTracking = usesAsyncTracking
+            self.isSame = isSame
+            self.typeID = typeID
         }
     }
     

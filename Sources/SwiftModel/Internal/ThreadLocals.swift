@@ -56,12 +56,6 @@ final class ThreadLocals: @unchecked Sendable {
     /// `withObservationTracking` tracking — even when `isDirty=false` due to a concurrent
     /// `onUpdate` clearing it before this `performUpdate`'s `observe()` runs.
     var isInsideAsyncPerformUpdate = false
-    /// When non-nil, `ModelContext.mirror(of:children:)` registers the model's context into this
-    /// array and returns empty children (stopping recursion). Used by `reflectForModels` to
-    /// collect all `AnyContext` values reachable in an arbitrary return value (e.g. a tuple,
-    /// array, or optional containing model structs) so `Observed`/`memoize` can subscribe via
-    /// `onAnyModification` when no property accesses were recorded.
-    var collectingModelContexts: [AnyContext]? = nil
 
     fileprivate init() {}
 

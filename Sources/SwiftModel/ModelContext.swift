@@ -80,15 +80,6 @@ extension ModelContext: Hashable {
 
 public extension ModelContext {
     func mirror(of model: M, children: [(String, Any)]) -> Mirror {
-        // When collecting model contexts (e.g. to find models returned from an Observed/memoize
-        // access closure), register this context and return empty children so we don't recurse
-        // into the model's own sub-models — those will be picked up via onAnyModification.
-        if threadLocals.collectingModelContexts != nil {
-            if let ctx = context {
-                threadLocals.collectingModelContexts!.append(ctx)
-            }
-            return Mirror(model, children: [], displayStyle: .struct)
-        }
         if let depth = threadLocals.shallowMirrorDepth {
             if depth == 0 {
                 threadLocals.shallowMirrorDepth = 1
@@ -273,7 +264,7 @@ public extension ModelContext {
     }
 }
 
-private func containerIsSame<T: ModelContainer>(_ lhs: T, _ rhs: T) -> Bool {
+func containerIsSame<T: ModelContainer>(_ lhs: T, _ rhs: T) -> Bool {
     if let leftOptional = lhs as? any _Optional {
         return optionalIsSame(leftOptional, rhs)
     }
@@ -285,7 +276,7 @@ private func containerIsSame<T: ModelContainer>(_ lhs: T, _ rhs: T) -> Bool {
     return false
 }
 
-private func optionalIsSame<T: _Optional>(_ lhs: T, _ rhs: Any) -> Bool {
+func optionalIsSame<T: _Optional>(_ lhs: T, _ rhs: Any) -> Bool {
     let rightOptional = rhs as! T
     switch (lhs.wrappedValue, rightOptional.wrappedValue) {
     case (nil, nil):
@@ -299,7 +290,7 @@ private func optionalIsSame<T: _Optional>(_ lhs: T, _ rhs: Any) -> Bool {
     }
 }
 
-private func collectionIsSame<T: Collection>(_ lhs: T, _ rhs: Any) -> Bool {
+func collectionIsSame<T: Collection>(_ lhs: T, _ rhs: Any) -> Bool {
     let rightCollection = rhs as! T
     if lhs.count != rightCollection.count {
         return false
@@ -310,7 +301,7 @@ private func collectionIsSame<T: Collection>(_ lhs: T, _ rhs: Any) -> Bool {
     }
 }
 
-private func modelIsSame(_ lhs: Any, _ rhs: Any) -> Bool {
+func modelIsSame(_ lhs: Any, _ rhs: Any) -> Bool {
     if let l = lhs as? any Model {
         return _modelIsSame(l, rhs)
     } else {
@@ -318,7 +309,7 @@ private func modelIsSame(_ lhs: Any, _ rhs: Any) -> Bool {
     }
 }
 
-private func _modelIsSame<T: Model>(_ lhs: T, _ rhs: Any) -> Bool {
+func _modelIsSame<T: Model>(_ lhs: T, _ rhs: Any) -> Bool {
     let rightOptional = rhs as! T
     return lhs.id == rightOptional.id
 }

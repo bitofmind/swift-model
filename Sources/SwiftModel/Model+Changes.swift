@@ -26,7 +26,7 @@ public struct Observed<Element: Sendable>: AsyncSequence, Sendable {
     /// - Parameter access: closure providing the value to be observed
     @_disfavoredOverload
     public init(initial: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions = [], _ access: @Sendable @escaping () -> Element) {
-        self.init(access: access, initial: initial, isSame: nil, coalesceUpdates: coalesceUpdates, debug: debug)
+        self.init(access: access, initial: initial, isSame: { (l: Element, r: Element) in dynamicEqual(l, r) }, coalesceUpdates: coalesceUpdates, debug: debug)
     }
 
     public func makeAsyncIterator() -> AsyncStream<Element>.Iterator {
@@ -43,7 +43,8 @@ public extension Observed where Element: Equatable {
     /// - Parameter debug: Debug options controlling trigger and change output. Only active in `DEBUG` builds.
     /// - Parameter access: closure providing the value to be observed
     init(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions = [], _ access: @Sendable @escaping () -> Element) {
-        stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? (==) : nil, coalesceUpdates: coalesceUpdates, debug: debug).stream
+        let isSame: (@Sendable (Element, Element) -> Bool)? = removeDuplicates ? buildObservationIsSame(Element.self) : nil
+        stream = Observed(access: access, initial: initial, isSame: isSame, coalesceUpdates: coalesceUpdates, debug: debug).stream
     }
 }
 
@@ -205,7 +206,7 @@ public extension ModelNode {
     /// - Note: For `Equatable` types, use the overload that accepts `isSame` to avoid recomputing
     ///         when the value hasn't actually changed.
     func memoize<T: Sendable>(for key: some Hashable&Sendable, debug: DebugOptions = [], produce: @Sendable @escaping () -> T) -> T {
-        memoize(for: key, produce: produce, isSame: nil, debug: debug)
+        memoize(for: key, produce: produce, isSame: buildObservationIsSame(T.self), debug: debug)
     }
 
     /// Caches the result of an expensive computation with automatic duplicate detection.
@@ -239,7 +240,7 @@ public extension ModelNode {
     /// model.items = [...]  // hasResults: false → true (notification sent!)
     /// ```
     func memoize<T: Sendable&Equatable>(for key: some Hashable&Sendable, debug: DebugOptions = [], produce: @Sendable @escaping () -> T) -> T {
-        memoize(for: key, produce: produce, isSame: { $0 == $1 }, debug: debug)
+        memoize(for: key, produce: produce, isSame: buildObservationIsSame(T.self), debug: debug)
     }
 
     /// Caches a tuple computation with automatic duplicate detection for each element.
@@ -519,6 +520,7 @@ private extension ModelNode {
             // Double-check: another thread may have set up tracking between our nil check above
             // and acquiring the lock here.
             if let existingEntry = context._memoizeCache[key] {
+                assert(existingEntry.typeID == ObjectIdentifier(T.self), "memoize key '\(key.base)' was previously used with a different type")
                 return existingEntry.value as! T
             }
 
@@ -567,6 +569,20 @@ private extension ModelNode {
                 } onUpdate: { @Sendable (value: T) in
                     var postLockCallbacks: [() -> Void] = []
 
+                    // Build type-erased isSame once for cache entry storage.
+                    // onUpdate is the initial callback called exactly once by update(); wrappedOnUpdate
+                    // (stored as entry.onUpdate) handles all subsequent dirty-path updates.
+                    let typeErasedIsSame: (@Sendable (Any, Any) -> Bool)?
+                    if let typed = isSame {
+                        typeErasedIsSame = { @Sendable (l: Any, r: Any) in
+                            guard let l = l as? T, let r = r as? T else { return false }
+                            return typed(l, r)
+                        }
+                    } else {
+                        typeErasedIsSame = nil
+                    }
+                    let typeID = ObjectIdentifier(T.self)
+
                     context.lock {
                         let entry = context._memoizeCache[key]
                         let prevValue = entry?.value as? T
@@ -609,7 +625,9 @@ private extension ModelNode {
                                     cancellable: currentCancellable ?? {},
                                     isDirty: false,
                                     onUpdate: currentOnUpdate,  // Preserve the same callback
-                                    usesAsyncTracking: usesAsyncTracking
+                                    usesAsyncTracking: usesAsyncTracking,
+                                    isSame: typeErasedIsSame,
+                                    typeID: typeID
                                 )
 
                                 if currentPrevValue != nil {
@@ -654,7 +672,9 @@ private extension ModelNode {
                             cancellable: prevCancellable ?? {},
                             isDirty: false,
                             onUpdate: wrappedOnUpdate,
-                            usesAsyncTracking: usesAsyncTracking
+                            usesAsyncTracking: usesAsyncTracking,
+                            isSame: typeErasedIsSame,
+                            typeID: typeID
                         )
 
                         if prevValue != nil {
@@ -990,11 +1010,9 @@ internal func update<T: Sendable>(
         // Box for performUpdate so observe()'s onChange closure can reference it
         let performUpdateBox = LockIsolated<(@Sendable () -> Void)?>(nil)
 
-        // Tracks `onAnyModification` subscriptions for models returned directly from access().
-        // These won't be picked up by withObservationTracking since no properties were read.
-        let activeReturnedModels = LockIsolated<[ObjectIdentifier: @Sendable () -> Void]>([:])
 
-        // Shared change handler used by both withObservationTracking.onChange and onAnyModification.
+
+        // Shared change handler used by withObservationTracking.onChange.
         @Sendable func onObservedChange() {
             if hasBeenCancelled.value { return }
             didModify?(false)
@@ -1019,42 +1037,6 @@ internal func update<T: Sendable>(
             }
         }
 
-        // Subscribe to any models found in `value` that are returned directly from access().
-        @Sendable func subscribeReturnedModels(in value: T) {
-            let contexts = reflectForModels(value)
-            guard !contexts.isEmpty else { return }
-
-            let newIDs = Set(contexts.map { ObjectIdentifier($0) })
-
-            let toCancel = activeReturnedModels.withValue { models in
-                let removed = models.filter { !newIDs.contains($0.key) }
-                for id in removed.keys { models.removeValue(forKey: id) }
-                return removed.values
-            }
-            for cancel in toCancel { cancel() }
-
-            for context in contexts {
-                let id = ObjectIdentifier(context)
-                let isActive = activeReturnedModels.withValue { $0[id] != nil }
-                guard !isActive else { continue }
-
-                let cancellation = context.onAnyModification { [weak activeReturnedModels] finished in
-                    if finished {
-                        activeReturnedModels?.withValue { $0.removeValue(forKey: id) }
-                        return nil
-                    }
-                    // Bypass isSame: onAnyModification confirms the model changed, but isSame
-                    // reads via the live context and would compare current values against current
-                    // values (since stored copies share the same live context reference),
-                    // causing the update to be spuriously suppressed.
-                    forceNext.setValue(true)
-                    onObservedChange()
-                    return nil
-                }
-                activeReturnedModels.withValue { $0[id] = cancellation }
-            }
-        }
-
         @Sendable func observe() -> T {
             let value = withObservationTracking {
                 access()
@@ -1065,7 +1047,6 @@ internal func update<T: Sendable>(
                 // the async path uses ForceObserver + forceNext for touch propagation.
                 onObservedChange()
             }
-            subscribeReturnedModels(in: value)
             return value
         }
 
@@ -1133,11 +1114,6 @@ internal func update<T: Sendable>(
             cancel: {
                 hasBeenCancelled.withValue { $0 = true }
                 forceObserver.cancel()
-                let cancels = activeReturnedModels.withValue { models in
-                    defer { models.removeAll() }
-                    return Array(models.values)
-                }
-                for cancel in cancels { cancel() }
             },
             forceNextUpdate: {
                 forceNext.setValue(true)
@@ -1149,12 +1125,8 @@ internal func update<T: Sendable>(
         
         let collector = AccessCollector { collector, force in
             // Call didModify immediately when dependency changes (for dirty tracking).
-            // `force` is true when the change was triggered by node.touch() or by
-            // subscribeToReturnedModels' onAnyModification (model property changed).
+            // `force` is true when the change was triggered by node.touch().
             didModify?(force)
-            // When force=true from subscribeToReturnedModels: bypass isSame so the update
-            // always fires. Models stored in last.value share the live context reference,
-            // so isSame would compare current values against current values — always equal.
             if force {
                 forceNext.setValue(true)
             }
@@ -1237,33 +1209,9 @@ internal func update<T: Sendable>(
     }
 }
 
-/// Walks `value` via `Mirror` with `collectingModelContexts` set, collecting all `AnyContext`
-/// values reachable in the value. `ModelContext.mirror(of:children:)` self-registers and returns
-/// empty children when `collectingModelContexts` is non-nil, acting as both the registration
-/// hook and the recursion terminator (so we don't recurse into a model's own sub-models).
-///
-/// Works correctly for compound return values: tuples, arrays, optionals, and any other
-/// non-model container — Mirror recurses explicitly, mirroring what `customDump`/`diff` do.
-private func reflectForModels<T>(_ value: T) -> [AnyContext] {
-    func walk(_ v: Any) {
-        let m = Mirror(reflecting: v)
-        for child in m.children {
-            walk(child.value)
-        }
-    }
-
-    return threadLocals.withValue([] as [AnyContext]?, at: \.collectingModelContexts) {
-        walk(value)
-        return threadLocals.collectingModelContexts ?? []
-    }
-}
-
 private final class AccessCollector: ModelAccess, @unchecked Sendable {
     let onModify: @Sendable (AccessCollector, Bool) -> (@Sendable () -> Void)?
     let active = LockIsolated<(active: [Key: @Sendable () -> Void], added: Set<Key>)>(([:], []))
-    /// Tracks `onAnyModification` subscriptions for models returned directly from the access
-    /// closure (i.e. not accessed via property reads). Keyed by `ObjectIdentifier(context)`.
-    let activeModels = LockIsolated<[ObjectIdentifier: @Sendable () -> Void]>([:])
 
     struct Key: Hashable, @unchecked Sendable {
         var id: ModelID
@@ -1277,9 +1225,6 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
 
     deinit {
         for cancel in active.value.active.values {
-            cancel()
-        }
-        for cancel in activeModels.value.values {
             cancel()
         }
     }
@@ -1307,58 +1252,7 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
             cancel()
         }
 
-        // Subscribe to any models returned directly from the access closure (not via property reads).
-        // These models won't trigger `willAccess`, so we use `onAnyModification` as a fallback.
-        subscribeToReturnedModels(in: value)
-
         return value
-    }
-
-    /// Walks `value` via `Mirror` with `collectingModelContexts` set. Any `@Model` struct
-    /// encountered registers its context and returns empty children, so we only collect the
-    /// top-level models in the value (their children are covered by `onAnyModification`).
-    private func subscribeToReturnedModels<Value>(in value: Value) {
-        let contexts = reflectForModels(value)
-        guard !contexts.isEmpty else { return }
-
-        let newIDs = Set(contexts.map { ObjectIdentifier($0) })
-
-        // Cancel subscriptions for models no longer present in the return value.
-        let toCancel = activeModels.withValue { activeModels in
-            let removed = activeModels.filter { !newIDs.contains($0.key) }
-            for id in removed.keys { activeModels.removeValue(forKey: id) }
-            return removed.values
-        }
-        for cancel in toCancel { cancel() }
-
-        // Subscribe to models not yet tracked.
-        for context in contexts {
-            let id = ObjectIdentifier(context)
-            let isActive = activeModels.withValue { $0[id] != nil }
-            guard !isActive else { continue }
-
-            let cancellation = context.onAnyModification { [weak self] finished in
-                guard let self else { return nil }
-                if finished {
-                    self.activeModels.withValue { $0.removeValue(forKey: id) }
-                    return nil
-                }
-                // Always schedule asynchronously via backgroundCall rather than returning
-                // the callback directly. Returning it inline causes the post-lock machinery
-                // to execute it synchronously, which can trigger re-entrant property writes
-                // (e.g. onUpdate appending the observed model to an array → updateContext →
-                // addParent → onAnyModification fires again → infinite recursion).
-                // Pass force=true so the outer onModify closure sets forceNext=true,
-                // bypassing isSame when performUpdate runs. Models stored in last.value
-                // share the live context reference, so isSame always sees the current
-                // (already-updated) value and would spuriously suppress the update.
-                if let callback = self.onModify(self, true) {
-                    backgroundCall { callback() }
-                }
-                return nil
-            }
-            activeModels.withValue { $0[id] = cancellation }
-        }
     }
 
     override var shouldPropagateToChildren: Bool { false }
@@ -1425,6 +1319,73 @@ private final class ForceObserver: ModelAccess, @unchecked Sendable {
         cancels.withValue { $0.append(cancellation) }
         return nil
     }
+}
+
+/// Returns true if `lhs` and `rhs` represent the same value based on identity semantics:
+/// - Model with Equatable: compared by == (respects user-defined equality)
+/// - Model without Equatable: compared by ModelID (identity)
+/// - ModelContainer (Array, Optional, …): compared by element ModelIDs (containerIsSame)
+/// - Equatable (non-model types): compared by ==
+/// - Otherwise: always returns false (always trigger)
+///
+/// Ordering matters for two reasons:
+/// 1. `Model` before `ModelContainer` — `Model: ModelContainer`, so a plain model would be
+///    caught by the ModelContainer branch, where `containerIsSame` falls through to `false`
+///    (always-trigger) instead of comparing by identity.
+/// 2. `ModelContainer` before `Equatable` — `Array<M>: Equatable when M: Equatable`, so an
+///    array of equatable models would use `Array.==` (value comparison) instead of element identity.
+private func dynamicEqual<T>(_ lhs: T, _ rhs: T) -> Bool {
+    if let l = lhs as? any Model {
+        if let le = l as? any Equatable {
+            return _dynamicEquatableEqual(le, rhs)
+        }
+        return l.modelID == (rhs as! any Model).modelID
+    }
+    if let l = lhs as? any ModelContainer {
+        return _dynamicContainerEqual(l, rhs)
+    }
+    if let l = lhs as? any Equatable {
+        return _dynamicEquatableEqual(l, rhs)
+    }
+    return false
+}
+
+private func _dynamicContainerEqual<T: ModelContainer>(_ lhs: T, _ rhs: Any) -> Bool {
+    guard let r = rhs as? T else { return false }
+    return containerIsSame(lhs, r)
+}
+
+private func _dynamicEquatableEqual<T: Equatable>(_ lhs: T, _ rhs: Any) -> Bool {
+    guard let r = rhs as? T else { return false }
+    return lhs == r
+}
+
+/// Builds a typed isSame closure once (for memoize first-access setup) based on the type's identity semantics.
+/// Uses the same ordering as `dynamicEqual` — see that function's doc comment for the rationale.
+/// Uses existential casting inside closures because Swift cannot infer static conformance from a runtime `is` check.
+private func buildObservationIsSame<T>(_ type: T.Type) -> (@Sendable (T, T) -> Bool)? {
+    if T.self is any Model.Type {
+        if T.self is any Equatable.Type {
+            return { l, r in
+                guard let le = l as? any Equatable else { return false }
+                return _dynamicEquatableEqual(le, r as Any)
+            }
+        }
+        return { l, r in (l as! any Model).modelID == (r as! any Model).modelID }
+    }
+    if T.self is any ModelContainer.Type {
+        return { l, r in
+            guard let lc = l as? any ModelContainer else { return false }
+            return _dynamicContainerEqual(lc, r as Any)
+        }
+    }
+    if T.self is any Equatable.Type {
+        return { l, r in
+            guard let le = l as? any Equatable else { return false }
+            return _dynamicEquatableEqual(le, r as Any)
+        }
+    }
+    return nil
 }
 
 protocol _Optional {

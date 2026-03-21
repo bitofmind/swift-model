@@ -377,12 +377,11 @@ struct DebugTests {
     // MARK: node.debug { } — closure returns model directly (subscribeToReturnedModels path)
 
     /// When the debug closure returns `model` itself no property reads are recorded by
-    /// withObservationTracking / AccessCollector, so `subscribeToReturnedModels` must
-    /// subscribe via `onAnyModification` and bypass `isSame` to fire the update.
+    /// The no-closure debug form uses onAnyModification so property mutations fire normally.
     @Test func debugTargeted_changes_selfReturn() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.changes(), .name("Counter"), .printer(output)]) { model }
+            model.debug([.changes(), .name("Counter"), .printer(output)])
             model.count = 4
         } result: {
             """
@@ -396,13 +395,14 @@ struct DebugTests {
         }
     }
 
-    /// Same as above but the closure returns a child model from a parent — mutations on
-    /// the child should fire the debug output even though no properties were read.
+    /// Replacing the child model (writing to the parent property) fires the debug closure.
     @Test func debugTargeted_changes_childReturn() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Child") }) { output in
             let parent = DebugParent().withAnchor()
             parent.debug([.changes(), .name("Child"), .printer(output)]) { parent.child }
-            parent.child.count = 7
+            let counter = DebugCounter()
+            counter.count = 7
+            parent.child = counter
         } result: {
             """
             Child value changed:
@@ -437,14 +437,15 @@ struct DebugTests {
 
     // MARK: node.debug { } — closure returns tuple, optional, array, swapped model
 
-    /// When the debug closure returns a tuple of two models directly, mutations on
-    /// either model should fire debug output via `subscribeToReturnedModels`.
-    /// Unchanged elements appear as context; only the mutated field shows a diff line.
+    /// Replacing a model in a tuple (writing to the parent property) fires the debug closure.
+    /// Unchanged tuple elements appear as context; only the replaced model shows a diff.
     @Test func debugTargeted_changes_tupleReturn() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Dual") }) { output in
             let parent = DebugDualParent().withAnchor()
             parent.debug([.changes(), .name("Dual"), .printer(output)]) { (parent.a, parent.b) }
-            parent.a.count = 3
+            let counter = DebugCounter()
+            counter.count = 3
+            parent.a = counter
         } result: {
             """
             Dual value changed:
@@ -459,8 +460,8 @@ struct DebugTests {
         }
     }
 
-    /// When the debug closure returns an optional model directly, mutations on the
-    /// wrapped model should fire debug output via `subscribeToReturnedModels`.
+    /// The debug closure fires on identity transitions: nil→Some shows the new model;
+    /// Some→Some (replacement) shows the diff between old and new model.
     @Test func debugTargeted_changes_optionalReturn() async throws {
         let output = CaptureStream()
         let parent = DebugOptionalParent().withAnchor()
@@ -483,8 +484,10 @@ struct DebugTests {
         }
         output.reset()
 
-        // some mutation: mutating the wrapped model should show a diff
-        parent.child!.count = 5
+        // Some → Some: replacing with a different model shows the diff
+        let counter = DebugCounter()
+        counter.count = 5
+        parent.child = counter
 
         try await waitUntil(output.captured.contains("Opt"))
 
@@ -500,14 +503,15 @@ struct DebugTests {
         }
     }
 
-    /// When the debug closure returns an array of models directly, mutations on any
-    /// element should fire debug output via `subscribeToReturnedModels`.
-    /// Unchanged elements appear as context; only the mutated field shows a diff line.
+    /// Replacing an array element (writing to the parent property) fires the debug closure.
+    /// Unchanged elements appear as context; only the replaced element shows a diff.
     @Test func debugTargeted_changes_arrayReturn() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Arr") }) { output in
             let parent = DebugDualParent().withAnchor()
             parent.debug([.changes(), .name("Arr"), .printer(output)]) { [parent.a, parent.b] }
-            parent.b.count = 7
+            let counter = DebugCounter()
+            counter.count = 7
+            parent.b = counter
         } result: {
             """
             Arr value changed:
@@ -526,7 +530,9 @@ struct DebugTests {
         try await assertOutputSnapshot(until: { $0.contains("Arr") }) { output in
             let parent = DebugDualParent().withAnchor()
             parent.debug([.changes(.diff(.collapsed)), .name("Arr"), .printer(output)]) { [parent.a, parent.b] }
-            parent.b.count = 7
+            let counter = DebugCounter()
+            counter.count = 7
+            parent.b = counter
         } result: {
             """
             Arr value changed:
@@ -543,15 +549,17 @@ struct DebugTests {
         }
     }
 
-    /// When the debug closure returns a different model instance after a swap, the
-    /// observer should re-subscribe to the new model and fire on its mutations.
+    /// The debug closure fires when the active model is replaced (parent property changes);
+    /// swapping useSecond fires because the closure reads useSecond (through the getter).
     @Test func debugTargeted_changes_swapReturn() async throws {
         let output = CaptureStream()
         let parent = DebugSwapParent().withAnchor()
         parent.debug([.changes(), .name("Swap"), .printer(output)]) { parent.active }
 
-        // Phase 1: Mutate first child
-        parent.active.count = 5
+        // Phase 1: Replace first child with a model that has count=5
+        let first = DebugCounter()
+        first.count = 5
+        parent.first = first
         try await waitUntil(output.captured.contains("Swap"))
 
         assertInlineSnapshot(of: output.captured, as: .lines) {
@@ -582,8 +590,10 @@ struct DebugTests {
         }
         output.reset()
 
-        // Phase 3: Mutate new active child — should fire against the new model
-        parent.active.count = 9
+        // Phase 3: Replace second child with a model that has count=9
+        let second = DebugCounter()
+        second.count = 9
+        parent.second = second
         try await waitUntil(output.captured.contains("Swap"))
 
         assertInlineSnapshot(of: output.captured, as: .lines) {
