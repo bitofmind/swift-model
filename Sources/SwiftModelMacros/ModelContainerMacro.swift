@@ -169,7 +169,11 @@ public struct ModelContainerMacro: ExtensionMacro {
                         equalsCasesForMember.append("case let (.\(element.name)(\(lhsBindings)), .\(element.name)(\(rhsBindings))): return \(comparisons)")
                     }
                 }
-                equalsCasesForMember.append("default: return false")
+                // Only add `default: return false` when multiple cases exist; a single-case enum
+                // is exhaustively covered by the explicit patterns, so `default` would be unreachable.
+                if elements.count > 1 {
+                    equalsCasesForMember.append("default: return false")
+                }
                 let equatableExtDecl: DeclSyntax =
                 """
                 extension \(raw: type.trimmedDescription): Equatable {
@@ -206,7 +210,9 @@ public struct ModelContainerMacro: ExtensionMacro {
                         equalsCases.append("case let (.\(element.name)(\(lhsBindings)), .\(element.name)(\(rhsBindings))): return \(comparisons)")
                     }
                 }
-                equalsCases.append("default: return false")
+                if elements.count > 1 {
+                    equalsCases.append("default: return false")
+                }
 
                 let equatableDecl: DeclSyntax =
                 """
@@ -280,23 +286,32 @@ extension ModelContainerMacro: MemberMacro {
             return []
         }
 
-        // Only inject members when the user explicitly declares Hashable in the inheritance clause.
-        // In that case the ExtensionMacro emits `extension T: Equatable { == }` to satisfy
-        // Equatable, and we inject only hash(into:) here as a direct member.
+        // Inject members when the user explicitly declares Hashable or Identifiable in the
+        // inheritance clause.
+        // - For Hashable: the ExtensionMacro emits `extension T: Equatable { == }` to satisfy
+        //   Equatable, and we inject hash(into:) here as a direct member.
+        // - For Identifiable: we inject `var id: _ModelContainerCaseID` as a direct member.
         // For Equatable-only declarations we don't synthesise — Swift's own auto-synthesis handles
         // simple cases, and the extension macro adds Hashable without redundant Equatable.
         let inheritedNames = Set(enumDecl.inheritanceClause?.inheritedTypes.map { $0.type.trimmedDescription } ?? [])
         let declaresHashable = inheritedNames.contains("Hashable")
+        let declaresIdentifiable = inheritedNames.contains("Identifiable")
 
-        guard declaresHashable else { return [] }
+        guard declaresHashable || declaresIdentifiable else { return [] }
 
-        // Respect manual implementations — if the user wrote == or hash, don't synthesise.
+        // Respect manual implementations — if the user wrote == or hash, don't synthesise those.
         let hasManualEquals = enumDecl.memberBlock.members.contains { member in
             guard let fn = member.decl.as(FunctionDeclSyntax.self) else { return false }
             return fn.name.text == "==" || fn.name.text == "hash"
         }
 
-        guard !hasManualEquals else { return [] }
+        // Respect manual `var id` — if the user declared it, don't synthesise.
+        let hasManualId = enumDecl.memberBlock.members.contains { member in
+            guard let varDecl = member.decl.as(VariableDeclSyntax.self) else { return false }
+            return varDecl.bindings.contains { binding in
+                binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text == "id"
+            }
+        }
 
         let caseDecls = enumDecl.memberBlock.members.compactMap { $0.decl.as(EnumCaseDeclSyntax.self) }
         let elements = caseDecls.flatMap(\.elements)
@@ -307,39 +322,80 @@ extension ModelContainerMacro: MemberMacro {
             return ""
         }
 
-        // Synthesise hash(into:) only.
-        // == is synthesised by the ExtensionMacro inside `extension T: Equatable { ... }` to
-        // avoid a Swift compiler crash that occurs when == is a direct member AND a separate
-        // Equatable conformance extension is present.
-        var hashCases: [String] = []
-        for element in elements {
-            let params = element.parameterClause?.parameters ?? []
-            let count = params.count
-            if count == 0 {
-                hashCases.append("""
-                case .\(element.name):
-                    hasher.combine("\(element.name)")
-                """)
-            } else {
-                let bindings = (0..<count).map { "\(paramLabel(params: params, at: $0))v\($0+1)" }.joined(separator: ", ")
-                let combines = (0..<count).map { "_modelCombine(into: &hasher, v\($0+1))" }.joined(separator: "\n        ")
-                hashCases.append("""
-                case let .\(element.name)(\(bindings)):
-                    hasher.combine("\(element.name)")
-                    \(combines)
-                """)
+        var result: [DeclSyntax] = []
+
+        if declaresHashable && !hasManualEquals {
+            // Synthesise hash(into:) only.
+            // == is synthesised by the ExtensionMacro inside `extension T: Equatable { ... }` to
+            // avoid a Swift compiler crash that occurs when == is a direct member AND a separate
+            // Equatable conformance extension is present.
+            var hashCases: [String] = []
+            for element in elements {
+                let params = element.parameterClause?.parameters ?? []
+                let count = params.count
+                if count == 0 {
+                    hashCases.append("""
+                    case .\(element.name):
+                        hasher.combine("\(element.name)")
+                    """)
+                } else {
+                    let bindings = (0..<count).map { "\(paramLabel(params: params, at: $0))v\($0+1)" }.joined(separator: ", ")
+                    let combines = (0..<count).map { "_modelCombine(into: &hasher, v\($0+1))" }.joined(separator: "\n        ")
+                    hashCases.append("""
+                    case let .\(element.name)(\(bindings)):
+                        hasher.combine("\(element.name)")
+                        \(combines)
+                    """)
+                }
             }
+
+            let hashDecl: DeclSyntax =
+            """
+            public func hash(into hasher: inout Hasher) {
+                switch self {
+                \(raw: hashCases.joined(separator: "\n    "))
+                }
+            }
+            """
+            result.append(hashDecl)
         }
 
-        let hashDecl: DeclSyntax =
-        """
-        public func hash(into hasher: inout Hasher) {
-            switch self {
-            \(raw: hashCases.joined(separator: "\n    "))
+        if declaresIdentifiable && !hasManualId {
+            // Synthesise `var id: _ModelContainerCaseID`.
+            // - Parameterless cases: id encodes only the case name.
+            // - Cases with associated values: id encodes the case name + _modelIdentity of each value.
+            //   _modelIdentity prefers value.id for Identifiable types (e.g. @Model), falls back
+            //   to AnyHashable(value) for Hashable types, and uses a zero placeholder otherwise.
+            var idCases: [String] = []
+            for element in elements {
+                let params = element.parameterClause?.parameters ?? []
+                let count = params.count
+                if count == 0 {
+                    idCases.append("""
+                    case .\(element.name):
+                        _ModelContainerCaseID(caseName: "\(element.name)", values: [])
+                    """)
+                } else {
+                    let bindings = (0..<count).map { "\(paramLabel(params: params, at: $0))v\($0+1)" }.joined(separator: ", ")
+                    let identities = (0..<count).map { "_modelIdentity(v\($0+1))" }.joined(separator: ", ")
+                    idCases.append("""
+                    case let .\(element.name)(\(bindings)):
+                        _ModelContainerCaseID(caseName: "\(element.name)", values: [\(identities)])
+                    """)
+                }
             }
-        }
-        """
 
-        return [hashDecl]
+            let idDecl: DeclSyntax =
+            """
+            public var id: _ModelContainerCaseID {
+                switch self {
+                \(raw: idCases.joined(separator: "\n    "))
+                }
+            }
+            """
+            result.append(idDecl)
+        }
+
+        return result
     }
 }

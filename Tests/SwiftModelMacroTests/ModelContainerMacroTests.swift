@@ -374,6 +374,191 @@ struct ModelContainerMacroTests {
         }
     }
 
+    @Test func testIdentifiableEnumModelContainer() {
+        assertMacro {
+            """
+            @ModelContainer enum Nav: Hashable, Identifiable {
+                case home
+                case detail(DetailModel)
+            }
+            """
+        } expansion: {
+            """
+            enum Nav: Hashable, Identifiable {
+                case home
+                case detail(DetailModel)
+
+                public func hash(into hasher: inout Hasher) {
+                    switch self {
+                    case .home:
+                    hasher.combine("home")
+                    case let .detail(v1):
+                    hasher.combine("detail")
+                    _modelCombine(into: &hasher, v1)
+                    }
+                }
+
+                public var id: _ModelContainerCaseID {
+                    switch self {
+                    case .home:
+                    _ModelContainerCaseID(caseName: "home", values: [])
+                    case let .detail(v1):
+                    _ModelContainerCaseID(caseName: "detail", values: [_modelIdentity(v1)])
+                    }
+                }
+            }
+
+            extension Nav: SwiftModel.ModelContainer {
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    switch self {
+                    case .home:
+                        break
+                    case let .detail(value1):
+                        visitor.visitStatically(at: path(caseName: "detail", value: value1) { root in
+                                if case let .detail(value1) = root {
+                                    value1
+                                } else {
+                                    nil
+                                }
+                            } set: { root, value in
+                                if case  .detail(_) = root {
+                                    let value1 = value
+                                    root = .detail(value1)
+                                }
+                            })
+
+
+                    }
+                }
+
+              }
+
+            extension Nav: Equatable {
+                public static func == (lhs: Self, rhs: Self) -> Bool {
+                    switch (lhs, rhs) {
+                    case (.home, .home):
+                        return true
+                    case let (.detail(l1), .detail(r1)):
+                        return _modelEqual(l1, r1)
+                    default:
+                        return false
+                    }
+                }
+            }
+            """
+        }
+    }
+
+    @Test func testIdentifiableNotSynthesisedWhenManualId() {
+        assertMacro {
+            """
+            @ModelContainer enum Nav: Hashable, Identifiable {
+                case detail(DetailModel)
+                var id: String { "manual" }
+            }
+            """
+        } expansion: {
+            """
+            enum Nav: Hashable, Identifiable {
+                case detail(DetailModel)
+                var id: String { "manual" }
+
+                public func hash(into hasher: inout Hasher) {
+                    switch self {
+                    case let .detail(v1):
+                    hasher.combine("detail")
+                    _modelCombine(into: &hasher, v1)
+                    }
+                }
+            }
+
+            extension Nav: SwiftModel.ModelContainer {
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    switch self {
+                    case let .detail(value1):
+                        visitor.visitStatically(at: path(caseName: "detail", value: value1) { root in
+                                if case let .detail(value1) = root {
+                                    value1
+                                } else {
+                                    nil
+                                }
+                            } set: { root, value in
+                                if case  .detail(_) = root {
+                                    let value1 = value
+                                    root = .detail(value1)
+                                }
+                            })
+
+
+                    }
+                }
+
+              }
+
+            extension Nav: Equatable {
+                public static func == (lhs: Self, rhs: Self) -> Bool {
+                    switch (lhs, rhs) {
+                    case let (.detail(l1), .detail(r1)):
+                        return _modelEqual(l1, r1)
+                    }
+                }
+            }
+            """
+        }
+    }
+
+    @Test func testIdentifiableOnlyEnum() {
+        assertMacro {
+            """
+            @ModelContainer enum Nav: Identifiable {
+                case home
+                case detail(DetailModel)
+            }
+            """
+        } expansion: {
+            """
+            enum Nav: Identifiable {
+                case home
+                case detail(DetailModel)
+
+                public var id: _ModelContainerCaseID {
+                    switch self {
+                    case .home:
+                    _ModelContainerCaseID(caseName: "home", values: [])
+                    case let .detail(v1):
+                    _ModelContainerCaseID(caseName: "detail", values: [_modelIdentity(v1)])
+                    }
+                }
+            }
+
+            extension Nav: SwiftModel.ModelContainer {
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    switch self {
+                    case .home:
+                        break
+                    case let .detail(value1):
+                        visitor.visitStatically(at: path(caseName: "detail", value: value1) { root in
+                                if case let .detail(value1) = root {
+                                    value1
+                                } else {
+                                    nil
+                                }
+                            } set: { root, value in
+                                if case  .detail(_) = root {
+                                    let value1 = value
+                                    root = .detail(value1)
+                                }
+                            })
+
+
+                    }
+                }
+
+              }
+            """
+        }
+    }
+
     @Test func testClassModelContainer() {
         assertMacro {
             """

@@ -96,7 +96,9 @@ struct TodoListView: View {
             .onMove { model.moveItems(from: $0, to: $1) }
         }
         .navigationTitle("To-Do List")
+#if os(macOS)
         .navigationSubtitle(model.items.isEmpty ? "" : "\(model.completedCount) of \(model.items.count) completed")
+#endif
         .toolbar {
 #if os(iOS)
             ToolbarItem(placement: .primaryAction) {
@@ -147,7 +149,9 @@ private struct TodoItemRow: View {
             if isEditing {
                 TextField("Title", text: $editDraft)
                     .onSubmit { commitEdit() }
+#if os(macOS)
                     .onExitCommand { cancelEdit() }   // Esc on macOS
+#endif
             } else {
                 Text(item.title)
                     .strikethrough(item.isDone)

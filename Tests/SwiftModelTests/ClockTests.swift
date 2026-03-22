@@ -4,6 +4,7 @@ import SwiftModelTesting
 import Observation
 import Clocks
 
+@available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
 @Model
 private struct TimerModel {
     var secondsElapsed = 0
@@ -18,6 +19,7 @@ private struct TimerModel {
 @Suite(.modelTesting)
 struct ClockTests {
     /// TestClock lets you advance time explicitly and assert intermediate states.
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test func testClockStepByStep() async {
         let clock = TestClock()
         let model = TimerModel().withAnchor {
@@ -33,6 +35,7 @@ struct ClockTests {
 
     /// ImmediateClock fires all timer intervals synchronously, so the model
     /// reaches its final state without explicit clock advancement.
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test(.modelTesting(exhaustivity: .off)) func testImmediateClock() async {
         let model = TimerModel().withAnchor {
             $0.continuousClock = ImmediateClock()

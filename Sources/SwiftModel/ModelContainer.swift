@@ -166,6 +166,46 @@ public func _modelCombine<T>(into hasher: inout Hasher, _ value: T) {
     hasher.combine(0)
 }
 
+// MARK: - Identifiable synthesis helpers
+
+/// The synthesised `id` type for `@ModelContainer` enums that declare `Identifiable`.
+///
+/// The `@ModelContainer` macro generates `var id: _ModelContainerCaseID` whose value encodes
+/// the case name and the identity of each associated value via `_modelIdentity`.
+public struct _ModelContainerCaseID: Hashable, @unchecked Sendable {
+    public var caseName: String
+    public var values: [AnyHashable]
+
+    public init(caseName: String, values: [AnyHashable]) {
+        self.caseName = caseName
+        self.values = values
+    }
+}
+
+/// Returns `AnyHashable(value.id)` for `Identifiable` types (covers `@Model` types).
+///
+/// Preferred over the `Hashable` overload when `T` conforms to both.
+public func _modelIdentity<T: Identifiable>(_ value: T) -> AnyHashable {
+    AnyHashable(value.id)
+}
+
+/// Returns `AnyHashable(value)` for `Hashable` types that are not `Identifiable`.
+///
+/// Used by the `@ModelContainer` macro's synthesised `var id` when the associated value
+/// is not `Identifiable` (e.g. plain `Int`, `String`, or a custom `Hashable` type).
+@_disfavoredOverload
+public func _modelIdentity<T: Hashable>(_ value: T) -> AnyHashable {
+    AnyHashable(value)
+}
+
+/// Fallback for types that are neither `Identifiable` nor `Hashable` (e.g. closures).
+///
+/// Returns a stable zero placeholder; such values cannot be meaningfully identified.
+@_disfavoredOverload
+public func _modelIdentity<T>(_ value: T) -> AnyHashable {
+    AnyHashable(0)
+}
+
 public extension ModelContainer {
     func path<ID: Hashable, Value>(id: ID, get: @escaping @Sendable (Self) -> Value, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
         let cursor = ContainerCursor(id: id, get: get, set: set)

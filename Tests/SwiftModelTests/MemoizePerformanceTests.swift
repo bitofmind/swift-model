@@ -6,6 +6,7 @@ import Observation
 @Suite(.serialized, .tags(.benchmark))
 struct MemoizePerformanceTests {
 
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkBulkUpdatesCurrentBehavior() async throws {
         let model = BenchmarkModel(itemCount: 1000).withAnchor()
@@ -31,6 +32,7 @@ struct MemoizePerformanceTests {
         #expect(model.sorted.allSatisfy { $0.value == 1 })
     }
 
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkBulkUpdatesWithTransaction() async throws {
         let model = BenchmarkModel(itemCount: 1000).withAnchor()
@@ -57,6 +59,7 @@ struct MemoizePerformanceTests {
         #expect(model.sorted.allSatisfy { $0.value == 1 })
     }
 
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkRepeatedAccess() async throws {
         let model = BenchmarkModel(itemCount: 100).withAnchor()
@@ -79,6 +82,7 @@ struct MemoizePerformanceTests {
         #expect(model.sortCallCount == 1)
     }
 
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkBulkUpdatesWithNestedModels() async throws {
         let model = NestedModelBenchmark(itemCount: 1000).withAnchor()
@@ -104,6 +108,7 @@ struct MemoizePerformanceTests {
         #expect(model.sorted.allSatisfy { $0.value == 1 })
     }
 
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkBulkUpdatesWithNestedModelsAndTransaction() async throws {
         let model = NestedModelBenchmark(itemCount: 1000).withAnchor()
@@ -130,6 +135,7 @@ struct MemoizePerformanceTests {
         #expect(model.sorted.allSatisfy { $0.value == 1 })
     }
 
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkMemoizeCoalescingComparison() async throws {
         print("\n===============================================================================================")
@@ -227,6 +233,7 @@ struct MemoizePerformanceTests {
         #expect(testModel.sorted.allSatisfy { $0.value == 1 })
     }
     
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkMemoizeComprehensive() async throws {
         let mutationCount = 100
@@ -408,6 +415,7 @@ struct MemoizePerformanceTests {
     /// Benchmark focused on dirty tracking: many mutations between reads
     /// This tests the "lazy" aspect of dirty tracking - value updated many times
     /// but only computed once when accessed
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkDirtyTrackingLazyEvaluation() async throws {
         let mutationCount = 100

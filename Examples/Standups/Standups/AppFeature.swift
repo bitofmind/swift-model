@@ -48,22 +48,16 @@ import ConcurrencyExtras
     }
   }
 
-  // @ModelContainer synthesises Hashable: Equatable/Hashable types (StandupDetail.ID, Meeting,
-  // Standup) use value equality; @Model types (RecordMeeting) fall back to identity via .id.
+  // @ModelContainer synthesises Hashable and Identifiable.
+  // Equatable/Hashable types (StandupDetail.ID, Meeting, Standup) hash by value;
+  // @Model types (RecordMeeting) hash by identity via .id.
+  // Identifiable makes [Path] a ModelContainer so child models are managed in the hierarchy.
   @ModelContainer @CasePathable
   @dynamicMemberLookup
   enum Path: Hashable, Sendable, Identifiable {
     case detail(StandupDetail.ID)
     case meeting(Meeting, standup: Standup)
     case record(RecordMeeting)
-
-    var id: AnyHashableSendable {
-      switch self {
-      case let .detail(detail): AnyHashableSendable(detail)
-      case let .meeting(meeting, standup: standup): AnyHashableSendable([AnyHashableSendable(meeting.id), AnyHashableSendable(standup.id)])
-      case let .record(record): AnyHashableSendable(record.id)
-      }
-    }
   }
 }
 

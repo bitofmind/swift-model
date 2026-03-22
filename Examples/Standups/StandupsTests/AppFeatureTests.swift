@@ -5,26 +5,27 @@ import Dependencies
 
 @testable import Standups
 
+@Suite(.modelTesting)
 struct AppFeatureTests {
   @Test func testDelete() async throws {
     let standup = Standup.mock
 
-    let (appFeature, tester) = AppFeature(path: []).andTester {
+    let appFeature = AppFeature(path: []).withAnchor {
       $0.dataManager = .mock(initialData: try! JSONEncoder().encode([standup]))
       $0.continuousClock = ImmediateClock()
     }
 
-    await tester.assert(appFeature.standupsList.standupDetails.first?.standup == standup)
-    let detail = try await tester.unwrap(appFeature.standupsList.standupDetails.first)
+    await expect(appFeature.standupsList.standupDetails.first?.standup == standup)
+    let detail = try await require(appFeature.standupsList.standupDetails.first)
 
     appFeature.path.append(.detail(detail.id))
-    await tester.assert(appFeature.path.count == 1)
+    await expect(appFeature.path.count == 1)
 
     detail.deleteButtonTapped()
 
-    try await tester.unwrap(detail.destination?.deleteStandup)()
+    try await require(detail.destination?.deleteStandup)()
 
-    await tester.assert {
+    await expect {
       detail.didSend(.deleteStandup)
       appFeature.path.isEmpty
       appFeature.standupsList.standupDetails.isEmpty
@@ -35,7 +36,7 @@ struct AppFeatureTests {
     var standup = Standup.mock
     let saveStandup = TestProbe()
 
-    let (appFeature, tester) = AppFeature(path: []).andTester { dependencies in
+    let appFeature = AppFeature(path: []).withAnchor { dependencies in
       dependencies.continuousClock = ImmediateClock()
       dependencies.dataManager = .mock(
         initialData: try! JSONEncoder().encode([standup])
@@ -47,31 +48,34 @@ struct AppFeatureTests {
     }
 
     let standup0 = standup
-    await tester.assert(appFeature.standupsList.standupDetails.first?.standup == standup0)
-    let detail = try await tester.unwrap(appFeature.standupsList.standupDetails.first)
+    await expect(appFeature.standupsList.standupDetails.first?.standup == standup0)
+    // The Observed fires once when StandupsList loads the data from the mock manager
+    // (standupDetails changes from [] to [standup0]). Consume that initial save.
+    await expect(saveStandup.wasCalled(with: [standup0]))
+    let detail = try await require(appFeature.standupsList.standupDetails.first)
 
     appFeature.path.append(.detail(detail.id))
-    await tester.assert(appFeature.path.count == 1)
+    await expect(appFeature.path.count == 1)
 
     detail.editButtonTapped()
 
-    let edit = try await tester.unwrap(detail.destination?.edit)
+    let edit = try await require(detail.destination?.edit)
 
     standup.title = "Blob"
     let editedStandup = standup
     edit.form.standup = editedStandup
-    await tester.assert(edit.form.standup == editedStandup)
+    await expect(edit.form.standup == editedStandup)
 
     edit.save(editedStandup)
-    await tester.assert {
+    await expect {
       detail.destination == nil
       detail.standup == editedStandup
     }
 
-    await tester.assert(saveStandup.wasCalled(with: [editedStandup]))
+    await expect(saveStandup.wasCalled(with: [editedStandup]))
   }
 
-  @Test func testRecording() async throws {
+  @Test(.modelTesting(exhaustivity: .off)) func testRecording() async throws {
     let speechResult = SpeechRecognitionResult(
       bestTranscription: Transcription(formattedString: "I completed the project"),
       isFinal: true
@@ -86,9 +90,9 @@ struct AppFeatureTests {
       duration: .seconds(6)
     )
 
-    let (appFeature, tester) = AppFeature(path: [
+    let appFeature = AppFeature(path: [
       .detail(standup.id),
-    ]).andTester {
+    ]).withAnchor {
       $0.dataManager = .mock(initialData: try! JSONEncoder().encode([standup]))
       $0.date.now = Date(timeIntervalSince1970: 1_234_567_890)
       $0.continuousClock = ImmediateClock()
@@ -102,14 +106,12 @@ struct AppFeatureTests {
       $0.uuid = .incrementing
     }
 
-    tester.exhaustivity = .off
-
-    let detailID = try await tester.unwrap(appFeature.path.first?.detail)
-    let detail = try await tester.unwrap(appFeature.standupsList.standupDetails[id: detailID])
+    let detailID = try await require(appFeature.path.first?.detail)
+    let detail = try await require(appFeature.standupsList.standupDetails[id: detailID])
 
     detail.startMeetingButtonTapped()
 
-    await tester.assert {
+    await expect {
       detail.standup.meetings == [
         Meeting(
           id: Meeting.ID(UUID(0)),

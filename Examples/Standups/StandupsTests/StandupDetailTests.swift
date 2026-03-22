@@ -4,82 +4,83 @@ import Dependencies
 
 @testable import Standups
 
+@Suite(.modelTesting)
 struct StandupDetailTests {
   @Test func testSpeechRestricted() async {
-    let (standupDetail, tester) = StandupDetail(standup: .mock).andTester() {
+    let standupDetail = StandupDetail(standup: .mock).withAnchor {
       $0.speechClient.authorizationStatus = { .restricted }
     }
 
     standupDetail.startMeetingButtonTapped()
-    await tester.assert(standupDetail.destination?.speechRecognitionRestricted != nil)
+    await expect(standupDetail.destination?.speechRecognitionRestricted != nil)
   }
 
   @Test func testSpeechDenied() async throws {
-    let (standupDetail, tester) = StandupDetail(standup: .mock).andTester() {
+    let standupDetail = StandupDetail(standup: .mock).withAnchor {
       $0.speechClient.authorizationStatus = { .denied }
     }
 
     standupDetail.startMeetingButtonTapped()
-    await tester.assert(standupDetail.destination != nil)// == .alert(.speechRecognitionDenied))
+    await expect(standupDetail.destination != nil)
   }
 
   @Test func testOpenSettings() async throws {
     let settingsOpened = TestProbe()
 
-    let (standupDetail, tester) = StandupDetail(standup: .mock).andTester() {
+    let standupDetail = StandupDetail(standup: .mock).withAnchor {
       $0.openSettings = settingsOpened.call
       $0.speechClient.authorizationStatus = { .denied }
     }
 
     standupDetail.startMeetingButtonTapped()
 
-    try await tester.unwrap(standupDetail.destination?.speechRecognitionDenied).openSettings()
-    await tester.assert {
+    try await require(standupDetail.destination?.speechRecognitionDenied).openSettings()
+    await expect {
       standupDetail.destination?.speechRecognitionDenied != nil
       settingsOpened.wasCalled()
     }
   }
 
   @Test func testContinueWithoutRecording() async throws {
-    let (standupDetail, tester) = StandupDetail(standup: .mock).andTester() {
+    let standupDetail = StandupDetail(standup: .mock).withAnchor {
       $0.speechClient.authorizationStatus = { .denied }
     }
 
     standupDetail.startMeetingButtonTapped()
-    try await tester.unwrap(standupDetail.destination?.speechRecognitionDenied).continue()
+    try await require(standupDetail.destination?.speechRecognitionDenied).continue()
 
-    await tester.assert {
+    await expect {
       standupDetail.destination?.speechRecognitionDenied != nil
       standupDetail.didSend(.startMeeting)
     }
   }
 
   @Test func testSpeechAuthorized() async throws {
-    let (standupDetail, tester) = StandupDetail(standup: .mock).andTester() {
+    let standupDetail = StandupDetail(standup: .mock).withAnchor {
       $0.speechClient.authorizationStatus = { .authorized }
     }
 
     standupDetail.startMeetingButtonTapped()
-    await tester.assert(standupDetail.didSend(.startMeeting))
+    await expect(standupDetail.didSend(.startMeeting))
   }
 
   @Test func testEdit() async throws {
     var standup = Standup.mock
-    let (standupDetail, tester) = StandupDetail(standup: standup).andTester() {
+    let standupDetail = StandupDetail(standup: standup).withAnchor {
       $0.uuid = .incrementing
     }
 
     standupDetail.editButtonTapped()
-    await tester.assert(standupDetail.destination?.edit != nil)
+    await expect(standupDetail.destination?.edit != nil)
 
-    let edit = try await tester.unwrap(standupDetail.destination?.edit)
+    let edit = try await require(standupDetail.destination?.edit)
     standup.title = "Blob's Meeting"
     edit.form.standup = standup
-    await tester.assert(edit.form.standup.title == "Blob's Meeting")
+    await expect(edit.form.standup.title == "Blob's Meeting")
 
     edit.save(edit.form.standup)
 
-    await tester.assert {
+    await expect {
       standupDetail.destination == nil
       standupDetail.standup.title == "Blob's Meeting"
     }

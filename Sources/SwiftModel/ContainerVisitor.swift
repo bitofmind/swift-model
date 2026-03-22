@@ -42,6 +42,12 @@ public extension ContainerVisitor {
     /// The `@ModelContainer` macro generates calls to this method in synthesised `visit(with:)`
     /// bodies. Prefer `visitDynamically` when the element type is a generic type parameter.
     mutating func visitStatically<T>(at path: WritableKeyPath<State, T>) {
+        #if DEBUG
+        if let collectionType = T.self as? any _DebugCollectionCheck.Type,
+           collectionType._hasModelOrContainerElement() {
+            reportIssue("A collection property of \(State.self) contains Model/ModelContainer elements but the collection is not itself a ModelContainer. Make the element type Identifiable so the collection becomes a ModelContainer.")
+        }
+        #endif
         modelVisitor.visit(path: path)
     }
 
@@ -59,6 +65,11 @@ public extension ContainerVisitor {
 
     mutating func visitStatically<T: Sequence>(at path: WritableKeyPath<State, T>) where T.Element: Model {
         reportIssue("Collection of models needs to conform to ModelContainer")
+        modelVisitor.visit(path: path)
+    }
+
+    mutating func visitStatically<T: Sequence>(at path: WritableKeyPath<State, T>) where T.Element: ModelContainer {
+        reportIssue("Collection of ModelContainer elements in \(State.self) is not itself a ModelContainer. Make the element type conform to Identifiable (e.g. add `: Identifiable` to the enum and declare `@ModelContainer enum Path: Hashable, Identifiable`).")
         modelVisitor.visit(path: path)
     }
 
@@ -80,3 +91,29 @@ private extension ContainerVisitor {
         modelVisitor.visit(path: path as! WritableKeyPath<State, M>)
     }
 }
+
+// MARK: - Debug collection element check
+
+/// A protocol used in `#if DEBUG` builds to detect at the type level whether a collection's
+/// element type is a `Model` or `ModelContainer`. This catches cases where a collection holds
+/// model children but is not itself a `ModelContainer` — meaning child models would be silently
+/// skipped during traversal.
+///
+/// Explicit conformances are provided for the most common collection types. For any other
+/// collection, the compile-time `visitStatically<T: Sequence> where T.Element: ModelContainer`
+/// overload serves as the primary safety net.
+#if DEBUG
+private protocol _DebugCollectionCheck {
+    static func _hasModelOrContainerElement() -> Bool
+}
+
+private extension Collection {
+    static func _hasModelOrContainerElement() -> Bool {
+        Element.self is any Model.Type || Element.self is any ModelContainer.Type
+    }
+}
+
+extension Array: _DebugCollectionCheck {}
+extension Set: _DebugCollectionCheck {}
+extension ContiguousArray: _DebugCollectionCheck {}
+#endif

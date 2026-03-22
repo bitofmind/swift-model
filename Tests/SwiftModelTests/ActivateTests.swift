@@ -246,6 +246,28 @@ struct ActivateTests {
 
         #expect(testResult.value == "PC0C2C3c2c3C4c4C4c4pc0")
     }
+
+    // MARK: - Collection model container checks
+
+    @Test func testCollectionOfModelContainerWithoutIdentifiableReportsIssue() {
+        // BadPath: ModelContainer but not Identifiable → [BadPath] is not a ModelContainer
+        // The compile-time visitStatically overload fires reportIssue when the model is connected.
+        withKnownIssue {
+            _ = ModelWithBadCollection().withAnchor()
+        }
+    }
+
+    @Test func testCollectionOfIdentifiableModelContainerIsOK() async {
+        // Child: Model (ModelContainer & Identifiable) → [Child] is a ModelContainer, no issue
+        await waitUntilRemoved {
+            ModelWithChildCollection().withAnchor()
+        }
+    }
+
+    @Test func testPlainCollectionIsOK() {
+        // [Int]: not a Model/ModelContainer → runtime check short-circuits, no issue
+        _ = ModelWithPlainCollection().withAnchor()
+    }
 }
 
 @ModelContainer private enum Cases {
@@ -253,6 +275,15 @@ struct ActivateTests {
     case child(Child)
     case children([Child])
 }
+
+// ModelContainer but NOT Identifiable — [BadPath] is not a ModelContainer
+@ModelContainer private enum BadPath {
+    case leaf(Leaf)
+}
+
+@Model private struct ModelWithBadCollection { var path: [BadPath] = [] }
+@Model private struct ModelWithChildCollection { var children: [Child] = [] }
+@Model private struct ModelWithPlainCollection { var values: [Int] = [] }
 
 @Model private struct Parent {
     var child: Child = Child(id: 0)

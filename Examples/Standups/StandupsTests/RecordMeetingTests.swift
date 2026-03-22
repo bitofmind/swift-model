@@ -4,12 +4,13 @@ import Dependencies
 
 @testable import Standups
 
+@Suite(.modelTesting)
 struct RecordMeetingTests {
   @Test func testTimer() async throws {
     let clock = TestClock()
     let onSave = TestProbe()
 
-    let (recordMeeting, tester) = RecordMeeting(
+    let recordMeeting = RecordMeeting(
       standup: Standup(
         id: Standup.ID(),
         attendees: [
@@ -21,49 +22,48 @@ struct RecordMeetingTests {
       ),
       onSave: onSave.call,
       onDiscard: {}
-    ).andTester {
+    ).withAnchor {
       $0.continuousClock = clock
       $0.speechClient.authorizationStatus = { .denied }
     }
-    tester.install(onSave)
 
     await clock.advance(by: .seconds(1))
-    await tester.assert {
+    await expect {
       recordMeeting.speakerIndex == 0
       recordMeeting.secondsElapsed == 1
       recordMeeting.durationRemaining == .seconds(5)
     }
 
     await clock.advance(by: .seconds(1))
-    await tester.assert {
+    await expect {
       recordMeeting.speakerIndex == 1
       recordMeeting.secondsElapsed == 2
       recordMeeting.durationRemaining == .seconds(4)
     }
 
     await clock.advance(by: .seconds(1))
-    await tester.assert {
+    await expect {
       recordMeeting.speakerIndex == 1
       recordMeeting.secondsElapsed == 3
       recordMeeting.durationRemaining == .seconds(3)
     }
 
     await clock.advance(by: .seconds(1))
-    await tester.assert {
+    await expect {
       recordMeeting.speakerIndex == 2
       recordMeeting.secondsElapsed == 4
       recordMeeting.durationRemaining == .seconds(2)
     }
 
     await clock.advance(by: .seconds(1))
-    await tester.assert {
+    await expect {
       recordMeeting.speakerIndex == 2
       recordMeeting.secondsElapsed == 5
       recordMeeting.durationRemaining == .seconds(1)
     }
 
     await clock.advance(by: .seconds(1))
-    await tester.assert {
+    await expect {
       recordMeeting.speakerIndex == 2
       recordMeeting.secondsElapsed == 6
       recordMeeting.durationRemaining == .seconds(0)
@@ -71,11 +71,11 @@ struct RecordMeetingTests {
     }
   }
 
-  @Test func testRecordTranscript() async throws {
+  @Test(.modelTesting(exhaustivity: .off)) func testRecordTranscript() async throws {
     let clock = TestClock()
     let onSave = TestProbe()
 
-    let (recordMeeting, tester) = RecordMeeting(
+    let recordMeeting = RecordMeeting(
       standup: Standup(
         id: Standup.ID(),
         attendees: [
@@ -87,7 +87,7 @@ struct RecordMeetingTests {
       ),
       onSave: onSave.call,
       onDiscard: {}
-    ).andTester {
+    ).withAnchor {
       $0.continuousClock = clock
       $0.speechClient.authorizationStatus = { .authorized }
       $0.speechClient.startTask = { _ in
@@ -103,63 +103,59 @@ struct RecordMeetingTests {
       }
     }
 
-    tester.install(onSave)
-    tester.exhaustivity = .off
-
-    await tester.assert(recordMeeting.transcript == "I completed the project")
+    await expect(recordMeeting.transcript == "I completed the project")
     await clock.advance(by: .seconds(6))
 
-    await tester.assert(onSave.wasCalled(with: "I completed the project"))
+    await expect(onSave.wasCalled(with: "I completed the project"))
   }
 
   @Test func testEndMeetingSave() async throws {
     let clock = TestClock()
     let onSave = TestProbe()
 
-    let (recordMeeting, tester) = RecordMeeting(
+    let recordMeeting = RecordMeeting(
       standup: .mock,
       onSave: onSave.call,
       onDiscard: {}
-    ).andTester {
+    ).withAnchor {
       $0.continuousClock = clock
       $0.speechClient.authorizationStatus = { .denied }
     }
-    tester.install(onSave)
 
     recordMeeting.endMeetingButtonTapped()
-    await tester.assert(recordMeeting.destination?.endMeeting != nil)
+    await expect(recordMeeting.destination?.endMeeting != nil)
 
     await clock.advance(by: .seconds(3))
 
     recordMeeting.destination?.endMeeting?.confirmSave()
-    await tester.assert(onSave.wasCalled(with: ""))
+    await expect(onSave.wasCalled(with: ""))
   }
 
   @Test func testEndMeetingDiscard() async throws {
     let clock = TestClock()
     let onDiscard = TestProbe()
 
-    let (recordMeeting, tester) = RecordMeeting(
+    let recordMeeting = RecordMeeting(
       standup: .mock,
       onSave: { _ in },
       onDiscard: onDiscard.call
-    ).andTester {
+    ).withAnchor {
       $0.continuousClock = clock
       $0.speechClient.authorizationStatus = { .denied }
     }
 
     recordMeeting.endMeetingButtonTapped()
-    let discardMeeting = try await tester.unwrap(recordMeeting.destination?.endMeeting?.discard)
+    let discardMeeting = try await require(recordMeeting.destination?.endMeeting?.discard)
     discardMeeting()
 
-    await tester.assert(onDiscard.wasCalled())
+    await expect(onDiscard.wasCalled())
   }
 
   @Test func testNextSpeaker() async throws {
     let clock = TestClock()
     let onSave = TestProbe()
 
-    let (recordMeeting, tester) = RecordMeeting(
+    let recordMeeting = RecordMeeting(
       standup: Standup(
         id: Standup.ID(),
         attendees: [
@@ -171,36 +167,36 @@ struct RecordMeetingTests {
       ),
       onSave: onSave.call,
       onDiscard: {}
-    ).andTester {
+    ).withAnchor {
       $0.continuousClock = clock
       $0.speechClient.authorizationStatus = { .denied }
     }
 
     recordMeeting.nextButtonTapped()
-    await tester.assert {
+    await expect {
       recordMeeting.speakerIndex == 1
       recordMeeting.secondsElapsed == 2
     }
 
     recordMeeting.nextButtonTapped()
-    await tester.assert {
+    await expect {
       recordMeeting.speakerIndex == 2
       recordMeeting.secondsElapsed == 4
     }
 
     recordMeeting.nextButtonTapped()
-    let endMeeting = try await tester.unwrap(recordMeeting.destination?.endMeeting)
-    await tester.assert(endMeeting.discard == nil)
+    let endMeeting = try await require(recordMeeting.destination?.endMeeting)
+    await expect(endMeeting.discard == nil)
 
     endMeeting.confirmSave()
-    await tester.assert(onSave.wasCalled(with: ""))
+    await expect(onSave.wasCalled(with: ""))
   }
 
   @Test func testSpeechRecognitionFailure_Continue() async throws {
     let clock = TestClock()
     let onSave = TestProbe()
 
-    let (recordMeeting, tester) = RecordMeeting(
+    let recordMeeting = RecordMeeting(
       standup: Standup(
         id: Standup.ID(),
         attendees: [
@@ -212,7 +208,7 @@ struct RecordMeetingTests {
       ),
       onSave: onSave.call,
       onDiscard: {}
-    ).andTester {
+    ).withAnchor {
       $0.continuousClock = clock
       $0.speechClient.authorizationStatus = { .authorized }
       $0.speechClient.startTask = { _ in
@@ -229,7 +225,7 @@ struct RecordMeetingTests {
       }
     }
 
-    await tester.assert {
+    await expect {
       recordMeeting.destination?.speechRecognizerFailed != nil
       recordMeeting.transcript == "I completed the project ❌"
     }
@@ -238,7 +234,7 @@ struct RecordMeetingTests {
 
     await clock.advance(by: .seconds(6))
 
-    await tester.assert {
+    await expect {
       recordMeeting.secondsElapsed == 6
       recordMeeting.speakerIndex == 2
       recordMeeting.destination == nil
@@ -250,11 +246,11 @@ struct RecordMeetingTests {
     let clock = TestClock()
     let onDiscard = TestProbe()
 
-    let (recordMeeting, tester) = RecordMeeting(
+    let recordMeeting = RecordMeeting(
       standup: .mock,
       onSave: { _ in },
       onDiscard: onDiscard.call
-    ).andTester {
+    ).withAnchor {
       $0.continuousClock = clock
       $0.speechClient.authorizationStatus = { .authorized }
       $0.speechClient.startTask = { _ in
@@ -264,11 +260,10 @@ struct RecordMeetingTests {
         }
       }
     }
-    tester.install(onDiscard)
 
-    let speechFailure = try await tester.unwrap(recordMeeting.destination?.speechRecognizerFailed)
+    let speechFailure = try await require(recordMeeting.destination?.speechRecognizerFailed)
     speechFailure() // discard
 
-    await tester.assert(onDiscard.wasCalled())
+    await expect(onDiscard.wasCalled())
   }
 }

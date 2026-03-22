@@ -5,9 +5,10 @@ import Dependencies
 
 @testable import Standups
 
+@Suite(.modelTesting)
 struct StandupsListTests {
   @Test func testAdd() async throws {
-    let (standupList, tester) = StandupsList().andTester() {
+    let standupList = StandupsList().withAnchor {
       $0.continuousClock = ImmediateClock()
       $0.dataManager = .mock()
       $0.uuid = .incrementing
@@ -20,18 +21,18 @@ struct StandupsListTests {
       ]
     )
     standupList.addStandupButtonTapped()
-    let addStandup = try await tester.unwrap(standupList.destination?.add)
-    await tester.assert(addStandup.form.standup == standup0)
+    let addStandup = try await require(standupList.destination?.add)
+    await expect(addStandup.form.standup == standup0)
 
     var standup1 = standup0
     standup1.title = "Engineering"
     let standup1Final = standup1
     addStandup.form.standup = standup1Final
-    await tester.assert(addStandup.form.standup == standup1Final)
+    await expect(addStandup.form.standup == standup1Final)
 
     let expectedStandup = standup1Final
     addStandup.add(addStandup.form.standup)
-    await tester.assert {
+    await expect {
       standupList.destination == nil
       standupList.standupDetails.map(\.standup) == [expectedStandup]
     }
@@ -39,7 +40,7 @@ struct StandupsListTests {
 
   @Test func testAdd_ValidatedAttendees() async throws {
     let uuid = UUIDGenerator.incrementing
-    let (standupList, tester) = StandupsList().withActivation {
+    let standupList = StandupsList().withActivation {
       $0.destination = $0.addDestination(
         for: Standup(
           id: Standup.ID(uuidString: "deadbeef-dead-beef-dead-beefdeadbeef")!,
@@ -50,16 +51,16 @@ struct StandupsListTests {
           title: "Design"
         )
       )
-    }.andTester() {
+    }.withAnchor {
       $0.continuousClock = ImmediateClock()
       $0.dataManager = .mock()
       $0.uuid = uuid
     }
 
-    let addStandup = try await tester.unwrap(standupList.destination?.add)
+    let addStandup = try await require(standupList.destination?.add)
     addStandup.add(addStandup.form.standup)
 
-    await tester.assert {
+    await expect {
       standupList.destination == nil
       standupList.standupDetails.map(\.standup) == [
         Standup(
@@ -74,17 +75,17 @@ struct StandupsListTests {
   }
 
   @Test func testLoadingDataDecodingFailed() async throws {
-    let (standupList, tester) = StandupsList().andTester {
+    let standupList = StandupsList().withAnchor {
       $0.continuousClock = ImmediateClock()
       $0.dataManager = .mock(
         initialData: Data("!@#$ BAD DATA %^&*()".utf8)
       )
     }
 
-    let dataFailedToLoad = try await tester.unwrap(standupList.destination?.dataFailedToLoad)
+    let dataFailedToLoad = try await require(standupList.destination?.dataFailedToLoad)
 
     dataFailedToLoad() // confirm
-    await tester.assert {
+    await expect {
       standupList.standupDetails.map(\.standup) == [
         .mock,
         .designMock,
@@ -94,7 +95,7 @@ struct StandupsListTests {
   }
 
   @Test func testLoadingDataFileNotFound() async throws {
-    let (standupList, tester) = StandupsList().andTester {
+    let standupList = StandupsList().withAnchor {
       $0.continuousClock = ImmediateClock()
       $0.dataManager.load = { _ in
         struct FileNotFound: Error {}
@@ -102,6 +103,6 @@ struct StandupsListTests {
       }
     }
 
-    await tester.assert(standupList.destination == nil)
+    await expect(standupList.destination == nil)
   }
 }
