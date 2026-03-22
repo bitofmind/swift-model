@@ -318,7 +318,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                             // Use includeInMirror so @Model child values show their fields and ModelID.
                             // This makes it clear which instance was assigned (important when a child
                             // model is replaced with a new instance that has the same field values).
-                            let valueDescription = threadLocals.withValue(true, at: \.includeInMirror) {
+                            let valueDescription = threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
                                 String(customDumping: value)
                             }
                             return "\(String(describing: M.self)).\(prop) == \(valueDescription)"
@@ -442,7 +442,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     let isEqualIncludingIds = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
                         let last = lastState.frozenCopy
                         return lock {
-                            threadLocals.withValue(true, at: \.includeInMirror) {
+                            threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
                                 return passedAccesses.reduce(true) { result, access in
                                     // Context/preference storage values live in AnyContext.contextStorage,
                                     // not in the @Model struct fields. Writing them back to a frozen copy
@@ -939,7 +939,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             // Layer 2: diff with IDs — only runs if layer 1 found nothing.
             // Catches identity-only changes: child model replaced with a new instance
             // that has the same field values, so only the implicit ModelID differs.
-            let layer2 = threadLocals.withValue(true, at: \.includeInMirror) {
+            let layer2 = threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
                 diffMessage(expected: lastAsserted, actual: actual, title: title)
             }
             // Suppress "Not equal but no difference detected" results from layer-2.

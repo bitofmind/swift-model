@@ -7,7 +7,7 @@ struct TodoListApp: App {
 
     init() {
         let stack = ModelUndoStack()
-        self.model = TodoListModel().withDebug().withAnchor(andDependencies: {
+        self.model = TodoListModel().withDebug().withAnchor(withDependencies: {
             $0.undoSystem.backend = stack
         })
     }

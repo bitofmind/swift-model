@@ -162,7 +162,7 @@ struct DiffMessageOutputTests {
     func diffMessageIdFieldVisible() {
         let a = Counter(id: 1, count: 5).withAnchor()
         let b = Counter(id: 2, count: 5).withAnchor()
-        let msg = threadLocals.withValue(true, at: \.includeInMirror) {
+        let msg = threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
             diffMessage(expected: a, actual: b, title: "Counter.id")
         }
         assertInlineSnapshot(of: msg, as: .lines) {
@@ -303,7 +303,7 @@ struct CustomDumpOutputTests {
         let model = Counter(id: 42, count: 7).withAnchor()
 
         var output = ""
-        _ = threadLocals.withValue(true, at: \.includeInMirror) {
+        _ = threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
             customDump(model, to: &output)
         }
         assertInlineSnapshot(of: output.trimmingCharacters(in: .whitespacesAndNewlines), as: .lines) {
