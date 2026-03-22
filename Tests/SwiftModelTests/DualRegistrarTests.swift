@@ -17,6 +17,7 @@ import SwiftModelTesting
 struct DualRegistrarTests {
 
     /// Test background thread modification → immediate background observer notification
+    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @Test func testBackgroundModificationImmediateBackgroundObserver() async throws {
         let model = TestModel().withAnchor()
 
@@ -44,6 +45,7 @@ struct DualRegistrarTests {
     }
 
     /// Same test as above but using old .withAnchor() style (should also work now!)
+    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @Test func testBackgroundModificationImmediateBackgroundObserver_WithAnchor() async throws {
         let model = TestModel().withAnchor(options: [])
 
@@ -70,6 +72,7 @@ struct DualRegistrarTests {
     }
 
     /// Test main thread modification → both registrars notified immediately
+    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @Test func testMainThreadModificationBothRegistrars() async throws {
         let model = TestModel().withAnchor()
 
@@ -108,6 +111,7 @@ struct DualRegistrarTests {
     }
 
     /// Same test as above but using old .withAnchor() style
+    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @Test func testMainThreadModificationBothRegistrars_WithAnchor() async throws {
         let model = TestModel().withAnchor(options: [])
 
@@ -146,6 +150,7 @@ struct DualRegistrarTests {
     }
 
     /// Test that memoize works correctly with background observers
+    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @Test func testMemoizeWithBackgroundObserver() async throws {
         let model = MemoizeModel().withAnchor()
 
@@ -177,6 +182,7 @@ struct DualRegistrarTests {
     }
 
     /// Same test as above but using old .withAnchor() style
+    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @Test func testMemoizeWithBackgroundObserver_WithAnchor() async throws {
         let model = MemoizeModel().withAnchor(options: [])
 

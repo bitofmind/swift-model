@@ -359,11 +359,12 @@ struct ExhaustionFailureTests {
         }
     }
 
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test("unasserted implicit-id child replacement: single diff message showing id change")
     func unassertedImplicitIdChildReplacement() async {
         // ModelID integers are non-deterministic, so we capture and normalize before snapshot.
         let reporter = CapturingIssueReporter()
-        await withIssueReporters([reporter]) {
+        withIssueReporters([reporter]) {
             let (model, tester) = ItemHolder().andTester(options: [])
             model.item = SimpleCounter()
             _ = tester  // deinit fires checkExhaustion(includeUpdates: false)

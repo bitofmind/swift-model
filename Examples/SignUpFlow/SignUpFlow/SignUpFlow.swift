@@ -41,11 +41,12 @@ struct SignUpData {
 
 @Model
 struct SignUpFeature {
-  // @ModelContainer synthesises Hashable (using model .id for associated values),
-  // which is required by NavigationStack(path:).
+  // @ModelContainer synthesises Hashable and Identifiable.
+  // Hashable is required by NavigationStack(path:); Identifiable makes [Path] a ModelContainer
+  // so child models are activated and managed in the model hierarchy.
   @ModelContainer @CasePathable
   @dynamicMemberLookup
-  enum Path: Hashable {
+  enum Path: Hashable, Identifiable {
     case basics(BasicsFeature)
     case personalInfo(PersonalInfoFeature)
     case summary(SummaryFeature)

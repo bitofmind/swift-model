@@ -89,7 +89,10 @@ extension TaskCancellable {
             let contexts = AnyCancellable.contexts
             let operation = { @Sendable in
                 do {
-                    try await Dependencies.withDependencies(from: context) {
+                    // Use context.capturedDependencies directly (not withDependencies(from: context))
+                    // so the task inherits exactly the context's dep overrides. withDependencies(from:)
+                    // would merge against DependencyValues._current, potentially losing overrides.
+                    try await DependencyValues.$_current.withValue(context.capturedDependencies) {
                         try await ModelAccess.$isInModelTaskContext.withValue(true) {
                             try await AnyCancellable.$inheritedContexts.withValue(contexts) {
                                 try await AnyCancellable.$contexts.withValue([]) {

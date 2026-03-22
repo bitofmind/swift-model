@@ -70,7 +70,7 @@ The same model is exhaustively testable with no extra setup:
 
 ```swift
 import Testing
-import SwiftModelTesting
+import SwiftModel
 
 @Test(.modelTesting) func testIncrement() async {
     let model = CounterModel().withAnchor()
@@ -1318,12 +1318,13 @@ Represent a navigation stack as an array of `@ModelContainer` enum cases. Each c
     var standupsList = StandupsList()
     var path: [Path] = []
 
-    // Declare Hashable — @ModelContainer synthesises == and hash(into:).
-    // For @Model associated values, identity (.id) is used; for Equatable/Hashable
-    // value types, full value equality is used automatically.
+    // Declare Hashable and Identifiable — @ModelContainer synthesises both.
+    // Hashable: @Model values compare/hash by identity; Equatable/Hashable values use full equality.
+    // Identifiable: the synthesised `var id` makes [Path] a ModelContainer, so each pushed
+    // screen gets its own live context in the model hierarchy.
     @ModelContainer @CasePathable
     @dynamicMemberLookup
-    enum Path: Hashable {
+    enum Path: Hashable, Identifiable {
         case detail(StandupDetail)
         case record(RecordMeeting)
     }
@@ -1354,7 +1355,7 @@ struct AppView: View {
 }
 ```
 
-> `NavigationStack` requires path elements to be `Hashable`. When you declare `Hashable` on a `@ModelContainer` enum, the conformance is synthesised automatically: `@Model` associated values compare and hash by identity, and `Equatable`/`Hashable` value types use their natural equality.
+> `NavigationStack` requires path elements to be `Hashable`. Declaring `: Identifiable` additionally makes `[Path]` conform to `ModelContainer`, so each screen on the stack gets a live context in the model hierarchy — its `onActivate` runs when pushed, and tasks cancel when popped. Both conformances are synthesised automatically by `@ModelContainer`; you never need to write `==`, `hash(into:)`, or `var id` by hand.
 
 ### Deep links and programmatic navigation
 
@@ -1378,7 +1379,7 @@ Add the `.modelTesting` trait to `@Test` or `@Suite`, then call `withAnchor()` a
 
 ```swift
 import Testing
-import SwiftModelTesting
+import SwiftModel
 
 @Test(.modelTesting) func testAddCounter() async {
     let model = AppModel().withAnchor {
@@ -1392,6 +1393,18 @@ import SwiftModelTesting
 ```
 
 > Assertions must `await` because state and event propagation is asynchronous.
+
+### Xcodeproj App-Hosted Tests
+
+SPM-based packages work with no extra configuration — `import SwiftModel` is all you need.
+
+If your test target uses `BUNDLE_LOADER` (the Xcode default for xcodeproj targets that test an app binary), one additional build setting is required on the **app target** (not the test target):
+
+```
+ENABLE_TESTING_SEARCH_PATHS = YES
+```
+
+This makes the testing APIs available inside the app binary, which the test bundle inherits at runtime via `BUNDLE_LOADER`. Do **not** add `SwiftModel` or `SwiftModelTesting` to the test target's Frameworks — the test bundle gets all symbols from the app, and adding extra links creates duplicate symbol errors.
 
 The `expect` builder block accepts any number of predicates. Using `==` gives you a pretty-printed diff on failure; any other `Bool` expression also works:
 

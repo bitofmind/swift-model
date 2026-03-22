@@ -14,22 +14,6 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     @Dependency(\.uuid) private var dependencies
 
-    /// Installs this context's captured DependencyValues as the current task-local,
-    /// unconditionally replacing whatever the caller's task-local currently holds.
-    ///
-    /// `withDependencies(from: self)` merges `self.initialValues.merging(_current)` where
-    /// the *current* task-local wins. That is correct when propagating deps from a parent
-    /// to a freshly-created child context — but wrong when a background task launched from
-    /// an *ancestor* context is creating children: the ancestor's task-local overwrites the
-    /// intermediate context's dep override. This function bypasses the merge by directly
-    /// installing `capturedDependencies` as `_current`, so the child context inherits
-    /// exactly this context's deps without interference from any outer task-local.
-    func withOwnDependencies<R>(_ operation: () throws -> R) rethrows -> R {
-        try DependencyValues.$_current.withValue(capturedDependencies) {
-            try operation()
-        }
-    }
-
     init(model: M, lock: NSRecursiveLock, options: ModelOption, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
         if model.lifetime != .initial {
             reportIssue("It is not allowed to add an already anchored or frozen model, instead create a new instance.")
@@ -50,18 +34,26 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         super.init(lock: lock, options: options, parent: parent, isObservable: isObservable)
 
         var dependencyModels: [AnyHashable: any Model] = [:]
-        Dependencies.withDependencies(from: parent ?? self) {
-            var contextDependencies = ModelDependencies(dependencies: $0)
-            dependencies(&contextDependencies)
-            for dependency in modelSetup?.dependencies ?? [] {
-                dependency(&contextDependencies)
-            }
+        // For child contexts, install parent.capturedDependencies (which includes all parent
+        // dep overrides) as _current before applying this context's own overrides. This ensures
+        // child contexts inherit the parent's explicit dep overrides, not just the Phase-1
+        // initial values that withDependencies(from: parent) would provide.
+        // For root contexts (parent == nil), self.capturedDependencies == .init() here, so
+        // withOwnDependencies is a no-op and withDependencies starts from the default values.
+        (parent ?? self).withOwnDependencies {
+            Dependencies.withDependencies {
+                var contextDependencies = ModelDependencies(dependencies: $0)
+                dependencies(&contextDependencies)
+                for dependency in modelSetup?.dependencies ?? [] {
+                    dependency(&contextDependencies)
+                }
 
-            $0 = contextDependencies.dependencies
-            dependencyModels = contextDependencies.models
-        } operation: {
-            _dependencies = Dependency(\.uuid)
-            capturedDependencies = DependencyValues._current
+                $0 = contextDependencies.dependencies
+                dependencyModels = contextDependencies.models
+            } operation: {
+                _dependencies = Dependency(\.uuid)
+                capturedDependencies = DependencyValues._current
+            }
         }
 
         readModel.withContextAdded(context: self)
@@ -360,7 +352,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // Dependency model context: readModel.modelContext.access is nil.
         // Walk parents to find a context that has a propagating access (e.g. TestAccess).
         let ancestorAccess = lock {
-            parents.compactMap { $0.anyModelAccess }.first
+            parents.lazy.compactMap { $0.anyModelAccess }.first
         }
         guard let ancestorAccess, ancestorAccess.shouldPropagateToChildren else {
             return readModel.modelContext
@@ -811,3 +803,4 @@ func runPostLockCallbacks(_ callbacks: [() -> Void]?) {
     threadLocals.postLockFlushes = nil
     for f in flushes { f() }
 }
+

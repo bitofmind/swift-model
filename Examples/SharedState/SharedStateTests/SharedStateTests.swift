@@ -3,33 +3,28 @@ import Testing
 import SwiftUINavigation
 @testable import SharedState
 
+@Suite(.modelTesting)
 struct SharedStateTests {
   @Test func testTabSelection() async {
-    let (model, tester) = SharedState().andTester()
+    let model = SharedState().withAnchor()
 
-    await tester.assert {
-      model.currentTab == .counter
-    }
+    await expect { model.currentTab == .counter }
 
     model.currentTab = .profile
 
-    await tester.assert {
-      model.currentTab == .profile
-    }
+    await expect { model.currentTab == .profile }
 
     model.currentTab = .counter
 
-    await tester.assert {
-      model.currentTab == .counter
-    }
+    await expect { model.currentTab == .counter }
   }
 
   @Test func testSharedCounts() async {
-    let (model, tester) = SharedState().andTester()
+    let model = SharedState().withAnchor()
 
     model.counter.incrementButtonTapped()
 
-    await tester.assert {
+    await expect {
       model.stats.count == 1
       model.stats.maxCount == 1
       model.stats.numberOfCounts == 1
@@ -37,7 +32,7 @@ struct SharedStateTests {
 
     model.counter.decrementButtonTapped()
 
-    await tester.assert {
+    await expect {
       model.stats.count == 0
       model.stats.minCount == 0
       model.stats.numberOfCounts == 2
@@ -45,7 +40,7 @@ struct SharedStateTests {
 
     model.profile.resetStatsButtonTapped()
 
-    await tester.assert {
+    await expect {
       model.stats.count == 0
       model.stats.maxCount == 0
       model.stats.minCount == 0
@@ -54,11 +49,11 @@ struct SharedStateTests {
   }
 
   @Test func testAlert() async {
-    let (model, tester) = SharedState().andTester()
+    let model = SharedState().withAnchor()
 
     model.counter.isPrimeButtonTapped()
 
-    await tester.assert {
+    await expect {
       model.counter.alert == AlertState {
         TextState("👎 The number 0 is not prime :(")
       }
@@ -66,15 +61,13 @@ struct SharedStateTests {
   }
 
   @Test func testProfileReadsCounterStats() async {
-    let (model, tester) = SharedState().andTester()
+    let model = SharedState().withAnchor()
 
-    // Increment via the counter tab — profile tab sees the same count
-    // because both hold a reference to the same Stats model instance.
     model.counter.incrementButtonTapped()
     model.counter.incrementButtonTapped()
     model.counter.incrementButtonTapped()
 
-    await tester.assert {
+    await expect {
       model.counter.stats.count == 3
       model.counter.stats.maxCount == 3
       model.counter.stats.numberOfCounts == 3

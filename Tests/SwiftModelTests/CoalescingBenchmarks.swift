@@ -7,6 +7,7 @@ import Foundation
 struct CoalescingBenchmarks {
 
     /// Benchmark: AccessCollector without coalescing
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkAccessCollector_NoCoalescing() async throws {
         let model = CoalescingTestModel().withAnchor()
@@ -37,6 +38,7 @@ struct CoalescingBenchmarks {
     }
 
     /// Benchmark: AccessCollector with coalescing
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkAccessCollector_WithCoalescing() async throws {
         let model = CoalescingTestModel().withAnchor()
@@ -71,6 +73,7 @@ struct CoalescingBenchmarks {
     // Non-coalescing benchmarks only available with AccessCollector.
 
     /// Benchmark: withObservationTracking with coalescing
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkObservationTracking_WithCoalescing() async throws {
         let model = CoalescingTestModel().withAnchor(options: [])
@@ -101,6 +104,7 @@ struct CoalescingBenchmarks {
     }
 
     /// Performance comparison across all 4 paths with realistic computational work
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkComparison() async throws {
         let mutationCount = 100
@@ -279,6 +283,7 @@ struct CoalescingBenchmarks {
         }
     }
 
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkComparisonWithTransactions() async throws {
         let mutationCount = 100
@@ -391,6 +396,7 @@ struct CoalescingBenchmarks {
         print("✅ Coalescing works in both transaction modes!")
     }
 
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkUnifiedComparison() async throws {
         let mutationCount = 100

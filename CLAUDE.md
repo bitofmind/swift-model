@@ -46,8 +46,6 @@ The project uses Swift 6 (`swiftLanguageModes: [.v6]`). All code must be strict-
 - **`ModelAccess`**: Base class for all observation/access strategies (SwiftUI's `@Observable`, test access, etc.).
 - **`ModelTester`**: Test harness. Wraps a model with `TestAccess` and exhaustively tracks state changes, events, tasks, and probe calls. Create via `model.andTester(options:)` (internal, requires `@testable import`) or use `withAnchor()` inside `@Test(.modelTesting)` (public API).
 - **`ModelOption`**: **Internal** `OptionSet` (not public API). Used only in tests via `@testable import` to enable specific behaviours like `disableObservationRegistrar` or `disableMemoizeCoalescing`.
-- **`DebugHook`**: **Internal** task-local hook for routing debug output during testing. Not part of the public API.
-
 ## Platform guards
 
 - `#if canImport(SwiftUI)` — gates all SwiftUI-specific code in `Sources/SwiftModel/SwiftUI/`.
@@ -63,6 +61,7 @@ The project uses Swift 6 (`swiftLanguageModes: [.v6]`). All code must be strict-
 - No Combine; prefer `async`/`await` and `AsyncStream`.
 - Avoid `@unchecked Sendable` except where the locking discipline is manually maintained and documented.
 - Internal symbols use no access modifier (defaulting to `internal`). Reserve `public` for the deliberate public API surface.
+- **Never introduce new compiler warnings.** The build must remain warning-free. Fix any warnings introduced by your changes before committing.
 
 ## Testing conventions
 
@@ -126,6 +125,10 @@ struct MyTests {
 - Use `BuildProject` to build.
 - Use `RunAllTests` to run the full suite, or `RunSomeTests` for specific tests.
 - **If a test target returns 0 results, it means it failed to compile — immediately call `GetBuildLog` to see the errors.**
+
+### Reading test output
+
+`print()` output is not in `results`, but `RunSomeTests` returns a `fullConsoleLogsPath` — read that file to see all stdout. To surface a value inline without an extra file read, call `reportIssue("message")`: the message appears directly in `errorMessages` (test will be marked Failed). File-based logging to `/tmp` offers no advantage over `print()` + `fullConsoleLogsPath` and should be avoided.
 
 ## CI
 

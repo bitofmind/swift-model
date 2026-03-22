@@ -81,6 +81,18 @@ class AnyContext: @unchecked Sendable {
     /// context when this context is accessed from a background task).
     var capturedDependencies: DependencyValues = .init()
 
+    /// Installs this context's captured DependencyValues as the current task-local,
+    /// unconditionally replacing whatever the caller's task-local currently holds.
+    ///
+    /// Use this instead of `withDependencies(from: self)` when you need the child to inherit
+    /// exactly this context's deps (with all overrides applied) rather than the merge that
+    /// `withDependencies(from:)` performs against `DependencyValues._current`.
+    func withOwnDependencies<R>(_ operation: () throws -> R) rethrows -> R {
+        try DependencyValues.$_current.withValue(capturedDependencies) {
+            try operation()
+        }
+    }
+
     // Bottom-up preference storage. Each context holds its own contribution; the aggregate
     // is computed by walking descendants. Keyed by AnyHashableSendable (source location or
     // explicit key from PreferenceStorage).

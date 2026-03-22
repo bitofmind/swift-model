@@ -44,10 +44,9 @@ extension SignUpData: DependencyKey {
 
 @Model
 struct SignUpFeature {
-  // @ModelContainer synthesises Hashable (using model .id for associated values),
-  // which is required by NavigationStack(path:).
-  // Identifiable (forwarding each case's model .id) makes [Path] conform to
-  // ModelContainer, which gives path elements live contexts in the model hierarchy.
+  // @ModelContainer synthesises Hashable and Identifiable.
+  // Hashable is required by NavigationStack(path:); Identifiable makes [Path] a ModelContainer
+  // so child models are activated and managed in the model hierarchy.
   @ModelContainer @CasePathable
   @dynamicMemberLookup
   enum Path: Hashable, Identifiable {
@@ -55,15 +54,6 @@ struct SignUpFeature {
     case personalInfo(PersonalInfoFeature)
     case summary(SummaryFeature)
     case topics(TopicsFeature)
-
-    var id: AnyHashable {
-      switch self {
-      case let .basics(model): model.id
-      case let .personalInfo(model): model.id
-      case let .summary(model): model.id
-      case let .topics(model): model.id
-      }
-    }
   }
 
   var path: [Path] = []

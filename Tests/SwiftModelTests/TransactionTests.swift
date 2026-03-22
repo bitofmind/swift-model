@@ -148,6 +148,7 @@ struct TransactionTests {
 
     // MARK: - Transaction Isolation
 
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test func testConcurrentReadsDuringTransaction() async throws {
         let model = IsolationModel().withAnchor(options: [.disableObservationRegistrar])
         model.value = 100
