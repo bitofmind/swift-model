@@ -1,6 +1,6 @@
 # SwiftModel
 
-[![Swift 5.9.2+](https://img.shields.io/badge/Swift-5.9.2%2B-orange.svg)](https://swift.org)
+[![Swift 6.1+](https://img.shields.io/badge/Swift-6.1%2B-orange.svg)](https://swift.org)
 [![Platforms](https://img.shields.io/badge/Platforms-macOS%2011%20%7C%20iOS%2014%20%7C%20tvOS%2014%20%7C%20watchOS%206%20%7C%20Linux-blue.svg)](https://swift.org)
 [![Swift Package Manager](https://img.shields.io/badge/SPM-compatible-brightgreen.svg)](https://swift.org/package-manager)
 
@@ -140,7 +140,7 @@ If your app is a single screen with no async work and no tests, `@Observable` is
 
 ### Requirements
 
-SwiftModel requires **Swift 5.9.2 / Xcode 15.1** or later (macOS 11+, iOS 14+, tvOS 14+, watchOS 6+, Linux).
+SwiftModel requires **Swift 6.1 / Xcode 16.1** or later (macOS 11+, iOS 14+, tvOS 14+, watchOS 6+, Linux).
 
 ### Documentation
 

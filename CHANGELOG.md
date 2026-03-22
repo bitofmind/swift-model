@@ -4,20 +4,52 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
-## [Unreleased]
+## [0.12.0] — Testing Overhaul & Swift 6.1+
 
 ### Added
-- **`@ModelContainer` Hashable synthesis** — declare `Hashable` on a `@ModelContainer` enum and the macro synthesises `==` and `hash(into:)` automatically. `@Model` associated values compare and hash by identity (`.id`); `Equatable`/`Hashable` value-type associated values use their natural equality. Manual `==` or `hash` implementations in the enum body suppress synthesis.
+- **`@Test(.modelTesting)` trait** — new primary testing API. Annotate a `@Test` or `@Suite` with `.modelTesting`; call `model.withAnchor()` inside the body and the model automatically connects to the test scope. Use the global `expect { }` and `require(_:)` functions for assertions. Requires Swift 6.1+ (`TestScoping`).
+- **`withModelTesting { }` scope function** — inline testing scope for tests that must observe post-deallocation side-effects (teardown logs, `onCancel` callbacks). Models anchored inside the closure are torn down when the closure returns, before the test function exits.
+- **`withExhaustivity(_:)` / `withExhaustivity(_:_:)` functions** — temporarily adjust exhaustivity for a portion of a test body without affecting the enclosing scope.
+- **`TestProbe` auto-registration** — probes now auto-register with the active `.modelTesting` scope at creation time and on every call; no explicit setup required.
+- **`@ModelContainer` Hashable and Identifiable synthesis** — declare `Hashable` on a `@ModelContainer` enum and the macro synthesises `==` and `hash(into:)`; `Identifiable` is also synthesised with a stable `id`. `@Model` associated values compare and hash by identity; `Equatable`/`Hashable` value types use their natural equality. Manual implementations suppress synthesis.
+- **GitHub Actions CI** — macOS (`macos-15`, latest Xcode) and Linux (Swift 6.1, 6.2, 6.3).
+- `Documentation.docc` landing page and `.spi.yml` for Swift Package Index hosted docs.
 
 ### Changed
-- Removed Apple-only `platforms:` restriction from `Package.swift` — Linux is now a supported platform.
-- Deleted diverged `Package@swift-5.9.swift` manifest (minimum requirement is Swift 5.9.2).
-- Added GitHub Actions CI for macOS and Linux.
-- Added `Sources/SwiftModel/Documentation.docc/` landing page for Swift Package Index hosted docs.
-- Added `.spi.yml` for Swift Package Index documentation generation.
+- **Minimum Swift version is now 6.1** — required for `TestScoping`, which makes the `.modelTesting` trait fully functional.
+- **Linux is now a supported platform** — removed Apple-only `platforms:` restriction from `Package.swift`.
+- `ModelID.description` now includes the raw integer value for easier debugging.
+- `Model` is now `@unchecked Sendable` — the locking discipline is internally maintained.
+- `node.transaction { }` no longer `rethrows` — transactions have no rollback; compute new values first, then apply them inside the transaction.
 - Comprehensive `///` doc comments across all public API.
-- `ModelID` now prints its integer value in `description` for easier debugging.
-- `Model` is now `@unchecked Sendable` (locking discipline is maintained internally).
+
+### Deprecated
+- `model.andTester(options:withDependencies:)` — use `model.withAnchor()` inside `@Test(.modelTesting)` instead.
+- `tester.assert { }` / `tester.unwrap { }` — use the global `expect { }` / `require(_:)` functions instead.
+- `tester.assertNow { }` — use `await expect { }` instead.
+- `TestProbe.install()` — probes auto-register on creation and on every call; explicit `install()` is no longer needed.
+
+---
+
+## [0.11.0] — Debug API Overhaul
+
+### Added
+- **New debug API** — `model.withDebug([DebugOptions])` and `model.debug([DebugOptions])` replace `_printChanges` / `_withPrintChanges` with a composable, configurable system:
+  - `.triggers()` — print which property triggered each update. Formats: `.name` (default), `.withValue` (old → new), `.withDiff` (structured diff of the triggering property).
+  - `.changes()` — print the state diff after each update. Styles: `.compact` (default, only changed lines and structural ancestors), `.collapsed` (unchanged siblings shown as `… (N unchanged)`), `.full` (complete before/after context).
+  - `.name("label")` — prefix all output with a custom label.
+  - `.printer(stream)` — redirect output to a custom `TextOutputStream`.
+  - `.shallow` — observe only the root model's own properties, not descendants.
+  - Debug options accepted by `node.memoize(for:debug:)` and `Observed(debug:)` to trace individual computed values and observation-driven side effects.
+  - Context and preference write triggers are now shown in debug output.
+
+### Fixed
+- Fixed races in `memoize` that caused it to stop observing updates after the first invalidation.
+- Fixed two data races in context storage access.
+- Fixed a regression in dependency forwarding inside `node.task` closures.
+- Fixed an infinite loop in `TestAccess`.
+- Fixed a deadlock in debug print diff.
+- Improved observation and `memoize` to use model identity comparison, avoiding spurious re-evaluations.
 
 ---
 
@@ -159,7 +191,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - `_printChanges()` / `_withPrintChanges()` — debug-build state change printing.
 - Example apps: `CounterFact`, `Standups`, `TodoList`.
 
-[Unreleased]: https://github.com/bitofmind/swift-model/compare/0.10.1...HEAD
+[0.12.0]: https://github.com/bitofmind/swift-model/compare/0.11.0...0.12.0
+[0.11.0]: https://github.com/bitofmind/swift-model/compare/0.10.1...0.11.0
 [0.10.1]: https://github.com/bitofmind/swift-model/compare/0.10.0...0.10.1
 [0.10.0]: https://github.com/bitofmind/swift-model/compare/0.9.5...0.10.0
 [0.9.0]: https://github.com/bitofmind/swift-model/compare/0.8.1...0.9.0
