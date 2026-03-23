@@ -63,15 +63,15 @@ private struct ExhaustionEventSender {
 @Model
 private struct LongTaskRunner {
     func startTasks() {
-        node.task { try? await Task.sleep(nanoseconds: 100_000_000_000) }
-        node.task { try? await Task.sleep(nanoseconds: 100_000_000_000) }
+        node.task("longTask1") { try? await Task.sleep(nanoseconds: 100_000_000_000) }
+        node.task("longTask2") { try? await Task.sleep(nanoseconds: 100_000_000_000) }
     }
 }
 
 @Model
 private struct SingleTaskRunner {
     func startTask() {
-        node.task { try? await Task.sleep(nanoseconds: 100_000_000_000) }
+        node.task("theTask") { try? await Task.sleep(nanoseconds: 100_000_000_000) }
     }
 }
 
@@ -417,8 +417,8 @@ struct ExhaustionFailureTests {
         } matches: {
             """
             Models of type `LongTaskRunner` have 2 active tasks still running
-            Active task of `LongTaskRunner` still running (registered here)
-            Active task of `LongTaskRunner` still running (registered here)
+            Active task 'longTask1' of `LongTaskRunner` still running (registered here)
+            Active task 'longTask2' of `LongTaskRunner` still running (registered here)
             """
         }
     }
@@ -433,7 +433,7 @@ struct ExhaustionFailureTests {
         } matches: {
             """
             Models of type `SingleTaskRunner` have 1 active task still running
-            Active task of `SingleTaskRunner` still running (registered here)
+            Active task 'theTask' of `SingleTaskRunner` still running (registered here)
             """
         }
     }

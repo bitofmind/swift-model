@@ -4,9 +4,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
-## [Unreleased] — Context Storage API Split
+## [Unreleased] — Context Storage API Split + Named Tasks
 
 ### Added
+- **Named tasks** — `node.task` and `node.forEach` now accept an optional `_ name: String? = nil` parameter. When provided, the name is passed to Swift's `Task(name:)` and surfaced in test exhaustion failure messages so it's immediately clear which task was still running. When omitted, a name is synthesised automatically from the call site: `"onActivate() @ Counter.swift:42"`.
+- **`forEach` unhandled error reporting** — when `catch:` is omitted from `node.forEach` and the upstream sequence throws (or the operation throws with `abortIfOperationThrows: true`), `reportIssue` is called at the call site. In test mode this fails the test; in debug production builds it triggers an `assertionFailure`. Per-element errors with `abortIfOperationThrows: false` (the default) remain intentionally swallowed as before.
 - **`node.local`** — new accessor for node-private storage. Reads and writes are isolated to the node; descendants do not inherit the value.
 - **`node.environment`** — new accessor for top-down propagating storage. Writes are visible to all descendants (equivalent to the old `.environment` propagation).
 - **`LocalKeys` / `LocalStorage`** — namespace and descriptor type for declaring node-private storage keys.

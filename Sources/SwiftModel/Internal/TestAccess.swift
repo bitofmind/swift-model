@@ -866,11 +866,11 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false) {
         if checkTasks {
             for info in context.activeTasks {
-                let taskWord = info.fileAndLines.count == 1 ? "task" : "tasks"
-                fail("Models of type `\(info.modelName)` have \(info.fileAndLines.count) active \(taskWord) still running", for: .tasks, at: fileAndLine)
+                let taskWord = info.tasks.count == 1 ? "task" : "tasks"
+                fail("Models of type `\(info.modelName)` have \(info.tasks.count) active \(taskWord) still running", for: .tasks, at: fileAndLine)
 
-                for fileAndLine in info.fileAndLines {
-                    fail("Active task of `\(info.modelName)` still running (registered here)", for: .tasks, at: fileAndLine)
+                for (taskName, taskFileAndLine) in info.tasks {
+                    fail("Active task '\(taskName)' of `\(info.modelName)` still running (registered here)", for: .tasks, at: taskFileAndLine)
                 }
             }
         }

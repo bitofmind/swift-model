@@ -48,18 +48,18 @@ SignUpFeature().withAnchor {
 
 Both approaches produce the same runtime behaviour. The right choice depends on team preference and how many values need sharing.
 
-## Context — environment propagation for edit mode
+## Environment — propagation for edit mode
 
-This app uses the same `ContextKeys.isEditing` pattern as `SignUpFlow`. When the user taps "Edit" from the summary screen, `SummaryFeature` sets `isEditing = true` on its own context node. Because the key uses `.environment` propagation, the value flows down to `PersonalInfoFeature` or `TopicsFeature` inside `destination` automatically — no constructor parameter and no dependency needed:
+This app uses the same `EnvironmentKeys.isEditing` pattern as `SignUpFlow`. When the user taps "Edit" from the summary screen, `SummaryFeature` sets `isEditing = true` on its own environment. The value flows down to `PersonalInfoFeature` or `TopicsFeature` inside `destination` automatically — no constructor parameter and no dependency needed:
 
 ```swift
 func editPersonalInfoButtonTapped() {
-    node.context.isEditing = true
+    node.environment.isEditing = true
     destination = .personalInfo(PersonalInfoFeature())  // no extra args
 }
 
-// PersonalInfoFeature — reads from context; no dependency or constructor param
-var isEditing: Bool { node.context.isEditing }
+// PersonalInfoFeature — reads from environment; no dependency or constructor param
+var isEditing: Bool { node.environment.isEditing }
 ```
 
 ## App structure
@@ -70,7 +70,7 @@ The model hierarchy is identical to `SignUpFlow`:
 |-------|--------|---------------|
 | `SignUpFeature` | Root | Navigation path |
 | `BasicsFeature` | Step 1 | Email + password fields |
-| `PersonalInfoFeature` | Step 2 | Name fields; reads `isEditing` from context |
-| `TopicsFeature` | Step 3 | Topic selection with validation; reads `isEditing` from context |
-| `SummaryFeature` | Step 4 | Review all data; sets `isEditing` context, pushes edit destinations |
+| `PersonalInfoFeature` | Step 2 | Name fields; reads `isEditing` from environment |
+| `TopicsFeature` | Step 3 | Topic selection with validation; reads `isEditing` from environment |
+| `SummaryFeature` | Step 4 | Review all data; sets `isEditing` environment, pushes edit destinations |
 | `SignUpData` | — | Shared dependency (email, name, topics) |

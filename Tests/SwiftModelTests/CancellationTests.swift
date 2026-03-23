@@ -3,6 +3,7 @@ import AsyncAlgorithms
 @testable import SwiftModel
 import Observation
 import Foundation
+import IssueReporting
 
 struct CancellationTests {
     @Test func testDestroyCancellation() {
@@ -134,6 +135,77 @@ struct CancellationTests {
         #expect(count == 4)
     }
 
+
+    // MARK: - forEach unhandled error reporting
+
+    @Test func testForEachUnhandledSequenceErrorReportsIssue() async throws {
+        struct TestError: Error, CustomStringConvertible {
+            var description: String { "TestError" }
+        }
+
+        let reporter = CapturingIssueReporter()
+        try await withIssueReporters([reporter]) {
+            let model = CounterModel(count: 0).withAnchor().testNode
+            let (stream, cont) = AsyncThrowingStream<Int, Error>.makeStream()
+            model.forEach(stream) { _ in }
+            cont.finish(throwing: TestError())
+            try await waitUntil(!reporter.messages.isEmpty)
+        }
+        #expect(reporter.messages.first?.contains("Unhandled error in node.forEach") == true)
+        #expect(reporter.messages.first?.contains("TestError") == true)
+    }
+
+    @Test func testForEachHandledSequenceErrorDoesNotReportIssue() async throws {
+        struct TestError: Error {}
+        @Locked var caught = false
+
+        let reporter = CapturingIssueReporter()
+        try await withIssueReporters([reporter]) {
+            let model = CounterModel(count: 0).withAnchor().testNode
+            let (stream, cont) = AsyncThrowingStream<Int, Error>.makeStream()
+            model.forEach(stream) { _ in } catch: { _ in $caught.wrappedValue = true }
+            cont.finish(throwing: TestError())
+            try await waitUntil(caught)
+        }
+        #expect(reporter.messages.isEmpty)
+    }
+
+    @Test func testForEachAbortIfOperationThrowsWithoutCatchReportsIssue() async throws {
+        struct TestError: Error, CustomStringConvertible {
+            var description: String { "TestError" }
+        }
+
+        let reporter = CapturingIssueReporter()
+        try await withIssueReporters([reporter]) {
+            let model = CounterModel(count: 0).withAnchor().testNode
+            let (stream, cont) = AsyncThrowingStream<Int, Error>.makeStream()
+            model.forEach(stream, abortIfOperationThrows: true) { _ in throw TestError() }
+            cont.yield(1)
+            try await waitUntil(!reporter.messages.isEmpty)
+            cont.finish()
+        }
+        #expect(reporter.messages.first?.contains("Unhandled error in node.forEach") == true)
+    }
+
+    @Test func testForEachOperationThrowsWithoutAbortDoesNotReportIssue() async throws {
+        struct TestError: Error {}
+        @Locked var operationRanCount = 0
+
+        let reporter = CapturingIssueReporter()
+        try await withIssueReporters([reporter]) {
+            let model = CounterModel(count: 0).withAnchor().testNode
+            let (stream, cont) = AsyncThrowingStream<Int, Error>.makeStream()
+            model.forEach(stream) { _ in
+                $operationRanCount.wrappedValue += 1
+                throw TestError()
+            }
+            cont.yield(1)
+            try await waitUntil(operationRanCount == 1)
+            cont.finish()
+        }
+        // abortIfOperationThrows: false (default) — errors are intentionally swallowed
+        #expect(reporter.messages.isEmpty)
+    }
 
     @Test func testForEachCancelPrevious() async throws {
         @Locked var count = 0

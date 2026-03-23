@@ -642,7 +642,15 @@ A typical model will need to handle asynchronous work such as performing operati
 
 ### Tasks
 
-To start some asynchronous work that is tied to the life time of your model you call `node.task()`, similarly as you would do when adding a `task()` to your view. 
+To start some asynchronous work that is tied to the life time of your model you call `node.task()`, similarly as you would do when adding a `task()` to your view. You can optionally give a task a name — it appears in test exhaustion failure messages and in Instruments, making it easier to identify which task was still running:
+
+```swift
+node.task("fetchFact") {
+    // ...
+}
+```
+
+When no name is provided, one is synthesised automatically from the call site: `"factButtonTapped() @ CounterModel.swift:42"`.
 
 
 ```swift
@@ -675,9 +683,19 @@ node.task {
 }
 ```
 
-The `catch:` closure is called on the same context as the task body, so writing to model state is safe. If you omit `catch:`, unhandled errors are silently discarded — add the closure whenever the task can throw.
+The `catch:` closure is called on the same context as the task body, so writing to model state is safe.
 
-For operations that should not show UI errors (fire-and-forget analytics, prefetch, etc.), omitting `catch:` is intentional.
+For `node.task`, `catch:` is only required when the operation can throw — the non-throwing overload has no `catch:` parameter at all. If the task's body is non-throwing and you want to silently ignore errors from a specific branch, catch them inside the closure.
+
+For `node.forEach`, omitting `catch:` is safe for non-throwing sequences. If the sequence or operation can throw and you omit `catch:`, SwiftModel calls `reportIssue` at the `forEach` call site — this fails the test in test mode and triggers an `assertionFailure` in debug builds. Per-element errors with `abortIfOperationThrows: false` (the default) are always silently swallowed; only sequence-level throws and `abortIfOperationThrows: true` errors trigger the report.
+
+For fire-and-forget work where errors are genuinely ignorable (analytics pings, prefetch), pass an explicit empty `catch:` to document the intent:
+
+```swift
+node.forEach(prefetchStream) { item in
+    try await prefetch(item)
+} catch: { _ in }  // errors are intentionally ignored
+```
 
 ### Observing State Changes
 

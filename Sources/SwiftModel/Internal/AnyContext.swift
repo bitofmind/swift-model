@@ -332,7 +332,7 @@ class AnyContext: @unchecked Sendable {
     deinit {
     }
 
-    var activeTasks: [(modelName: String, fileAndLines: [FileAndLine])] {
+    var activeTasks: [(modelName: String, tasks: [(name: String, fileAndLine: FileAndLine)])] {
         allChildren.reduce(into: cancellations.activeTasks) {
             $0.append(contentsOf: $1.activeTasks)
         }

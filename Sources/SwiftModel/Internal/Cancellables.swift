@@ -42,16 +42,18 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
     let id: Int
     weak var cancellations: Cancellations?
     var task: Task<Void, Error>!
-    let name: String
+    let modelName: String
+    let taskName: String
     let fileAndLine: FileAndLine
     let lock = NSLock()
     var hasBeenCancelled = false
 
-    init(name: String, fileAndLine: FileAndLine, context: AnyContext, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
+    init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
         self.cancellations = context.cancellations
         let id = context.cancellations.nextId
         self.id = id
-        self.name = name
+        self.modelName = modelName
+        self.taskName = taskName
         self.fileAndLine = fileAndLine
         self.task = nil
 
@@ -84,8 +86,8 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
 }
 
 extension TaskCancellable {
-    convenience init(name: String, fileAndLine: FileAndLine, context: AnyContext, isDetached: Bool, priority: TaskPriority?, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async throws -> Void, `catch`: (@Sendable (Error) -> Void)?) {
-        self.init(name: name, fileAndLine: fileAndLine, context: context) { onDone in
+    convenience init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, isDetached: Bool, priority: TaskPriority?, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async throws -> Void, `catch`: (@Sendable (Error) -> Void)?) {
+        self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, context: context) { onDone in
             let contexts = AnyCancellable.contexts
             let operation = { @Sendable in
                 do {
@@ -111,9 +113,9 @@ extension TaskCancellable {
             }
             
             if isDetached {
-                return Task.detached(priority: priority, operation: operation)
+                return Task.detached(name: taskName, priority: priority, operation: operation)
             } else {
-                return Task(priority: priority, operation: operation)
+                return Task(name: taskName, priority: priority, operation: operation)
             }
         }
     }
