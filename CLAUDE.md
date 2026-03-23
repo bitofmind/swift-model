@@ -71,7 +71,7 @@ The project uses Swift 6 (`swiftLanguageModes: [.v6]`). All code must be strict-
 
 ### Preferred pattern — `@Test(.modelTesting)` (most tests)
 
-Use `@Test(.modelTesting)` + `model.withAnchor()` + `expect { }` / `require(_:)` from `SwiftModelTesting`. This applies to both example tests and internal `@testable import` tests.
+Use `@Test(.modelTesting)` + `model.withAnchor()` + `expect { }` / `require(_:)`. This applies to both example tests and internal `@testable import` tests.
 
 ```swift
 @Suite(.modelTesting)

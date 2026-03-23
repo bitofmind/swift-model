@@ -1453,7 +1453,7 @@ If your test target uses `BUNDLE_LOADER` (the Xcode default for xcodeproj target
 ENABLE_TESTING_SEARCH_PATHS = YES
 ```
 
-This makes the testing APIs available inside the app binary, which the test bundle inherits at runtime via `BUNDLE_LOADER`. Do **not** add `SwiftModel` or `SwiftModelTesting` to the test target's Frameworks — the test bundle gets all symbols from the app, and adding extra links creates duplicate symbol errors.
+This makes the testing APIs available inside the app binary, which the test bundle inherits at runtime via `BUNDLE_LOADER`. Do **not** add `SwiftModel` to the test target's Frameworks — the test bundle gets all symbols from the app, and adding extra links creates duplicate symbol errors.
 
 The `expect` builder block accepts any number of predicates. Using `==` gives you a pretty-printed diff on failure; any other `Bool` expression also works:
 

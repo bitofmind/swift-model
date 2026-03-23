@@ -2,7 +2,7 @@ import Testing
 import Observation
 import ConcurrencyExtras
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 
 /// Comprehensive tests for memoization behavior, particularly around performance and correctness
 @Suite(.modelTesting(exhaustivity: .off))

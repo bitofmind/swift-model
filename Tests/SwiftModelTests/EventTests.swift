@@ -1,7 +1,7 @@
 import Testing
 import AsyncAlgorithms
 import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 import Foundation
 
 @Suite(.modelTesting)

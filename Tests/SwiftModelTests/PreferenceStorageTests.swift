@@ -3,7 +3,7 @@ import ConcurrencyExtras
 import Observation
 import Dependencies
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 
 // MARK: - Keys
 

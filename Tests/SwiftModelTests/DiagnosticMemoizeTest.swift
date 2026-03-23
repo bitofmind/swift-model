@@ -1,7 +1,7 @@
 import Testing
 import Observation
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 import ConcurrencyExtras
 
 /// Diagnostic tests to understand withObservationTracking + memoize interaction

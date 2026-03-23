@@ -182,10 +182,10 @@ struct CounterView: View {
 
 ## Testing
 
-Use `@Test(.modelTesting)` (from `SwiftModelTesting`) together with `withAnchor()` and `expect { }`. The test scope is exhaustive by default — any state change, event, or task you didn't assert fails the test.
+Use `@Test(.modelTesting)` together with `withAnchor()` and `expect { }`. The test scope is exhaustive by default — any state change, event, or task you didn't assert fails the test.
 
 ```swift
-import SwiftModelTesting
+import SwiftModel
 
 @Suite(.modelTesting)
 struct CounterTests {

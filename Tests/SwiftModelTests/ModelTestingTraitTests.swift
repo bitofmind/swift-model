@@ -1,7 +1,7 @@
 import Testing
 import Observation
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 
 // MARK: - Test models
 

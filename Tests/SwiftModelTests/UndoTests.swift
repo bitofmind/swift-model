@@ -3,7 +3,7 @@ import AsyncAlgorithms
 import ConcurrencyExtras
 import Observation
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 
 // MARK: - trackUndo() (all fields) tests
 

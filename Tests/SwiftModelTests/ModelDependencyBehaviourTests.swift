@@ -2,7 +2,7 @@ import Observation
 import Testing
 import AsyncAlgorithms
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 import Dependencies
 
 /// Tests covering the documented semantics of Model-as-dependency in SwiftModel.

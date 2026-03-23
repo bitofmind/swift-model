@@ -1,7 +1,7 @@
 import Testing
 import AsyncAlgorithms
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 import Dependencies
 import Observation
 

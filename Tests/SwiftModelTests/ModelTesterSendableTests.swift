@@ -1,7 +1,7 @@
 import Testing
 import Observation
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 
 /// Regression tests that verify ModelTester's closure-accepting APIs require @Sendable closures.
 ///

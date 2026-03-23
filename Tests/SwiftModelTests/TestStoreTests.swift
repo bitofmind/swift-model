@@ -1,6 +1,6 @@
 import Testing
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 import CustomDump
 import Observation
 

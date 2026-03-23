@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 import CustomDump
 import IssueReporting
 import InlineSnapshotTesting

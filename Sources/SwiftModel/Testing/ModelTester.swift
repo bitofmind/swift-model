@@ -32,7 +32,7 @@ public final class ModelTester<M: Model> {
     ///
     /// > Deprecated: Use `@Test(.modelTesting)` with `model.withAnchor()` and the global
     ///   `expect { }` / `require(_:)` functions instead. `ModelTester` remains available for
-    ///   programmatic use or when `SwiftModelTesting` is not imported.
+    ///   programmatic use or advanced test scenarios.
     ///
     /// - Parameters:
     ///   - model: An un-anchored model to test.
@@ -59,7 +59,7 @@ public final class ModelTester<M: Model> {
 public extension Model {
     /// Anchors the model and returns it together with a `ModelTester` for exhaustive testing.
     ///
-    /// > Deprecated: Use `@Test(.modelTesting)` (from `SwiftModelTesting`) with `model.withAnchor()`
+    /// > Deprecated: Use `@Test(.modelTesting)` with `model.withAnchor()`
     ///   and the global `expect { }` / `require(_:)` functions instead:
     ///
     /// ```swift

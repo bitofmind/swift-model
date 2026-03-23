@@ -4,7 +4,7 @@ import ConcurrencyExtras
 import Foundation
 import Dependencies
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 
 /// Tests for dual ObservationRegistrar pattern
 ///

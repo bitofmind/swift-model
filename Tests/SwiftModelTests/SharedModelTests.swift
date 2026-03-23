@@ -1,5 +1,5 @@
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 import Testing
 import ConcurrencyExtras
 import Observation

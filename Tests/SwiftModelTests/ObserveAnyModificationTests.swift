@@ -2,7 +2,7 @@ import Testing
 import AsyncAlgorithms
 import Observation
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 
 @Suite(.modelTesting)
 struct ObserveAnyModificationTests {

@@ -1,6 +1,6 @@
 import Testing
 import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 import Observation
 import Clocks
 

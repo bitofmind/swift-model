@@ -1,7 +1,7 @@
 import Testing
 import Observation
 @testable import SwiftModel
-import SwiftModelTesting
+import SwiftModel
 
 @Model private struct TouchModel: Equatable {
     var count: Int = 5
