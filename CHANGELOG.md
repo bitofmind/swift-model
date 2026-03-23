@@ -26,7 +26,6 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 ### Deprecated
 - `model.andTester(options:withDependencies:)` — use `model.withAnchor()` inside `@Test(.modelTesting)` instead.
 - `tester.assert { }` / `tester.unwrap { }` — use the global `expect { }` / `require(_:)` functions instead.
-- `tester.assertNow { }` — use `await expect { }` instead.
 - `TestProbe.install()` — probes auto-register on creation and on every call; explicit `install()` is no longer needed.
 
 ---

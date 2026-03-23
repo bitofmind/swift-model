@@ -84,7 +84,7 @@ struct MyTests {
 }
 ```
 
-- `expect { }` waits for all predicates to become true, similar to `assertNow`.
+- `expect { }` waits for all predicates to become true.
 - Per-suite exhaustivity: `@Suite(.modelTesting(exhaustivity: .off))` when individual tests use `#expect` directly (bypasses exhaustivity). Opt specific tests back in with `@Test(.modelTesting(exhaustivity: .preference))`.
 - Tests that exercise both observation mechanisms use `options: [.disableObservationRegistrar]` inside `withAnchor(options:)`.
 
@@ -100,10 +100,9 @@ struct MyTests {
        @Test func testTeardown() async {
            let testResult = TestResult()
            await waitUntilRemoved {
-               let (model, tester) = MyModel().andTester(options: [], withDependencies: {
+               let (model, _) = MyModel().andTester(options: [], withDependencies: {
                    $0.testResult = testResult
                })
-               await assertNow(tester) { model.isActive }
                return model
            }
            // Assert post-deallocation behavior
@@ -114,9 +113,7 @@ struct MyTests {
 
    Files currently in this category: `UniquelyReferencedTests`, `ModelDependencyTests`, `ModelDependencyBehaviourTests`, `ObserveAnyModificationLifetimeTests`.
 
-2. **Testing the testing framework itself**: `OutputSnapshotTests` directly invokes `tester.access.assert(timeoutNanoseconds:)` to capture and snapshot the failure messages produced by the framework. This requires direct access to the `TestAccess` internals.
-
-   Call `await assertNow(tester) { }` (free function in `Utilities.swift`) rather than `tester.assert { }` (deprecated public API).
+2. **Testing the testing framework itself**: `OutputSnapshotTests` uses `withModelTesting` + `assertIssueSnapshot` to capture and snapshot the failure messages produced by the framework. The `didSendOnUnanchoredModel` test requires direct access to `TestAccess.TesterAssertContext` internals.
 
 ## Building and testing with MCP
 

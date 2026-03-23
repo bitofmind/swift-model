@@ -1,16 +1,14 @@
 import Foundation
 import Testing
 @testable import SwiftModel
-import SwiftModel
 import CustomDump
 import IssueReporting
 import InlineSnapshotTesting
 
 // MARK: - Test models
 //
-// Note: tester.assert property name capture relies on @ModelTracked property observation.
-// Models with only auto-generated ModelID use non-deterministic values in failure output,
-// so output tests use string-contains checks rather than exact string matching.
+// Note: Models with only auto-generated ModelID use non-deterministic values in failure output,
+// so such tests normalize ModelIDs before snapshot comparison.
 
 @Model
 private struct Counter {
@@ -146,11 +144,11 @@ struct DiffMessageOutputTests {
             """
             Counter.count: …
 
-                  Counter(
-                    id: 1,
+                \u{2007} Counter(
+                \u{2007}   id: 1,
                 −   count: 5
                 +   count: 9
-                  )
+                \u{2007} )
 
             (Expected: −, Actual: +)
             """
@@ -169,11 +167,11 @@ struct DiffMessageOutputTests {
             """
             Counter.id: …
 
-                  Counter(
+                \u{2007} Counter(
                 −   id: 1,
                 +   id: 2,
-                    count: 5
-                  )
+                \u{2007}   count: 5
+                \u{2007} )
 
             (Expected: −, Actual: +)
             """
@@ -183,11 +181,12 @@ struct DiffMessageOutputTests {
     // Exhaustion output when a data field changes: only one message, no ModelID in the diff.
     @Test("unasserted data field change: single message, no ModelID")
     func unassertedDataFieldChange() async {
-        let (model, tester) = CounterHolder().andTester(options: [])
-        model.item.count = 7
-
         await assertIssueSnapshot {
-            await tester.access.assert(timeoutNanoseconds: NSEC_PER_SEC, at: tester.fileAndLine, predicates: [])
+            await withModelTesting {
+                let model = CounterHolder().withAnchor()
+                model.item.count = 7
+                await expect { }
+            }
         } matches: {
             """
             State not exhausted: …
@@ -202,11 +201,12 @@ struct DiffMessageOutputTests {
     // Exhaustion output when a child model is replaced with a different explicit id.
     @Test("unasserted child model replacement with explicit id: single message with id")
     func unassertedChildModelReplacementExplicitId() async {
-        let (model, tester) = CounterHolder().andTester(options: [])
-        model.item = Counter(id: 99, count: 7)
-
         await assertIssueSnapshot {
-            await tester.access.assert(timeoutNanoseconds: NSEC_PER_SEC, at: tester.fileAndLine, predicates: [])
+            await withModelTesting {
+                let model = CounterHolder().withAnchor()
+                model.item = Counter(id: 99, count: 7)
+                await expect { }
+            }
         } matches: {
             """
             State not exhausted: …
@@ -222,22 +222,23 @@ struct DiffMessageOutputTests {
     }
 }
 
-// MARK: - tester.assert failure messages
+// MARK: - assertion failure messages
 
-/// Tests for messages emitted by `tester.assert` when predicates fail.
+/// Tests for messages emitted by `expect` when predicates fail.
 @Suite("tester.assert failure messages")
 struct TesterAssertOutputTests {
 
     @Test("failed predicate produces diff with expected/actual markers")
     func predicateFailureMessage() async {
-        let (model, tester) = SimpleCounter().andTester(options: [], exhaustivity: .off)
-        model.count = 3
-
-        // Explicit TestPredicate type annotation forces the TestPredicate-returning == overload,
-        // which captures both sides as autoclosures and produces the diff format on failure.
-        let pred: TestPredicate = model.count == 99
         await assertIssueSnapshot {
-            await assertNow(tester, timeoutNanoseconds: 1_000_000) { pred }
+            await withModelTesting(exhaustivity: .off) {
+                let model = SimpleCounter().withAnchor()
+                model.count = 3
+                // Explicit TestPredicate type annotation forces the TestPredicate-returning == overload,
+                // which captures both sides as autoclosures and produces the diff format on failure.
+                let pred: TestPredicate = model.count == 99
+                await expect(pred, timeoutNanoseconds: 1_000_000)
+            }
         } matches: {
             """
             Failed to assert: SimpleCounter.count: …
@@ -252,11 +253,12 @@ struct TesterAssertOutputTests {
 
     @Test("passing assertion emits no issues")
     func passingAssertionNoIssues() async {
-        let (model, tester) = SimpleCounter().andTester(options: [], exhaustivity: .off)
-        model.count = 5
-
         await assertIssueSnapshot {
-            await assertNow(tester) { model.count == 5 }
+            await withModelTesting(exhaustivity: .off) {
+                let model = SimpleCounter().withAnchor()
+                model.count = 5
+                await expect { model.count == 5 }
+            }
         } matches: {
             """
             """
@@ -343,11 +345,12 @@ struct ExhaustionFailureTests {
 
     @Test("unasserted scalar state change reports State not exhausted with value")
     func unassertedStateChange() async {
-        let (model, tester) = SimpleCounter().andTester(options: [], exhaustivity: .state)
-        model.count = 42
-
         await assertIssueSnapshot {
-            await tester.access.assert(timeoutNanoseconds: NSEC_PER_SEC, at: tester.fileAndLine, predicates: [])
+            await withModelTesting(exhaustivity: .state) {
+                let model = SimpleCounter().withAnchor()
+                model.count = 42
+                await expect { }
+            }
         } matches: {
             """
             State not exhausted: …
@@ -364,10 +367,11 @@ struct ExhaustionFailureTests {
     func unassertedImplicitIdChildReplacement() async {
         // ModelID integers are non-deterministic, so we capture and normalize before snapshot.
         let reporter = CapturingIssueReporter()
-        withIssueReporters([reporter]) {
-            let (model, tester) = ItemHolder().andTester(options: [])
-            model.item = SimpleCounter()
-            _ = tester  // deinit fires checkExhaustion(includeUpdates: false)
+        await withIssueReporters([reporter]) {
+            await withModelTesting {
+                let model = ItemHolder().withAnchor()
+                model.item = SimpleCounter()
+            }
         }
         let normalized = reporter.messages.joined(separator: "\n")
             .replacing(#/ModelID\(\d+\)/#, with: "ModelID(N)")
@@ -375,14 +379,14 @@ struct ExhaustionFailureTests {
             """
             State not exhausted: …
 
-                  ItemHolder(
-                    id: ModelID(N),
-                    item: SimpleCounter(
+                \u{2007} ItemHolder(
+                \u{2007}   id: ModelID(N),
+                \u{2007}   item: SimpleCounter(
                 −     id: ModelID(N),
                 +     id: ModelID(N),
-                      count: 0
-                    )
-                  )
+                \u{2007}     count: 0
+                \u{2007}   )
+                \u{2007} )
 
             (Expected: −, Actual: +)
             """
@@ -392,9 +396,10 @@ struct ExhaustionFailureTests {
     @Test("unasserted event reports event name and model type")
     func unassertedEvent() async {
         await assertIssueSnapshot {
-            let (model, tester) = ExhaustionEventSender().andTester(options: [], exhaustivity: .events)
-            model.tap()
-            _ = tester
+            await withModelTesting(exhaustivity: .events) {
+                let model = ExhaustionEventSender().withAnchor()
+                model.tap()
+            }
         } matches: {
             """
             Event `ExhaustionEventSender.Event.tapped` sent from `ExhaustionEventSender` was not handled
@@ -405,9 +410,10 @@ struct ExhaustionFailureTests {
     @Test("two active tasks report '2 active tasks' in summary line")
     func twoActiveTasksSummaryPlural() async {
         await assertIssueSnapshot {
-            let (model, tester) = LongTaskRunner().andTester(options: [], exhaustivity: .tasks)
-            model.startTasks()
-            _ = tester  // deinit fires checkExhaustion with checkTasks: true
+            await withModelTesting(exhaustivity: .tasks) {
+                let model = LongTaskRunner().withAnchor()
+                model.startTasks()
+            }
         } matches: {
             """
             Models of type `LongTaskRunner` have 2 active tasks still running
@@ -420,9 +426,10 @@ struct ExhaustionFailureTests {
     @Test("one active task reports '1 active task' (singular) in summary line")
     func oneActiveTaskSummarySingular() async {
         await assertIssueSnapshot {
-            let (model, tester) = SingleTaskRunner().andTester(options: [], exhaustivity: .tasks)
-            model.startTask()
-            _ = tester  // deinit fires checkExhaustion with checkTasks: true
+            await withModelTesting(exhaustivity: .tasks) {
+                let model = SingleTaskRunner().withAnchor()
+                model.startTask()
+            }
         } matches: {
             """
             Models of type `SingleTaskRunner` have 1 active task still running
@@ -433,12 +440,12 @@ struct ExhaustionFailureTests {
 
     @Test("named probe exhaustion message includes probe name with space-separated quote")
     func namedProbeExhaustionMessage() async {
-        let onLoad = TestProbe("myLoader")
         await assertIssueSnapshot {
-            let (model, tester) = TraitLoader(onLoad: onLoad.call).andTester(options: [], exhaustivity: .probes)
-            tester.access.install(onLoad)
-            model.load(value: "hello")
-            _ = tester
+            await withModelTesting(exhaustivity: .probes) {
+                let onLoad = TestProbe("myLoader")
+                let model = TraitLoader(onLoad: onLoad.call).withAnchor()
+                model.load(value: "hello")
+            }
         } matches: {
             """
             Failed to assert calling of probe "myLoader":
@@ -449,12 +456,12 @@ struct ExhaustionFailureTests {
 
     @Test("unnamed probe exhaustion message uses bare 'probe:' format")
     func unnamedProbeExhaustionMessage() async {
-        let onLoad = TestProbe()
         await assertIssueSnapshot {
-            let (model, tester) = TraitLoader(onLoad: onLoad.call).andTester(options: [], exhaustivity: .probes)
-            tester.access.install(onLoad)
-            model.load(value: "hello")
-            _ = tester
+            await withModelTesting(exhaustivity: .probes) {
+                let onLoad = TestProbe()
+                let model = TraitLoader(onLoad: onLoad.call).withAnchor()
+                model.load(value: "hello")
+            }
         } matches: {
             """
             Failed to assert calling of probe:
@@ -472,12 +479,13 @@ struct TimeoutProbeFailureTests {
 
     @Test("probe with no values reports 'No available probe values'")
     func probeNoValues() async {
-        let onLoad = TestProbe()
         await assertIssueSnapshot {
-            let (_, tester) = TraitLoader(onLoad: onLoad.call).andTester(options: [], exhaustivity: .off)
-            tester.access.install(onLoad)
-            await assertNow(tester, timeoutNanoseconds: 1_000_000) {
-                onLoad.wasCalled(with: "hello")
+            await withModelTesting(exhaustivity: .off) {
+                let onLoad = TestProbe()
+                let _ = TraitLoader(onLoad: onLoad.call).withAnchor()
+                await expect(timeoutNanoseconds: 1_000_000) {
+                    onLoad.wasCalled(with: "hello")
+                }
             }
         } matches: {
             """
@@ -491,12 +499,14 @@ struct TimeoutProbeFailureTests {
 
     @Test("probe with one wrong value emits diff")
     func probeOneWrongValue() async {
-        let onLoad = TestProbe()
         await assertIssueSnapshot {
-            let (model, tester) = TraitLoader(onLoad: onLoad.call).andTester(options: [], exhaustivity: .off)
-            model.load(value: "actual")
-            await assertNow(tester, timeoutNanoseconds: 1_000_000) {
-                onLoad.wasCalled(with: "expected")
+            await withModelTesting(exhaustivity: .off) {
+                let onLoad = TestProbe()
+                let model = TraitLoader(onLoad: onLoad.call).withAnchor()
+                model.load(value: "actual")
+                await expect(timeoutNanoseconds: 1_000_000) {
+                    onLoad.wasCalled(with: "expected")
+                }
             }
         } matches: {
             """
@@ -512,13 +522,15 @@ struct TimeoutProbeFailureTests {
 
     @Test("probe with multiple values lists all available probe values")
     func probeMultipleValues() async {
-        let onLoad = TestProbe()
         await assertIssueSnapshot {
-            let (model, tester) = TraitLoader(onLoad: onLoad.call).andTester(options: [], exhaustivity: .off)
-            model.load(value: "first")
-            model.load(value: "second")
-            await assertNow(tester, timeoutNanoseconds: 1_000_000) {
-                onLoad.wasCalled(with: "nonexistent")
+            await withModelTesting(exhaustivity: .off) {
+                let onLoad = TestProbe()
+                let model = TraitLoader(onLoad: onLoad.call).withAnchor()
+                model.load(value: "first")
+                model.load(value: "second")
+                await expect(timeoutNanoseconds: 1_000_000) {
+                    onLoad.wasCalled(with: "nonexistent")
+                }
             }
         } matches: {
             """
@@ -534,11 +546,13 @@ struct TimeoutProbeFailureTests {
 
     @Test("named probe timeout message includes probe name with space-separated quote")
     func namedProbeTimeoutMessage() async {
-        let onLoad = TestProbe("myLoader")
         await assertIssueSnapshot {
-            let (_, tester) = TraitLoader(onLoad: onLoad.call).andTester(options: [], exhaustivity: .off)
-            await assertNow(tester, timeoutNanoseconds: 1_000_000) {
-                onLoad.wasCalled(with: "hello")
+            await withModelTesting(exhaustivity: .off) {
+                let onLoad = TestProbe("myLoader")
+                let _ = TraitLoader(onLoad: onLoad.call).withAnchor()
+                await expect(timeoutNanoseconds: 1_000_000) {
+                    onLoad.wasCalled(with: "hello")
+                }
             }
         } matches: {
             """
@@ -553,15 +567,17 @@ struct TimeoutProbeFailureTests {
 
 // MARK: - Unwrap timeout message
 
-/// Tests for the failure message from `tester.unwrap` when the value stays nil.
+/// Tests for the failure message from `require` when the value stays nil.
 @Suite("unwrap timeout failure messages")
 struct UnwrapTimeoutTests {
 
     @Test("tester.unwrap timeout includes the type name")
     func unwrapTimeoutIncludesTypeName() async {
-        let (_, tester) = TraitLoader().andTester(options: [], exhaustivity: .off)
         await assertIssueSnapshot {
-            _ = try? await unwrapNow(tester, nil as String?, timeoutNanoseconds: 1_000_000)
+            await withModelTesting(exhaustivity: .off) {
+                let _ = TraitLoader().withAnchor()
+                _ = try? await require(nil as String?, timeoutNanoseconds: 1_000_000)
+            }
         } matches: {
             """
             Failed to unwrap value of type String
@@ -612,20 +628,20 @@ struct OutOfScopeTests {
 
     @Test("didSend() outside assert block reports clear error")
     func didSendOutsideAssertBlock() async {
-        let (model, tester) = EventSenderForOutOfScope().andTester(options: [], exhaustivity: .off)
         await assertIssueSnapshot {
-            _ = model.didSend(EventSenderForOutOfScope.Event.tapped)
+            await withModelTesting(exhaustivity: .off) {
+                let model = EventSenderForOutOfScope().withAnchor()
+                _ = model.didSend(EventSenderForOutOfScope.Event.tapped)
+            }
         } matches: {
             """
             Can only call didSend inside a ModelTester assert
             """
         }
-        _ = tester
     }
 
     @Test("didSend() on unanchored model inside assert block reports clear error")
     func didSendOnUnanchoredModel() async {
-        let (model, tester) = EventSenderForOutOfScope().andTester(options: [], exhaustivity: .off)
         let unanchored = EventSenderForOutOfScope()
         let fileAndLine = FileAndLine(fileID: #fileID, filePath: #filePath, line: #line, column: #column)
         let fakeContext = TestAccess<EventSenderForOutOfScope>.TesterAssertContext(events: { [] }, fileAndLine: fileAndLine)
@@ -638,7 +654,6 @@ struct OutOfScopeTests {
             Can only call didSend on a model that is part of a ModelTester
             """
         }
-        _ = (model, tester)
     }
 
     @Test("probe.wasCalled() outside assert block reports clear error")
@@ -674,10 +689,12 @@ struct AssertionFailedFallbackTests {
 
     @Test("false literal predicate emits 'Assertion failed'")
     func falseLiteralPredicate() async {
-        let (_, tester) = SimpleCounter().andTester(options: [], exhaustivity: .off)
         await assertIssueSnapshot {
-            await assertNow(tester, timeoutNanoseconds: 1_000_000) {
-                false
+            await withModelTesting(exhaustivity: .off) {
+                let _ = SimpleCounter().withAnchor()
+                await expect(timeoutNanoseconds: 1_000_000) {
+                    false
+                }
             }
         } matches: {
             """

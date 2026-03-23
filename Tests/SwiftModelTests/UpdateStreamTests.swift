@@ -335,26 +335,26 @@ struct UpdateStreamTests {
 
     /// Observed { child } (returns model struct, not a property read) should fire when any
     /// property of child changes, using onAnyModification as the subscription fallback.
-    @Test(arguments: UpdatePath.allCases)
+    @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningChildModelDirectly(updatePath: UpdatePath) async throws {
-        let (model, tester) = ReturnModelModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = ReturnModelModel().withAnchor(options: updatePath.options)
 
-        await tester.assert { model.childSnapshots.count == 1 }
+        await expect { model.childSnapshots.count == 1 }
 
         model.child.count = 5
-        await tester.assert { model.childSnapshots.last?.count == 5 }
+        await expect { model.childSnapshots.last?.count == 5 }
 
         model.child.count = 10
-        await tester.assert { model.childSnapshots.last?.count == 10 }
+        await expect { model.childSnapshots.last?.count == 10 }
     }
 
     /// Observed { observed } — property changes on the returned model do NOT trigger; only
     /// replacing the model (writing to the parent property) fires a new emission.
-    @Test(arguments: UpdatePath.allCases)
+    @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningSelf(updatePath: UpdatePath) async throws {
-        let (model, tester) = SelfObserverParent().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = SelfObserverParent().withAnchor(options: updatePath.options)
 
-        await tester.assert { model.observedCounts.count == 1 }
+        await expect { model.observedCounts.count == 1 }
 
         // Property change does NOT trigger re-emission
         model.observed.count = 7
@@ -363,17 +363,17 @@ struct UpdateStreamTests {
 
         // Model replacement DOES trigger (new identity)
         model.observed = SelfObservingModel()
-        await tester.assert { model.observedCounts.count == 2 }
+        await expect { model.observedCounts.count == 2 }
         #expect(model.observedCounts.last == 0)
     }
 
     /// Observed { (a, b) } — property changes on the returned models do NOT trigger; only
     /// replacing a model (writing to the parent property) fires a new emission.
-    @Test(arguments: UpdatePath.allCases)
+    @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningTupleOfModels(updatePath: UpdatePath) async throws {
-        let (model, tester) = TupleObserverModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = TupleObserverModel().withAnchor(options: updatePath.options)
 
-        await tester.assert { model.snapshots.count == 1 }
+        await expect { model.snapshots.count == 1 }
 
         // Property changes do NOT trigger re-emission
         model.a.count = 3
@@ -383,20 +383,20 @@ struct UpdateStreamTests {
 
         // Replacing a triggers; the snapshot captures current counts of both models
         model.a = ChildModel()
-        await tester.assert { model.snapshots.count == 2 }
+        await expect { model.snapshots.count == 2 }
         // b.count is 7 (mutated above but not yet snapshotted until the replacement fires)
         #expect(model.snapshots.last?.1 == 7)
     }
 
     /// Observed { optionalChild } — identity transitions (nil→Some, Some→nil, Some→other Some)
     /// trigger re-emission; property changes on the wrapped model do NOT.
-    @Test(arguments: UpdatePath.allCases)
+    @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningOptionalModel(updatePath: UpdatePath) async throws {
-        let (model, tester) = OptionalObserverModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = OptionalObserverModel().withAnchor(options: updatePath.options)
 
         // nil → Some triggers (different identity)
         model.child = ChildModel()
-        await tester.assert { model.observedCounts.last == 0 }
+        await expect { model.observedCounts.last == 0 }
 
         // Property change does NOT trigger
         model.child!.count = 5
@@ -405,17 +405,17 @@ struct UpdateStreamTests {
 
         // Some → nil triggers (different identity)
         model.child = nil
-        await tester.assert { model.observedCounts.last == -1 }
+        await expect { model.observedCounts.last == -1 }
     }
 
     /// Observed { children } — property changes on array elements do NOT trigger; adding or
     /// removing elements (changing array composition) DOES trigger.
-    @Test(arguments: UpdatePath.allCases)
+    @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningArrayOfModels(updatePath: UpdatePath) async throws {
-        let (model, tester) = ArrayObserverModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = ArrayObserverModel().withAnchor(options: updatePath.options)
 
         // Initial: 2 children
-        await tester.assert { model.snapshots.count == 1 }
+        await expect { model.snapshots.count == 1 }
 
         // Property changes do NOT trigger
         model.children[0].count = 10
@@ -425,18 +425,18 @@ struct UpdateStreamTests {
 
         // Adding a new element changes array composition — triggers
         model.children.append(ChildModel())
-        await tester.assert { model.snapshots.count == 2 }
+        await expect { model.snapshots.count == 2 }
         // Snapshot captures current counts: [10, 20, 0]
         #expect(model.snapshots.last?.count == 3)
     }
 
     /// Observed { child } only fires when the child model is replaced (different identity);
     /// neither direct property changes nor descendant changes trigger re-evaluation.
-    @Test(arguments: UpdatePath.allCases)
+    @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturnedModelIgnoresDescendantChanges(updatePath: UpdatePath) async throws {
-        let (model, tester) = DescendantObserverModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = DescendantObserverModel().withAnchor(options: updatePath.options)
 
-        await tester.assert { model.snapshots.count == 1 }
+        await expect { model.snapshots.count == 1 }
 
         // Direct property change on returned model does NOT trigger
         model.child.direct = 5
@@ -450,16 +450,16 @@ struct UpdateStreamTests {
 
         // Model replacement DOES trigger (new identity)
         model.child = DeepChildModel()
-        await tester.assert { model.snapshots.count == 2 }
+        await expect { model.snapshots.count == 2 }
     }
 
     /// Observed { active } fires when the identity of the returned model changes (swap);
     /// property changes on the currently active model do NOT trigger.
-    @Test(arguments: UpdatePath.allCases)
+    @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningSwappedModel(updatePath: UpdatePath) async throws {
-        let (model, tester) = SwapObserverModel().andTester(options: updatePath.options, exhaustivity: .off)
+        let model = SwapObserverModel().withAnchor(options: updatePath.options)
 
-        await tester.assert { model.snapshots.count == 1 }
+        await expect { model.snapshots.count == 1 }
         #expect(model.snapshots.last == 0)
 
         // Property change does NOT trigger
@@ -469,7 +469,7 @@ struct UpdateStreamTests {
 
         // Swap to a different model DOES trigger (new identity returned by closure)
         model.useSecond = true
-        await tester.assert { model.snapshots.count == 2 }
+        await expect { model.snapshots.count == 2 }
         #expect(model.snapshots.last == 0)
 
         // Property change on new active also does NOT trigger
