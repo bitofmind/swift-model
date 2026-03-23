@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import CustomDump
 import IssueReporting
 import Dependencies

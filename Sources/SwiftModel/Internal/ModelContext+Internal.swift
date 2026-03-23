@@ -1,5 +1,6 @@
 import Foundation
 import Dependencies
+import Observation
 
 extension ModelContext {
     var reference: Context<M>.Reference? {

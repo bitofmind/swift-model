@@ -1,5 +1,5 @@
 import Dependencies
-import Observation
+public import Observation
 
 /// Transforms a struct into a SwiftModel model.
 ///

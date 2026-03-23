@@ -80,9 +80,18 @@ var threadLocals: ThreadLocals {
 
 private let threadLocalsKey: pthread_key_t = {
     var key: pthread_key_t = 0
+    // pthread_key_create's destructor parameter is annotated _Nonnull on Apple platforms
+    // but remains nullable (void *) on Linux, so the Swift signatures differ.
+    #if os(Linux)
+    let cleanup: @convention(c) (UnsafeMutableRawPointer?) -> Void = { state in
+        guard let state else { return }
+        Unmanaged<ThreadLocals>.fromOpaque(state).release()
+    }
+    #else
     let cleanup: @convention(c) (UnsafeMutableRawPointer) -> Void = { state in
         Unmanaged<ThreadLocals>.fromOpaque(state).release()
     }
+    #endif
     pthread_key_create(&key, cleanup)
     return key
 }()

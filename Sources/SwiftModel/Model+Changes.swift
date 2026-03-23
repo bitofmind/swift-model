@@ -2,6 +2,7 @@ import Foundation
 import AsyncAlgorithms
 import CustomDump
 import ConcurrencyExtras
+import Observation
 
 /// A stream for observing changes to model properties.
 ///
