@@ -32,6 +32,7 @@ struct MemoryTests {
         }
 
         await parentRef.waitUntilNil()
+        await childRef.waitUntilNil()
 
         #expect(parentRef == nil)
         #expect(childRef == nil)

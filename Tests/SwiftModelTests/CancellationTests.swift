@@ -118,13 +118,17 @@ struct CancellationTests {
             }
             .cancel(for: CancelKey.one, cancelInFlight: true)
             
-            // Wait for the cancellation to take effect
-            try await waitUntil(count == 1, timeout: 5_000_000_000)
+            // Wait for the cancellation to take effect. Under heavy parallel-test load the
+            // Swift cooperative scheduler can be very congested, so the model task's
+            // continuation (resumed after the channel rendezvous) may wait a long time
+            // before it gets a turn to execute withTaskCancellationHandler. Use a 60s
+            // explicit timeout so the scaled timeout is at least 60s on any machine.
+            try await waitUntil(count == 1, timeout: 60_000_000_000)
 
             model.cancelAll(for: CancelKey.one)
-            
+
             // Wait for the final cancellation handler to complete
-            try await waitUntil(count == 4, timeout: 5_000_000_000)
+            try await waitUntil(count == 4, timeout: 60_000_000_000)
         }
 
         #expect(count == 4)

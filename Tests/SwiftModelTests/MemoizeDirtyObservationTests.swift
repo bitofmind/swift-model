@@ -587,6 +587,13 @@ struct MemoizeDirtyObservationTests {
             model.value = i
         }
 
+        // Under heavy parallel-test load, backgroundCall's queue is congested. waitUntil
+        // polls via Task.yield() which can't keep up. Use waitForCurrentItems() instead:
+        // it cooperatively waits on backgroundCall's own drain loop for the two-hop
+        // delivery chain (memoize performUpdate → Observed performUpdate).
+        await backgroundCall.waitForCurrentItems()
+        await backgroundCall.waitForCurrentItems()
+
         // The final value must be observed (20 * 2 = 40)
         try await waitUntil(updates.value.contains(40), timeout: 3_000_000_000)
         #expect(updates.value.contains(40), "[\(path)] Final value 40 must be observed after 20 rapid mutations")
@@ -599,6 +606,9 @@ struct MemoizeDirtyObservationTests {
         for i in 1...20 {
             model.value = 20 + i
         }
+        // Two hops: memoize performUpdate → Observed performUpdate
+        await backgroundCall.waitForCurrentItems()
+        await backgroundCall.waitForCurrentItems()
         // Final value: 40 * 2 = 80
         try await waitUntil(updates.value.contains(80), timeout: 3_000_000_000)
         #expect(updates.value.contains(80), "[\(path)] Subscription must survive a second round of rapid mutations")

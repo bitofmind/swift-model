@@ -1,6 +1,7 @@
 import Foundation
 import Dependencies
 import OrderedCollections
+import Observation
 
 enum ModelLifetime: Comparable {
     case initial

@@ -308,18 +308,23 @@ struct MemoizeEdgeCaseTests {
     func testResetDuringDirty() async throws {
         let model = ResetTestModel().withAnchor()
 
-        _ = model.computed  // Initial computation
+        _ = model.computed  // Initial computation, count=1
 
-        // Mutate (marks dirty)
+        // Mutate (marks dirty, queues async performUpdate via backgroundCall)
         model.value = 5
 
-        // Reset before accessing dirty value
+        // Reset before accessing dirty value.
+        // The async performUpdate may or may not have already run by this point:
+        // - If it ran BEFORE this cancel: count=2 (produce() for retracking)
+        // - If it runs AFTER this cancel: hasBeenCancelled=true → it exits early
         model.node.resetMemoization(for: "computed")
 
         // Access should trigger fresh computation
         let value = model.computed
         #expect(value == 10, "Should compute fresh value")
-        #expect(model.computeCount.value == 2, "Should have computed twice (initial + after reset)")
+        // Count is 2 (reset before performUpdate) or 3 (performUpdate ran before cancel)
+        #expect(model.computeCount.value >= 2, "Fresh access after reset must have recomputed")
+        #expect(model.computeCount.value <= 3, "Should not have more than one extra compute from async retracking")
 
         print("Reset during dirty: value=\(value), computeCount=\(model.computeCount.value)")
     }

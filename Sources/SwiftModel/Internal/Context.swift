@@ -3,6 +3,7 @@ import Dependencies
 import OrderedCollections
 import IssueReporting
 import CustomDump
+import Observation
 
 final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
@@ -119,7 +120,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         reference.destruct(lastSeenValue)
 
         Task {
-            try? await Task.sleep(nanoseconds: NSEC_PER_MSEC*UInt64(lastSeenTimeToLive*1000))
+            try? await Task.sleep(nanoseconds: 1_000_000*UInt64(lastSeenTimeToLive*1000))
             reference.clear()
         }
     }

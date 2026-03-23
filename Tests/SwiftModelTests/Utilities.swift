@@ -138,6 +138,11 @@ func waitUntil(
     file: StaticString = #file,
     line: UInt = #line
 ) async throws {
+    // Fast path: if the condition is already satisfied, skip the calibration yield entirely.
+    // On iOS simulator under heavy parallel-test load a single Task.yield() can take
+    // hundreds of milliseconds, so avoiding it when possible keeps tests fast.
+    if condition() { return }
+
     // Scale the timeout by current scheduler latency so that under heavy parallel
     // test load (e.g. 100x repetitions) we wait proportionally longer.
     let calibrationStart = DispatchTime.now().uptimeNanoseconds

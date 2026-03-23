@@ -1,5 +1,6 @@
 import Foundation
 import Dependencies
+import Observation
 
 /// Internal bridge so all framework code can access the model context directly
 /// without going through the public `_context` access token.

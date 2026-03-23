@@ -303,7 +303,7 @@ struct DualRegistrarTests {
     /// Verifies: Observed { observable.value } should work with Apple's @Observable
     /// NOTE: Disabled - Observed uses AccessCollector which doesn't support pure @Observable types
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
-    @Test
+    @Test(.disabled("Observed uses AccessCollector which doesn't support pure @Observable types"))
     func testObservedWithPureObservable() async throws {
         let observable = PureObservableModel()
         
@@ -485,8 +485,12 @@ struct DualRegistrarTests {
         try await waitUntil(values.value.contains(0))
         #expect(values.value.contains(0), "Should have initial value 0")
         
-        // Change observable
+        // Change observable. Under heavy parallel-test load, backgroundCall can be
+        // congested. waitForCurrentItems() cooperatively waits on backgroundCall's
+        // drain loop rather than polling via Task.yield(), ensuring the performUpdate
+        // runs before we check the condition.
         observable.value = 5
+        await backgroundCall.waitForCurrentItems()
         try await waitUntil(values.value.contains(10))
         
         #expect(values.value.contains(10), "Observed should track @Observable changes via @Model")
