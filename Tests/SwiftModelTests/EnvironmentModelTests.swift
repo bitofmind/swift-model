@@ -4,14 +4,14 @@ import Observation
 @testable import SwiftModel
 import SwiftModel
 
-// MARK: - Context keys
+// MARK: - Environment keys
 
-private extension ContextKeys {
+private extension EnvironmentKeys {
     /// A theme model that ancestors can inject into the environment.
-    var theme: ContextStorage<Theme?> { .init(defaultValue: nil, propagation: .environment) }
+    var theme: EnvironmentStorage<Theme?> { .init(defaultValue: nil) }
 
     /// A router model available to all descendants.
-    var router: ContextStorage<Router?> { .init(defaultValue: nil, propagation: .environment) }
+    var router: EnvironmentStorage<Router?> { .init(defaultValue: nil) }
 }
 
 // MARK: - Models
@@ -35,7 +35,7 @@ private struct ThemeHost {
 
     func onActivate() {
         // Write the *child* theme model into context so all descendants can find it.
-        node.context.theme = theme
+        node.environment.theme = theme
     }
 }
 
@@ -43,7 +43,7 @@ private struct ThemeHost {
 @Model
 private struct ThemeConsumer {
     /// The current theme, resolved by walking up the ancestor chain.
-    var theme: Theme? { node.context.theme }
+    var theme: Theme? { node.environment.theme }
 }
 
 /// A deeper consumer to verify multi-level ancestry resolution.
@@ -65,7 +65,7 @@ private struct Router {
     var currentRoute: String = "home"
 
     func onActivate() {
-        node.context.router = self
+        node.environment.router = self
     }
 
     func navigate(to route: String) {
@@ -76,8 +76,8 @@ private struct Router {
 /// A model that reads both theme and router from context.
 @Model
 private struct MultiConsumer {
-    var theme: Theme? { node.context.theme }
-    var router: Router? { node.context.router }
+    var theme: Theme? { node.environment.theme }
+    var router: Router? { node.environment.router }
 }
 
 /// An app root that wires everything together.
@@ -99,8 +99,8 @@ struct EnvironmentModelTests {
     /// its direct child can read it by walking up the ancestor chain.
     @Test func childCanReadModelFromAncestorContext() {
         let host = ThemeHost().withAnchor()
-        // ThemeHost.onActivate writes node.context.theme = theme.
-        // ThemeConsumer reads node.context.theme — walks up to ThemeHost and finds it.
+        // ThemeHost.onActivate writes node.environment.theme = theme.
+        // ThemeConsumer reads node.environment.theme — walks up to ThemeHost and finds it.
         #expect(host.child.theme != nil)
         #expect(host.child.theme?.colorScheme == "light")
     }

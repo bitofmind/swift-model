@@ -2,17 +2,16 @@ import SwiftModel
 import SwiftUI
 import SwiftUINavigation
 
-// MARK: - Context Keys
+// MARK: - Environment Keys
 
-extension ContextKeys {
+extension EnvironmentKeys {
     /// Set by SummaryFeature on its own node when it pushes an edit destination.
-    /// Because propagation is `.environment`, all descendants of SummaryFeature —
-    /// including PersonalInfoFeature and TopicsFeature inside `destination` —
-    /// inherit the value without any constructor parameter being passed.
+    /// All descendants of SummaryFeature — including PersonalInfoFeature and TopicsFeature
+    /// inside `destination` — inherit the value without any constructor parameter being passed.
     /// Steps in the normal forward flow (children of SignUpFeature, not SummaryFeature)
     /// read the default `false`.
-    var isEditing: ContextStorage<Bool> {
-        .init(defaultValue: false, propagation: .environment)
+    var isEditing: EnvironmentStorage<Bool> {
+        .init(defaultValue: false)
     }
 }
 
@@ -146,7 +145,7 @@ struct PersonalInfoFeature {
   /// True when this instance was pushed from the summary screen for editing.
   /// Read from context — set by SummaryFeature without threading it through
   /// the constructor.
-  var isEditing: Bool { node.context.isEditing }
+  var isEditing: Bool { node.environment.isEditing }
 }
 
 struct PersonalInfoStep: View {
@@ -191,7 +190,7 @@ struct TopicsFeature {
   var signUpData: SignUpData
 
   /// True when this instance was pushed from the summary screen for editing.
-  var isEditing: Bool { node.context.isEditing }
+  var isEditing: Bool { node.environment.isEditing }
 
   enum Event {
     case onDone
@@ -291,12 +290,12 @@ struct SummaryFeature {
   func editPersonalInfoButtonTapped() {
     // Setting isEditing on this node propagates via .environment to all
     // descendants, including the PersonalInfoFeature inside `destination`.
-    node.context.isEditing = true
+    node.environment.isEditing = true
     destination = .personalInfo(PersonalInfoFeature(signUpData: signUpData))
   }
 
   func editFavoriteTopicsButtonTapped() {
-    node.context.isEditing = true
+    node.environment.isEditing = true
     destination = .topics(TopicsFeature(signUpData: signUpData))
   }
 
@@ -307,12 +306,12 @@ struct SummaryFeature {
   func onActivate() {
     node.forEach(node.event(of: .onDone, fromType: TopicsFeature.self)) { _ in
       destination = nil
-      node.context.isEditing = false
+      node.environment.isEditing = false
     }
     // Reset isEditing whenever the sheet is dismissed (covers both Done button
     // and interactive dismissal via swipe/tap-outside).
     node.forEach(Observed(initial: false) { destination == nil }) { isNil in
-      if isNil { node.context.isEditing = false }
+      if isNil { node.environment.isEditing = false }
     }
   }
 }

@@ -48,8 +48,8 @@ import Observation
     var value: Int = 0
 }
 
-extension ContextKeys {
-    var debugContextCount: ContextStorage<Int> { .init(defaultValue: 0) }
+extension LocalKeys {
+    var debugContextCount: LocalStorage<Int> { .init(defaultValue: 0) }
 }
 
 extension PreferenceKeys {
@@ -902,18 +902,18 @@ struct DebugTests {
 
     // MARK: Context storage triggers
 
-    /// Context storage changes appear as `ModelType.context.keyName` in trigger output.
+    /// Context storage changes appear as `ModelType.local.keyName` in trigger output.
     @Test func debugTargeted_triggers_contextStorage_name() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Model") }) { output in
             let model = DebugContextModel().withAnchor()
             model.debug([.triggers(.name), .name("Model"), .printer(output)]) {
-                model.node.context.debugContextCount
+                model.node.local.debugContextCount
             }
-            model.node.context.debugContextCount = 5
+            model.node.local.debugContextCount = 5
         } result: {
             """
             Model triggered update:
-              dependency changed: DebugContextModel.context.debugContextCount
+              dependency changed: DebugContextModel.local.debugContextCount
 
             """
         }
@@ -924,13 +924,13 @@ struct DebugTests {
         try await assertOutputSnapshot(until: { $0.contains("Model") }) { output in
             let model = DebugContextModel().withAnchor()
             model.debug([.triggers(.withValue), .name("Model"), .printer(output)]) {
-                model.node.context.debugContextCount
+                model.node.local.debugContextCount
             }
-            model.node.context.debugContextCount = 7
+            model.node.local.debugContextCount = 7
         } result: {
             """
             Model triggered update:
-              dependency changed: DebugContextModel.context.debugContextCount: 0 → 7
+              dependency changed: DebugContextModel.local.debugContextCount: 0 → 7
 
             """
         }

@@ -5,14 +5,12 @@ import Dependencies
 
 // MARK: - Context storage keys for undo state
 
-extension ContextKeys {
-    /// Guards against calling `trackUndo` more than once per context.
-    var isTrackingUndo: ContextStorage<Bool> { .init(defaultValue: false, isSystemStorage: true) }
+/// Guards against calling `trackUndo` more than once per context.
+private let _isTrackingUndoStorage = ContextStorage<Bool>(defaultValue: false, isSystemStorage: true)
 
-    /// The shared `UndoCoalescer` for a context. Stored directly on the context to avoid
-    /// the ObjectIdentifier address-reuse bug that occurs with global static dictionaries.
-    fileprivate var undoCoalescer: ContextStorage<UndoCoalescer?> { .init(defaultValue: nil, isSystemStorage: true) }
-}
+/// The shared `UndoCoalescer` for a context. Stored directly on the context to avoid
+/// the ObjectIdentifier address-reuse bug that occurs with global static dictionaries.
+private let _undoCoalescerStorage = ContextStorage<UndoCoalescer?>(defaultValue: nil, isSystemStorage: true)
 
 // MARK: - UndoAvailability
 
@@ -244,14 +242,14 @@ public extension ModelNode {
     /// should participate in undo must call `trackUndo` in their own `onActivate`.
     func trackUndo() {
         guard let context = enforcedContext() else { return }
-        guard !context.context.isTrackingUndo else {
+        guard !context[_isTrackingUndoStorage] else {
             reportIssue("trackUndo() has already been called for this model. Call it only once in onActivate().")
             return
         }
         let undoSystem: ModelUndoSystem = self[dynamicMember: \.undoSystem]
         guard let backend = undoSystem.backend else { return }
 
-        context.context.isTrackingUndo = true
+        context[_isTrackingUndoStorage] = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, only: nil)
         context.model.visit(with: &visitor, includeSelf: false)
     }
@@ -276,7 +274,7 @@ public extension ModelNode {
         _ paths: repeat WritableKeyPath<M, each PathValue> & Sendable
     ) {
         guard let context = enforcedContext() else { return }
-        guard !context.context.isTrackingUndo else {
+        guard !context[_isTrackingUndoStorage] else {
             reportIssue("trackUndo() has already been called for this model. Call it only once in onActivate().")
             return
         }
@@ -300,7 +298,7 @@ public extension ModelNode {
         }
         let trackedBackingPaths = collector.paths
 
-        context.context.isTrackingUndo = true
+        context[_isTrackingUndoStorage] = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, only: trackedBackingPaths)
         context.model.visit(with: &visitor, includeSelf: false)
     }
@@ -318,7 +316,7 @@ public extension ModelNode {
         excluding paths: repeat WritableKeyPath<M, each PathValue> & Sendable
     ) {
         guard let context = enforcedContext() else { return }
-        guard !context.context.isTrackingUndo else {
+        guard !context[_isTrackingUndoStorage] else {
             reportIssue("trackUndo() has already been called for this model. Call it only once in onActivate().")
             return
         }
@@ -334,7 +332,7 @@ public extension ModelNode {
         }
         let excludedBackingPaths = collector.paths
 
-        context.context.isTrackingUndo = true
+        context[_isTrackingUndoStorage] = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, excluding: excludedBackingPaths)
         context.model.visit(with: &visitor, includeSelf: false)
     }
@@ -554,11 +552,11 @@ private final class UndoCoalescer: @unchecked Sendable {
     // (still-live) coalescer from the other test and push undo entries to the wrong backend.
     static func forContext<M: Model>(_ context: Context<M>, backend: any UndoBackend) -> UndoCoalescer {
         return context.lock {
-            if let existing = context.context.undoCoalescer {
+            if let existing = context[_undoCoalescerStorage] {
                 return existing
             }
             let new = UndoCoalescer(backend: backend)
-            context.context.undoCoalescer = new
+            context[_undoCoalescerStorage] = new
             return new
         }
     }

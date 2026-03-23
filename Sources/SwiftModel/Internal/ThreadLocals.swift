@@ -18,7 +18,7 @@ final class ThreadLocals: @unchecked Sendable {
     var postLockFlushes: [() -> Void]? = nil
     /// When non-nil, `TestAccess.didModify` and `willAccess` tag their `ValueUpdate`/`Access`
     /// entries with this area instead of the default `.state`. Set by `Context<M>` around
-    /// the typed context storage path calls so context changes are reported under `.context`.
+    /// the typed context storage path calls so context changes are reported under `.local`.
     var modificationArea: Exhaustivity? = nil
     /// Guards against infinite recursion in `willAccessStorage`/`didModifyStorage`.
     /// Reading `readModel[keyPath: \M[_metadata: storage]]` inside the TestAccess closure

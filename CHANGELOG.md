@@ -4,6 +4,29 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [Unreleased] — Context Storage API Split
+
+### Added
+- **`node.local`** — new accessor for node-private storage. Reads and writes are isolated to the node; descendants do not inherit the value.
+- **`node.environment`** — new accessor for top-down propagating storage. Writes are visible to all descendants (equivalent to the old `.environment` propagation).
+- **`LocalKeys` / `LocalStorage`** — namespace and descriptor type for declaring node-private storage keys.
+- **`EnvironmentKeys` / `EnvironmentStorage`** — namespace and descriptor type for declaring top-down propagating storage keys.
+- **`node.removeLocal(_:)`** — removes a local storage value back to default.
+- **`node.removeEnvironment(_:)`** — removes a local override, causing the node to inherit from its nearest ancestor again.
+- **`Exhaustivity.environment`** — new exhaustivity category for `node.environment` writes (separate from `.local`).
+
+### Deprecated
+- **`node.context`** — use `node.local` or `node.environment` depending on the desired propagation.
+- **`node.removeContext(_:)`** — use `node.removeLocal(_:)` or `node.removeEnvironment(_:)`.
+- **`ContextKeys` / `ContextValues`** — use `LocalKeys` / `LocalStorage` or `EnvironmentKeys` / `EnvironmentStorage`.
+- **`Exhaustivity.context`** — use `[.local, .environment]` to cover both, or target one specifically.
+
+### Changed
+- Debug trigger output now shows `ModelType.local.keyName` / `ModelType.environment.keyName` instead of the generic `ModelType.context.keyName`.
+- Exhaustion failure messages now say "Local not exhausted" / "Environment not exhausted" instead of "Context not exhausted".
+
+---
+
 ## [0.12.0] — Testing Overhaul & Swift 6.1+
 
 ### Added

@@ -37,7 +37,7 @@ import Dependencies
 //   - expectedState: advances one assert at a time — updated only when an assert passes.
 //   - valueUpdates : pending un-asserted changes — entries are removed when asserted.
 //
-// Why context storage (node.context.x) can't currently participate as a regular access:
+// Why context storage (node.local.x / node.environment.x) can't currently participate as a regular access:
 //
 //   willAccess<M,V> and didModify<M,V> both guard on a WritableKeyPath<M,Value> so the
 //   value can be stored/applied into the typed Root snapshots (lastState/expectedState).
@@ -103,7 +103,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         var apply: (inout Root) -> Void
         var debugInfo: () -> String
         /// Which exhaustivity category this update belongs to. Defaults to `.state` for
-        /// regular property writes; `.context` for `node.context` writes.
+        /// regular property writes; `.local` for `node.local` writes; `.environment` for `node.environment` writes.
         var area: Exhaustivity
     }
 
@@ -150,7 +150,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // are set here but may be cleared by the time the returned closure is invoked).
         let capturedArea = threadLocals.modificationArea
         // For context/preference storage paths, storageName carries the property name
-        // (e.g. "isDarkMode") captured via #function in the ContextKeys/PreferenceKeys declaration.
+        // (e.g. "isDarkMode") captured via #function in the LocalKeys/EnvironmentKeys/PreferenceKeys declaration.
         // propertyName(from:path:) returns nil for synthetic subscript paths, so we prefer this.
         let capturedStorageName = threadLocals.storageName
 
@@ -174,7 +174,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // or plain "propertyName" for regular @Model state properties.
         let resolvedStorageName: String?
         if let sn = capturedStorageName {
-            let pfx = capturedArea == .preference ? "preference" : capturedArea == .context ? "context" : nil
+            let pfx = capturedArea == .preference ? "preference" : capturedArea == .local ? "local" : capturedArea == .environment ? "environment" : nil
             resolvedStorageName = pfx.map { "\($0).\(sn)" } ?? sn
         } else {
             resolvedStorageName = nil  // falls back to propertyName(from:path:) below
@@ -183,7 +183,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // Dependency model context/preference storage: no root-relative path exists (the model
         // lives in dependencyContexts, not children). Return a dummy Access whose additionalCleanup
         // clears the corresponding dependency updates entry when asserted.
-        if fullPaths.isEmpty, (capturedArea == .context || capturedArea == .preference), let modelContext = model.context {
+        if fullPaths.isEmpty, (capturedArea == .local || capturedArea == .environment || capturedArea == .preference), let modelContext = model.context {
             let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
             let area = capturedArea
             return { [weak self] in
@@ -193,7 +193,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         if area == .preference {
                             self?.dependencyPreferenceUpdates.removeValue(forKey: key)
                         } else {
-                            self?.dependencyMetadataUpdates.removeValue(forKey: key)
+                            self?.dependencyMetadataUpdates.removeValue(forKey: key)  // covers .local and .environment
                         }
                     }
                 }
@@ -215,7 +215,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // Context and preference storage values live in AnyContext.contextStorage, not in the @Model
         // struct fields. Writing them back to a frozen copy (no live context) is a silent no-op, so
         // the isEqualIncludingIds round-trip check would always fail. Skip it for these accesses.
-        let isContextOrPreferenceStorage = capturedArea.map { $0.contains(.context) || $0.contains(.preference) } ?? false
+        let isContextOrPreferenceStorage = capturedArea.map { $0.contains(.local) || $0.contains(.environment) || $0.contains(.preference) } ?? false
         // Model-typed properties (e.g. TestHelper.summary: SummaryFeature) carry a generation counter
         // that increments on every child write. Comparing the full struct value in isEqualIncludingIds
         // causes a false "not settled" result whenever a child property changes. Child accesses
@@ -278,16 +278,16 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         let fullPaths = rootPaths.map { $0.appending(path: path) }
         let area = threadLocals.modificationArea ?? .state
         // For context/preference storage, storageName carries the property name captured via
-        // #function in the ContextKeys/PreferenceKeys declaration (e.g. "isDarkMode").
+        // #function in the LocalKeys/EnvironmentKeys/PreferenceKeys declaration (e.g. "isDarkMode").
         // Fall back to propertyName(from:path:) for regular @Model properties.
         let storageName = threadLocals.storageName
 
         // Dependency model context/preference storage: no root-relative path exists. Track the
         // update separately so checkExhaustion can report it if not asserted.
-        if fullPaths.isEmpty, (area == .context || area == .preference), let modelContext = model.context {
+        if fullPaths.isEmpty, (area == .local || area == .environment || area == .preference), let modelContext = model.context {
             let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
             let name = storageName ?? propertyName(from: model, path: path)
-            let prefix = area == .preference ? "preference" : "context"
+            let prefix = area == .preference ? "preference" : area == .environment ? "environment" : "local"
             return { [weak self] in
                 guard let self else { return }
                 let value = frozenCopy(modelContext[path])
@@ -300,14 +300,14 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     if area == .preference {
                         self.dependencyPreferenceUpdates[key] = update
                     } else {
-                        self.dependencyMetadataUpdates[key] = update
+                        self.dependencyMetadataUpdates[key] = update  // covers .local and .environment
                     }
                 }
             }
         }
 
         let name = storageName ?? propertyName(from: model, path: path)
-        let prefix: String? = area == .preference ? "preference" : area == .context ? "context" : nil
+        let prefix: String? = area == .preference ? "preference" : area == .local ? "local" : area == .environment ? "environment" : nil
         return {
             let value = frozenCopy(model.context![path])
             self.lock {
@@ -959,15 +959,16 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // On the timeout/deinit path, layer 3 catches changes invisible to the struct
         // diff (e.g. multiple writes to the same property that ended at the same value).
         if !reportedStateFailure {
-            // Partition by area so state, context, and preference storage are each reported
+            // Partition by area so state, local, environment, and preference storage are each reported
             // independently and respect their respective exhaustivity flags.
-            for area: Exhaustivity in [.state, .context, .preference] {
+            for area: Exhaustivity in [.state, .local, .environment, .preference] {
                 let updates = snapshotUpdates.values.filter { $0.area == area }
                 if !updates.isEmpty {
                     let descriptions = updates.map { $0.debugInfo() }
                     let areaTitle: String
                     switch area {
-                    case .context: areaTitle = "Context not exhausted"
+                    case .local: areaTitle = "Local not exhausted"
+                    case .environment: areaTitle = "Environment not exhausted"
                     case .preference: areaTitle = "Preference not exhausted"
                     default: areaTitle = "State not exhausted"
                     }
@@ -981,19 +982,25 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 }
             }
 
-            // Layer 3b: unasserted context/preference storage on dependency models.
+            // Layer 3b: unasserted local/environment/preference storage on dependency models.
             // These are tracked separately because dependency models have no
             // root-relative WritableKeyPath and cannot be put in valueUpdates.
             let depMetaUpdates = lock { dependencyMetadataUpdates }
             if !depMetaUpdates.isEmpty {
-                let descriptions = depMetaUpdates.values.map { $0.debugInfo() }
-                fail("""
-                    Context not exhausted: …
+                for area: Exhaustivity in [.local, .environment] {
+                    let updates = depMetaUpdates.values.filter { $0.area == area }
+                    if !updates.isEmpty {
+                        let descriptions = updates.map { $0.debugInfo() }
+                        let areaTitle = area == .local ? "Local not exhausted" : "Environment not exhausted"
+                        fail("""
+                            \(areaTitle): …
 
-                    Modifications not asserted:
+                            Modifications not asserted:
 
-                    \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
-                    """, for: .context, at: fileAndLine)
+                            \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
+                            """, for: area, at: fileAndLine)
+                    }
+                }
             }
 
             let depPrefUpdates = lock { dependencyPreferenceUpdates }

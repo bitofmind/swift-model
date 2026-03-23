@@ -1122,35 +1122,41 @@ When a new `EditorModel` is added to `editors`, the stream immediately includes 
 
 Context and preferences let models share data across the model hierarchy without explicit parent-to-child passing. **Context** flows downward (like SwiftUI's `@Environment`); **preferences** flow upward (like SwiftUI's `PreferenceKey`).
 
-Both systems are declared by extending a namespace type with computed properties, and accessed via `node.context` and `node.preference`.
+Both systems are declared by extending a namespace type with computed properties. Context storage comes in two flavours: **local** (node-private, not inherited) via `node.local`, and **environment** (top-down propagation, like SwiftUI's `@Environment`) via `node.environment`. Preferences are accessed via `node.preference`.
 
-### Context — top-down propagation
+### Local storage — node-private
 
-Declare a context key by extending `ContextKeys` with a computed property that returns a `ContextStorage` descriptor:
+For values that belong to a single node and should not be inherited by descendants, extend `LocalKeys` with a computed property returning a `LocalStorage` descriptor:
 
 ```swift
-extension ContextKeys {
-    var isFeatureEnabled: ContextStorage<Bool> {
+extension LocalKeys {
+    var isFeatureEnabled: LocalStorage<Bool> {
         .init(defaultValue: false)
     }
 }
 ```
 
-Read and write via `node.context`:
+Read and write via `node.local`:
 
 ```swift
-node.context.isFeatureEnabled = true      // write
-let enabled = node.context.isFeatureEnabled  // read
+node.local.isFeatureEnabled = true      // write
+let enabled = node.local.isFeatureEnabled  // read
 ```
 
-#### Environment propagation
-
-For values that should automatically flow to all descendants — like a colour scheme, a selection state, or an editing mode — use `.environment` propagation:
+To clear back to the default value:
 
 ```swift
-extension ContextKeys {
-    var colorScheme: ContextStorage<ColorScheme> {
-        .init(defaultValue: .light, propagation: .environment)
+node.removeLocal(\.isFeatureEnabled)
+```
+
+### Environment storage — top-down propagation
+
+For values that should automatically flow to all descendants — like a colour scheme, a selection state, or an editing mode — extend `EnvironmentKeys` with a computed property returning an `EnvironmentStorage` descriptor:
+
+```swift
+extension EnvironmentKeys {
+    var colorScheme: EnvironmentStorage<ColorScheme> {
+        .init(defaultValue: .light)
     }
 }
 ```
@@ -1158,20 +1164,20 @@ extension ContextKeys {
 A write on any ancestor is visible to all descendants. Reading walks up the hierarchy to the nearest ancestor that has set the value, returning `defaultValue` if none has:
 
 ```swift
-// Parent sets the theme for its entire subtree:
-parentModel.node.context.colorScheme = .dark
+// Parent sets the scheme for its entire subtree:
+parentModel.node.environment.colorScheme = .dark
 
 // Any descendant reads it (returns .dark — inherited from parent):
-let scheme = childModel.node.context.colorScheme
+let scheme = childModel.node.environment.colorScheme
 
 // A child can locally override it; only that child and its descendants see the override:
-childModel.node.context.colorScheme = .light
+childModel.node.environment.colorScheme = .light
 ```
 
 To remove a local override and go back to inheriting from the nearest ancestor:
 
 ```swift
-node.removeContext(\.colorScheme)
+node.removeEnvironment(\.colorScheme)
 ```
 
 ### Preferences — bottom-up aggregation
@@ -1214,19 +1220,19 @@ Both reads and writes participate in SwiftModel's observation system: wrapping a
 **Propagating a colour scheme / theme:**
 
 ```swift
-extension ContextKeys {
-    var theme: ContextStorage<AppTheme> {
-        .init(defaultValue: .default, propagation: .environment)
+extension EnvironmentKeys {
+    var theme: EnvironmentStorage<AppTheme> {
+        .init(defaultValue: .default)
     }
 }
 
 // Root model sets the theme once:
 func onActivate() {
-    node.context.theme = userPreferences.theme
+    node.environment.theme = userPreferences.theme
 }
 
 // Any descendant reads it:
-let colors = node.context.theme.colors
+let colors = node.environment.theme.colors
 ```
 
 **Aggregating unsaved-changes across a subtree:**
@@ -1521,7 +1527,8 @@ By default the trait enforces exhaustivity across six categories — any unasser
 - **`.events`** — every event sent via `node.send()` must be observed with `didSend(_:)`
 - **`.tasks`** — all async tasks must complete or be cancelled before the test ends
 - **`.probes`** — every installed `TestProbe` invocation must be consumed by `wasCalled`
-- **`.context`** — every `node.context` write must be consumed by an `expect` block
+- **`.local`** — every `node.local` write must be consumed by an `expect` block
+- **`.environment`** — every `node.environment` write must be consumed by an `expect` block
 - **`.preference`** — every `node.preference` write must be consumed by an `expect` block
 
 To focus a test on only some categories, pass an exhaustivity argument to `.modelTesting`:

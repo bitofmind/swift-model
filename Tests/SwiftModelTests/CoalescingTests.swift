@@ -307,7 +307,7 @@ struct CoalescingTests {
     @Test func testCoalescingWithRapidMutations_AccessCollector() async throws {
         let model = TestModel().withAnchor()
         let updateCount = LockIsolated(0)
-        
+
         let (cancellable, _) = update(
             initial: false,
             isSame: { $0 == $1 },
@@ -316,7 +316,8 @@ struct CoalescingTests {
             access: { model.value },
             onUpdate: { _ in updateCount.withValue { $0 += 1 } }
         )
-        
+        defer { cancellable() }
+
         // Rapid mutations: should coalesce to very few updates
         for i in 1...100 {
             model.value = i
@@ -370,7 +371,7 @@ struct CoalescingTests {
     @Test func testWithoutCoalescing_AllUpdatesFire() async throws {
         let model = TestModel().withAnchor()
         let updateCount = LockIsolated(0)
-        
+
         let (cancellable, _) = update(
             initial: false,
             isSame: { $0 == $1 },
@@ -379,22 +380,17 @@ struct CoalescingTests {
             access: { model.value },
             onUpdate: { _ in updateCount.withValue { $0 += 1 } }
         )
-        
+        defer { cancellable() }
+
         // Without coalescing: each mutation triggers an update
         let mutationCount = 10
         for i in 1...mutationCount {
             model.value = i
         }
-        
-        // Wait for all updates
-        while updateCount.value < mutationCount {
-            await Task.yield()
-        }
-        
-        // Should have all updates
+
+        try await waitUntil(updateCount.value >= mutationCount)
+
         #expect(updateCount.value == mutationCount, "Without coalescing, should have all \(mutationCount) updates, got \(updateCount.value)")
-        
-        cancellable()
     }
     
     // MARK: - Comparison Test

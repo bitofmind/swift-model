@@ -62,7 +62,8 @@ node.task { }                         // start a lifetime-managed async task
 node.forEach(sequence) { value in }  // iterate an async sequence
 node.send(.myEvent)                   // send an event up the hierarchy
 node.cancelAll(for: key)              // cancel tasks by key
-node.context.myValue                  // read/write context (top-down)
+node.local.myValue                    // read/write node-private storage
+node.environment.myValue              // read/write top-down propagating storage
 node.preference.myValue               // read/write preference (bottom-up)
 node[MyDependency.self]               // access a dependency
 node.myDep                            // shorthand if DependencyValues extended
@@ -238,7 +239,7 @@ struct LenientTests { ... }
 func testPreferenceOnly() async { ... }
 ```
 
-Categories: `.state`, `.events`, `.tasks`, `.probes`, `.context`, `.preference`
+Categories: `.state`, `.events`, `.tasks`, `.probes`, `.local`, `.environment`, `.preference`
 
 ### Dependency overrides
 
@@ -369,17 +370,26 @@ node.forEach(node.event(of: AppEvent.logout)) { logout() }
 }
 ```
 
-### Context (top-down) and Preferences (bottom-up)
+### Local / Environment Storage and Preferences
 
 ```swift
-// Context — flows downward like @Environment
-extension ContextKeys {
-    var theme: ContextStorage<AppTheme> {
-        .init(defaultValue: .default, propagation: .environment)
+// Local storage — node-private (not inherited by descendants)
+extension LocalKeys {
+    var isEditing: LocalStorage<Bool> {
+        .init(defaultValue: false)
     }
 }
-node.context.theme = .dark        // write (visible to all descendants)
-let theme = node.context.theme    // read
+node.local.isEditing = true       // write (only visible to this node)
+let editing = node.local.isEditing // read
+
+// Environment storage — flows downward like @Environment
+extension EnvironmentKeys {
+    var theme: EnvironmentStorage<AppTheme> {
+        .init(defaultValue: .default)
+    }
+}
+node.environment.theme = .dark        // write (visible to all descendants)
+let theme = node.environment.theme    // read
 
 // Preferences — aggregate upward
 extension PreferenceKeys {
@@ -438,5 +448,6 @@ Use `@ModelContainer` for enums and structs that hold models but are not models 
 | `Observed` | Creates an `AsyncStream` that re-emits when tracked properties change |
 | `Exhaustivity` | OptionSet controlling which categories `ModelTester` enforces |
 | `ModelRelation` | OptionSet for hierarchy traversal: `.self`, `.ancestors`, `.descendants`, etc. |
-| `ContextStorage` | Descriptor for a top-down context value (declared in `ContextKeys` extension) |
+| `LocalStorage` | Descriptor for a node-private storage value (declared in `LocalKeys` extension) |
+| `EnvironmentStorage` | Descriptor for a top-down propagating storage value (declared in `EnvironmentKeys` extension) |
 | `PreferenceStorage` | Descriptor for a bottom-up aggregated preference (declared in `PreferenceKeys` extension) |

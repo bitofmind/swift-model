@@ -188,7 +188,8 @@ public extension ModelTester {
 /// - `events`: events sent via `node.send()` must be asserted with `model.didSend(_:)`.
 /// - `tasks`: async tasks launched by the model must complete or be cancelled within the test.
 /// - `probes`: values emitted by installed `TestProbe` instances must be asserted.
-/// - `context`: writes to context storage via `node.context` must be asserted.
+/// - `local`: writes to node-private storage via `node.local` must be asserted.
+/// - `environment`: writes to top-down propagating storage via `node.environment` must be asserted.
 /// - `preference`: writes to preference storage via `node.preference` must be asserted.
 ///
 /// Use `.off` to disable all checks, or compose individual members:
@@ -214,15 +215,24 @@ public extension Exhaustivity {
     static let tasks = Self(rawValue: 1 << 2)
     /// Require all values emitted by installed `TestProbe` instances to be consumed.
     static let probes = Self(rawValue: 1 << 3)
-    /// Require all context storage changes (via `node.context`) to be consumed by `assert` blocks.
-    static let context = Self(rawValue: 1 << 4)
+    /// Require all node-private storage changes (via `node.local`) to be consumed by `assert` blocks.
+    static let local = Self(rawValue: 1 << 4)
     /// Require all preference storage changes (via `node.preference`) to be consumed by `assert` blocks.
     static let preference = Self(rawValue: 1 << 5)
+    /// Require all top-down propagating storage changes (via `node.environment`) to be consumed by `assert` blocks.
+    static let environment = Self(rawValue: 1 << 6)
 
     /// Exhaustivity is completely disabled — no side effects need to be asserted.
     static let off: Self = []
     /// All categories are checked. This is the default.
-    static let full: Self = [.state, .events, .tasks, .probes, .context, .preference]
+    static let full: Self = [.state, .events, .tasks, .probes, .local, .environment, .preference]
+
+    /// Require all context storage changes to be consumed by `assert` blocks.
+    ///
+    /// - Deprecated: Use `[.local, .environment]` to cover both storage kinds, or just
+    ///   `.local` / `.environment` to target one specifically.
+    @available(*, deprecated, message: "Use [.local, .environment] to cover both storage kinds, or .local/.environment to target one specifically.")
+    static var context: Self { [.local, .environment] }
 }
 
 public extension Exhaustivity {

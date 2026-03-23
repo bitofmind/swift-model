@@ -3,7 +3,7 @@ import Testing
 import SwiftUINavigation
 @testable import SignUpFlow
 
-@Suite(.modelTesting(.removing(.context)))
+@Suite(.modelTesting(.removing(.local)))
 struct SharedStateTests {
   @Test func testSharedSignUpData() async {
     let signUpData = SignUpData()
@@ -64,7 +64,7 @@ struct SharedStateTests {
 
     await expect {
       summary.destination.is(\.personalInfo) == true
-      summary.node.context.isEditing == true
+      summary.node.environment.isEditing == true
       summary.destination?.personalInfo?.isEditing == true
     }
 
@@ -78,7 +78,7 @@ struct SharedStateTests {
 
     await expect {
       summary.destination == nil
-      summary.node.context.isEditing == false
+      summary.node.environment.isEditing == false
     }
 
     summary.submitButtonTapped()
