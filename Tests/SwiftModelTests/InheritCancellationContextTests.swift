@@ -33,15 +33,17 @@ struct InheritCancellationContextTests {
     /// A task that inherits a cancellation context is cancelled when the outer context is cancelled.
     @Test func testInheritedTaskIsCancelledWithContext() async throws {
         @Locked var cancelCount = 0
-        let channel = AsyncChannel<()>()
+        let inHandler = AsyncChannel<()>()
 
         do {
             let model = InheritModel().withAnchor().testNode
 
             _ = model.cancellationContext(for: InheritKey.outer) {
                 model.task {
-                    await channel.send(())
                     try await withTaskCancellationHandler {
+                        // Signal that the handler is registered before sleeping.
+                        // This guarantees cancelAll below fires onCancel synchronously.
+                        await inHandler.send(())
                         try await Task.sleep(nanoseconds: nanosPerSecond * 60)
                     } onCancel: {
                         $cancelCount.wrappedValue += 1
@@ -50,12 +52,13 @@ struct InheritCancellationContextTests {
                     .inheritCancellationContext()
             }
 
-            // Wait until the task is running
-            var it = channel.makeAsyncIterator()
-            await it.next()
+            // Block until the task is inside withTaskCancellationHandler with onCancel registered
+            var it = inHandler.makeAsyncIterator()
+            _ = await it.next()
 
             #expect(cancelCount == 0)
             model.cancelAll(for: InheritKey.outer)
+            // onCancel fires synchronously since handler is registered at this point
             try await waitUntil(cancelCount == 1, timeout: 5_000_000_000)
         }
 
