@@ -524,7 +524,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                                 access.additionalCleanup?()
                             }
 
-                            events.remove(atOffsets: context.eventsSent)
+                            for index in context.eventsSent.reversed() { events.remove(at: index) }
 
                             for (probe, value) in context.probes {
                                 probe.consume(value)
@@ -633,7 +633,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                             access.additionalCleanup?()
                         }
 
-                        events.remove(atOffsets: context.eventsSent)
+                        for index in context.eventsSent.reversed() { events.remove(at: index) }
 
                         for (probe, value) in context.probes {
                             probe.consume(value)
@@ -746,7 +746,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     access.apply(&expectedState)
                 }
 
-                events.remove(atOffsets: context.eventsSent)
+                for index in context.eventsSent.reversed() { events.remove(at: index) }
 
                 for (probe, value) in context.probes {
                     probe.consume(value)
