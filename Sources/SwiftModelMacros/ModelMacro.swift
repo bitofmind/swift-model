@@ -35,15 +35,37 @@ extension ModelMacro: ExtensionMacro {
             }
 
             addConformance("Model", qualifiedName: "SwiftModel.Model")
-            // Inline this conformance directly so that `@unchecked` is a literal part of the
-            // parsed template string, not a raw token interpolation.  Using \(raw: "@unchecked Sendable")
-            // via addConformance() mis-places @unchecked in the AST on Linux Swift 6.1, producing
+            // Build the @unchecked Sendable extension programmatically rather than using a
+            // string literal template.  On Linux Swift 6.1, SwiftSyntaxBuilder's parser
+            // places @unchecked as an attribute on the extension declaration instead of as a
+            // type attribute inside the inheritance clause, producing
             // "'unchecked' attribute only applies in inheritance clauses" at compile time.
             if !isConforming(to: "Sendable") {
-                extensions.append(
-                """
-                extension \(raw: type.trimmedDescription): @unchecked Sendable {}
-                """)
+                let uncheckedAttr = AttributeSyntax(
+                    atSign: .atSignToken(),
+                    attributeName: IdentifierTypeSyntax(name: .identifier("unchecked"))
+                ).with(\.trailingTrivia, .space)
+                let sendableType = AttributedTypeSyntax(
+                    specifier: nil,
+                    attributes: AttributeListSyntax([.attribute(uncheckedAttr)]),
+                    baseType: IdentifierTypeSyntax(name: .identifier("Sendable"))
+                )
+                let extensionDecl = ExtensionDeclSyntax(
+                    extensionKeyword: .keyword(.extension, trailingTrivia: .space),
+                    extendedType: type,
+                    inheritanceClause: InheritanceClauseSyntax(
+                        colon: .colonToken(trailingTrivia: .space),
+                        inheritedTypes: InheritedTypeListSyntax([
+                            InheritedTypeSyntax(type: sendableType)
+                        ])
+                    ),
+                    memberBlock: MemberBlockSyntax(
+                        leftBrace: .leftBraceToken(leadingTrivia: .space),
+                        members: MemberBlockItemListSyntax([]),
+                        rightBrace: .rightBraceToken()
+                    )
+                )
+                extensions.append(DeclSyntax(extensionDecl))
             }
             addConformance("Identifiable")
 
