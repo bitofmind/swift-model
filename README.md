@@ -171,6 +171,8 @@ import SwiftModel
 ``` 
 
 > **`@Model` structs behave like SwiftUI's `@State`** — the struct is a lightweight handle into a reference-counted backing store. Writing `count += 1` doesn't mutate the struct; it writes through a context pointer to the shared store. This is why setters are non-mutating: you can write `model.count = 5` on a `let model`, and why `[weak self]` is both unnecessary and rejected by the compiler.
+>
+> This hybrid — value-type surface, reference backing — is intentional. **Value semantics** make testing, diffing, and undo trivial: a point-in-time snapshot is just a cheap struct copy, no extra infrastructure needed. **Reference semantics** handle what value types can't: shared mutable state without wrapper hacks, and any-thread mutation without `@MainActor` hops.
 
 ### No Retain Cycles — a structural guarantee
 
