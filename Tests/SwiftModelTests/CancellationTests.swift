@@ -101,7 +101,7 @@ struct CancellationTests {
             model.task {
                 await channel.send(1)
                 try await withTaskCancellationHandler {
-                    try await Task.sleep(nanoseconds: NSEC_PER_SEC*1)  // Use 1 second to ensure task is running when cancelled
+                    try await Task.sleep(nanoseconds: nanosPerSecond)  // Use 1 second to ensure task is running when cancelled
                 } onCancel: {
                     $count.wrappedValue += 1
                 }

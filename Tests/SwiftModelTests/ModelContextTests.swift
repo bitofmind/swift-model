@@ -147,7 +147,7 @@ struct ModelContextTests {
         #expect(test.activateCount == 1)
         #expect(test.child.activateCount == 2)
 
-        try await Task.sleep(nanoseconds: NSEC_PER_MSEC * 2)
+        try await Task.sleep(nanoseconds: 2_000_000)
 
         let result = (-1 + 2*1)*(3*2)
         #expect(test.totalCount == result)

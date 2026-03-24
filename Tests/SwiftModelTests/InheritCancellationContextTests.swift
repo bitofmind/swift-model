@@ -42,7 +42,7 @@ struct InheritCancellationContextTests {
                 model.task {
                     await channel.send(())
                     try await withTaskCancellationHandler {
-                        try await Task.sleep(nanoseconds: NSEC_PER_SEC * 60)
+                        try await Task.sleep(nanoseconds: nanosPerSecond * 60)
                     } onCancel: {
                         $cancelCount.wrappedValue += 1
                     }
@@ -110,7 +110,7 @@ struct InheritCancellationContextTests {
             let subscription = model.forEach(channel, cancelPrevious: true) { value in
                 await workStarted.send(())
                 // Long-running work per element
-                try await Task.sleep(nanoseconds: NSEC_PER_MSEC * 500)
+                try await Task.sleep(nanoseconds: 500_000_000)
                 $processedCount.wrappedValue += value
             } catch: { _ in }
 
@@ -124,7 +124,7 @@ struct InheritCancellationContextTests {
             subscription.cancel()
 
             // Processing should be interrupted (processedCount stays 0)
-            try await Task.sleep(nanoseconds: NSEC_PER_MSEC * 100)
+            try await Task.sleep(nanoseconds: 100_000_000)
             #expect(processedCount == 0)
         }
     }
