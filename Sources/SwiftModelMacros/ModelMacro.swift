@@ -35,7 +35,16 @@ extension ModelMacro: ExtensionMacro {
             }
 
             addConformance("Model", qualifiedName: "SwiftModel.Model")
-            addConformance("Sendable", qualifiedName: "@unchecked Sendable")
+            // Inline this conformance directly so that `@unchecked` is a literal part of the
+            // parsed template string, not a raw token interpolation.  Using \(raw: "@unchecked Sendable")
+            // via addConformance() mis-places @unchecked in the AST on Linux Swift 6.1, producing
+            // "'unchecked' attribute only applies in inheritance clauses" at compile time.
+            if !isConforming(to: "Sendable") {
+                extensions.append(
+                """
+                extension \(raw: type.trimmedDescription): @unchecked Sendable {}
+                """)
+            }
             addConformance("Identifiable")
 
             let memberList = declaration.memberBlock.members.filter {

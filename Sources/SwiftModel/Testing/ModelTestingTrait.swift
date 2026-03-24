@@ -22,7 +22,7 @@ import IssueReporting
 /// > Important: Must be called inside a `@Test(.modelTesting)` function. Calling outside
 ///   a model testing scope reports an issue.
 public func expect(
-    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
+    timeoutNanoseconds timeout: UInt64 = nanosPerSecond,
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
     line: UInt = #line,
@@ -55,7 +55,7 @@ public func expect(
 @_disfavoredOverload
 public func expect(
     _ predicate: @escaping @Sendable @autoclosure () -> Bool,
-    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
+    timeoutNanoseconds timeout: UInt64 = nanosPerSecond,
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
     line: UInt = #line,
@@ -76,7 +76,7 @@ public func expect(
 /// > Important: Must be called inside a `@Test(.modelTesting)` function.
 public func expect(
     _ predicate: TestPredicate,
-    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
+    timeoutNanoseconds timeout: UInt64 = nanosPerSecond,
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
     line: UInt = #line,
@@ -107,7 +107,7 @@ public func expect(
 ///   a model testing scope reports an issue and throws.
 public func require<T>(
     _ expression: @escaping @Sendable @autoclosure () -> T?,
-    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
+    timeoutNanoseconds timeout: UInt64 = nanosPerSecond,
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
     line: UInt = #line,

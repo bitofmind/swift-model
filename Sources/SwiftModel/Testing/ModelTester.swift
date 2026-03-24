@@ -4,6 +4,14 @@ import Dependencies
 import IssueReporting
 import CustomDump
 
+/// The number of nanoseconds in one second (1,000,000,000).
+///
+/// Use this constant when specifying `timeoutNanoseconds` values:
+/// ```swift
+/// await expect(timeoutNanoseconds: 5 * nanosPerSecond) { ... }
+/// ```
+public let nanosPerSecond: UInt64 = nanosPerSecond
+
 /// Drives a model through a test, providing exhaustive checking of state, events, tasks, and callbacks.
 ///
 /// > Note: `ModelTester` is the lower-level testing API. Prefer `@Test(.modelTesting)` with
@@ -385,7 +393,7 @@ public extension ModelTester {
     /// - Parameter builder: A result-builder block of Boolean predicates. Use the `==` operator for
     ///   pretty-printed diff output on failure.
     @available(*, deprecated, message: "Use the global expect { } function inside a @Test(.modelTesting) test instead.")
-    func assert(timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) async {
+    func assert(timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) async {
         await access.assert(timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
     }
 
@@ -394,7 +402,7 @@ public extension ModelTester {
     /// > Deprecated: Use the global `expect { }` function inside a `@Test(.modelTesting)` test instead.
     @_disfavoredOverload
     @available(*, deprecated, message: "Use the global expect { } function inside a @Test(.modelTesting) test instead.")
-    func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
+    func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
         await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
@@ -405,7 +413,7 @@ public extension ModelTester {
     ///
     /// > Deprecated: Use the global `expect { }` function inside a `@Test(.modelTesting)` test instead.
     @available(*, deprecated, message: "Use the global expect { } function inside a @Test(.modelTesting) test instead.")
-    func assert(_ predicate: TestPredicate, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
+    func assert(_ predicate: TestPredicate, timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
         await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
@@ -415,7 +423,7 @@ public extension ModelTester {
     ///
     /// > Deprecated: Use the global `require(_:)` function inside a `@Test(.modelTesting)` test instead.
     @available(*, deprecated, message: "Use the global require(_:) function inside a @Test(.modelTesting) test instead.")
-    func unwrap<T>(_ unwrap: @escaping @Sendable @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = NSEC_PER_SEC, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T  {
+    func unwrap<T>(_ unwrap: @escaping @Sendable @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T  {
         try await access.unwrap(unwrap, timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))
     }
 }
@@ -465,7 +473,7 @@ private extension Duration {
     /// Converts a `Duration` to nanoseconds as `UInt64`, clamped to zero for negative values.
     var toNanoseconds: UInt64 {
         let (seconds, attoseconds) = components
-        return UInt64(max(seconds, 0)) * NSEC_PER_SEC + UInt64(max(attoseconds, 0)) / 1_000_000_000
+        return UInt64(max(seconds, 0)) * nanosPerSecond + UInt64(max(attoseconds, 0)) / nanosPerSecond
     }
 }
 

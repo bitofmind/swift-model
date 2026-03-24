@@ -366,7 +366,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // Only scale when the caller passes the default (1 s) or larger timeout. Short explicit
         // timeouts must be respected as-is so tests probing failure messages don't wait
         // unexpectedly long under heavy parallel load.
-        guard floor >= NSEC_PER_SEC else { return floor }
+        guard floor >= nanosPerSecond else { return floor }
         let calibrationStart = DispatchTime.now().uptimeNanoseconds
         await Task.yield()
         let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
@@ -382,7 +382,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // timeouts (e.g. 1 ms passed by output-snapshot tests) must be respected as-is so
         // tests that intentionally probe failure messages don't wait unexpectedly long under
         // heavy parallel load.
-        let scaledTimeout = timeout >= NSEC_PER_SEC ? max(timeout, yieldLatencyNs * 100) : timeout
+        let scaledTimeout = timeout >= nanosPerSecond ? max(timeout, yieldLatencyNs * 100) : timeout
         // One scheduler round at the current pace. Used as the minimum poll interval so
         // for-await loop bodies always get at least one full cooperative-pool turn per
         // waitForModification call, even under heavy parallel test load.
