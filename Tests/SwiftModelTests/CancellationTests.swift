@@ -91,17 +91,17 @@ struct CancellationTests {
 
     @Test func testCancelInFlight() async throws {
         @Locked var count = 0
-        let channel = AsyncChannel<(Int)>()
+        let inHandler = AsyncChannel<()>()
 
         do {
             let model = CounterModel(count: 0).withAnchor().testNode
 
-            async let v = Array(channel.prefix(1))
-
             model.task {
-                await channel.send(1)
                 try await withTaskCancellationHandler {
-                    try await Task.sleep(nanoseconds: nanosPerSecond)  // Use 1 second to ensure task is running when cancelled
+                    // Signal that the cancellation handler is now registered, then sleep.
+                    // Using a long sleep so the task cannot complete naturally before being cancelled.
+                    await inHandler.send(())
+                    try await Task.sleep(nanoseconds: nanosPerSecond * 60)
                 } onCancel: {
                     $count.wrappedValue += 1
                 }
@@ -109,7 +109,11 @@ struct CancellationTests {
             } catch: { _ in }
             .cancel(for: CancelKey.one, cancelInFlight: true)
 
-            _ = await v
+            // Block until the task is inside withTaskCancellationHandler with onCancel registered.
+            // After this rendezvous the handler is guaranteed to be installed, so the subsequent
+            // cancelInFlight call will fire onCancel { count += 1 } synchronously on this thread.
+            var it = inHandler.makeAsyncIterator()
+            _ = await it.next()
 
             #expect(count == 0)
 
@@ -117,12 +121,8 @@ struct CancellationTests {
                 $count.wrappedValue += 3
             }
             .cancel(for: CancelKey.one, cancelInFlight: true)
-            
-            // Wait for the cancellation to take effect. Under heavy parallel-test load the
-            // Swift cooperative scheduler can be very congested, so the model task's
-            // continuation (resumed after the channel rendezvous) may wait a long time
-            // before it gets a turn to execute withTaskCancellationHandler. Use a 60s
-            // explicit timeout so the scaled timeout is at least 60s on any machine.
+
+            // onCancel { count += 1 } fires synchronously when cancelInFlight cancels the task
             try await waitUntil(count == 1, timeout: 60_000_000_000)
 
             model.cancelAll(for: CancelKey.one)

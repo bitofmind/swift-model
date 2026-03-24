@@ -10,7 +10,7 @@ import CustomDump
 /// ```swift
 /// await expect(timeoutNanoseconds: 5 * nanosPerSecond) { ... }
 /// ```
-public let nanosPerSecond: UInt64 = nanosPerSecond
+public let nanosPerSecond: UInt64 = 1_000_000_000
 
 /// Drives a model through a test, providing exhaustive checking of state, events, tasks, and callbacks.
 ///
