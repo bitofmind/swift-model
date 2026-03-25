@@ -42,6 +42,7 @@ let package = Package(
                 .product(name: "Dependencies", package: "swift-dependencies"),
                 .product(name: "InlineSnapshotTesting", package: "swift-snapshot-testing"),
                 .product(name: "Clocks", package: "swift-clocks"),
+                .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
             ]
         ),
         .macro(
