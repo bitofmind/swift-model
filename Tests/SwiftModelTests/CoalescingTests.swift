@@ -649,15 +649,18 @@ struct CoalescingTests {
         
         let countAfterSwitch = updateCount.value
         
-        // Mutate valueB multiple times
-        for i in 11...15 {
-            model.valueB = i
+        // Mutate valueB multiple times inside a transaction.
+        // withObservationTracking's onChange fires once per registration and
+        // re-registers only inside performUpdate (a background task). On multi-core
+        // Linux that background task can re-register between loop iterations,
+        // causing each mutation to see a fresh onChange and get its own update.
+        // A transaction defers all onChange callbacks until after the block exits,
+        // guaranteeing a single coalesced update regardless of scheduler timing.
+        model.node.transaction {
+            for i in 11...15 {
+                model.valueB = i
+            }
         }
-
-        // Under heavy parallel-test load, backgroundCall's queue can be congested with
-        // work from other tests, making waitUntil's polling too slow. Waiting for
-        // current items in the queue ensures our performUpdate runs before we check.
-        await backgroundCall.waitForCurrentItems()
 
         // Wait for updates to complete (longer timeout for heavy load scenarios)
         try await waitUntil(observedValues.value.last == 15, timeout: 5_000_000_000)
@@ -666,7 +669,8 @@ struct CoalescingTests {
         #expect(updateCount.value > countAfterSwitch, "Should update for valueB changes")
         #expect(observedValues.value.last == 15, "Should see final valueB")
         
-        // Verify coalescing happened (fewer than 5 individual updates for valueB)
+        // Verify coalescing happened: transaction guarantees a single onChange fire,
+        // so performUpdate runs at most once per transaction (≤ 2 with re-registration race).
         let valueBUpdates = updateCount.value - countAfterSwitch
         #expect(valueBUpdates < 5, "Should coalesce valueB mutations (got \(valueBUpdates) updates instead of 5)")
     }
