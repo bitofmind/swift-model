@@ -4,7 +4,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
-## [Unreleased] — Context Storage API Split + Named Tasks + Settle API
+## [0.13.0] — Context Storage API Split + Named Tasks + Settle API
 
 ### Added
 - **Named tasks** — `node.task` and `node.forEach` now accept an optional `_ name: String? = nil` parameter. When provided, the name is passed to Swift's `Task(name:)` and surfaced in test exhaustion failure messages so it's immediately clear which task was still running. When omitted, a name is synthesised automatically from the call site: `"onActivate() @ Counter.swift:42"`.
@@ -220,6 +220,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - `_printChanges()` / `_withPrintChanges()` — debug-build state change printing.
 - Example apps: `CounterFact`, `Standups`, `TodoList`.
 
+[0.13.0]: https://github.com/bitofmind/swift-model/compare/0.12.0...0.13.0
 [0.12.0]: https://github.com/bitofmind/swift-model/compare/0.11.0...0.12.0
 [0.11.0]: https://github.com/bitofmind/swift-model/compare/0.10.1...0.11.0
 [0.10.1]: https://github.com/bitofmind/swift-model/compare/0.10.0...0.10.1
