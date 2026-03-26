@@ -410,7 +410,7 @@ public extension ModelTester {
     /// > Deprecated: Use the global `require(_:)` function inside a `@Test(.modelTesting)` test instead.
     @available(*, deprecated, message: "Use the global require(_:) function inside a @Test(.modelTesting) test instead.")
     func unwrap<T>(_ unwrap: @escaping @Sendable @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T  {
-        try await access.unwrap(unwrap, timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))
+        try await access.require(unwrap, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))
     }
 }
 
@@ -450,7 +450,7 @@ public extension ModelTester {
     /// > Deprecated: Use the global `require(_:timeout:)` function inside a `@Test(.modelTesting)` test instead.
     @available(*, deprecated, message: "Use the global require(_:timeout:) function inside a @Test(.modelTesting) test instead.")
     func unwrap<T>(_ unwrap: @escaping @Sendable @autoclosure () -> T?, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T {
-        try await access.unwrap(unwrap, timeoutNanoseconds: timeout.toNanoseconds, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))
+        try await access.require(unwrap, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))
     }
 }
 

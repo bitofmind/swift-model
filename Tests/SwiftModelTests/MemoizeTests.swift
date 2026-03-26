@@ -30,11 +30,9 @@ struct MemoizeTests {
         model.value = 5
         await expect(model.value == 5)
 
-        // Access should recompute (wait for async onChange if needed)
-        await expect(model.doubled == 10)
-        // Wait for backgroundCall to settle: both UpdatePaths use coalesced async performUpdate
-        // which calls produce() once to re-establish tracking (count may go from 2 → 3).
-        await backgroundCall.waitUntilIdle()
+        // settle() waits until doubled == 10 and the system is fully idle,
+        // including any async re-tracking produce() calls.
+        await settle(model.doubled == 10)
 
         // Verify it recomputed (accessCount will be higher due to polling + re-tracking)
         #expect(model.accessCount.value > 2, "Should have recomputed after value change")
@@ -63,9 +61,8 @@ struct MemoizeTests {
 
         // Direct dirty read: recomputes and returns updated value.
         #expect(model.doubled == 10, "Should recompute after dependency change")
-        // Both UpdatePaths use coalesced backgroundCall for async performUpdate
-        // which calls produce() to re-establish tracking. Wait to settle.
-        await backgroundCall.waitUntilIdle()
+        // settle() waits for all async re-tracking produce() calls to complete.
+        await settle()
         // Sync path: exactly 3 accesses, 2 computes. Async re-tracking adds 1 access + 1 compute.
         #expect(model.accessCount.value >= 3, "Should have accessed at least 3 times")
         #expect(model.computeCount.value >= 2, "Should have recomputed at least twice")
@@ -498,9 +495,8 @@ struct MemoizeTests {
         let updated = model.doubled
         #expect(updated == 14, "Should recompute after dependency change")
 
-        // Both UpdatePaths use a coalesced backgroundCall that calls produce() again to
-        // re-establish tracking. Wait to settle before counting.
-        await backgroundCall.waitUntilIdle()
+        // settle() waits for all async re-tracking produce() calls to complete.
+        await settle()
         #expect(model.computeCount.value >= 2, "Should have recomputed after dependency change")
     }
 
@@ -521,11 +517,8 @@ struct MemoizeTests {
         #expect(model.doubledA == 10)
         #expect(model.tripledA == 15)
 
-        // Both UpdatePaths use a coalesced backgroundCall that calls produce() again to
-        // re-establish tracking. Wait to settle so we have a stable baseline.
-        await backgroundCall.waitUntilIdle()
+        await settle()
 
-        // Sync path: count == 2; async path: count == 2 or 3 (re-tracking produce).
         #expect(model.computeCountA.value >= 2, "doubledA must recompute after value changes")
         #expect(model.computeCountB.value >= 2, "tripledA must recompute after value changes")
 
@@ -657,9 +650,7 @@ struct MemoizeTests {
         let third = model.summary
         #expect(third == (1, "one"))
 
-        // Both UpdatePaths use a coalesced backgroundCall that calls produce() again to
-        // re-establish tracking. Wait to settle and capture a stable baseline.
-        await backgroundCall.waitUntilIdle()
+        await settle()
         #expect(model.computeCount.value >= 2, "Must recompute after dependency change")
         let countAfterMutation = model.computeCount.value
 
@@ -686,12 +677,9 @@ struct MemoizeTests {
         // Mutate only the dependency for 'doubled' (a)
         model.a = 5
 
-        // 'doubled' should recompute; others use their own (unchanged) deps
-        #expect(model.doubled == 10)
-        // Both UpdatePaths use a coalesced backgroundCall that calls produce() again to
-        // re-establish tracking. Wait to settle so we have a stable baseline.
-        await backgroundCall.waitUntilIdle()
-        let doubledCountAfterA = model.doubledCount.value  // settled count for doubled
+        // settle() waits until doubled == 10 and the system is fully idle, giving a stable count baseline.
+        await settle(model.doubled == 10)
+        let doubledCountAfterA = model.doubledCount.value
         #expect(doubledCountAfterA >= 2, "doubled must recompute after a changes")
 
         // 'tripled' depends on b, 'quadrupled' depends on c — both unchanged
@@ -702,9 +690,8 @@ struct MemoizeTests {
 
         // Now mutate b; tripled should recompute, doubled and quadrupled should not
         model.b = 3
-        #expect(model.tripled == 9)
-        await backgroundCall.waitUntilIdle()
-        let tripledCountAfterB = model.tripledCount.value  // settled count for tripled
+        await settle(model.tripled == 9)
+        let tripledCountAfterB = model.tripledCount.value
         #expect(tripledCountAfterB >= 2, "tripled must recompute after b changes")
         #expect(model.doubledCount.value == doubledCountAfterA, "doubled must NOT recompute (a unchanged)")
         #expect(model.quadrupledCount.value == 1, "quadrupled must NOT recompute (c unchanged)")

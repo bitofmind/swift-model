@@ -230,24 +230,26 @@ struct TesterAssertOutputTests {
 
     @Test("failed predicate produces diff with expected/actual markers")
     func predicateFailureMessage() async {
-        await assertIssueSnapshot {
-            await withModelTesting(exhaustivity: .off) {
-                let model = SimpleCounter().withAnchor()
-                model.count = 3
-                // Explicit TestPredicate type annotation forces the TestPredicate-returning == overload,
-                // which captures both sides as autoclosures and produces the diff format on failure.
-                let pred: TestPredicate = model.count == 99
-                await expect(pred)
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let model = SimpleCounter().withAnchor()
+                    model.count = 3
+                    // Explicit TestPredicate type annotation forces the TestPredicate-returning == overload,
+                    // which captures both sides as autoclosures and produces the diff format on failure.
+                    let pred: TestPredicate = model.count == 99
+                    await expect(pred)
+                }
+            } matches: {
+                """
+                Expectation not met: SimpleCounter.count: …
+
+                    − 99
+                    + 3
+
+                (Expected: −, Actual: +)
+                """
             }
-        } matches: {
-            """
-            Expectation not met: SimpleCounter.count: …
-
-                − 99
-                + 3
-
-            (Expected: −, Actual: +)
-            """
         }
     }
 
@@ -483,88 +485,96 @@ struct TimeoutProbeFailureTests {
 
     @Test("probe with no values reports 'No available probe values'")
     func probeNoValues() async {
-        await assertIssueSnapshot {
-            await withModelTesting(exhaustivity: .off) {
-                let onLoad = TestProbe()
-                let _ = TraitLoader(onLoad: onLoad.call).withAnchor()
-                await expect {
-                    onLoad.wasCalled(with: "hello")
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let onLoad = TestProbe()
+                    let _ = TraitLoader(onLoad: onLoad.call).withAnchor()
+                    await expect {
+                        onLoad.wasCalled(with: "hello")
+                    }
                 }
-            }
-        } matches: {
-            """
-            Expected probe not called:
-                "hello"
+            } matches: {
+                """
+                Expected probe not called:
+                    "hello"
 
-            No available probe values
-            """
+                No available probe values
+                """
+            }
         }
     }
 
     @Test("probe with one wrong value emits diff")
     func probeOneWrongValue() async {
-        await assertIssueSnapshot {
-            await withModelTesting(exhaustivity: .off) {
-                let onLoad = TestProbe()
-                let model = TraitLoader(onLoad: onLoad.call).withAnchor()
-                model.load(value: "actual")
-                await expect {
-                    onLoad.wasCalled(with: "expected")
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let onLoad = TestProbe()
+                    let model = TraitLoader(onLoad: onLoad.call).withAnchor()
+                    model.load(value: "actual")
+                    await expect {
+                        onLoad.wasCalled(with: "expected")
+                    }
                 }
+            } matches: {
+                """
+                Probe does not match: …
+
+                    − "expected"
+                    + "actual"
+
+                (Expected: −, Actual: +)
+                """
             }
-        } matches: {
-            """
-            Probe does not match: …
-
-                − "expected"
-                + "actual"
-
-            (Expected: −, Actual: +)
-            """
         }
     }
 
     @Test("probe with multiple values lists all available probe values")
     func probeMultipleValues() async {
-        await assertIssueSnapshot {
-            await withModelTesting(exhaustivity: .off) {
-                let onLoad = TestProbe()
-                let model = TraitLoader(onLoad: onLoad.call).withAnchor()
-                model.load(value: "first")
-                model.load(value: "second")
-                await expect {
-                    onLoad.wasCalled(with: "nonexistent")
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let onLoad = TestProbe()
+                    let model = TraitLoader(onLoad: onLoad.call).withAnchor()
+                    model.load(value: "first")
+                    model.load(value: "second")
+                    await expect {
+                        onLoad.wasCalled(with: "nonexistent")
+                    }
                 }
-            }
-        } matches: {
-            """
-            Expected probe not called:
-                "nonexistent"
+            } matches: {
+                """
+                Expected probe not called:
+                    "nonexistent"
 
-            2 Available probe values to assert:
-                "first"
-                "second"
-            """
+                2 Available probe values to assert:
+                    "first"
+                    "second"
+                """
+            }
         }
     }
 
     @Test("named probe timeout message includes probe name with space-separated quote")
     func namedProbeTimeoutMessage() async {
-        await assertIssueSnapshot {
-            await withModelTesting(exhaustivity: .off) {
-                let onLoad = TestProbe("myLoader")
-                let _ = TraitLoader(onLoad: onLoad.call).withAnchor()
-                await expect {
-                    onLoad.wasCalled(with: "hello")
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let onLoad = TestProbe("myLoader")
+                    let _ = TraitLoader(onLoad: onLoad.call).withAnchor()
+                    await expect {
+                        onLoad.wasCalled(with: "hello")
+                    }
                 }
-            }
-        } matches: {
-            """
-            Expected probe not called "myLoader":
-                "hello"
+            } matches: {
+                """
+                Expected probe not called "myLoader":
+                    "hello"
 
-            No available probe values
-            """
+                No available probe values
+                """
+            }
         }
     }
 }
@@ -577,15 +587,17 @@ struct UnwrapTimeoutTests {
 
     @Test("tester.unwrap timeout includes the type name")
     func unwrapTimeoutIncludesTypeName() async {
-        await assertIssueSnapshot {
-            await withModelTesting(exhaustivity: .off) {
-                let _ = TraitLoader().withAnchor()
-                _ = try? await require(nil as String?)
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let _ = TraitLoader().withAnchor()
+                    _ = try? await require(nil as String?)
+                }
+            } matches: {
+                """
+                Failed to unwrap value of type String
+                """
             }
-        } matches: {
-            """
-            Failed to unwrap value of type String
-            """
         }
     }
 }
@@ -697,17 +709,19 @@ struct AssertionFailedFallbackTests {
 
     @Test("false literal predicate emits 'Assertion failed'")
     func falseLiteralPredicate() async {
-        await assertIssueSnapshot {
-            await withModelTesting(exhaustivity: .off) {
-                let _ = SimpleCounter().withAnchor()
-                await expect {
-                    false
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let _ = SimpleCounter().withAnchor()
+                    await expect {
+                        false
+                    }
                 }
+            } matches: {
+                """
+                Assertion failed
+                """
             }
-        } matches: {
-            """
-            Assertion failed
-            """
         }
     }
 }

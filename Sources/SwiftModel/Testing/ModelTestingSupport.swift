@@ -15,7 +15,7 @@ package protocol _AnyModelTestScope: AnyObject, Sendable {
         predicates: [AssertBuilder.Predicate]
     ) async
 
-    func unwrap<T>(
+    func require<T>(
         _ expression: @escaping @Sendable () -> T?,
         fileID: StaticString,
         filePath: StaticString,
@@ -91,12 +91,12 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
         await c.assert(settleResetting: settleResetting, fileID: fileID, filePath: filePath, line: line, column: column, predicates: predicates)
     }
 
-    package func unwrap<T>(_ expression: @escaping @Sendable () -> T?, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt) async throws -> T {
+    package func require<T>(_ expression: @escaping @Sendable () -> T?, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt) async throws -> T {
         guard let c = concrete else {
             reportIssue("No model was anchored in this .modelTesting test. Call withAnchor() first.", fileID: fileID, filePath: filePath, line: line, column: column)
             throw UnwrapError()
         }
-        return try await c.unwrap(expression, fileID: fileID, filePath: filePath, line: line, column: column)
+        return try await c.require(expression, fileID: fileID, filePath: filePath, line: line, column: column)
     }
 
     package func install(_ probes: [TestProbe]) {
@@ -163,14 +163,14 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         )
     }
 
-    package func unwrap<T>(
+    package func require<T>(
         _ expression: @escaping @Sendable () -> T?,
         fileID: StaticString,
         filePath: StaticString,
         line: UInt,
         column: UInt
     ) async throws -> T {
-        try await tester.access.unwrap(
+        try await tester.access.require(
             expression,
             at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         )

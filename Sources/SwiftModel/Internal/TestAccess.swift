@@ -878,32 +878,45 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         }
     }
 
-    func unwrap<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
-        try await unwrap(expression, timeoutNanoseconds: 1_000_000_000, at: fileAndLine)
-    }
+    /// Polls `expression` until it returns a non-nil value, then returns the unwrapped result.
+    /// Uses the same activity-relative idle detection as `expect`: the timeout resets on every
+    /// model state change, so a healthy model never hits it. The hard cap is the absolute
+    /// safety net (default 5 s, overridable via `TestAccessOverrides.hardCapNanoseconds`).
+    func require<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
+        let calibrationStart = DispatchTime.now().uptimeNanoseconds
+        await Task.yield()
+        let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
+        let scaledTimeout = max(nanosPerSecond, yieldLatencyNs * 100)
+        let yieldRoundNs = max(1_000_000, yieldLatencyNs)
+        let hardCap = TestAccessOverrides.hardCapNanoseconds ?? max(5 * nanosPerSecond, scaledTimeout * 30)
 
-    func unwrap<T>(_ expression: @escaping @Sendable () -> T?, timeoutNanoseconds timeout: UInt64, at fileAndLine: FileAndLine) async throws -> T {
-        let scaledTimeout = await Self.adaptiveTimeout(floor: timeout)
         let start = DispatchTime.now().uptimeNanoseconds
+        var lastProgressTime = start
+        var retryCount = 0
+
         while true {
             if let value = expression() {
+                // Expression is non-nil. Drive the same settled-state stability check as expect.
                 let predicate = AssertBuilder.Predicate(predicate: { expression() != nil }, fileAndLine: fileAndLine)
-                await expect(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate], enableExhaustionTest: false)
+                await expect(timeoutNanoseconds: nanosPerSecond, at: fileAndLine, predicates: [predicate], enableExhaustionTest: false)
                 return value
             }
 
-            if start.distance(to: DispatchTime.now().uptimeNanoseconds) > scaledTimeout {
+            let now = DispatchTime.now().uptimeNanoseconds
+            if lastProgressTime.distance(to: now) > scaledTimeout || start.distance(to: now) > hardCap {
                 fail("Failed to unwrap value of type \(T.self)", at: fileAndLine)
                 throw UnwrapError()
             }
 
-            let elapsed = start.distance(to: DispatchTime.now().uptimeNanoseconds)
-            let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
-            // Cap the per-iteration wait to one poll round (1ms). The outer loop re-checks
-            // the timeout after each iteration, so we never need to block for `remaining`
-            // in one shot — that would delay timeout detection when the value stays nil.
-            let yieldRoundNs: UInt64 = 1_000_000
-            await waitForModification(timeoutNanoseconds: min(remaining, yieldRoundNs), yieldRoundNs: yieldRoundNs)
+            let elapsed = start.distance(to: now)
+            let remaining = elapsed < hardCap ? hardCap - UInt64(elapsed) : 0
+            let didProgress = await waitForModification(
+                timeoutNanoseconds: min(remaining, yieldRoundNs),
+                yieldRoundNs: yieldRoundNs,
+                retryCount: retryCount
+            )
+            if didProgress { lastProgressTime = DispatchTime.now().uptimeNanoseconds }
+            retryCount += 1
         }
     }
 

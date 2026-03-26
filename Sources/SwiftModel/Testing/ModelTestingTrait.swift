@@ -234,7 +234,7 @@ public func require<T>(
         reportIssue("require() must be called inside a @Test(.modelTesting) test function", fileID: fileID, filePath: filePath, line: line, column: column)
         throw UnwrapError()
     }
-    return try await scope.unwrap(
+    return try await scope.require(
         expression,
         fileID: fileID,
         filePath: filePath,
