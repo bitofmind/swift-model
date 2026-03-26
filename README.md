@@ -1447,13 +1447,16 @@ import SwiftModel
 
 SPM-based packages work with no extra configuration — `import SwiftModel` is all you need.
 
-If your test target uses `BUNDLE_LOADER` (the Xcode default for xcodeproj targets that test an app binary), one additional build setting is required on the **app target** (not the test target):
+If your test target uses `BUNDLE_LOADER` (the Xcode default for xcodeproj targets that test an app binary), two build settings are required on the **app target** (not the test target):
 
 ```
 ENABLE_TESTING_SEARCH_PATHS = YES
+OTHER_LDFLAGS = $(inherited) -weak_framework Testing
 ```
 
-This makes the testing APIs available inside the app binary, which the test bundle inherits at runtime via `BUNDLE_LOADER`. Do **not** add `SwiftModel` to the test target's Frameworks — the test bundle gets all symbols from the app, and adding extra links creates duplicate symbol errors.
+`ENABLE_TESTING_SEARCH_PATHS` makes the testing APIs available inside the app binary, which the test bundle inherits at runtime via `BUNDLE_LOADER`. `-weak_framework Testing` is required so the app doesn't crash at launch outside a test context — without it, `Testing.framework` is hard-linked and dyld fails to find it when the app runs standalone.
+
+Do **not** add `SwiftModel` to the test target's Frameworks — the test bundle gets all symbols from the app, and adding extra links creates duplicate symbol errors.
 
 The `expect` builder block accepts any number of predicates. Using `==` gives you a pretty-printed diff on failure; any other `Bool` expression also works:
 
