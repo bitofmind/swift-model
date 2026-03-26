@@ -4,9 +4,9 @@ import CustomDump
 import IssueReporting
 import Dependencies
 
-// MARK: - How tester.assert works
+// MARK: - How expect works
 //
-// tester.assert { predicate } is a polling loop that:
+// expect { predicate } is a polling loop that:
 //
 //   1. Evaluates each predicate closure. Reading any @Model property during evaluation
 //      fires willAccess<M,V>, which (if a TesterAssertContext is active) appends an
@@ -49,6 +49,12 @@ import Dependencies
 //   lastContext) with hooks called from willAccessEnvironmentKey/didModifyEnvironmentKey
 //   would be the correct fix — see the planned implementation in the tester gap investigation.
 
+// Task-local overrides for output snapshot tests. These allow tests to trigger specific
+// timeout paths quickly without waiting the normal 5-second minimum.
+enum TestAccessOverrides {
+    @TaskLocal static var hardCapNanoseconds: UInt64? = nil
+}
+
 // Key for tracking context storage writes on dependency models (which have no root-relative keypath).
 // Combines the context's identity with the per-model context path so distinct storage
 // keys on distinct dependency model contexts produce distinct entries.
@@ -65,7 +71,7 @@ private struct DependencyMetadataKey: Hashable, @unchecked Sendable {
     }
 }
 
-final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
+final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchecked Sendable {
     let lock = NSRecursiveLock()
     let context: Context<Root>
 
@@ -97,6 +103,13 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     var probes: [TestProbe] = []
     let fileAndLine: FileAndLine
 
+    // Activation task counter (Phase 3): tracks tasks created inside onActivate() that
+    // have not yet begun executing their body. Reaches 0 when all such tasks have entered.
+    private var _activationTasksInFlight: Int = 0
+
+    // General task counter (Phase 5): tracks all currently-running tasks in the hierarchy.
+    private var _activeTaskCount: Int = 0
+
     // Captures a pending state change: how to apply it to a Root snapshot, and how to
     // describe it for exhaustion-failure messages.
     struct ValueUpdate {
@@ -112,16 +125,19 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         var context: AnyContext
     }
 
-    init(model: Root, options: ModelOption = [], dependencies: (inout ModelDependencies) -> Void, fileAndLine: FileAndLine) {
+    init(model: Root, dependencies: (inout ModelDependencies) -> Void, fileAndLine: FileAndLine) {
         expectedState = model.frozenCopy
         lastState = model.frozenCopy
         self.fileAndLine = fileAndLine
-        context = Context(model: model, lock: NSRecursiveLock(), options: options, dependencies: dependencies, parent: nil)
+        context = Context(model: model, lock: NSRecursiveLock(), dependencies: dependencies, parent: nil)
 
         super.init(useWeakReference: true)
 
         context.readModel.modelContext.access = self
         context.modifyModel.modelContext.access = self
+        // Register as lifecycle delegate before activation so tasks created in
+        // onActivate() are counted from the first task creation.
+        context.taskLifecycleDelegate = self
         usingAccess(self) {
             context.model.activate()
         }
@@ -374,7 +390,11 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         return max(floor, yieldLatencyNs * 100)
     }
 
-    func assert(timeoutNanoseconds timeout: UInt64, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
+    func expect(settleResetting: Exhaustivity? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
+        await expect(timeoutNanoseconds: 1_000_000_000, settleResetting: settleResetting, at: fileAndLine, predicates: predicates, enableExhaustionTest: enableExhaustionTest)
+    }
+
+    func expect(timeoutNanoseconds timeout: UInt64, settleResetting: Exhaustivity? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
         let calibrationStart = DispatchTime.now().uptimeNanoseconds
         await Task.yield()
         let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
@@ -388,9 +408,15 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // waitForModification call, even under heavy parallel test load.
         let yieldRoundNs = max(1_000_000, yieldLatencyNs) // floor at 1ms for lightly loaded runs
         let context = TesterAssertContext(events: { self.lock { self.events } }, fileAndLine: fileAndLine)
+        // Hard cap: absolute maximum regardless of activity (5s safety cap).
+        // Fires only when tasks are stuck in an infinite loop producing constant changes.
+        // TestAccessOverrides.hardCapNanoseconds allows output snapshot tests to override.
+        let hardCap = TestAccessOverrides.hardCapNanoseconds ?? max(5 * NSEC_PER_SEC, scaledTimeout * 30)
+
         await TesterAssertContextBase.$assertContext.withValue(context) {
 
             let start = DispatchTime.now().uptimeNanoseconds
+            var lastProgressTime = start  // reset whenever a state modification arrives
             var retryCount = 0
             var failures: [TesterAssertContext.Failure] = []
             var passedAccesses: [TesterAssertContext.Access] = []
@@ -488,19 +514,98 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     // If the timeout has elapsed even here, fall through to the failure path so
                     // the assert doesn't spin forever when isEqualIncludingIds is permanently false.
                     if !isEqualIncludingIds {
-                        if start.distance(to: DispatchTime.now().uptimeNanoseconds) > scaledTimeout {
-                            // Let the outer timeout path run by injecting a synthetic failure so it
-                            // has something to report. The predicate actually passed, but we couldn't
-                            // confirm the model settled (IDs never converged). Report it as a failure.
-                            fail("State did not settle: model IDs kept diverging after the predicate passed. This may indicate a backgroundCall loop or an unresolvable ID mismatch.", at: fileAndLine)
+                        if start.distance(to: DispatchTime.now().uptimeNanoseconds) > hardCap {
+                            // Hard cap hit: the model has been continuously producing changes
+                            // and IDs never converged. Report as failure.
+                            fail("State did not settle: model IDs kept diverging after the predicate passed. This may indicate a backgroundCallQueue loop or an unresolvable ID mismatch.", at: fileAndLine)
                             return
                         }
-                        await backgroundCall.waitForCurrentItems()
+                        await self.context.backgroundCallQueue.waitForCurrentItems()
                         await Task.yield()
+                        // Count as progress — backgroundCallQueue draining counts as activity.
+                        lastProgressTime = DispatchTime.now().uptimeNanoseconds
                         continue
                     }
 
                     if isEqualIncludingIds {
+                        // Settling mode: after the predicate passes and IDs converge,
+                        // wait for all activation tasks to enter their body, then run
+                        // one idle cycle to catch trailing mutations (e.g. forEach first
+                        // fires). Finally, reset selected exhaustivity categories so
+                        // subsequent expect {} calls only see changes made after settling.
+                        if let resetting = settleResetting {
+                            // Wait for all onActivate()-born tasks to begin executing.
+                            // In practice this completes almost immediately because
+                            // activationTaskEntered() fires at the start of the task body.
+                            while self.activationTasksInFlight > 0 {
+                                let didProgress = await waitForModification(timeoutNanoseconds: scaledTimeout, yieldRoundNs: yieldRoundNs, retryCount: retryCount)
+                                if didProgress { lastProgressTime = DispatchTime.now().uptimeNanoseconds }
+                                retryCount += 1
+                                if start.distance(to: DispatchTime.now().uptimeNanoseconds) > hardCap {
+                                    let taskInfo = self.settleTimeoutDiagnostics()
+                                    fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
+                                    return
+                                }
+                            }
+
+                            // Idle cycle: wait until one full scheduling round passes
+                            // with no state changes. Uses modificationCount on the root
+                            // context as a version number.
+                            var lastChangeVersion = self.context.modificationCount
+                            while true {
+                                await self.context.backgroundCallQueue.waitForCurrentItems()
+                                await Task.yield()
+                                let currentVersion = self.context.modificationCount
+                                if currentVersion == lastChangeVersion {
+                                    // No changes this round. If tasks are still running,
+                                    // wait one more round to handle scheduling jitter —
+                                    // the task might just be between yield suspension and
+                                    // its next mutation.
+                                    if !self.isCompletelyIdle {
+                                        await waitForModification(timeoutNanoseconds: yieldRoundNs, yieldRoundNs: yieldRoundNs, retryCount: 2)
+                                        let afterWait = self.context.modificationCount
+                                        if afterWait == currentVersion {
+                                            break // genuinely idle: no changes even after waiting
+                                        }
+                                        lastChangeVersion = afterWait
+                                    } else {
+                                        break // no active tasks → idle
+                                    }
+                                } else {
+                                    lastChangeVersion = currentVersion
+                                }
+                                lastProgressTime = DispatchTime.now().uptimeNanoseconds
+                                if start.distance(to: DispatchTime.now().uptimeNanoseconds) > hardCap {
+                                    let taskInfo = self.settleTimeoutDiagnostics()
+                                    fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
+                                    return
+                                }
+                            }
+
+                            // Reset selected exhaustivity categories.
+                            lock {
+                                if resetting.contains(.state) {
+                                    expectedState = lastState
+                                    valueUpdates.removeAll()
+                                }
+                                if resetting.contains(.local) {
+                                    dependencyMetadataUpdates.removeAll()
+                                }
+                                if resetting.contains(.environment) || resetting.contains(.preference) {
+                                    dependencyPreferenceUpdates.removeAll()
+                                }
+                                if resetting.contains(.events) {
+                                    events.removeAll()
+                                }
+                                if resetting.contains(.probes) {
+                                    for probe in probes {
+                                        probe.resetValues()
+                                    }
+                                }
+                            }
+                            return
+                        }
+
                         // Step 3: Model has settled. Mark all asserted paths as handled,
                         // advance expectedState, and run the exhaustion check.
                         lock {
@@ -552,7 +657,11 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 // diffMessage/customDump triggers customMirror on @Model types, which reads
                 // @ModelTracked properties, which calls willAccess → rootPaths → tries to acquire
                 // this same lock from the continuation's thread — deadlock if already held.
-                if start.distance(to: DispatchTime.now().uptimeNanoseconds) > scaledTimeout {
+                //
+                // Activity-relative timeout: fail only when the model has made no progress for
+                // `scaledTimeout` (no state changes), or when the absolute hard cap fires.
+                let now = DispatchTime.now().uptimeNanoseconds
+                if lastProgressTime.distance(to: now) > scaledTimeout || start.distance(to: now) > hardCap {
                     // Build all failure messages outside the lock so that diffMessage/customDump
                     // cannot re-enter it via willAccess → rootPaths.
                     var reports: [[(String, FileAndLine)]] = []
@@ -563,7 +672,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                                 access.propertyName.map { "\(access.modelName).\($0)" }
                             }.joined(separator: ", ")
 
-                            let title = "Failed to assert: \(propertyNames)"
+                            let title = "Expectation not met: \(propertyNames)"
                             let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
                                 diffMessage(expected: rhs, actual: lhs, title: title)
                             }
@@ -573,12 +682,12 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                                 let pred = access.propertyName.map {
                                     "\(access.modelName).\($0) == \(access.value())"
                                 } ?? access.value()
-                                messages.append(("Failed to assert: \(pred)", failure.predicate.fileAndLine))
+                                messages.append(("Expectation not met: \(pred)", failure.predicate.fileAndLine))
                             }
                         }
 
                         for event in failure.events {
-                            messages.append(("Failed to assert sending of: \(String(customDumping: event.event)) from \(event.context.typeDescription)", failure.predicate.fileAndLine))
+                            messages.append(("Expected event not sent: \(String(customDumping: event.event)) from \(event.context.typeDescription)", failure.predicate.fileAndLine))
                         }
 
                         for modelName in failure.modelsNoLongerPartOfTester {
@@ -586,7 +695,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         }
 
                         for (probe, value) in failure.probes {
-                            let preTitle = "Failed to assert calling of probe" + (probe.name.map { " \"\($0)\":" } ?? ":")
+                            let preTitle = "Expected probe not called" + (probe.name.map { " \"\($0)\":" } ?? ":")
                             let title = value is NoArgs ? preTitle :
                                 """
                                 \(preTitle)
@@ -655,10 +764,13 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 }
 
                 // Step 6: Wait for the next modification event before re-checking.
-                let elapsed = start.distance(to: DispatchTime.now().uptimeNanoseconds)
+                // Pass the remaining no-progress budget as the wait timeout (how long to sleep
+                // if no modification arrives). The hard cap is checked at Step 5 next iteration.
+                let elapsed = lastProgressTime.distance(to: DispatchTime.now().uptimeNanoseconds)
                 let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
                 retryCount += 1
-                await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: yieldRoundNs, retryCount: retryCount)
+                let didProgress = await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: yieldRoundNs, retryCount: retryCount)
+                if didProgress { lastProgressTime = DispatchTime.now().uptimeNanoseconds }
             }
 
             // Step 5 (timeout): Report failures.
@@ -676,7 +788,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         access.propertyName.map { "\(access.modelName).\($0)" }
                     }.joined(separator: ", ")
 
-                    let title = "Failed to assert: \(propertyNames)"
+                    let title = "Expectation not met: \(propertyNames)"
                     let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
                         diffMessage(expected: rhs, actual: lhs, title: title)
                     }
@@ -686,12 +798,12 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         let pred = access.propertyName.map {
                             "\(access.modelName).\($0) == \(access.value())"
                         } ?? access.value()
-                        messages.append(("Failed to assert: \(pred)", failure.predicate.fileAndLine))
+                        messages.append(("Expectation not met: \(pred)", failure.predicate.fileAndLine))
                     }
                 }
 
                 for event in failure.events {
-                    messages.append(("Failed to assert sending of: \(String(customDumping: event.event)) from \(event.context.typeDescription)", failure.predicate.fileAndLine))
+                    messages.append(("Expected event not sent: \(String(customDumping: event.event)) from \(event.context.typeDescription)", failure.predicate.fileAndLine))
                 }
 
                 for modelName in failure.modelsNoLongerPartOfTester {
@@ -699,7 +811,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 }
 
                 for (probe, value) in failure.probes {
-                    let preTitle = "Failed to assert calling of probe" + (probe.name.map { "\"\($0)\":" } ?? ":")
+                    let preTitle = "Expected probe not called" + (probe.name.map { "\"\($0)\":" } ?? ":")
                     let title = value is NoArgs ? preTitle :
                         """
                         \(preTitle)
@@ -727,7 +839,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 }
 
                 if failure.accesses.isEmpty, failure.events.isEmpty, failure.modelsNoLongerPartOfTester.isEmpty, failure.probes.isEmpty {
-                    messages.append(("Failed to assert: ", failure.predicate.fileAndLine))
+                    messages.append(("Expectation not met", failure.predicate.fileAndLine))
                 }
                 reports.append(messages)
             }
@@ -766,13 +878,17 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         }
     }
 
+    func unwrap<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
+        try await unwrap(expression, timeoutNanoseconds: 1_000_000_000, at: fileAndLine)
+    }
+
     func unwrap<T>(_ expression: @escaping @Sendable () -> T?, timeoutNanoseconds timeout: UInt64, at fileAndLine: FileAndLine) async throws -> T {
         let scaledTimeout = await Self.adaptiveTimeout(floor: timeout)
         let start = DispatchTime.now().uptimeNanoseconds
         while true {
             if let value = expression() {
                 let predicate = AssertBuilder.Predicate(predicate: { expression() != nil }, fileAndLine: fileAndLine)
-                await assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate], enableExhaustionTest: false)
+                await expect(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate], enableExhaustionTest: false)
                 return value
             }
 
@@ -809,30 +925,34 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     ///   2+:  Use `waitForCurrentItems(deadline: yieldRoundNs * 20)`. Under 100x load
     ///        with yieldRoundNs≈50ms the deadline is ~1s — enough for the queue to drain
     ///        to our performUpdate, but bounded so it doesn't consume the full test budget.
-    private func waitForModification(timeoutNanoseconds remaining: UInt64, yieldRoundNs: UInt64, retryCount: Int = 0) async {
-        guard remaining > 0 else { return }
+    /// Returns `true` if a state modification was observed during the wait (progress was made).
+    @discardableResult
+    private func waitForModification(timeoutNanoseconds remaining: UInt64, yieldRoundNs: UInt64, retryCount: Int = 0) async -> Bool {
+        guard remaining > 0 else { return false }
 
-        // After two quick-yield retries, escalate to a sentinel wait when backgroundCall
+        // After two quick-yield retries, escalate to a sentinel wait when backgroundCallQueue
         // has pending work. This gives fast conditions a free early-exit while ensuring
         // memoized conditions get enough time for performUpdate to run.
-        if retryCount >= 2 && !backgroundCall.isIdle {
+        if retryCount >= 2 && !context.backgroundCallQueue.isIdle {
             // FIFO sentinel: suspend until all items currently in the queue have been
             // processed. When it fires, our performUpdate (if any) has already run.
             //
             // Deadline: use the full remaining timeout. By retry 2, fast conditions
             // (e.g. testCancelInFlight) have already passed on an earlier quick-yield
             // retry, so we know this is a genuinely async condition that needs the
-            // backgroundCall queue to drain. Waiting up to `remaining` is safe and
+            // backgroundCallQueue queue to drain. Waiting up to `remaining` is safe and
             // ensures deep queues under heavy parallel load are fully covered.
             let deadline = DispatchTime.now().uptimeNanoseconds + remaining
-            await backgroundCall.waitForCurrentItems(deadline: deadline)
+            await context.backgroundCallQueue.waitForCurrentItems(deadline: deadline)
             await Task.yield()
-            return
+            // Draining the backgroundCallQueue counts as progress — it may have delivered
+            // a memoize performUpdate that changed state.
+            return true
         }
 
-        // Early retries (0-1) or backgroundCall already idle.
+        // Early retries (0-1) or backgroundCallQueue already idle.
         //
-        // backgroundCall idle means either:
+        // backgroundCallQueue idle means either:
         // A) performUpdate already ran — memoize cache is fresh, predicate will pass.
         // B) No modification yet — register onAnyModification and sleep one round.
         let didModify = LockIsolated(false)
@@ -852,11 +972,53 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             }
         }
 
-        // If a modification arrived, yield once so backgroundCall gets a scheduler
+        // If a modification arrived, yield once so backgroundCallQueue gets a scheduler
         // turn to process the resulting performUpdate before the outer loop re-checks.
-        if didModify.value || !backgroundCall.isIdle {
+        if didModify.value || !context.backgroundCallQueue.isIdle {
             await Task.yield()
         }
+
+        return didModify.value
+    }
+
+    // MARK: - TaskLifecycleDelegate
+
+    func activationTaskCreated() {
+        lock { _activationTasksInFlight += 1 }
+    }
+
+    func activationTaskEntered() {
+        lock { _activationTasksInFlight -= 1 }
+    }
+
+    func taskCreated() {
+        lock { _activeTaskCount += 1 }
+    }
+
+    func taskCompleted() {
+        lock { _activeTaskCount -= 1 }
+    }
+
+    /// True when all tasks born from `onActivate()` have begun executing their body.
+    var activationTasksInFlight: Int {
+        lock { _activationTasksInFlight }
+    }
+
+    /// True when no tasks are currently running anywhere in the hierarchy.
+    var isCompletelyIdle: Bool {
+        lock { _activeTaskCount == 0 }
+    }
+
+    /// Builds a diagnostic string for settle() timeout failures.
+    private func settleTimeoutDiagnostics() -> String {
+        var lines: [String] = []
+        let taskInfos = context.activeTasks
+        for info in taskInfos {
+            for (taskName, fl) in info.tasks {
+                lines.append("  \(info.modelName): \"\(taskName)\" @ \(fl.fileID):\(fl.line)")
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     // Checks that no state changed without being asserted (exhaustion check).
@@ -882,7 +1044,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
         let probes = lock { self.probes }
         for probe in probes {
-            let preTitle = "Failed to assert calling of probe" + (probe.name.map { " \"\($0)\":" } ?? ":")
+            let preTitle = "Expected probe not called" + (probe.name.map { " \"\($0)\":" } ?? ":")
             for value in probe.values {
                 let message = value is NoArgs ? preTitle :
                     """

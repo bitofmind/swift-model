@@ -175,10 +175,10 @@ struct ModelDependencyBehaviourTests {
     func testParentCanObserveDependencyModelProperty(observationPath: ObservationPath) async {
         let testResult = TestResult()
         await withModelTesting {
-            let model = ObservingHostModel().withAnchor(options: observationPath.options) {
+            let model = observationPath.withOptions { ObservingHostModel().withAnchor {
                 $0.testResult = testResult
                 $0[SimpleDep.self] = SimpleDep(tag: "initial")
-            }
+            } }
 
             await expect(model.dep.tag == "initial")
 

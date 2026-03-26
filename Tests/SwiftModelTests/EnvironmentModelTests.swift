@@ -179,7 +179,7 @@ struct EnvironmentModelTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func observingContextModelPropertyReactsToChanges(path: ObservationPath) async throws {
-        let host = ThemeHost().withAnchor(options: path.options)
+        let host = path.withOptions { ThemeHost().withAnchor() }
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
             host.child.theme?.colorScheme

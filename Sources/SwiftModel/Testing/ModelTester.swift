@@ -29,27 +29,12 @@ public final class ModelTester<M: Model> {
     /// so that `deinit` skips the duplicate work.
     var cleanupHandledExternally = false
 
-    // Internal designated init — accepts options directly; avoids double-anchoring.
-    init(_ model: M, options: ModelOption, exhaustivity: Exhaustivity = .full, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
+    // Internal designated init — options are read from `ModelOption.current` (TaskLocal) by AnyContext.
+    init(_ model: M, exhaustivity: Exhaustivity = .full, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
         let fl = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         fileAndLine = fl
-        access = TestAccess(model: model, options: options, dependencies: dependencies, fileAndLine: fl)
+        access = TestAccess(model: model, dependencies: dependencies, fileAndLine: fl)
         access.lock { access.exhaustivity = exhaustivity }
-    }
-
-    /// Creates a tester for the given model.
-    ///
-    /// > Deprecated: Use `@Test(.modelTesting)` with `model.withAnchor()` and the global
-    ///   `expect { }` / `require(_:)` functions instead. `ModelTester` remains available for
-    ///   programmatic use or advanced test scenarios.
-    ///
-    /// - Parameters:
-    ///   - model: An un-anchored model to test.
-    ///   - exhaustivity: Which side-effect categories must be explicitly asserted. Defaults to `.full`.
-    ///   - dependencies: A closure for overriding dependencies that will be accessed by the model.
-    @available(*, deprecated, message: "Use @Test(.modelTesting) with withAnchor() and the global expect { } / require(_:) functions instead.")
-    public convenience init(_ model: M, exhaustivity: Exhaustivity = .full, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
-        self.init(model, options: [], exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
     }
 
     /// The live model being tested. Use this to read state and invoke actions.
@@ -85,16 +70,7 @@ public extension Model {
     @available(*, deprecated, message: "Use @Test(.modelTesting) with withAnchor() and the global expect { } / require(_:) functions instead.")
     func andTester(exhaustivity: Exhaustivity = .full, withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
         assertInitialState(function: function)
-        let tester = ModelTester(self, options: [], exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
-        return (tester.model, tester)
-    }
-}
-
-// Internal overloads used by tests (via @testable import) to exercise specific option combinations.
-extension Model {
-    func andTester(options: ModelOption, exhaustivity: Exhaustivity = .full, withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
-        assertInitialState(function: function)
-        let tester = ModelTester(self, options: options, exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
+        let tester = ModelTester(self, exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
         return (tester.model, tester)
     }
 }
@@ -404,7 +380,7 @@ public extension ModelTester {
     ///   pretty-printed diff output on failure.
     @available(*, deprecated, message: "Use the global expect { } function inside a @Test(.modelTesting) test instead.")
     func assert(timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) async {
-        await access.assert(timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
+        await access.expect(timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
     }
 
     /// Single-predicate convenience overload. Equivalent to `assert { predicate }` for a plain `Bool` expression.
@@ -415,7 +391,7 @@ public extension ModelTester {
     func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
-        await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
+        await access.expect(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
     }
 
     /// Single-predicate convenience overload for a `TestPredicate` (the result of `==` between two `Equatable` values).
@@ -426,7 +402,7 @@ public extension ModelTester {
     func assert(_ predicate: TestPredicate, timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
-        await access.assert(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
+        await access.expect(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
     }
 
     /// Waits for an optional expression to become non-`nil`, then returns the unwrapped value.
@@ -445,7 +421,7 @@ public extension ModelTester {
     /// > Deprecated: Use the global `expect(timeout:)` function inside a `@Test(.modelTesting)` test instead.
     @available(*, deprecated, message: "Use the global expect(timeout:) function inside a @Test(.modelTesting) test instead.")
     func assert(timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) async {
-        await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
+        await access.expect(timeoutNanoseconds: timeout.toNanoseconds, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
     }
 
     /// Single-predicate `Bool` overload with a `Duration` timeout.
@@ -456,7 +432,7 @@ public extension ModelTester {
     func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
-        await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
+        await access.expect(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
     }
 
     /// Single-predicate `TestPredicate` overload with a `Duration` timeout.
@@ -466,7 +442,7 @@ public extension ModelTester {
     func assert(_ predicate: TestPredicate, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
-        await access.assert(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
+        await access.expect(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
     }
 
     /// Waits for an optional to become non-`nil` with a `Duration` timeout.

@@ -1,12 +1,16 @@
 import Foundation
 
 // Internal configuration options for model behavior. Not part of the public API.
+// Set via `ModelOption.$current.withValue(...)` before calling `withAnchor()` or `andTester()`.
+// The value is captured into `AnyContext.options` at init time and inherited by child contexts.
 struct ModelOption: OptionSet, Sendable {
     let rawValue: Int
 
     init(rawValue: Int) {
         self.rawValue = rawValue
     }
+
+    @TaskLocal static var current: ModelOption = []
 
     /// Disable ObservationRegistrar and use AccessCollector for dependency tracking.
     ///

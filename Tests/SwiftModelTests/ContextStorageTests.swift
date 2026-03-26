@@ -150,7 +150,7 @@ struct MetadataEnvironmentTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func environmentWriteNotifiesDescendant(path: ObservationPath) async throws {
-        let root = GrandparentModel().withAnchor(options: path.options)
+        let root = path.withOptions { GrandparentModel().withAnchor() }
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
             root.parent.child.node.environment.isDarkMode
@@ -182,7 +182,7 @@ struct MetadataEnvironmentTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func environmentWriteOnSelfNotifiesSelf(path: ObservationPath) async throws {
-        let model = ChildModel().withAnchor(options: path.options)
+        let model = path.withOptions { ChildModel().withAnchor() }
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
             model.node.environment.isDarkMode
@@ -209,7 +209,7 @@ struct MetadataEnvironmentTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func environmentWriteOnParentNotifiesChildObserver(path: ObservationPath) async throws {
-        let parent = ParentModel().withAnchor(options: path.options)
+        let parent = path.withOptions { ParentModel().withAnchor() }
 
         // Set up observation on child
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
@@ -281,7 +281,7 @@ struct MetadataEnvironmentTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func intermediateOverrideObservation(path: ObservationPath) async throws {
-        let root = GrandparentModel().withAnchor(options: path.options)
+        let root = path.withOptions { GrandparentModel().withAnchor() }
 
         // Observer on grandchild
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
@@ -354,7 +354,7 @@ struct MetadataEnvironmentTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func removeNotifiesObserverOnSameNode(path: ObservationPath) async throws {
-        let model = ChildModel().withAnchor(options: path.options)
+        let model = path.withOptions { ChildModel().withAnchor() }
         model.node.environment.isDarkMode = true
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
@@ -378,7 +378,7 @@ struct MetadataEnvironmentTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func removeIntermediateOverrideNotifiesDescendantObserver(path: ObservationPath) async throws {
-        let root = GrandparentModel().withAnchor(options: path.options)
+        let root = path.withOptions { GrandparentModel().withAnchor() }
         root.node.environment.isDarkMode = true
         root.parent.node.environment.isDarkMode = false  // intermediate override
 

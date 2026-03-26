@@ -15,7 +15,7 @@ struct TransactionTests {
     // MARK: - Basic Transaction Semantics
 
     @Test func testTransactionAtomicity() async throws {
-        let model = AtomicModel().withAnchor(options: [.disableObservationRegistrar])
+        let model = withModelOptions([.disableObservationRegistrar]) { AtomicModel().withAnchor() }
 
         // Setup observer to track updates (coalesceUpdates: false uses AccessCollector for .disableObservationRegistrar)
         let updateCount = LockIsolated(0)
@@ -46,7 +46,7 @@ struct TransactionTests {
     }
 
     @Test func testTransactionConsistency() async throws {
-        let model = ConsistencyModel().withAnchor(options: [.disableObservationRegistrar])
+        let model = withModelOptions([.disableObservationRegistrar]) { ConsistencyModel().withAnchor() }
 
         // Track invariant: total should always equal sum of parts (coalesceUpdates: false uses AccessCollector)
         let invariantViolations = LockIsolated(0)
@@ -88,7 +88,7 @@ struct TransactionTests {
     }
 
     @Test func testNestedTransactions() async throws {
-        let model = NestedTransactionModel().withAnchor(options: [.disableObservationRegistrar])
+        let model = withModelOptions([.disableObservationRegistrar]) { NestedTransactionModel().withAnchor() }
 
         let updateCount = LockIsolated(0)
         model.node.forEach(Observed(coalesceUpdates: false) { model.value }) { _ in
@@ -118,7 +118,7 @@ struct TransactionTests {
     // MARK: - Transaction Read Semantics
 
     @Test func testReadDuringTransaction() async throws {
-        let model = ReadDuringTransactionModel().withAnchor(options: [.disableObservationRegistrar])
+        let model = withModelOptions([.disableObservationRegistrar]) { ReadDuringTransactionModel().withAnchor() }
 
         model.transaction {
             model.value = 10
@@ -132,7 +132,7 @@ struct TransactionTests {
     }
 
     @Test func testComputedPropertyDuringTransaction() async throws {
-        let model = ComputedDuringTransactionModel().withAnchor(options: [.disableObservationRegistrar])
+        let model = withModelOptions([.disableObservationRegistrar]) { ComputedDuringTransactionModel().withAnchor() }
 
         model.transaction {
             model.a = 10
@@ -150,7 +150,7 @@ struct TransactionTests {
 
     @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test func testConcurrentReadsDuringTransaction() async throws {
-        let model = IsolationModel().withAnchor(options: [.disableObservationRegistrar])
+        let model = withModelOptions([.disableObservationRegistrar]) { IsolationModel().withAnchor() }
         model.value = 100
 
         let observedValues = LockIsolated<[Int]>([])
@@ -187,7 +187,7 @@ struct TransactionTests {
     // MARK: - Notification Batching
 
     @Test func testNotificationBatching() async throws {
-        let model = NotificationBatchingModel().withAnchor(options: [.disableObservationRegistrar])
+        let model = withModelOptions([.disableObservationRegistrar]) { NotificationBatchingModel().withAnchor() }
 
         let notificationCount = LockIsolated(0)
         let notifiedValues = LockIsolated<[Int]>([])
@@ -219,7 +219,7 @@ struct TransactionTests {
     /// once at the end rather than once per write — tested on both observation paths.
     @Test(arguments: ObservationPath.allCases)
     func testTransactionBatchesNotifications(path: ObservationPath) async throws {
-        let model = RegistrarBatchingModel().withAnchor(options: path.options)
+        let model = path.withOptions { RegistrarBatchingModel().withAnchor() }
 
         let notificationCount = LockIsolated(0)
         model.node.forEach(Observed(coalesceUpdates: false) { model.value }) { _ in
@@ -248,7 +248,7 @@ struct TransactionTests {
     // MARK: - Error Handling
 
     @Test func testTransactionRollback() async throws {
-        let model = RollbackModel().withAnchor(options: [.disableObservationRegistrar])
+        let model = withModelOptions([.disableObservationRegistrar]) { RollbackModel().withAnchor() }
         model.value = 10
 
         do {

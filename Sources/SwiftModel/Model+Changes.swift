@@ -543,7 +543,8 @@ private extension ModelNode {
                     isSame: nil,
                     useWithObservationTracking: useWithObservationTracking,
                     useCoalescing: useCoalescing,
-                    didModify: didModifyCallback
+                    didModify: didModifyCallback,
+                    backgroundCallQueue: context.backgroundCallQueue
                 ) {
                     // When called from a coalesced performUpdate (either the withObservationTracking
                     // or AccessCollector path): always call produce() so that dependency tracking
@@ -924,6 +925,7 @@ internal func update<T: Sendable>(
     useWithObservationTracking: Bool,
     useCoalescing: Bool = false,
     didModify: (@Sendable (Bool) -> Void)? = nil,
+    backgroundCallQueue: BackgroundCallQueue = backgroundCall,
     access: @Sendable @escaping () -> T,
     onUpdate: @Sendable @escaping (T) -> Void
 ) -> (cancel: @Sendable () -> Void, forceNextUpdate: @Sendable () -> Void) {
@@ -1032,10 +1034,10 @@ internal func update<T: Sendable>(
 
             if threadLocals.postTransactions != nil {
                 threadLocals.postTransactions!.append { _ in
-                    backgroundCall(performUpdate)
+                    backgroundCallQueue(performUpdate)
                 }
             } else {
-                backgroundCall(performUpdate)
+                backgroundCallQueue(performUpdate)
             }
         }
 
@@ -1108,7 +1110,7 @@ internal func update<T: Sendable>(
         let forceObserver = ForceObserver(onForce: { [weak performUpdateBox] in
             forceNext.setValue(true)
             guard let performUpdate = performUpdateBox?.value else { return }
-            backgroundCall(performUpdate)
+            backgroundCallQueue(performUpdate)
         })
         usingActiveAccess(forceObserver) { _ = access() }
 
@@ -1179,10 +1181,10 @@ internal func update<T: Sendable>(
             }
 
             if useCoalescing {
-                // backgroundCall schedules on next runloop iteration, allowing multiple
+                // backgroundCallQueue schedules on next runloop iteration, allowing multiple
                 // mutations to coalesce into a single update callback.
                 return {
-                    backgroundCall(performUpdate)
+                    backgroundCallQueue(performUpdate)
                 }
             } else {
                 // Coalescing disabled: return callback to execute via context

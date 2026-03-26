@@ -7,7 +7,7 @@ import Observation
 struct UpdateStreamTests {
     @Test(arguments: ObservationPath.allCases)
     func testChangeOf(observationPath: ObservationPath) async throws {
-        let model = ValuesModel(initial: false, recursive: false).withAnchor(options: observationPath.options)
+        let model = observationPath.withOptions { ValuesModel(initial: false, recursive: false).withAnchor() }
 
         model.count += 5
         await expect {
@@ -24,7 +24,7 @@ struct UpdateStreamTests {
 
     @Test(arguments: ObservationPath.allCases)
     func testChangeOfConcurrency(observationPath: ObservationPath) async throws {
-        let model = ValuesModel(initial: false, recursive: false).withAnchor(options: observationPath.options)
+        let model = observationPath.withOptions { ValuesModel(initial: false, recursive: false).withAnchor() }
 
         let range = 1...10
         await Task.detached {
@@ -42,7 +42,7 @@ struct UpdateStreamTests {
         // Give time for background observation callbacks to process
         try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         
-        await expect(timeoutNanoseconds: 5_000_000_000) {
+        await expect {
             model.count == range.count
             model.counts.count > 0
             model.counts == model.counts.sorted()
@@ -52,7 +52,7 @@ struct UpdateStreamTests {
 
     @Test(arguments: UpdatePath.allCases)
     func testChangeOfChild(updatePath: UpdatePath) async throws {
-        let model = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).withAnchor(options: updatePath.options)
+        let model = updatePath.withOptions { ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).withAnchor() }
 
         await expect {
             model.child.count == 2
@@ -76,7 +76,7 @@ struct UpdateStreamTests {
 
     @Test(arguments: UpdatePath.allCases)
     func testChangeOfChildWhereChildIsUpdated(updatePath: UpdatePath) async throws {
-        let model = ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).withAnchor(options: updatePath.options)
+        let model = updatePath.withOptions { ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).withAnchor() }
 
         await expect {
             model.child.count == 2
@@ -84,7 +84,7 @@ struct UpdateStreamTests {
             model.counts == [0]
             model.optChildCounts == [nil]
         }
-        
+
         model.child = ChildModel(count: 4)
         await expect {
             model.child.count == 4
@@ -94,7 +94,7 @@ struct UpdateStreamTests {
 
     @Test
     func testChangeOfChildConcurrency() async throws {
-        let model = ValuesModel(child: ChildModel(count: 0), initial: false, recursive: false).withAnchor(options: [])
+        let model = ValuesModel(child: ChildModel(count: 0), initial: false, recursive: false).withAnchor()
 
         let range = 1...10
         await Task.detached {
@@ -114,7 +114,7 @@ struct UpdateStreamTests {
         // Give time for background observation callbacks to process
         try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
         
-        await expect(timeoutNanoseconds: 5_000_000_000) {
+        await expect {
             model.child.count == range.count
             model.childCounts.count > 0
             model.childCounts == model.childCounts.sorted()
@@ -123,7 +123,7 @@ struct UpdateStreamTests {
     }
 
     @Test func testChangeOfOptChildWhereChildIsUpdated() async throws {
-        let model = ValuesModel(initial: false, recursive: false).withAnchor(options: [])
+        let model = ValuesModel(initial: false, recursive: false).withAnchor()
 
         model.optChild = ChildModel(count: 4)
         await expect {
@@ -179,7 +179,7 @@ struct UpdateStreamTests {
     }
 
     @Test func testRecursiveChild() async throws {
-        let model = ValuesModel(initial: false, recursive: true).withAnchor(options: [])
+        let model = ValuesModel(initial: false, recursive: true).withAnchor()
 
         await expect {
             model.child.count == 0
@@ -204,7 +204,7 @@ struct UpdateStreamTests {
     }
 
     @Test func testRecursiveOptChild() async throws {
-        let model = ValuesModel(initial: false, recursive: true).withAnchor(options: [])
+        let model = ValuesModel(initial: false, recursive: true).withAnchor()
 
         await expect {
             model.optChild == nil
@@ -237,7 +237,7 @@ struct UpdateStreamTests {
     }
 
     @Test func testRecursiveChildren() async throws {
-        let model = ValuesModel(initial: false, recursive: true).withAnchor(options: [])
+        let model = ValuesModel(initial: false, recursive: true).withAnchor()
 
         await expect(model.childrenCounts == [])
 
@@ -279,7 +279,7 @@ struct UpdateStreamTests {
 
     @Test(.modelTesting(exhaustivity: .full.subtracting(.tasks)))
     func testComputed() async throws {
-        let model = ComputedModel().withAnchor(options: [])
+        let model = ComputedModel().withAnchor()
 
         model.count1 = 7
         model.count2 = 4
@@ -294,7 +294,7 @@ struct UpdateStreamTests {
 
     @Test(.modelTesting(exhaustivity: .off))
     func testNestedComputed() async throws {
-        let model = NestedComputedModel().withAnchor(options: [])
+        let model = NestedComputedModel().withAnchor()
 
         model.computed = ComputedModel(count1: 4, count2: 8)
         model.computed?.count1 = 5
@@ -310,7 +310,7 @@ struct UpdateStreamTests {
 
     @Test(.modelTesting(exhaustivity: .full.subtracting(.tasks)))
     func testMemoize() async throws {
-        let model = ComputedModel().withAnchor(options: [.disableMemoizeCoalescing])
+        let model = withModelOptions([.disableMemoizeCoalescing]) { ComputedModel().withAnchor() }
 
         #expect(model.memoizeComputed == 3)
         #expect(model.memoizeSquared == 1)
@@ -337,7 +337,7 @@ struct UpdateStreamTests {
     /// property of child changes, using onAnyModification as the subscription fallback.
     @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningChildModelDirectly(updatePath: UpdatePath) async throws {
-        let model = ReturnModelModel().withAnchor(options: updatePath.options)
+        let model = updatePath.withOptions { ReturnModelModel().withAnchor() }
 
         await expect { model.childSnapshots.count == 1 }
 
@@ -352,7 +352,7 @@ struct UpdateStreamTests {
     /// replacing the model (writing to the parent property) fires a new emission.
     @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningSelf(updatePath: UpdatePath) async throws {
-        let model = SelfObserverParent().withAnchor(options: updatePath.options)
+        let model = updatePath.withOptions { SelfObserverParent().withAnchor() }
 
         await expect { model.observedCounts.count == 1 }
 
@@ -371,7 +371,7 @@ struct UpdateStreamTests {
     /// replacing a model (writing to the parent property) fires a new emission.
     @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningTupleOfModels(updatePath: UpdatePath) async throws {
-        let model = TupleObserverModel().withAnchor(options: updatePath.options)
+        let model = updatePath.withOptions { TupleObserverModel().withAnchor() }
 
         await expect { model.snapshots.count == 1 }
 
@@ -392,7 +392,7 @@ struct UpdateStreamTests {
     /// trigger re-emission; property changes on the wrapped model do NOT.
     @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningOptionalModel(updatePath: UpdatePath) async throws {
-        let model = OptionalObserverModel().withAnchor(options: updatePath.options)
+        let model = updatePath.withOptions { OptionalObserverModel().withAnchor() }
 
         // nil → Some triggers (different identity)
         model.child = ChildModel()
@@ -412,7 +412,7 @@ struct UpdateStreamTests {
     /// removing elements (changing array composition) DOES trigger.
     @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningArrayOfModels(updatePath: UpdatePath) async throws {
-        let model = ArrayObserverModel().withAnchor(options: updatePath.options)
+        let model = updatePath.withOptions { ArrayObserverModel().withAnchor() }
 
         // Initial: 2 children
         await expect { model.snapshots.count == 1 }
@@ -434,7 +434,7 @@ struct UpdateStreamTests {
     /// neither direct property changes nor descendant changes trigger re-evaluation.
     @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturnedModelIgnoresDescendantChanges(updatePath: UpdatePath) async throws {
-        let model = DescendantObserverModel().withAnchor(options: updatePath.options)
+        let model = updatePath.withOptions { DescendantObserverModel().withAnchor() }
 
         await expect { model.snapshots.count == 1 }
 
@@ -457,7 +457,7 @@ struct UpdateStreamTests {
     /// property changes on the currently active model do NOT trigger.
     @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
     func testObservedReturningSwappedModel(updatePath: UpdatePath) async throws {
-        let model = SwapObserverModel().withAnchor(options: updatePath.options)
+        let model = updatePath.withOptions { SwapObserverModel().withAnchor() }
 
         await expect { model.snapshots.count == 1 }
         #expect(model.snapshots.last == 0)

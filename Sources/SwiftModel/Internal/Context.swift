@@ -15,7 +15,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     @Dependency(\.uuid) private var dependencies
 
-    init(model: M, lock: NSRecursiveLock, options: ModelOption, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
+    init(model: M, lock: NSRecursiveLock, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
         if model.lifetime != .initial {
             reportIssue("It is not allowed to add an already anchored or frozen model, instead create a new instance.")
         }
@@ -32,7 +32,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         } else {
             isObservable = false
         }
-        super.init(lock: lock, options: options, parent: parent, isObservable: isObservable)
+        super.init(lock: lock, parent: parent, isObservable: isObservable)
 
         var dependencyModels: [AnyHashable: any Model] = [:]
         // For child contexts, install parent.capturedDependencies (which includes all parent
@@ -650,7 +650,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 // its task-local would overwrite this context's dep overrides. By unconditionally
                 // replacing _current with self's deps, the child correctly inherits this context.
                 let child = withOwnDependencies {
-                    Context<Child>(model: childModel, lock: lock, options: self.options, dependencies: { _ in }, parent: self)
+                    Context<Child>(model: childModel, lock: lock, dependencies: { _ in }, parent: self)
                 }
                 children[containerPath, default: [:]][modelRef] = child
                 return child

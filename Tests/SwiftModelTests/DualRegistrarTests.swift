@@ -39,7 +39,7 @@ struct DualRegistrarTests {
         model.value = 42
 
         // Observer should fire immediately (synchronously on background registrar)
-        await expect(observerFired.value, timeoutNanoseconds: 100_000_000)  // short: observer should fire without mainCall delay
+        await expect(observerFired.value)
 
         #expect(observerFired.value, "Background observer should fire without mainCall delay")
     }
@@ -47,7 +47,7 @@ struct DualRegistrarTests {
     /// Same test as above but using old .withAnchor() style (should also work now!)
     @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @Test func testBackgroundModificationImmediateBackgroundObserver_WithAnchor() async throws {
-        let model = TestModel().withAnchor(options: [])
+        let model = TestModel().withAnchor()
 
         let observerFired = LockIsolated(false)
 
@@ -107,13 +107,13 @@ struct DualRegistrarTests {
         }
 
         // Both observers should fire immediately (main thread modification)
-        await expect(mainObserverFired.value && backgroundObserverFired.value, timeoutNanoseconds: 100_000_000)  // short: both observers should fire synchronously on main thread
+        await expect(mainObserverFired.value && backgroundObserverFired.value)
     }
 
     /// Same test as above but using old .withAnchor() style
     @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @Test func testMainThreadModificationBothRegistrars_WithAnchor() async throws {
-        let model = TestModel().withAnchor(options: [])
+        let model = TestModel().withAnchor()
 
         let mainObserverFired = LockIsolated(false)
         let backgroundObserverFired = LockIsolated(false)
@@ -175,7 +175,7 @@ struct DualRegistrarTests {
         model.value = 5
 
         // Background observer should detect change without mainCall delay
-        await expect(changeDetected.value, timeoutNanoseconds: 100_000_000)  // short: background observer should fire without mainCall delay
+        await expect(changeDetected.value)
 
         #expect(changeDetected.value, "Background observer should have detected change")
         #expect(model.accessCount.value >= 1, "Memoized property should have been accessed")
@@ -184,7 +184,7 @@ struct DualRegistrarTests {
     /// Same test as above but using old .withAnchor() style
     @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @Test func testMemoizeWithBackgroundObserver_WithAnchor() async throws {
-        let model = MemoizeModel().withAnchor(options: [])
+        let model = MemoizeModel().withAnchor()
 
         let changeDetected = LockIsolated(false)
 
@@ -223,7 +223,7 @@ struct DualRegistrarTests {
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
     @Test
     func testAppleObservationsWithModel() async throws {
-        let model = TestModel().withAnchor(options: [.disableMemoizeCoalescing])
+        let model = withModelOptions([.disableMemoizeCoalescing]) { TestModel().withAnchor() }
         
         let values = LockIsolated<[Int]>([])
         let observationStarted = LockIsolated(false)
@@ -265,8 +265,8 @@ struct DualRegistrarTests {
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
     @Test
     func testAppleObservationsWithModelTransactions() async throws {
-        let model = TestModel().withAnchor(options: [])
-        
+        let model = TestModel().withAnchor()
+
         let transactionCount = LockIsolated(0)
         let observationStarted = LockIsolated(false)
         
@@ -345,7 +345,7 @@ struct DualRegistrarTests {
     @available(macOS 26.0, iOS 26.0, watchOS 26.0, tvOS 26.0, *)
     @Test
     func testBidirectionalCompatibility() async throws {
-        let model = TestModel().withAnchor(options: [])
+        let model = TestModel().withAnchor()
         let observable = PureObservableModel()
         
         let modelValues = LockIsolated<[Int]>([])
@@ -396,8 +396,8 @@ struct DualRegistrarTests {
     @Test
     func testModelHoldingObservableObject() async throws {
         let observable = PureObservableModel()
-        let model = ModelHoldingObservable(observable: observable).withAnchor(options: [])
-        
+        let model = ModelHoldingObservable(observable: observable).withAnchor()
+
         let changeDetected = LockIsolated(false)
         
         // Set up observation tracking on model's computed property that accesses observable
@@ -432,7 +432,7 @@ struct DualRegistrarTests {
     func testModelWithObservableDependency() async throws {
         let observable = PureObservableModel()
         
-        let model = ModelWithObservableDependency().withAnchor(options: []) {
+        let model = ModelWithObservableDependency().withAnchor {
             $0[PureObservableModel.self] = observable
         }
         
@@ -468,8 +468,8 @@ struct DualRegistrarTests {
     @Test
     func testObservedStreamWithModelAccessingObservable() async throws {
         let observable = PureObservableModel()
-        let model = ModelHoldingObservable(observable: observable).withAnchor(options: [])
-        
+        let model = ModelHoldingObservable(observable: observable).withAnchor()
+
         let values = LockIsolated<[Int]>([])
         
         let task = Task {

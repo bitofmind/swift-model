@@ -178,7 +178,7 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
 
                 return {
                     if !finished {
-                        mainCall {
+                        context.mainCallQueue {
                             self.objectWillChange.send()
                         }
                     } else {

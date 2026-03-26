@@ -4,7 +4,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
-## [Unreleased] — Context Storage API Split + Named Tasks
+## [Unreleased] — Context Storage API Split + Named Tasks + Settle API
 
 ### Added
 - **Named tasks** — `node.task` and `node.forEach` now accept an optional `_ name: String? = nil` parameter. When provided, the name is passed to Swift's `Task(name:)` and surfaced in test exhaustion failure messages so it's immediately clear which task was still running. When omitted, a name is synthesised automatically from the call site: `"onActivate() @ Counter.swift:42"`.
@@ -16,16 +16,21 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - **`node.removeLocal(_:)`** — removes a local storage value back to default.
 - **`node.removeEnvironment(_:)`** — removes a local override, causing the node to inherit from its nearest ancestor again.
 - **`Exhaustivity.environment`** — new exhaustivity category for `node.environment` writes (separate from `.local`).
+- **`settle()` function** — standalone function that waits for activation tasks to enter their body, runs an idle cycle until no state changes occur, then resets the exhaustivity baseline. Four overloads: builder, no-predicate, `Bool` autoclosure, and `TestPredicate`.
+- **`settle(resetting:)` parameter** — controls which exhaustivity categories are reset after settling. Accepts an `Exhaustivity` value (default `.full`). Use `resetting: .full.removing(.events)` to keep tracking events across the settle boundary. Categories: `.state`, `.events`, `.tasks`, `.probes`, `.local`, `.environment`, `.preference`.
+- **Rich settle timeout diagnostics** — when settle times out, the failure message now includes details about which activation tasks are still running, pending state changes, and the current model state.
 
 ### Deprecated
 - **`node.context`** — use `node.local` or `node.environment` depending on the desired propagation.
 - **`node.removeContext(_:)`** — use `node.removeLocal(_:)` or `node.removeEnvironment(_:)`.
 - **`ContextKeys` / `ContextValues`** — use `LocalKeys` / `LocalStorage` or `EnvironmentKeys` / `EnvironmentStorage`.
 - **`Exhaustivity.context`** — use `[.local, .environment]` to cover both, or target one specifically.
+- **`timeoutNanoseconds` on `expect`/`require`/`tester.assert`** — timeout is no longer needed. The framework uses activity-relative idle detection with a fixed 5-second hard cap instead of user-configurable timeouts.
 
 ### Changed
 - Debug trigger output now shows `ModelType.local.keyName` / `ModelType.environment.keyName` instead of the generic `ModelType.context.keyName`.
 - Exhaustion failure messages now say "Local not exhausted" / "Environment not exhausted" instead of "Context not exhausted".
+- Settling now uses `modificationCount`-based idle detection instead of configurable timeouts. A fixed 5-second hard cap replaces the previous 30-second cap.
 
 ---
 

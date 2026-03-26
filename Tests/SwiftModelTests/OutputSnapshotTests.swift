@@ -237,11 +237,11 @@ struct TesterAssertOutputTests {
                 // Explicit TestPredicate type annotation forces the TestPredicate-returning == overload,
                 // which captures both sides as autoclosures and produces the diff format on failure.
                 let pred: TestPredicate = model.count == 99
-                await expect(pred, timeoutNanoseconds: 1_000_000)
+                await expect(pred)
             }
         } matches: {
             """
-            Failed to assert: SimpleCounter.count: …
+            Expectation not met: SimpleCounter.count: …
 
                 − 99
                 + 3
@@ -300,6 +300,9 @@ struct CustomDumpOutputTests {
         }
     }
 
+    // Excluded from iOS: triggers simulator runtime crash in _dispatch_ios_simulator_memorypressure_init
+    // via NSCache.init during regex compilation in swift-custom-dump's typeName().
+    #if !os(iOS)
     @Test("includeInMirror shows data fields and ModelID")
     func customDumpWithIncludeInMirrorShowsID() {
         let model = Counter(id: 42, count: 7).withAnchor()
@@ -317,6 +320,7 @@ struct CustomDumpOutputTests {
             """
         }
     }
+    #endif
 
     @Test("model with explicit id shows id field when includeChildrenInMirror is set")
     func explicitIdFieldVisible() {
@@ -448,7 +452,7 @@ struct ExhaustionFailureTests {
             }
         } matches: {
             """
-            Failed to assert calling of probe "myLoader":
+            Expected probe not called "myLoader":
                 "hello"
             """
         }
@@ -464,7 +468,7 @@ struct ExhaustionFailureTests {
             }
         } matches: {
             """
-            Failed to assert calling of probe:
+            Expected probe not called:
                 "hello"
             """
         }
@@ -483,13 +487,13 @@ struct TimeoutProbeFailureTests {
             await withModelTesting(exhaustivity: .off) {
                 let onLoad = TestProbe()
                 let _ = TraitLoader(onLoad: onLoad.call).withAnchor()
-                await expect(timeoutNanoseconds: 1_000_000) {
+                await expect {
                     onLoad.wasCalled(with: "hello")
                 }
             }
         } matches: {
             """
-            Failed to assert calling of probe:
+            Expected probe not called:
                 "hello"
 
             No available probe values
@@ -504,7 +508,7 @@ struct TimeoutProbeFailureTests {
                 let onLoad = TestProbe()
                 let model = TraitLoader(onLoad: onLoad.call).withAnchor()
                 model.load(value: "actual")
-                await expect(timeoutNanoseconds: 1_000_000) {
+                await expect {
                     onLoad.wasCalled(with: "expected")
                 }
             }
@@ -528,13 +532,13 @@ struct TimeoutProbeFailureTests {
                 let model = TraitLoader(onLoad: onLoad.call).withAnchor()
                 model.load(value: "first")
                 model.load(value: "second")
-                await expect(timeoutNanoseconds: 1_000_000) {
+                await expect {
                     onLoad.wasCalled(with: "nonexistent")
                 }
             }
         } matches: {
             """
-            Failed to assert calling of probe:
+            Expected probe not called:
                 "nonexistent"
 
             2 Available probe values to assert:
@@ -550,13 +554,13 @@ struct TimeoutProbeFailureTests {
             await withModelTesting(exhaustivity: .off) {
                 let onLoad = TestProbe("myLoader")
                 let _ = TraitLoader(onLoad: onLoad.call).withAnchor()
-                await expect(timeoutNanoseconds: 1_000_000) {
+                await expect {
                     onLoad.wasCalled(with: "hello")
                 }
             }
         } matches: {
             """
-            Failed to assert calling of probe "myLoader":
+            Expected probe not called "myLoader":
                 "hello"
 
             No available probe values
@@ -576,7 +580,7 @@ struct UnwrapTimeoutTests {
         await assertIssueSnapshot {
             await withModelTesting(exhaustivity: .off) {
                 let _ = TraitLoader().withAnchor()
-                _ = try? await require(nil as String?, timeoutNanoseconds: 1_000_000)
+                _ = try? await require(nil as String?)
             }
         } matches: {
             """
@@ -640,6 +644,9 @@ struct OutOfScopeTests {
         }
     }
 
+    // Excluded from iOS: triggers simulator runtime crash in _dispatch_ios_simulator_memorypressure_init
+    // via NSCache.init during regex compilation in swift-custom-dump's typeName().
+    #if !os(iOS)
     @Test("didSend() on unanchored model inside assert block reports clear error")
     func didSendOnUnanchoredModel() async {
         let unanchored = EventSenderForOutOfScope()
@@ -655,6 +662,7 @@ struct OutOfScopeTests {
             """
         }
     }
+    #endif
 
     @Test("probe.wasCalled() outside assert block reports clear error")
     func probeWasCalledOutsideAssertBlock() async {
@@ -692,7 +700,7 @@ struct AssertionFailedFallbackTests {
         await assertIssueSnapshot {
             await withModelTesting(exhaustivity: .off) {
                 let _ = SimpleCounter().withAnchor()
-                await expect(timeoutNanoseconds: 1_000_000) {
+                await expect {
                     false
                 }
             }
@@ -700,6 +708,78 @@ struct AssertionFailedFallbackTests {
             """
             Assertion failed
             """
+        }
+    }
+}
+
+// MARK: - Timeout failure messages
+
+// Task that produces infinite state changes — triggers settle timeout
+@Model
+private struct InfiniteChangesModel {
+    var tick = 0
+    func onActivate() {
+        // Use forEach to create a feedback loop: each tick change triggers another tick change
+        // through the observation system, ensuring continuous state changes during the idle cycle.
+        node.task("spinner") {
+            while !Task.isCancelled {
+                tick += 1
+                await Task.yield()
+            }
+        }
+    }
+}
+
+/// Tests for the messages emitted when settle() or expect times out.
+@Suite("timeout failure messages")
+struct TimeoutFailureTests {
+
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
+    @Test("settle timeout: model still has active tasks")
+    func settleInfiniteChangesTimeout() async {
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            let tester = ModelTester(InfiniteChangesModel(), exhaustivity: .off)
+            let reporter = CapturingIssueReporter()
+            await withIssueReporters([reporter]) {
+                await tester.access.expect(
+                    timeoutNanoseconds: 1_000_000,
+                    settleResetting: .full,
+                    at: tester.access.fileAndLine,
+                    predicates: []
+                )
+            }
+            _ = tester
+            let normalized = reporter.messages.joined(separator: "\n")
+                .replacing(#/@\s+\S+:\d+/#, with: "@ <file>:<line>")
+            assertInlineSnapshot(of: normalized, as: .lines) {
+                """
+                settle() timed out: model still has active tasks.
+                  InfiniteChangesModel: "spinner" @ <file>:<line>
+                """
+            }
+        }
+    }
+
+    @Test("expect predicate timeout shows diff")
+    func expectPredicateTimeout() async {
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(10_000_000) {
+            let tester = ModelTester(SimpleCounter(), exhaustivity: .off)
+            let model = tester.model
+            let access = tester.access
+            model.count = 3
+            let pred: TestPredicate = model.count == 99
+            await assertIssueSnapshot {
+                await access.expect(timeoutNanoseconds: 1_000_000, at: access.fileAndLine, predicates: AssertBuilder.buildExpression(pred))
+            } matches: {
+                """
+                Expectation not met: SimpleCounter.count: …
+
+                    − 99
+                    + 3
+
+                (Expected: −, Actual: +)
+                """
+            }
         }
     }
 }

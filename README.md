@@ -1616,6 +1616,62 @@ For tests that only care about the end result and not intermediate timer ticks, 
 }
 ```
 
+### Settling
+
+Models that perform async work during activation — loading data in `onActivate()`, subscribing to streams, or triggering `forEach` callbacks — may not be fully ready when `withAnchor()` returns. Use `settle()` as the first assertion to wait for the model to reach a stable state and reset the exhaustivity baseline:
+
+```swift
+@Model struct ItemListModel {
+    var items: [Item] = []
+
+    func onActivate() {
+        node.task {
+            items = try await fetchItems()
+        }
+    }
+}
+
+@Test(.modelTesting) func testItemSelection() async {
+    let model = ItemListModel().withAnchor()
+
+    // Wait for onActivate() task to finish and stabilize.
+    await settle { model.items.count > 0 }
+
+    // Baseline is now clean — only changes after this point are tracked.
+    model.selectItem(id: model.items[0].id)
+    await expect { model.selectedItem != nil }
+}
+```
+
+Settling performs three steps after the predicate passes:
+
+1. **Wait for activation tasks** — all tasks started from `onActivate()` must enter their body.
+2. **Idle cycle** — waits until one full scheduling round passes with no state changes, ensuring `forEach` callbacks and cascading effects have settled.
+3. **Reset baseline** — clears tracked state changes, events, and probe calls so exhaustivity only covers post-settling behaviour.
+
+If you don't need to verify the activation outcome, use `settle()` with no predicate to just let activation finish and reset the baseline:
+
+```swift
+@Test(.modelTesting) func testUserInteraction() async {
+    let model = ItemListModel().withAnchor()
+    await settle()
+
+    // Test user interactions without worrying about activation details.
+    model.refresh()
+    await expect { model.items.count > 0 }
+}
+```
+
+To selectively reset specific exhaustivity categories, pass a `resetting:` parameter. For example, to keep events from activation visible to subsequent assertions:
+
+```swift
+await settle(resetting: .full.removing(.events)) { model.activated == true }
+// Events sent during activation are still tracked and can be asserted.
+await expect { model.didSend(.loaded) }
+```
+
+Without `settle()`, the test would need to assert every intermediate state change caused by activation — brittle and unnecessary when you only care about the steady state.
+
 ### Refactor-Resilient Tests
 
 SwiftModel tests assert **final state**, not the sequence of actions or effects that produced it. This means you can freely restructure model internals — split a method, rename a case, change how async work is dispatched — and existing tests continue to pass as long as the observable outcome is unchanged.
