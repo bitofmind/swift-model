@@ -169,12 +169,12 @@ extension ModelContext {
                 observable.willSet(path: path, from: context)
                 defer { observable.didSet(path: path, from: context) }
                 activeAccess?.didModify(model, at: path)?()
-                mainCall.drainIfOnMain()
+                context.mainCallQueue.drainIfOnMain()
             }
         } else {
             activeAccess?.didModify(model, at: path)?()
             if threadLocals.pendingObservationNotifications == nil {
-                mainCall.drainIfOnMain()
+                (self.context?.mainCallQueue ?? mainCall).drainIfOnMain()
             }
         }
     }

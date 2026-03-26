@@ -61,13 +61,16 @@ final class Cancellations: @unchecked Sendable {
         }
     }
 
-    var activeTasks: [(modelName: String, fileAndLines: [FileAndLine])] {
+    var activeTasks: [(modelName: String, tasks: [(name: String, fileAndLine: FileAndLine)])] {
         lock {
-            registered.values.reduce(into: [String: [FileAndLine]]()) { dict, c in
+            // Sort by task ID (registration order) for stable diagnostic output.
+            registered.values.reduce(into: [String: [(id: Int, name: String, fileAndLine: FileAndLine)]]()) { dict, c in
                 if let task = c as? TaskCancellable {
-                    dict[task.name, default: []].append(task.fileAndLine)
+                    dict[task.modelName, default: []].append((task.id, task.taskName, task.fileAndLine))
                 }
-            }.map { (modelName: $0.key, fileAndLines: $0.value) }
+            }.map { modelName, triples in
+                (modelName: modelName, tasks: triples.sorted { $0.id < $1.id }.map { ($0.name, $0.fileAndLine) })
+            }
         }
     }
 

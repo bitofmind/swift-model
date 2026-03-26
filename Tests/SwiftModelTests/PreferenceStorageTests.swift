@@ -233,7 +233,7 @@ struct PreferenceStorageTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func childWriteNotifiesAncestorObserver(path: ObservationPath) async throws {
-        let root = RootModel().withAnchor(options: path.options)
+        let root = path.withOptions { RootModel().withAnchor() }
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
             root.node.preference.totalCount
@@ -260,7 +260,7 @@ struct PreferenceStorageTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func selfWriteNotifiesSelfObserver(path: ObservationPath) async throws {
-        let model = LeafModel().withAnchor(options: path.options)
+        let model = path.withOptions { LeafModel().withAnchor() }
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
             model.node.preference.totalCount
@@ -285,7 +285,7 @@ struct PreferenceStorageTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func removeNotifiesAncestorObserver(path: ObservationPath) async throws {
-        let root = RootModel().withAnchor(options: path.options)
+        let root = path.withOptions { RootModel().withAnchor() }
         root.branch.leaf.node.preference.totalCount = 5
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {

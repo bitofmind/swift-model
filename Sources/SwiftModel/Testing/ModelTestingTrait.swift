@@ -2,14 +2,13 @@
 import Testing
 import IssueReporting
 
-// MARK: - Global expect / require / withExhaustivity
+// MARK: - Global expect / require / settle / withExhaustivity
 
 /// Asserts — within a `@Test(.modelTesting)` test — that all predicates in the builder
 /// pass and that no unasserted side effects remain.
 ///
 /// Mirrors the behaviour of Swift Testing's `#expect`: on failure the issue is recorded
-/// but the test continues. Equivalent to `tester.assert { }` but uses the test scope set
-/// up by `.modelTesting`.
+/// but the test continues.
 ///
 /// ```swift
 /// @Test(.modelTesting) func example() async {
@@ -22,7 +21,6 @@ import IssueReporting
 /// > Important: Must be called inside a `@Test(.modelTesting)` function. Calling outside
 ///   a model testing scope reports an issue.
 public func expect(
-    timeoutNanoseconds timeout: UInt64 = nanosPerSecond,
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
     line: UInt = #line,
@@ -34,7 +32,7 @@ public func expect(
         return
     }
     await scope.assert(
-        timeoutNanoseconds: timeout,
+        settleResetting: nil,
         fileID: fileID,
         filePath: filePath,
         line: line,
@@ -45,8 +43,6 @@ public func expect(
 
 /// Single-predicate convenience overload of `expect` for a plain `Bool` expression.
 ///
-/// Equivalent to `await expect { someCondition }` but without the result-builder braces.
-///
 /// ```swift
 /// await expect(model.count == 1)
 /// ```
@@ -55,44 +51,166 @@ public func expect(
 @_disfavoredOverload
 public func expect(
     _ predicate: @escaping @Sendable @autoclosure () -> Bool,
-    timeoutNanoseconds timeout: UInt64 = nanosPerSecond,
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
     line: UInt = #line,
     column: UInt = #column
 ) async {
-    await expect(timeoutNanoseconds: timeout, fileID: fileID, filePath: filePath, line: line, column: column) {
+    await expect(fileID: fileID, filePath: filePath, line: line, column: column) {
         predicate()
     }
 }
 
-/// Single-predicate convenience overload of `expect` for a `TestPredicate` (result of `==`
-/// between two `Equatable` values). Provides a pretty-printed diff on failure.
+/// Single-predicate convenience overload of `expect` for a `TestPredicate`.
+/// Provides a pretty-printed diff on failure.
 ///
 /// ```swift
-/// await expect(model.count == 1)  // uses TestPredicate overload for rich diffs
+/// await expect(model.count == 1)
 /// ```
 ///
 /// > Important: Must be called inside a `@Test(.modelTesting)` function.
 public func expect(
     _ predicate: TestPredicate,
-    timeoutNanoseconds timeout: UInt64 = nanosPerSecond,
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
     line: UInt = #line,
     column: UInt = #column
 ) async {
-    await expect(timeoutNanoseconds: timeout, fileID: fileID, filePath: filePath, line: line, column: column) {
+    await expect(fileID: fileID, filePath: filePath, line: line, column: column) {
         predicate
     }
 }
 
+// MARK: - settle
+
+/// Waits for the model to settle — all activation tasks enter their body, the model
+/// becomes idle (no state changes for one scheduling round) — then resets selected
+/// exhaustivity categories so subsequent `expect {}` calls start from a clean baseline.
+///
+/// Use `settle()` without predicates after anchoring to skip past activation side effects:
+///
+/// ```swift
+/// @Test(.modelTesting) func example() async {
+///     let model = ItemListModel().withAnchor()
+///     await settle()  // activation did its thing — start fresh
+///     model.selectItem(id: model.items[0].id)
+///     await expect { model.selectedItem != nil }
+/// }
+/// ```
+///
+/// Pass a predicate to verify the model reached an expected state before resetting:
+///
+/// ```swift
+/// await settle { model.items.count > 0 }
+/// ```
+///
+/// Use `resetting:` to control which exhaustivity categories are reset. By default
+/// all categories are reset. Pass a subset to keep tracking specific categories
+/// across the settle boundary:
+///
+/// ```swift
+/// await settle(resetting: .full.removing(.events)) { model.items.count > 0 }
+/// // Events from activation are still tracked — assert them in the next expect.
+/// await expect { model.didSend(.didLoad) }
+/// ```
+///
+/// > Important: Must be called inside a `@Test(.modelTesting)` function.
+public func settle(
+    resetting: Exhaustivity = .full,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column,
+    @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result
+) async {
+    guard let scope = _ModelTestingLocals.scope else {
+        reportIssue("settle() must be called inside a @Test(.modelTesting) test function", fileID: fileID, filePath: filePath, line: line, column: column)
+        return
+    }
+    await scope.assert(
+        settleResetting: resetting,
+        fileID: fileID,
+        filePath: filePath,
+        line: line,
+        column: column,
+        predicates: builder()
+    )
+}
+
+/// Settles the model without any predicate — waits for activation tasks and idle cycle,
+/// then resets selected exhaustivity categories.
+///
+/// ```swift
+/// let model = MyModel().withAnchor()
+/// await settle()  // skip past activation side effects
+/// ```
+///
+/// > Important: Must be called inside a `@Test(.modelTesting)` function.
+public func settle(
+    resetting: Exhaustivity = .full,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column
+) async {
+    guard let scope = _ModelTestingLocals.scope else {
+        reportIssue("settle() must be called inside a @Test(.modelTesting) test function", fileID: fileID, filePath: filePath, line: line, column: column)
+        return
+    }
+    await scope.assert(
+        settleResetting: resetting,
+        fileID: fileID,
+        filePath: filePath,
+        line: line,
+        column: column,
+        predicates: []
+    )
+}
+
+/// Single-predicate settling overload for a plain `Bool` expression.
+///
+/// ```swift
+/// await settle(model.items.count > 0)
+/// ```
+///
+/// > Important: Must be called inside a `@Test(.modelTesting)` function.
+@_disfavoredOverload
+public func settle(
+    _ predicate: @escaping @Sendable @autoclosure () -> Bool,
+    resetting: Exhaustivity = .full,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column
+) async {
+    await settle(resetting: resetting, fileID: fileID, filePath: filePath, line: line, column: column) {
+        predicate()
+    }
+}
+
+/// Single-predicate settling overload for a `TestPredicate`.
+///
+/// > Important: Must be called inside a `@Test(.modelTesting)` function.
+public func settle(
+    _ predicate: TestPredicate,
+    resetting: Exhaustivity = .full,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column
+) async {
+    await settle(resetting: resetting, fileID: fileID, filePath: filePath, line: line, column: column) {
+        predicate
+    }
+}
+
+// MARK: - require
+
 /// Unwraps an optional value — within a `@Test(.modelTesting)` test — waiting for it to
-/// become non-nil within the timeout.
+/// become non-nil.
 ///
 /// Mirrors the behaviour of Swift Testing's `#require`: on failure the issue is recorded
 /// and the test stops (throws). Returns the unwrapped value on success.
-/// Equivalent to `tester.unwrap { }` but uses the test scope set up by `.modelTesting`.
 ///
 /// ```swift
 /// @Test(.modelTesting) func example() async throws {
@@ -107,7 +225,6 @@ public func expect(
 ///   a model testing scope reports an issue and throws.
 public func require<T>(
     _ expression: @escaping @Sendable @autoclosure () -> T?,
-    timeoutNanoseconds timeout: UInt64 = nanosPerSecond,
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
     line: UInt = #line,
@@ -119,12 +236,109 @@ public func require<T>(
     }
     return try await scope.unwrap(
         expression,
-        timeoutNanoseconds: timeout,
         fileID: fileID,
         filePath: filePath,
         line: line,
         column: column
     )
+}
+
+// MARK: - Deprecated overloads
+
+/// - Deprecated: Use `settle { }` instead.
+@available(*, deprecated, renamed: "settle")
+public struct ExpectMode: Sendable {
+    let isSettling: Bool
+    public static let settling = ExpectMode(isSettling: true)
+}
+
+@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
+public func expect(
+    timeoutNanoseconds timeout: UInt64,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column,
+    @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result
+) async {
+    await expect(fileID: fileID, filePath: filePath, line: line, column: column, builder)
+}
+
+@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
+@_disfavoredOverload
+public func expect(
+    _ predicate: @escaping @Sendable @autoclosure () -> Bool,
+    timeoutNanoseconds timeout: UInt64,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column
+) async {
+    await expect(predicate(), fileID: fileID, filePath: filePath, line: line, column: column)
+}
+
+@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
+public func expect(
+    _ predicate: TestPredicate,
+    timeoutNanoseconds timeout: UInt64,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column
+) async {
+    await expect(predicate, fileID: fileID, filePath: filePath, line: line, column: column)
+}
+
+@available(*, deprecated, message: "Use settle { } instead of expect(.settling) { }.")
+public func expect(
+    _ mode: ExpectMode,
+    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column,
+    @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result
+) async {
+    await settle(fileID: fileID, filePath: filePath, line: line, column: column, builder)
+}
+
+@available(*, deprecated, message: "Use settle(_:) instead of expect(.settling, predicate).")
+@_disfavoredOverload
+public func expect(
+    _ mode: ExpectMode,
+    _ predicate: @escaping @Sendable @autoclosure () -> Bool,
+    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column
+) async {
+    await settle(predicate(), fileID: fileID, filePath: filePath, line: line, column: column)
+}
+
+@available(*, deprecated, message: "Use settle(_:) instead of expect(.settling, predicate).")
+public func expect(
+    _ mode: ExpectMode,
+    _ predicate: TestPredicate,
+    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column
+) async {
+    await settle(predicate, fileID: fileID, filePath: filePath, line: line, column: column)
+}
+
+@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
+public func require<T>(
+    _ expression: @escaping @Sendable @autoclosure () -> T?,
+    timeoutNanoseconds timeout: UInt64,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column
+) async throws -> T {
+    try await require(expression(), fileID: fileID, filePath: filePath, line: line, column: column)
 }
 
 /// Runs `body` with exhaustivity temporarily set to `exhaustivity` for the active

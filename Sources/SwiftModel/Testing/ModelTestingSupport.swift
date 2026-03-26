@@ -7,7 +7,7 @@ import IssueReporting
 /// functions can hold a reference without knowing the concrete root model type.
 package protocol _AnyModelTestScope: AnyObject, Sendable {
     func assert(
-        timeoutNanoseconds: UInt64,
+        settleResetting: Exhaustivity?,
         fileID: StaticString,
         filePath: StaticString,
         line: UInt,
@@ -17,7 +17,6 @@ package protocol _AnyModelTestScope: AnyObject, Sendable {
 
     func unwrap<T>(
         _ expression: @escaping @Sendable () -> T?,
-        timeoutNanoseconds: UInt64,
         fileID: StaticString,
         filePath: StaticString,
         line: UInt,
@@ -84,20 +83,20 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
     package var concrete: (any _AnyModelTestScope)? { lock.withLock { _concrete } }
     package var registrationFileAndLine: FileAndLine? { lock.withLock { _registrationFileAndLine } }
 
-    package func assert(timeoutNanoseconds: UInt64, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt, predicates: [AssertBuilder.Predicate]) async {
+    package func assert(settleResetting: Exhaustivity? = nil, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt, predicates: [AssertBuilder.Predicate]) async {
         guard let c = concrete else {
             reportIssue("No model was anchored in this .modelTesting test. Call withAnchor() first.", fileID: fileID, filePath: filePath, line: line, column: column)
             return
         }
-        await c.assert(timeoutNanoseconds: timeoutNanoseconds, fileID: fileID, filePath: filePath, line: line, column: column, predicates: predicates)
+        await c.assert(settleResetting: settleResetting, fileID: fileID, filePath: filePath, line: line, column: column, predicates: predicates)
     }
 
-    package func unwrap<T>(_ expression: @escaping @Sendable () -> T?, timeoutNanoseconds: UInt64, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt) async throws -> T {
+    package func unwrap<T>(_ expression: @escaping @Sendable () -> T?, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt) async throws -> T {
         guard let c = concrete else {
             reportIssue("No model was anchored in this .modelTesting test. Call withAnchor() first.", fileID: fileID, filePath: filePath, line: line, column: column)
             throw UnwrapError()
         }
-        return try await c.unwrap(expression, timeoutNanoseconds: timeoutNanoseconds, fileID: fileID, filePath: filePath, line: line, column: column)
+        return try await c.unwrap(expression, fileID: fileID, filePath: filePath, line: line, column: column)
     }
 
     package func install(_ probes: [TestProbe]) {
@@ -150,15 +149,15 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
     }
 
     package func assert(
-        timeoutNanoseconds: UInt64,
+        settleResetting: Exhaustivity? = nil,
         fileID: StaticString,
         filePath: StaticString,
         line: UInt,
         column: UInt,
         predicates: [AssertBuilder.Predicate]
     ) async {
-        await tester.access.assert(
-            timeoutNanoseconds: timeoutNanoseconds,
+        await tester.access.expect(
+            settleResetting: settleResetting,
             at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column),
             predicates: predicates
         )
@@ -166,7 +165,6 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
 
     package func unwrap<T>(
         _ expression: @escaping @Sendable () -> T?,
-        timeoutNanoseconds: UInt64,
         fileID: StaticString,
         filePath: StaticString,
         line: UInt,
@@ -174,7 +172,6 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
     ) async throws -> T {
         try await tester.access.unwrap(
             expression,
-            timeoutNanoseconds: timeoutNanoseconds,
             at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         )
     }
@@ -204,7 +201,7 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         // Wait for the backgroundCall drain queue to finish processing any teardown
         // side-effects (onCancel callbacks, stream finalizations) that were dispatched
         // during onRemoval(). This ensures post-teardown assertions see final state.
-        await backgroundCall.waitUntilIdle()
+        await tester.access.context.backgroundCallQueue.waitUntilIdle()
     }
 
     package var exhaustivity: Exhaustivity {

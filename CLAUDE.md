@@ -84,7 +84,8 @@ struct MyTests {
 }
 ```
 
-- `expect { }` waits for all predicates to become true.
+- `expect { }` waits for all predicates to become true, similar to `assertNow`.
+- `settle()` waits for activation tasks, runs an idle cycle, then resets exhaustivity. Use after `withAnchor()` to skip past activation side effects. Supports `resetting:` for selective category reset (e.g., `settle(resetting: .full.removing(.events)) { ... }`).
 - Per-suite exhaustivity: `@Suite(.modelTesting(exhaustivity: .off))` when individual tests use `#expect` directly (bypasses exhaustivity). Opt specific tests back in with `@Test(.modelTesting(exhaustivity: .preference))`.
 - Tests that exercise both observation mechanisms use `options: [.disableObservationRegistrar]` inside `withAnchor(options:)`.
 

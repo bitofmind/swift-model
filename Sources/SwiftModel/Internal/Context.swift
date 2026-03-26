@@ -15,7 +15,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     @Dependency(\.uuid) private var dependencies
 
-    init(model: M, lock: NSRecursiveLock, options: ModelOption, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
+    init(model: M, lock: NSRecursiveLock, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
         if model.lifetime != .initial {
             reportIssue("It is not allowed to add an already anchored or frozen model, instead create a new instance.")
         }
@@ -32,7 +32,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         } else {
             isObservable = false
         }
-        super.init(lock: lock, options: options, parent: parent, isObservable: isObservable)
+        super.init(lock: lock, parent: parent, isObservable: isObservable)
 
         var dependencyModels: [AnyHashable: any Model] = [:]
         // For child contexts, install parent.capturedDependencies (which includes all parent
@@ -175,7 +175,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         modelContext.willAccess(readModel, at: untypedPath)?()
 
         // Typed writable path — drives TestAccess snapshot tracking so that
-        // `model.node.context.myKey` inside tester.assert {} is fully assertable.
+        // `model.node.local.myKey`/`model.node.environment.myKey` inside tester.assert {} is fully assertable.
         // \M[_metadata: storage] is a WritableKeyPath<M, V> because ContextStorage<V>
         // is Hashable (via its key), giving Swift what it needs to form and distinguish paths.
         // Tag the access as `.metadata` so TestAccess records it under the correct exhaustivity area.
@@ -191,7 +191,8 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         guard !threadLocals.isAccessingMetadataStorage else { return }
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
         let mc = metadataModelContext()
-        let closureOpt = threadLocals.withValue(.context, at: \.modificationArea) {
+        let storageArea: Exhaustivity = storage.propagation == .environment ? .environment : .local
+        let closureOpt = threadLocals.withValue(storageArea, at: \.modificationArea) {
             threadLocals.withValue(storage.name, at: \.storageName) {
                 mc.willAccess(readModel, at: typedPath)
             }
@@ -224,8 +225,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // Same re-entry guard as willAccessStorage: the TestAccess.didModify closure reads
             // model.context![path] which goes through the context getter → willAccessStorage → loop.
             if !threadLocals.isAccessingMetadataStorage {
+                let storageArea: Exhaustivity = storage.propagation == .environment ? .environment : .local
                 threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
-                    threadLocals.withValue(.context, at: \.modificationArea) {
+                    threadLocals.withValue(storageArea, at: \.modificationArea) {
                         threadLocals.withValue(storage.name, at: \.storageName) {
                             mc.invokeDidModify(readModel, at: typedPath)
                         }
@@ -648,7 +650,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 // its task-local would overwrite this context's dep overrides. By unconditionally
                 // replacing _current with self's deps, the child correctly inherits this context.
                 let child = withOwnDependencies {
-                    Context<Child>(model: childModel, lock: lock, options: self.options, dependencies: { _ in }, parent: self)
+                    Context<Child>(model: childModel, lock: lock, dependencies: { _ in }, parent: self)
                 }
                 children[containerPath, default: [:]][modelRef] = child
                 return child

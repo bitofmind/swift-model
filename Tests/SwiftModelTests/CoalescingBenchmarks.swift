@@ -76,7 +76,7 @@ struct CoalescingBenchmarks {
     @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test
     func benchmarkObservationTracking_WithCoalescing() async throws {
-        let model = CoalescingTestModel().withAnchor(options: [])
+        let model = CoalescingTestModel().withAnchor()
         let updateCount = LockIsolated(0)
         let mutationCount = 100
 
@@ -194,7 +194,7 @@ struct CoalescingBenchmarks {
 
         // 3. ObservationTracking with coalescing
         for _ in 0..<iterations {
-            let model = CoalescingTestModel().withAnchor(options: [])
+            let model = CoalescingTestModel().withAnchor()
             let updateCount = LockIsolated(0)
             let totalWorkTime = LockIsolated(0.0)
 
@@ -314,7 +314,7 @@ struct CoalescingBenchmarks {
 
         for config in configs {
             for _ in 0..<iterations {
-                let model = CoalescingTestModel().withAnchor(options: config.useObservation ? [] : [.disableObservationRegistrar])
+                let model = withModelOptions(config.useObservation ? [] : [.disableObservationRegistrar]) { CoalescingTestModel().withAnchor() }
                 let updateCount = LockIsolated(0)
                 let totalWorkTime = LockIsolated(0.0)
 
@@ -430,7 +430,7 @@ struct CoalescingBenchmarks {
         // === UPDATE BENCHMARKS ===
         for config in configs {
             for _ in 0..<iterations {
-                let model = CoalescingTestModel().withAnchor(options: config.useAC ? [.disableObservationRegistrar] : [])
+                let model = withModelOptions(config.useAC ? [.disableObservationRegistrar] : []) { CoalescingTestModel().withAnchor() }
                 let callbackCount = LockIsolated(0)
 
                 let (cancellable, _) = update(
@@ -467,7 +467,7 @@ struct CoalescingBenchmarks {
                 let options: ModelOption = config.useAC ? [.disableObservationRegistrar] : []
                 let coalescingOption: ModelOption = config.useCoalescing ? [] : [.disableMemoizeCoalescing]
                 var model = CoalescingMemoizeTestModel(items: (0..<mutationCount).map { _ in CoalescingItemModel(value: 0) })
-                model = model.withAnchor(options: options.union(coalescingOption))
+                model = withModelOptions(options.union(coalescingOption)) { model.withAnchor() }
 
                 _ = model.sorted
                 let initialComputes = model.sortCallCount.value

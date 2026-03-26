@@ -5,10 +5,13 @@ import Foundation
 
 // MARK: - Keys
 
-private extension ContextKeys {
-    var concurrentInt: ContextStorage<Int> { .init(defaultValue: 0) }
-    var concurrentString: ContextStorage<String> { .init(defaultValue: "initial", propagation: .environment) }
-    var environmentSet: ContextStorage<Set<Int>> { .init(defaultValue: [], propagation: .environment) }
+private extension LocalKeys {
+    var concurrentInt: LocalStorage<Int> { .init(defaultValue: 0) }
+}
+
+private extension EnvironmentKeys {
+    var concurrentString: EnvironmentStorage<String> { .init(defaultValue: "initial") }
+    var environmentSet: EnvironmentStorage<Set<Int>> { .init(defaultValue: []) }
 }
 
 private extension PreferenceKeys {
@@ -34,7 +37,7 @@ private struct MemoizeLeaf {
     // async performUpdate via BatchedCalls.drainLoop on a background thread.
     var isContained: Bool {
         node.memoize {
-            node.context.environmentSet.contains(id)
+            node.environment.environmentSet.contains(id)
         }
     }
 }
@@ -82,14 +85,14 @@ struct ConcurrencyTests {
             // Writer task: sets the key to incrementing integers.
             group.addTask {
                 for i in 0..<iterations {
-                    model.node.context.concurrentInt = i
+                    model.node.local.concurrentInt = i
                 }
             }
             // Reader task: reads the key concurrently with the writer.
             group.addTask {
                 var lastSeen = 0
                 for _ in 0..<iterations {
-                    let v = model.node.context.concurrentInt
+                    let v = model.node.local.concurrentInt
                     // Value must always be a non-negative integer — never garbage.
                     #expect(v >= 0)
                     lastSeen = v
@@ -112,13 +115,13 @@ struct ConcurrencyTests {
             // Writer writes on the parent.
             group.addTask {
                 for i in 0..<iterations {
-                    parent.node.context.concurrentString = "value-\(i)"
+                    parent.node.environment.concurrentString = "value-\(i)"
                 }
             }
             // Reader reads the inherited value from the child (walks up via environmentValue).
             group.addTask {
                 for _ in 0..<iterations {
-                    let v = parent.child.node.context.concurrentString
+                    let v = parent.child.node.environment.concurrentString
                     // Must always start with "value-" or be the default "initial".
                     #expect(v == "initial" || v.hasPrefix("value-"))
                 }
@@ -140,14 +143,14 @@ struct ConcurrencyTests {
                 let writerID = w
                 group.addTask {
                     for i in 0..<iterationsPerWriter {
-                        model.node.context.concurrentInt = writerID * iterationsPerWriter + i
+                        model.node.local.concurrentInt = writerID * iterationsPerWriter + i
                     }
                 }
             }
         }
 
         // After all writers finish, the value must be in the valid range.
-        let final = model.node.context.concurrentInt
+        let final = model.node.local.concurrentInt
         #expect(final >= 0 && final < writerCount * iterationsPerWriter)
     }
 
@@ -164,20 +167,20 @@ struct ConcurrencyTests {
             // Writer alternates between setting and clearing the environment value on the root.
             group.addTask {
                 for i in 0..<iterations {
-                    root.node.context.concurrentString = "env-\(i)"
+                    root.node.environment.concurrentString = "env-\(i)"
                 }
             }
             // Reader reads from the deepest descendant, forcing a full ancestor walk.
             group.addTask {
                 for _ in 0..<iterations {
-                    let v = root.parent.child.node.context.concurrentString
+                    let v = root.parent.child.node.environment.concurrentString
                     #expect(v == "initial" || v.hasPrefix("env-"))
                 }
             }
             // Second reader on the intermediate parent.
             group.addTask {
                 for _ in 0..<iterations {
-                    let v = root.parent.node.context.concurrentString
+                    let v = root.parent.node.environment.concurrentString
                     #expect(v == "initial" || v.hasPrefix("env-"))
                 }
             }
@@ -231,13 +234,13 @@ struct ConcurrencyTests {
             // Concurrently writes contextStorage.
             group.addTask {
                 for i in 0..<iterations {
-                    model.node.context.concurrentInt = i
+                    model.node.local.concurrentInt = i
                 }
             }
             // Concurrently reads contextStorage.
             group.addTask {
                 for _ in 0..<iterations {
-                    let v = model.node.context.concurrentInt
+                    let v = model.node.local.concurrentInt
                     #expect(v >= 0)
                 }
             }
@@ -282,7 +285,7 @@ struct ConcurrencyTests {
             // a backgroundCall(performUpdate) on the drain loop.
             group.addTask {
                 for i in 0..<iterations {
-                    container.node.context.environmentSet = Set([i % 3])
+                    container.node.environment.environmentSet = Set([i % 3])
                 }
             }
 
@@ -297,7 +300,7 @@ struct ConcurrencyTests {
                 }
                 // Keep writing to ensure the drain loop flushes during removal.
                 for i in 0..<iterations {
-                    container.node.context.environmentSet = Set([(iterations + i) % 3])
+                    container.node.environment.environmentSet = Set([(iterations + i) % 3])
                 }
             }
         }
@@ -327,16 +330,16 @@ struct ConcurrencyTests {
             group.addTask {
                 for i in 0..<iterations {
                     if i % 2 == 0 {
-                        root.node.context.concurrentString = "set-\(i)"
+                        root.node.environment.concurrentString = "set-\(i)"
                     } else {
-                        root.node.removeContext(\.concurrentString)
+                        root.node.removeEnvironment(\.concurrentString)
                     }
                 }
             }
             // Reads during the set/remove cycle.
             group.addTask {
                 for _ in 0..<iterations {
-                    let v = root.parent.child.node.context.concurrentString
+                    let v = root.parent.child.node.environment.concurrentString
                     #expect(v == "initial" || v.hasPrefix("set-"))
                 }
             }

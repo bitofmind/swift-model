@@ -148,6 +148,10 @@ extension TestProbe {
         }
     }
 
+    func resetValues() {
+        lock { _values.removeAll() }
+    }
+
     var values: [Any] { lock(_values) }
 }
 

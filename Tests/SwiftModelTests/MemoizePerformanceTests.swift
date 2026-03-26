@@ -148,8 +148,9 @@ struct MemoizePerformanceTests {
         
         // Test WITHOUT coalescing
         for _ in 0..<iterations {
-            let model = BenchmarkModel(itemCount: 100)
-                .withAnchor(options: [.disableMemoizeCoalescing])
+            let model = withModelOptions([.disableMemoizeCoalescing]) {
+                BenchmarkModel(itemCount: 100).withAnchor()
+            }
             
             _ = model.sorted  // Initial setup
             let initialComputes = model.sortCallCount
@@ -259,13 +260,13 @@ struct MemoizePerformanceTests {
         
         for config in configurations {
             for _ in 0..<iterations {
-                let model = BenchmarkModel(itemCount: mutationCount).withAnchor(options: config.options)
-                
+                let model = withModelOptions(config.options) { BenchmarkModel(itemCount: mutationCount).withAnchor() }
+
                 _ = model.sorted  // Initial setup
                 let initialComputes = model.sortCallCount
-                
+
                 let start = ContinuousClock.now
-                
+
                 if config.useTransaction {
                     model.transaction {
                         for i in 0..<model.items.count {
@@ -432,8 +433,8 @@ struct MemoizePerformanceTests {
             var durations: [Double] = []
             
             for _ in 0..<iterations {
-                let model = BenchmarkModel(itemCount: mutationCount).withAnchor(options: config.options)
-                
+                let model = withModelOptions(config.options) { BenchmarkModel(itemCount: mutationCount).withAnchor() }
+
                 // Initial setup - this establishes observation
                 _ = model.sorted
                 let initialComputes = model.sortCallCount

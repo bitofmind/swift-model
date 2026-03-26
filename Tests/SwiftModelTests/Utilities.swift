@@ -188,6 +188,10 @@ enum ObservationPath: String, CaseIterable {
             return [.disableObservationRegistrar]
         }
     }
+
+    func withOptions<T>(_ body: () throws -> T) rethrows -> T {
+        try ModelOption.$current.withValue(options, operation: body)
+    }
 }
 
 /// Test parameter for validating both observation mechanisms (AccessCollector vs withObservationTracking)
@@ -215,4 +219,12 @@ enum UpdatePath: String, CaseIterable {
             return []
         }
     }
+
+    func withOptions<T>(_ body: () throws -> T) rethrows -> T {
+        try ModelOption.$current.withValue(options, operation: body)
+    }
+}
+
+func withModelOptions<T>(_ options: ModelOption, _ body: () throws -> T) rethrows -> T {
+    try ModelOption.$current.withValue(options, operation: body)
 }

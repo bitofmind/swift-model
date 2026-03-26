@@ -7,15 +7,17 @@ import SwiftModel
 
 // MARK: - Keys
 
-private extension ContextKeys {
-    /// A simple boolean environment flag (propagates up/down the hierarchy).
-    var isDarkMode: ContextStorage<Bool> { .init(defaultValue: false, propagation: .environment) }
+private extension EnvironmentKeys {
+    /// A simple boolean environment flag (propagates down the hierarchy).
+    var isDarkMode: EnvironmentStorage<Bool> { .init(defaultValue: false) }
 
     /// A string environment value.
-    var theme: ContextStorage<String> { .init(defaultValue: "light", propagation: .environment) }
+    var theme: EnvironmentStorage<String> { .init(defaultValue: "light") }
+}
 
-    /// A local (non-environment) flag for comparison.
-    var localFlag: ContextStorage<Bool> { .init(defaultValue: false) }
+private extension LocalKeys {
+    /// A local (node-private) flag.
+    var localFlag: LocalStorage<Bool> { .init(defaultValue: false) }
 }
 
 // MARK: - Models
@@ -76,71 +78,71 @@ struct MetadataEnvironmentTests {
 
     @Test func localFlagDefaultValue() {
         let model = ChildModel().withAnchor()
-        #expect(model.node.context.localFlag == false)
+        #expect(model.node.local.localFlag == false)
     }
 
     @Test func localFlagReadWrite() {
         let model = ChildModel().withAnchor()
-        model.node.context.localFlag = true
-        #expect(model.node.context.localFlag == true)
+        model.node.local.localFlag = true
+        #expect(model.node.local.localFlag == true)
     }
 
     @Test func localFlagIsolatedToContext() {
         let parent = ParentModel().withAnchor()
-        parent.node.context.localFlag = true
+        parent.node.local.localFlag = true
 
         // child should NOT see parent's local flag
-        #expect(parent.child.node.context.localFlag == false)
+        #expect(parent.child.node.local.localFlag == false)
     }
 
     // MARK: - Environment read inheritance
 
     @Test func environmentDefaultValue() {
         let model = ChildModel().withAnchor()
-        #expect(model.node.context.isDarkMode == false)
+        #expect(model.node.environment.isDarkMode == false)
     }
 
     @Test func environmentReadFromSelf() {
         let model = ChildModel().withAnchor()
-        model.node.context.isDarkMode = true
-        #expect(model.node.context.isDarkMode == true)
+        model.node.environment.isDarkMode = true
+        #expect(model.node.environment.isDarkMode == true)
     }
 
     @Test func environmentInheritedFromParent() {
         let parent = ParentModel().withAnchor()
-        parent.node.context.isDarkMode = true
+        parent.node.environment.isDarkMode = true
 
         // Child should inherit parent's value
-        #expect(parent.child.node.context.isDarkMode == true)
+        #expect(parent.child.node.environment.isDarkMode == true)
     }
 
     @Test func environmentInheritedFromGrandparent() {
         let root = GrandparentModel().withAnchor()
-        root.node.context.isDarkMode = true
+        root.node.environment.isDarkMode = true
 
         // Grandchild should inherit grandparent's value
-        #expect(root.parent.child.node.context.isDarkMode == true)
+        #expect(root.parent.child.node.environment.isDarkMode == true)
     }
 
     @Test func environmentOverrideAtChild() {
         let root = GrandparentModel().withAnchor()
-        root.node.context.isDarkMode = true
+        root.node.environment.isDarkMode = true
 
         // Override at intermediate level
-        root.parent.node.context.isDarkMode = false
-        #expect(root.parent.node.context.isDarkMode == false)
-        #expect(root.parent.child.node.context.isDarkMode == false)
+        root.parent.node.environment.isDarkMode = false
+        #expect(root.parent.node.environment.isDarkMode == false)
+        #expect(root.parent.child.node.environment.isDarkMode == false)
 
         // Root still has true
-        #expect(root.node.context.isDarkMode == true)
+        #expect(root.node.environment.isDarkMode == true)
     }
 
     @Test func environmentDefaultWhenNoneSet() {
         let root = GrandparentModel().withAnchor()
         // No one has set isDarkMode — should return defaultValue
-        #expect(root.node.context.isDarkMode == false)
-        #expect(root.parent.node.context.isDarkMode == false)
-        #expect(root.parent.child.node.context.isDarkMode == false)
+        #expect(root.node.environment.isDarkMode == false)
+        #expect(root.parent.node.environment.isDarkMode == false)
+        #expect(root.parent.child.node.environment.isDarkMode == false)
     }
 
     // MARK: - Environment write notifies descendants
@@ -148,10 +150,10 @@ struct MetadataEnvironmentTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func environmentWriteNotifiesDescendant(path: ObservationPath) async throws {
-        let root = GrandparentModel().withAnchor(options: path.options)
+        let root = path.withOptions { GrandparentModel().withAnchor() }
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
-            root.parent.child.node.context.isDarkMode
+            root.parent.child.node.environment.isDarkMode
         }
 
         let values = LockIsolated<[Bool]>([])
@@ -167,12 +169,12 @@ struct MetadataEnvironmentTests {
         #expect(values.value.first == false)
 
         // Write on root — should propagate down to child
-        root.node.context.isDarkMode = true
+        root.node.environment.isDarkMode = true
         try await waitUntil(values.value.contains(true), timeout: 3_000_000_000)
         #expect(values.value.contains(true), "[\(path)] Writing on root should notify descendant observer, got \(values.value)")
 
         // Write on root again — should propagate down to child
-        root.node.context.isDarkMode = false
+        root.node.environment.isDarkMode = false
         try await waitUntil(values.value.filter({ !$0 }).count >= 2, timeout: 3_000_000_000)
         #expect(values.value.filter({ !$0 }).count >= 2, "[\(path)] Second write on root should notify descendant again, got \(values.value)")
     }
@@ -180,10 +182,10 @@ struct MetadataEnvironmentTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func environmentWriteOnSelfNotifiesSelf(path: ObservationPath) async throws {
-        let model = ChildModel().withAnchor(options: path.options)
+        let model = path.withOptions { ChildModel().withAnchor() }
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
-            model.node.context.isDarkMode
+            model.node.environment.isDarkMode
         }
 
         let values = LockIsolated<[Bool]>([])
@@ -199,7 +201,7 @@ struct MetadataEnvironmentTests {
         #expect(values.value.first == false)
 
         // Write on self — observer should be notified
-        model.node.context.isDarkMode = true
+        model.node.environment.isDarkMode = true
         try await waitUntil(values.value.contains(true), timeout: 3_000_000_000)
         #expect(values.value.contains(true), "[\(path)] Writing on self should notify self observer, got \(values.value)")
     }
@@ -207,11 +209,11 @@ struct MetadataEnvironmentTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func environmentWriteOnParentNotifiesChildObserver(path: ObservationPath) async throws {
-        let parent = ParentModel().withAnchor(options: path.options)
+        let parent = path.withOptions { ParentModel().withAnchor() }
 
         // Set up observation on child
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
-            parent.child.node.context.theme
+            parent.child.node.environment.theme
         }
 
         let values = LockIsolated<[String]>([])
@@ -227,12 +229,12 @@ struct MetadataEnvironmentTests {
         #expect(values.value.first == "light")
 
         // Write on parent — child should be notified
-        parent.node.context.theme = "dark"
+        parent.node.environment.theme = "dark"
         try await waitUntil(values.value.contains("dark"), timeout: 3_000_000_000)
         #expect(values.value.contains("dark"), "[\(path)] Writing on parent should notify child observer, got \(values.value)")
 
         // Write on parent again
-        parent.node.context.theme = "high-contrast"
+        parent.node.environment.theme = "high-contrast"
         try await waitUntil(values.value.contains("high-contrast"), timeout: 3_000_000_000)
         #expect(values.value.contains("high-contrast"), "[\(path)] Second write on parent should notify child observer again, got \(values.value)")
     }
@@ -241,49 +243,49 @@ struct MetadataEnvironmentTests {
 
     @Test func environmentWriteOnChildDoesNotAffectParent() {
         let parent = ParentModel().withAnchor()
-        parent.child.node.context.isDarkMode = true
+        parent.child.node.environment.isDarkMode = true
 
         // Parent has NOT set isDarkMode, so it returns defaultValue
-        #expect(parent.node.context.isDarkMode == false)
+        #expect(parent.node.environment.isDarkMode == false)
         // Child returns its own stored value
-        #expect(parent.child.node.context.isDarkMode == true)
+        #expect(parent.child.node.environment.isDarkMode == true)
     }
 
     // MARK: - Local does not propagate
 
     @Test func localFlagNotVisibleInChildren() {
         let parent = ParentModel().withAnchor()
-        parent.node.context.localFlag = true
+        parent.node.local.localFlag = true
 
-        #expect(parent.node.context.localFlag == true)
-        #expect(parent.child.node.context.localFlag == false)
+        #expect(parent.node.local.localFlag == true)
+        #expect(parent.child.node.local.localFlag == false)
     }
 
     // MARK: - Intermediate override
 
     @Test func intermediateOverrideRead() {
         let root = GrandparentModel().withAnchor()
-        root.node.context.isDarkMode = true
+        root.node.environment.isDarkMode = true
 
         // No intermediate override: grandchild sees grandparent's value
-        #expect(root.parent.child.node.context.isDarkMode == true)
+        #expect(root.parent.child.node.environment.isDarkMode == true)
 
         // Set override at parent
-        root.parent.node.context.isDarkMode = false
-        #expect(root.parent.child.node.context.isDarkMode == false)
+        root.parent.node.environment.isDarkMode = false
+        #expect(root.parent.child.node.environment.isDarkMode == false)
 
         // Root value unchanged
-        #expect(root.node.context.isDarkMode == true)
+        #expect(root.node.environment.isDarkMode == true)
     }
 
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func intermediateOverrideObservation(path: ObservationPath) async throws {
-        let root = GrandparentModel().withAnchor(options: path.options)
+        let root = path.withOptions { GrandparentModel().withAnchor() }
 
         // Observer on grandchild
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
-            root.parent.child.node.context.isDarkMode
+            root.parent.child.node.environment.isDarkMode
         }
         let values = LockIsolated<[Bool]>([])
         let task = Task {
@@ -295,23 +297,23 @@ struct MetadataEnvironmentTests {
         #expect(values.value.last == false)
 
         // Grandparent writes — grandchild observer should fire (no intermediate override)
-        root.node.context.isDarkMode = true
+        root.node.environment.isDarkMode = true
         try await waitUntil(values.value.contains(true), timeout: 3_000_000_000)
         #expect(values.value.contains(true), "[\(path)] Grandparent write should notify grandchild, got \(values.value)")
 
         // Intermediate parent now sets an override (false) — grandchild should see the override
-        root.parent.node.context.isDarkMode = false
+        root.parent.node.environment.isDarkMode = false
         try await waitUntil(values.value.filter({ !$0 }).count >= 2, timeout: 3_000_000_000)
         #expect(values.value.filter({ !$0 }).count >= 2, "[\(path)] Intermediate override should notify grandchild, got \(values.value)")
 
         // Grandparent writes again — grandchild should NOT change (intermediate still overrides)
         let countBefore = values.value.count
-        root.node.context.isDarkMode = false
+        root.node.environment.isDarkMode = false
         // Give a moment; grandchild should still read false from intermediate override
         try await Task.sleep(nanoseconds: 100_000_000)
         // The effective value is still false, so even if a notification fired the read value
         // is unchanged. We check the effective value is still false.
-        #expect(root.parent.child.node.context.isDarkMode == false)
+        #expect(root.parent.child.node.environment.isDarkMode == false)
         _ = countBefore  // suppresses unused warning
     }
 
@@ -319,44 +321,44 @@ struct MetadataEnvironmentTests {
 
     @Test func removeEnvironmentValueFallsBackToAncestor() {
         let root = GrandparentModel().withAnchor()
-        root.node.context.isDarkMode = true
-        root.parent.node.context.isDarkMode = false
+        root.node.environment.isDarkMode = true
+        root.parent.node.environment.isDarkMode = false
 
         // Parent override shadows grandparent
-        #expect(root.parent.node.context.isDarkMode == false)
+        #expect(root.parent.node.environment.isDarkMode == false)
 
         // Remove the override at parent — should fall back to grandparent's value
-        root.parent.node.removeContext(\.isDarkMode)
-        #expect(root.parent.node.context.isDarkMode == true)
+        root.parent.node.removeEnvironment(\.isDarkMode)
+        #expect(root.parent.node.environment.isDarkMode == true)
 
         // Grandchild also falls back
-        #expect(root.parent.child.node.context.isDarkMode == true)
+        #expect(root.parent.child.node.environment.isDarkMode == true)
     }
 
     @Test func removeLocalValueFallsBackToDefault() {
         let model = ChildModel().withAnchor()
-        model.node.context.isDarkMode = true
-        #expect(model.node.context.isDarkMode == true)
+        model.node.environment.isDarkMode = true
+        #expect(model.node.environment.isDarkMode == true)
 
-        model.node.removeContext(\.isDarkMode)
-        #expect(model.node.context.isDarkMode == false)
+        model.node.removeEnvironment(\.isDarkMode)
+        #expect(model.node.environment.isDarkMode == false)
     }
 
     @Test func removeOnNodeWithNoValueIsNoop() {
         let model = ChildModel().withAnchor()
         // Removing a never-set key should not crash
-        model.node.removeContext(\.isDarkMode)
-        #expect(model.node.context.isDarkMode == false)
+        model.node.removeEnvironment(\.isDarkMode)
+        #expect(model.node.environment.isDarkMode == false)
     }
 
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func removeNotifiesObserverOnSameNode(path: ObservationPath) async throws {
-        let model = ChildModel().withAnchor(options: path.options)
-        model.node.context.isDarkMode = true
+        let model = path.withOptions { ChildModel().withAnchor() }
+        model.node.environment.isDarkMode = true
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
-            model.node.context.isDarkMode
+            model.node.environment.isDarkMode
         }
         let values = LockIsolated<[Bool]>([])
         let task = Task {
@@ -368,7 +370,7 @@ struct MetadataEnvironmentTests {
         #expect(values.value.last == true)
 
         // Remove the value — observer should see false (default)
-        model.node.removeContext(\.isDarkMode)
+        model.node.removeEnvironment(\.isDarkMode)
         try await waitUntil(values.value.contains(false), timeout: 3_000_000_000)
         #expect(values.value.contains(false), "[\(path)] Remove should notify observer, got \(values.value)")
     }
@@ -376,13 +378,13 @@ struct MetadataEnvironmentTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func removeIntermediateOverrideNotifiesDescendantObserver(path: ObservationPath) async throws {
-        let root = GrandparentModel().withAnchor(options: path.options)
-        root.node.context.isDarkMode = true
-        root.parent.node.context.isDarkMode = false  // intermediate override
+        let root = path.withOptions { GrandparentModel().withAnchor() }
+        root.node.environment.isDarkMode = true
+        root.parent.node.environment.isDarkMode = false  // intermediate override
 
         // Observer on grandchild — currently sees false (intermediate override)
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
-            root.parent.child.node.context.isDarkMode
+            root.parent.child.node.environment.isDarkMode
         }
         let values = LockIsolated<[Bool]>([])
         let task = Task {
@@ -394,7 +396,7 @@ struct MetadataEnvironmentTests {
         #expect(values.value.last == false)
 
         // Remove intermediate override — grandchild should now see grandparent's true
-        root.parent.node.removeContext(\.isDarkMode)
+        root.parent.node.removeEnvironment(\.isDarkMode)
         try await waitUntil(values.value.contains(true), timeout: 3_000_000_000)
         #expect(values.value.contains(true), "[\(path)] Removing intermediate override should notify descendant observer, got \(values.value)")
     }
@@ -406,40 +408,40 @@ struct MetadataEnvironmentTests {
     // - didModifyStorage fires the typed path so TestAccess records the ValueUpdate
     // - Exhaustion catches unasserted metadata writes
     //
-    // The user-facing callsite is the natural `model.node.context.myKey` form.
+    // The user-facing callsite is `model.node.local.myKey` / `model.node.environment.myKey`.
 
     @Test func testerAssertLocalMetadata() async {
         let model = ChildModel().withAnchor()
-        model.node.context.localFlag = true
-        await expect(model.node.context.localFlag == true)
+        model.node.local.localFlag = true
+        await expect(model.node.local.localFlag == true)
     }
 
     @Test func testerAssertEnvironmentMetadata() async {
         let model = ParentModel().withAnchor()
-        model.node.context.isDarkMode = true
-        await expect(model.node.context.isDarkMode == true)
+        model.node.environment.isDarkMode = true
+        await expect(model.node.environment.isDarkMode == true)
     }
 
     @Test func testerAssertEnvironmentMetadataInheritedByChild() async {
         let model = ParentModel().withAnchor()
         // Setting on parent — child inherits via environment propagation.
-        model.node.context.isDarkMode = true
-        await expect(model.node.context.isDarkMode == true && model.child.node.context.isDarkMode == true)
+        model.node.environment.isDarkMode = true
+        await expect(model.node.environment.isDarkMode == true && model.child.node.environment.isDarkMode == true)
     }
 
     @Test(.modelTesting(exhaustivity: .off)) func testerAssertMetadataExhaustion() async {
         let model = ChildModel().withAnchor()
         // Write without asserting — with exhaustion off this should not fail.
-        model.node.context.localFlag = true
-        await expect(model.node.context.localFlag == true)
+        model.node.local.localFlag = true
+        await expect(model.node.local.localFlag == true)
     }
 
     @Test func testerAssertRemoveMetadataNotifiesAssert() async {
         let model = ChildModel().withAnchor()
-        model.node.context.localFlag = true
-        await expect(model.node.context.localFlag == true)
-        model.node.removeContext(\.localFlag)
-        await expect(model.node.context.localFlag == false)
+        model.node.local.localFlag = true
+        await expect(model.node.local.localFlag == true)
+        model.node.removeLocal(\.localFlag)
+        await expect(model.node.local.localFlag == false)
     }
 
     // MARK: - .context exhaustivity option
@@ -449,7 +451,7 @@ struct MetadataEnvironmentTests {
         let model = ChildModel().withAnchor()
 
         // Write metadata without asserting it.
-        model.node.context.localFlag = true
+        model.node.local.localFlag = true
 
         // Write a regular property and assert only it — exhaustion check runs but should
         // NOT complain about the unasserted metadata write because .metadata is not included.
@@ -457,11 +459,11 @@ struct MetadataEnvironmentTests {
         await expect(model.name == "updated")
     }
 
-    @Test(.modelTesting(exhaustivity: .context)) func metadataExhaustivityCatchesUnassertedMetadataWrites() async {
+    @Test(.modelTesting(exhaustivity: .local)) func metadataExhaustivityCatchesUnassertedMetadataWrites() async {
         // With .metadata in exhaustivity, unasserted metadata writes SHOULD be caught.
         let model = ChildModel().withAnchor()
 
-        model.node.context.localFlag = true
+        model.node.local.localFlag = true
         // Assert something unrelated so the exhaustion check runs with the metadata write pending.
         // This should produce a known issue: "Context not exhausted".
         await withKnownIssue {
@@ -469,7 +471,7 @@ struct MetadataEnvironmentTests {
         }
     }
 
-    @Test(.modelTesting(exhaustivity: .context)) func stateExhaustivityDoesNotCoverMetadata() async {
+    @Test(.modelTesting(exhaustivity: .local)) func stateExhaustivityDoesNotCoverMetadata() async {
         // With only .metadata exhaustivity (no .state), unasserted state changes should NOT fail.
         let model = ChildModel().withAnchor()
 
@@ -478,7 +480,7 @@ struct MetadataEnvironmentTests {
 
         // Assert metadata (unchanged from default) — exhaustion runs but should NOT
         // complain about the unasserted state change because .state is not included.
-        await expect(model.node.context.localFlag == false)
+        await expect(model.node.local.localFlag == false)
     }
 
     // MARK: - Context storage exhaustivity via dependency models
@@ -487,15 +489,15 @@ struct MetadataEnvironmentTests {
         // Writing metadata on a dependency model should be tracked and assertable,
         // and should be caught by .metadata exhaustivity if not asserted.
         let model = ConsumerModel().withAnchor()
-        model.service.node.context.localFlag = true
-        await expect(model.service.node.context.localFlag == true)
+        model.service.node.local.localFlag = true
+        await expect(model.service.node.local.localFlag == true)
     }
 
-    @Test(.modelTesting(exhaustivity: .context)) func unassertedMetadataOnDependencyModelIsCaught() async {
+    @Test(.modelTesting(exhaustivity: .local)) func unassertedMetadataOnDependencyModelIsCaught() async {
         // With .metadata exhaustivity, an unasserted metadata write on a dependency model
         // should be reported just like one on a regular child model.
         let model = ConsumerModel().withAnchor()
-        model.service.node.context.localFlag = true
+        model.service.node.local.localFlag = true
         await withKnownIssue {
             await expect(model.service.status == "idle")
         }
@@ -505,7 +507,7 @@ struct MetadataEnvironmentTests {
         // With only .state exhaustivity, unasserted metadata on a dependency model
         // should NOT trigger a failure.
         let model = ConsumerModel().withAnchor()
-        model.service.node.context.localFlag = true
+        model.service.node.local.localFlag = true
         model.service.status = "running"
         await expect(model.service.status == "running")
     }
@@ -522,15 +524,15 @@ struct MetadataEnvironmentTests {
         // Write metadata on the dependency accessed via the child.
         // Assert it via the parent — both resolve to the same underlying context.
         let model = ParentConsumerModel().withAnchor()
-        model.child.service.node.context.localFlag = true
-        await expect(model.child.service.node.context.localFlag == true)
+        model.child.service.node.local.localFlag = true
+        await expect(model.child.service.node.local.localFlag == true)
     }
 
-    @Test(.modelTesting(exhaustivity: .context)) func sharedDependencyMetadataCaughtWhenUnasserted() async {
+    @Test(.modelTesting(exhaustivity: .local)) func sharedDependencyMetadataCaughtWhenUnasserted() async {
         // With .metadata exhaustivity, an unasserted write via either the parent or the
         // child accessor should be caught — both resolve to the same shared context.
         let model = ParentConsumerModel().withAnchor()
-        model.child.service.node.context.localFlag = true
+        model.child.service.node.local.localFlag = true
         await withKnownIssue {
             await expect(model.child.service.status == "idle")
         }
@@ -540,35 +542,35 @@ struct MetadataEnvironmentTests {
         // With only .state exhaustivity, unasserted metadata on a shared dependency
         // should NOT trigger a failure.
         let model = ParentConsumerModel().withAnchor()
-        model.child.service.node.context.localFlag = true
+        model.child.service.node.local.localFlag = true
         model.child.service.status = "running"
         await expect(model.child.service.status == "running")
     }
 
     // MARK: - Exhaustion failure message formatting
 
-    // Regression tests: unasserted context storage changes must name the key as
-    // "context.keyName" in the failure message, not "UNKNOWN".
+    // Regression tests: unasserted local storage changes must name the key as
+    // "local.keyName" in the failure message, not "UNKNOWN".
     // Verifies the #function capture in ContextStorage.init flows all the way to
-    // the "Context not exhausted" failure output.
+    // the "Local not exhausted" failure output.
 
-    @Test(.modelTesting(exhaustivity: .context)) func contextExhaustionMessageContainsKeyName() async {
+    @Test(.modelTesting(exhaustivity: .local)) func contextExhaustionMessageContainsKeyName() async {
         let model = ChildModel().withAnchor()
-        model.node.context.localFlag = true
+        model.node.local.localFlag = true
         await withKnownIssue {
             await expect(model.name == "child")
         } matching: { issue in
-            issue.comments.contains { $0.rawValue.contains("context.localFlag") }
+            issue.comments.contains { $0.rawValue.contains("local.localFlag") }
         }
     }
 
-    @Test(.modelTesting(exhaustivity: .context)) func contextExhaustionMessageOnDependencyModelContainsKeyName() async {
+    @Test(.modelTesting(exhaustivity: .local)) func contextExhaustionMessageOnDependencyModelContainsKeyName() async {
         let model = ConsumerModel().withAnchor()
-        model.service.node.context.localFlag = true
+        model.service.node.local.localFlag = true
         await withKnownIssue {
             await expect(model.service.status == "idle")
         } matching: { issue in
-            issue.comments.contains { $0.rawValue.contains("context.localFlag") }
+            issue.comments.contains { $0.rawValue.contains("local.localFlag") }
         }
     }
 

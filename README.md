@@ -171,6 +171,8 @@ import SwiftModel
 ``` 
 
 > **`@Model` structs behave like SwiftUI's `@State`** — the struct is a lightweight handle into a reference-counted backing store. Writing `count += 1` doesn't mutate the struct; it writes through a context pointer to the shared store. This is why setters are non-mutating: you can write `model.count = 5` on a `let model`, and why `[weak self]` is both unnecessary and rejected by the compiler.
+>
+> This hybrid — value-type surface, reference backing — is intentional. **Value semantics** make testing, diffing, and undo trivial: a point-in-time snapshot is just a cheap struct copy, no extra infrastructure needed. **Reference semantics** handle what value types can't: shared mutable state without wrapper hacks, and any-thread mutation without `@MainActor` hops.
 
 ### No Retain Cycles — a structural guarantee
 
@@ -642,7 +644,15 @@ A typical model will need to handle asynchronous work such as performing operati
 
 ### Tasks
 
-To start some asynchronous work that is tied to the life time of your model you call `node.task()`, similarly as you would do when adding a `task()` to your view. 
+To start some asynchronous work that is tied to the life time of your model you call `node.task()`, similarly as you would do when adding a `task()` to your view. You can optionally give a task a name — it appears in test exhaustion failure messages and in Instruments, making it easier to identify which task was still running:
+
+```swift
+node.task("fetchFact") {
+    // ...
+}
+```
+
+When no name is provided, one is synthesised automatically from the call site: `"factButtonTapped() @ CounterModel.swift:42"`.
 
 
 ```swift
@@ -675,9 +685,19 @@ node.task {
 }
 ```
 
-The `catch:` closure is called on the same context as the task body, so writing to model state is safe. If you omit `catch:`, unhandled errors are silently discarded — add the closure whenever the task can throw.
+The `catch:` closure is called on the same context as the task body, so writing to model state is safe.
 
-For operations that should not show UI errors (fire-and-forget analytics, prefetch, etc.), omitting `catch:` is intentional.
+For `node.task`, `catch:` is only required when the operation can throw — the non-throwing overload has no `catch:` parameter at all. If the task's body is non-throwing and you want to silently ignore errors from a specific branch, catch them inside the closure.
+
+For `node.forEach`, omitting `catch:` is safe for non-throwing sequences. If the sequence or operation can throw and you omit `catch:`, SwiftModel calls `reportIssue` at the `forEach` call site — this fails the test in test mode and triggers an `assertionFailure` in debug builds. Per-element errors with `abortIfOperationThrows: false` (the default) are always silently swallowed; only sequence-level throws and `abortIfOperationThrows: true` errors trigger the report.
+
+For fire-and-forget work where errors are genuinely ignorable (analytics pings, prefetch), pass an explicit empty `catch:` to document the intent:
+
+```swift
+node.forEach(prefetchStream) { item in
+    try await prefetch(item)
+} catch: { _ in }  // errors are intentionally ignored
+```
 
 ### Observing State Changes
 
@@ -1122,35 +1142,41 @@ When a new `EditorModel` is added to `editors`, the stream immediately includes 
 
 Context and preferences let models share data across the model hierarchy without explicit parent-to-child passing. **Context** flows downward (like SwiftUI's `@Environment`); **preferences** flow upward (like SwiftUI's `PreferenceKey`).
 
-Both systems are declared by extending a namespace type with computed properties, and accessed via `node.context` and `node.preference`.
+Both systems are declared by extending a namespace type with computed properties. Context storage comes in two flavours: **local** (node-private, not inherited) via `node.local`, and **environment** (top-down propagation, like SwiftUI's `@Environment`) via `node.environment`. Preferences are accessed via `node.preference`.
 
-### Context — top-down propagation
+### Local storage — node-private
 
-Declare a context key by extending `ContextKeys` with a computed property that returns a `ContextStorage` descriptor:
+For values that belong to a single node and should not be inherited by descendants, extend `LocalKeys` with a computed property returning a `LocalStorage` descriptor:
 
 ```swift
-extension ContextKeys {
-    var isFeatureEnabled: ContextStorage<Bool> {
+extension LocalKeys {
+    var isFeatureEnabled: LocalStorage<Bool> {
         .init(defaultValue: false)
     }
 }
 ```
 
-Read and write via `node.context`:
+Read and write via `node.local`:
 
 ```swift
-node.context.isFeatureEnabled = true      // write
-let enabled = node.context.isFeatureEnabled  // read
+node.local.isFeatureEnabled = true      // write
+let enabled = node.local.isFeatureEnabled  // read
 ```
 
-#### Environment propagation
-
-For values that should automatically flow to all descendants — like a colour scheme, a selection state, or an editing mode — use `.environment` propagation:
+To clear back to the default value:
 
 ```swift
-extension ContextKeys {
-    var colorScheme: ContextStorage<ColorScheme> {
-        .init(defaultValue: .light, propagation: .environment)
+node.removeLocal(\.isFeatureEnabled)
+```
+
+### Environment storage — top-down propagation
+
+For values that should automatically flow to all descendants — like a colour scheme, a selection state, or an editing mode — extend `EnvironmentKeys` with a computed property returning an `EnvironmentStorage` descriptor:
+
+```swift
+extension EnvironmentKeys {
+    var colorScheme: EnvironmentStorage<ColorScheme> {
+        .init(defaultValue: .light)
     }
 }
 ```
@@ -1158,20 +1184,20 @@ extension ContextKeys {
 A write on any ancestor is visible to all descendants. Reading walks up the hierarchy to the nearest ancestor that has set the value, returning `defaultValue` if none has:
 
 ```swift
-// Parent sets the theme for its entire subtree:
-parentModel.node.context.colorScheme = .dark
+// Parent sets the scheme for its entire subtree:
+parentModel.node.environment.colorScheme = .dark
 
 // Any descendant reads it (returns .dark — inherited from parent):
-let scheme = childModel.node.context.colorScheme
+let scheme = childModel.node.environment.colorScheme
 
 // A child can locally override it; only that child and its descendants see the override:
-childModel.node.context.colorScheme = .light
+childModel.node.environment.colorScheme = .light
 ```
 
 To remove a local override and go back to inheriting from the nearest ancestor:
 
 ```swift
-node.removeContext(\.colorScheme)
+node.removeEnvironment(\.colorScheme)
 ```
 
 ### Preferences — bottom-up aggregation
@@ -1214,19 +1240,19 @@ Both reads and writes participate in SwiftModel's observation system: wrapping a
 **Propagating a colour scheme / theme:**
 
 ```swift
-extension ContextKeys {
-    var theme: ContextStorage<AppTheme> {
-        .init(defaultValue: .default, propagation: .environment)
+extension EnvironmentKeys {
+    var theme: EnvironmentStorage<AppTheme> {
+        .init(defaultValue: .default)
     }
 }
 
 // Root model sets the theme once:
 func onActivate() {
-    node.context.theme = userPreferences.theme
+    node.environment.theme = userPreferences.theme
 }
 
 // Any descendant reads it:
-let colors = node.context.theme.colors
+let colors = node.environment.theme.colors
 ```
 
 **Aggregating unsaved-changes across a subtree:**
@@ -1524,7 +1550,8 @@ By default the trait enforces exhaustivity across six categories — any unasser
 - **`.events`** — every event sent via `node.send()` must be observed with `didSend(_:)`
 - **`.tasks`** — all async tasks must complete or be cancelled before the test ends
 - **`.probes`** — every installed `TestProbe` invocation must be consumed by `wasCalled`
-- **`.context`** — every `node.context` write must be consumed by an `expect` block
+- **`.local`** — every `node.local` write must be consumed by an `expect` block
+- **`.environment`** — every `node.environment` write must be consumed by an `expect` block
 - **`.preference`** — every `node.preference` write must be consumed by an `expect` block
 
 To focus a test on only some categories, pass an exhaustivity argument to `.modelTesting`:
@@ -1591,6 +1618,62 @@ For tests that only care about the end result and not intermediate timer ticks, 
     await expect(model.secondsElapsed > 0)
 }
 ```
+
+### Settling
+
+Models that perform async work during activation — loading data in `onActivate()`, subscribing to streams, or triggering `forEach` callbacks — may not be fully ready when `withAnchor()` returns. Use `settle()` as the first assertion to wait for the model to reach a stable state and reset the exhaustivity baseline:
+
+```swift
+@Model struct ItemListModel {
+    var items: [Item] = []
+
+    func onActivate() {
+        node.task {
+            items = try await fetchItems()
+        }
+    }
+}
+
+@Test(.modelTesting) func testItemSelection() async {
+    let model = ItemListModel().withAnchor()
+
+    // Wait for onActivate() task to finish and stabilize.
+    await settle { model.items.count > 0 }
+
+    // Baseline is now clean — only changes after this point are tracked.
+    model.selectItem(id: model.items[0].id)
+    await expect { model.selectedItem != nil }
+}
+```
+
+Settling performs three steps after the predicate passes:
+
+1. **Wait for activation tasks** — all tasks started from `onActivate()` must enter their body.
+2. **Idle cycle** — waits until one full scheduling round passes with no state changes, ensuring `forEach` callbacks and cascading effects have settled.
+3. **Reset baseline** — clears tracked state changes, events, and probe calls so exhaustivity only covers post-settling behaviour.
+
+If you don't need to verify the activation outcome, use `settle()` with no predicate to just let activation finish and reset the baseline:
+
+```swift
+@Test(.modelTesting) func testUserInteraction() async {
+    let model = ItemListModel().withAnchor()
+    await settle()
+
+    // Test user interactions without worrying about activation details.
+    model.refresh()
+    await expect { model.items.count > 0 }
+}
+```
+
+To selectively reset specific exhaustivity categories, pass a `resetting:` parameter. For example, to keep events from activation visible to subsequent assertions:
+
+```swift
+await settle(resetting: .full.removing(.events)) { model.activated == true }
+// Events sent during activation are still tracked and can be asserted.
+await expect { model.didSend(.loaded) }
+```
+
+Without `settle()`, the test would need to assert every intermediate state change caused by activation — brittle and unnecessary when you only care about the steady state.
 
 ### Refactor-Resilient Tests
 

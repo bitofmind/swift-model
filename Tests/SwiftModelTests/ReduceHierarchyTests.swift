@@ -223,7 +223,7 @@ struct ReduceHierarchyTests {
     @Test(arguments: [ObservationPath.accessCollector, .observationRegistrar])
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testPropertyAccessInSelfIsObserved(path: ObservationPath) async throws {
-        let model = LeafModel(value: 0).withAnchor(options: path.options)
+        let model = path.withOptions { LeafModel(value: 0).withAnchor() }
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
             model.node.mapHierarchy(for: .self) { ($0 as? LeafModel)?.value }.first ?? -1
@@ -248,7 +248,7 @@ struct ReduceHierarchyTests {
     @Test(arguments: [ObservationPath.accessCollector, .observationRegistrar])
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testPropertyAccessInChildIsObserved(path: ObservationPath) async throws {
-        let model = ParentModel().withAnchor(options: path.options)
+        let model = path.withOptions { ParentModel().withAnchor() }
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
             model.node.mapHierarchy(for: [.self, .descendants]) { ($0 as? LeafModel)?.value }.first ?? -1
@@ -291,7 +291,7 @@ struct ReduceHierarchyTests {
     @Test(arguments: [ObservationPath.accessCollector, .observationRegistrar])
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testPropertyAccessInAncestorIsObserved(path: ObservationPath) async throws {
-        let model = GrandparentModel().withAnchor(options: path.options)
+        let model = path.withOptions { GrandparentModel().withAnchor() }
         let leaf = model.parent.child
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
@@ -320,7 +320,7 @@ struct ReduceHierarchyTests {
     @Test(arguments: [ObservationPath.accessCollector, .observationRegistrar])
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testPropertyAccessInParentIsObserved(path: ObservationPath) async throws {
-        let model = GrandparentModel().withAnchor(options: path.options)
+        let model = path.withOptions { GrandparentModel().withAnchor() }
         let leaf = model.parent.child
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
@@ -356,8 +356,8 @@ struct ReduceHierarchyTests {
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testParentAdditionIsObserved(path: ObservationPath) async throws {
         // Start with the child unattached (no parent yet), then add it to a parent.
-        let parent = IndexedParent().withAnchor(options: path.options)
-        let orphan = IndexedChild(tag: 99).withAnchor(options: path.options)
+        let parent = path.withOptions { IndexedParent().withAnchor() }
+        let orphan = path.withOptions { IndexedChild(tag: 99).withAnchor() }
 
         // Observe the child's parent relationship via reduceHierarchy.
         // Initially there is no parent, so mapHierarchy returns [].
@@ -388,11 +388,11 @@ struct ReduceHierarchyTests {
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testIndexInParentIsObserved(path: ObservationPath) async throws {
         // The canonical real-world use case: a child computing its own index in its parent.
-        let parent = IndexedParent(children: [
+        let parent = path.withOptions { IndexedParent(children: [
             IndexedChild(tag: 0),
             IndexedChild(tag: 1),
             IndexedChild(tag: 2),
-        ]).withAnchor(options: path.options)
+        ]).withAnchor() }
 
         let middle = parent.children[1]
 
@@ -424,11 +424,11 @@ struct ReduceHierarchyTests {
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testCachedIndexInParentIsObserved(path: ObservationPath) async throws {
         // Same as testIndexInParentIsObserved but using the memoized variant.
-        let parent = IndexedParent(children: [
+        let parent = path.withOptions { IndexedParent(children: [
             IndexedChild(tag: 0),
             IndexedChild(tag: 1),
             IndexedChild(tag: 2),
-        ]).withAnchor(options: path.options)
+        ]).withAnchor() }
 
         let middle = parent.children[1]
 
@@ -462,7 +462,7 @@ struct ReduceHierarchyTests {
     @Test
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testWithObservationTrackingSeesChildProperty() async throws {
-        let model = ParentModel().withAnchor(options: []) // use ObservationRegistrar
+        let model = ParentModel().withAnchor() // use ObservationRegistrar
 
         let fired = LockIsolated(false)
 
@@ -484,7 +484,7 @@ struct ReduceHierarchyTests {
     @Test
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testWithObservationTrackingSeesAncestorProperty() async throws {
-        let model = GrandparentModel().withAnchor(options: []) // use ObservationRegistrar
+        let model = GrandparentModel().withAnchor() // use ObservationRegistrar
         let leaf = model.parent.child
 
         let fired = LockIsolated(false)
@@ -516,8 +516,8 @@ struct ReduceHierarchyTests {
     @Test(arguments: [ObservationPath.accessCollector, .observationRegistrar])
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testMemoizedAncestorTypeSearchReEvaluatesWhenAncestorAppears(path: ObservationPath) async throws {
-        let target = AncestorContainer().withAnchor(options: path.options)
-        let leaf = AncestorSearchLeaf().withAnchor(options: path.options)
+        let target = path.withOptions { AncestorContainer().withAnchor() }
+        let leaf = path.withOptions { AncestorSearchLeaf().withAnchor() }
 
         let observed = Observed(coalesceUpdates: path == .observationRegistrar) {
             leaf.memoizedNearestContainer != nil
@@ -549,8 +549,8 @@ struct ReduceHierarchyTests {
         // When the leaf is later removed from `target`, leafContainer remains its parent,
         // so `parents.isEmpty` stays false → `onRemoval` is NOT triggered → memoize
         // subscriptions survive → the async `performUpdate` can deliver the new nil value.
-        let leafContainer = AncestorSearchLeafContainer().withAnchor(options: path.options)
-        let target = AncestorContainer().withAnchor(options: path.options)
+        let leafContainer = path.withOptions { AncestorSearchLeafContainer().withAnchor() }
+        let target = path.withOptions { AncestorContainer().withAnchor() }
         leafContainer.leaves.append(AncestorSearchLeaf())
         let leaf = leafContainer.leaves[0]  // live reference; leafContainer is its structural parent
         target.leaves.append(leaf)          // leaf now has two parents: leafContainer + target

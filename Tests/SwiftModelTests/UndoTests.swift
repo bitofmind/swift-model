@@ -358,8 +358,10 @@ struct UndoObservationTests {
     @Test(arguments: UpdatePath.allCases)
     func undoNotifiesObserverOfDirectProperty(updatePath: UpdatePath) async throws {
         let stack = ModelUndoStack()
-        let model = MultiFieldModel().withAnchor(options: updatePath.options) {
-            $0.undoSystem.backend = stack
+        let model = updatePath.withOptions {
+            MultiFieldModel().withAnchor {
+                $0.undoSystem.backend = stack
+            }
         }
 
         model.count = 42
@@ -379,8 +381,10 @@ struct UndoObservationTests {
     @Test(arguments: UpdatePath.allCases)
     func redoNotifiesObserverOfDirectProperty(updatePath: UpdatePath) async throws {
         let stack = ModelUndoStack()
-        let model = MultiFieldModel().withAnchor(options: updatePath.options) {
-            $0.undoSystem.backend = stack
+        let model = updatePath.withOptions {
+            MultiFieldModel().withAnchor {
+                $0.undoSystem.backend = stack
+            }
         }
 
         model.count = 7
@@ -410,8 +414,10 @@ struct UndoObservationTests {
     func undoNotifiesObserverOfContainerItemProperty(updatePath: UpdatePath) async throws {
         let stack = ModelUndoStack()
         // Start with an item already in the model so the undo stack is clean from the start
-        let model = ContainerTrackedModel(items: [EquatableChild(value: 0)]).withAnchor(options: updatePath.options) {
-            $0.undoSystem.backend = stack
+        let model = updatePath.withOptions {
+            ContainerTrackedModel(items: [EquatableChild(value: 0)]).withAnchor {
+                $0.undoSystem.backend = stack
+            }
         }
 
         model.items[0].value = 99

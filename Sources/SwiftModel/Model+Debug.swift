@@ -758,8 +758,9 @@ func debugPropertyName<M: Model, T>(from model: M, path: KeyPath<M, T>) -> Strin
     // willAccessStorage and willAccessPreferenceValue while the typed-path willAccess is running.
     if let name = threadLocals.storageName, !name.isEmpty {
         switch threadLocals.modificationArea {
-        case .context:    return "context.\(name)"
-        case .preference: return "preference.\(name)"
+        case .local:       return "local.\(name)"
+        case .environment: return "environment.\(name)"
+        case .preference:  return "preference.\(name)"
         default: break
         }
     }

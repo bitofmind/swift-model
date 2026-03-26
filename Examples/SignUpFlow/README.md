@@ -37,25 +37,25 @@ func basicsNextTapped() {
 
 Because `SignUpData` is a `@Model`, all steps share identity — a change on one screen is immediately visible on all others, with no synchronisation.
 
-### Context — environment propagation for edit mode
+### Environment — propagation for edit mode
 
-When the user taps "Edit" from the summary screen, `SummaryFeature` sets `isEditing = true` on its *own* context node. Because the key uses `.environment` propagation, this value flows down to all descendants automatically — including the `PersonalInfoFeature` or `TopicsFeature` inside `destination` — without any constructor parameter:
+When the user taps "Edit" from the summary screen, `SummaryFeature` sets `isEditing = true` on its own environment. This value flows down to all descendants automatically — including the `PersonalInfoFeature` or `TopicsFeature` inside `destination` — without any constructor parameter:
 
 ```swift
-extension ContextKeys {
-    var isEditing: ContextStorage<Bool> {
-        .init(defaultValue: false, propagation: .environment)
+extension EnvironmentKeys {
+    var isEditing: EnvironmentStorage<Bool> {
+        .init(defaultValue: false)
     }
 }
 
 // SummaryFeature — sets on its own node; descendants inherit via environment
 func editPersonalInfoButtonTapped() {
-    node.context.isEditing = true
+    node.environment.isEditing = true
     destination = .personalInfo(PersonalInfoFeature(signUpData: signUpData))
 }
 
-// PersonalInfoFeature — reads from context; no constructor param needed
-var isEditing: Bool { node.context.isEditing }
+// PersonalInfoFeature — reads from environment; no constructor param needed
+var isEditing: Bool { node.environment.isEditing }
 ```
 
 Steps in the normal forward flow (children of `SignUpFeature`, not `SummaryFeature`) inherit `false` — the default — so no changes are needed there.
@@ -66,9 +66,9 @@ Steps in the normal forward flow (children of `SignUpFeature`, not `SummaryFeatu
 |-------|--------|---------------|
 | `SignUpFeature` | Root | Navigation path, shared `SignUpData` |
 | `BasicsFeature` | Step 1 | Email + password fields |
-| `PersonalInfoFeature` | Step 2 | Name fields; reads `isEditing` from context |
-| `TopicsFeature` | Step 3 | Topic selection with validation; reads `isEditing` from context |
-| `SummaryFeature` | Step 4 | Review all data; sets `isEditing` context, pushes edit destinations |
+| `PersonalInfoFeature` | Step 2 | Name fields; reads `isEditing` from environment |
+| `TopicsFeature` | Step 3 | Topic selection with validation; reads `isEditing` from environment |
+| `SummaryFeature` | Step 4 | Review all data; sets `isEditing` environment, pushes edit destinations |
 | `SignUpData` | — | Shared mutable state (email, name, topics) |
 
 See also [SignUpFlowUsingDependency](../SignUpFlowUsingDependency) for the same app using `@ModelDependency` instead of constructor injection for `SignUpData`.

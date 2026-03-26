@@ -39,16 +39,16 @@ public enum StoragePropagation: Sendable {
 /// }
 /// ```
 ///
-/// ## Accessing via `node.context`
+/// ## Accessing via `node.local` / `node.environment`
 ///
 /// ```swift
 /// // Read
-/// let enabled = node.context.isFeatureEnabled
-/// let current = node.context.theme   // walks up to nearest ancestor that set it
+/// let enabled = node.local.isFeatureEnabled
+/// let current = node.environment.theme   // walks up to nearest ancestor that set it
 ///
 /// // Write
-/// node.context.isFeatureEnabled = true
-/// node.context.theme = .dark         // stores here, notifies all descendants
+/// node.local.isFeatureEnabled = true
+/// node.environment.theme = .dark         // stores here, notifies all descendants
 /// ```
 ///
 /// ## Propagation modes
@@ -247,49 +247,285 @@ extension ContextStorage where Value: Equatable {
     }
 }
 
-// MARK: - ContextKeys
+// MARK: - LocalStorage
 
-/// A namespace for declaring named context storage keys as computed properties.
+/// A typed key + default value for node-local storage.
 ///
-/// Extend `ContextKeys` with computed properties that return `ContextStorage<Value>` descriptors.
-/// SwiftModel uses the source location of each property declaration as a unique key automatically,
-/// so no separate enum or string identifier is required.
+/// Declare one as a computed property on `LocalKeys`. The source location captured at `init`
+/// time serves as the unique dictionary key — no separate enum or identifier is needed.
 ///
 /// ```swift
-/// extension ContextKeys {
-///     var isFeatureEnabled: ContextStorage<Bool> {
+/// extension LocalKeys {
+///     var isEditing: LocalStorage<Bool> {
 ///         .init(defaultValue: false)
-///     }
-///     var theme: ContextStorage<ColorScheme> {
-///         .init(defaultValue: .light, propagation: .environment)
 ///     }
 /// }
 /// ```
 ///
-/// Access values via `node.context`:
+/// Access values via `node.local`:
 ///
 /// ```swift
-/// node.context.isFeatureEnabled        // read
-/// node.context.isFeatureEnabled = true // write
+/// node.local.isEditing = true
+/// let editing = node.local.isEditing
 /// ```
+public struct LocalStorage<Value: Sendable>: Hashable, Sendable {
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.storage == rhs.storage }
+    public func hash(into hasher: inout Hasher) { hasher.combine(storage) }
+    let storage: ContextStorage<Value>
+
+    /// Creates a local storage descriptor using the call-site source location as the unique key.
+    public init(
+        defaultValue: Value,
+        function: StaticString = #function,
+        fileID: StaticString = #fileID,
+        line: UInt = #line,
+        column: UInt = #column
+    ) {
+        storage = ContextStorage(
+            defaultValue: defaultValue,
+            propagation: .local,
+            function: function,
+            fileID: fileID,
+            line: line,
+            column: column
+        )
+    }
+}
+
+extension LocalStorage where Value: Equatable {
+    /// Creates a local storage descriptor for an `Equatable` value.
+    ///
+    /// Writes that do not change the stored value are suppressed — no observation notifications fired.
+    public init(
+        defaultValue: Value,
+        function: StaticString = #function,
+        fileID: StaticString = #fileID,
+        line: UInt = #line,
+        column: UInt = #column
+    ) {
+        storage = ContextStorage(
+            defaultValue: defaultValue,
+            propagation: .local,
+            function: function,
+            fileID: fileID,
+            line: line,
+            column: column
+        )
+    }
+}
+
+// MARK: - EnvironmentStorage
+
+/// A typed key + default value for top-down propagating storage.
+///
+/// Declare one as a computed property on `EnvironmentKeys`. A value written on any ancestor
+/// is visible to all its descendants. Reading walks up to the nearest ancestor that has set the
+/// value, returning `defaultValue` if none has.
+///
+/// ```swift
+/// extension EnvironmentKeys {
+///     var theme: EnvironmentStorage<ColorScheme> {
+///         .init(defaultValue: .light)
+///     }
+/// }
+/// ```
+///
+/// Access values via `node.environment`:
+///
+/// ```swift
+/// parentNode.environment.theme = .dark        // store on parent
+/// let current = childNode.environment.theme   // .dark — inherited from parent
+/// childNode.environment.theme = .light        // override on child
+/// ```
+public struct EnvironmentStorage<Value: Sendable>: Hashable, Sendable {
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.storage == rhs.storage }
+    public func hash(into hasher: inout Hasher) { hasher.combine(storage) }
+    let storage: ContextStorage<Value>
+
+    /// Creates an environment storage descriptor using the call-site source location as the unique key.
+    public init(
+        defaultValue: Value,
+        function: StaticString = #function,
+        fileID: StaticString = #fileID,
+        line: UInt = #line,
+        column: UInt = #column
+    ) {
+        storage = ContextStorage(
+            defaultValue: defaultValue,
+            propagation: .environment,
+            function: function,
+            fileID: fileID,
+            line: line,
+            column: column
+        )
+    }
+}
+
+extension EnvironmentStorage where Value: Equatable {
+    /// Creates an environment storage descriptor for an `Equatable` value.
+    ///
+    /// Writes that do not change the stored value are suppressed — no observation notifications fired.
+    public init(
+        defaultValue: Value,
+        function: StaticString = #function,
+        fileID: StaticString = #fileID,
+        line: UInt = #line,
+        column: UInt = #column
+    ) {
+        storage = ContextStorage(
+            defaultValue: defaultValue,
+            propagation: .environment,
+            function: function,
+            fileID: fileID,
+            line: line,
+            column: column
+        )
+    }
+}
+
+// MARK: - LocalKeys
+
+/// A namespace for declaring named local storage keys as computed properties.
+///
+/// Extend `LocalKeys` with computed properties that return `LocalStorage<Value>` descriptors.
+/// SwiftModel uses the source location of each property as a unique key automatically.
+///
+/// ```swift
+/// extension LocalKeys {
+///     var isEditing: LocalStorage<Bool> {
+///         .init(defaultValue: false)
+///     }
+/// }
+/// ```
+///
+/// Access values via `node.local`:
+///
+/// ```swift
+/// node.local.isEditing        // read
+/// node.local.isEditing = true // write
+/// ```
+public struct LocalKeys: Sendable {
+    public init() {}
+}
+
+// MARK: - LocalValues
+
+/// Provides `@dynamicMemberLookup` access to a model node's local storage via `LocalKeys`.
+///
+/// Obtained from `node.local` inside your model implementation.
+///
+/// ```swift
+/// let editing = node.local.isEditing   // read
+/// node.local.isEditing = true          // write
+/// ```
+@dynamicMemberLookup
+public struct LocalValues: Sendable {
+    let context: AnyContext?
+
+    init(context: AnyContext?) {
+        self.context = context
+    }
+
+    /// Reads or writes a local value using a storage descriptor directly.
+    public subscript<V>(storage: LocalStorage<V>) -> V {
+        get {
+            guard let context else { return storage.storage.defaultValue }
+            return context[storage.storage]
+        }
+        nonmutating set {
+            guard let context else { return }
+            context[storage.storage] = newValue
+        }
+    }
+
+    /// Reads or writes a local value using a key path on `LocalKeys`.
+    public subscript<V>(dynamicMember path: KeyPath<LocalKeys, LocalStorage<V>>) -> V {
+        get { self[LocalKeys()[keyPath: path]] }
+        nonmutating set { self[LocalKeys()[keyPath: path]] = newValue }
+    }
+}
+
+// MARK: - EnvironmentKeys
+
+/// A namespace for declaring named environment storage keys as computed properties.
+///
+/// Extend `EnvironmentKeys` with computed properties that return `EnvironmentStorage<Value>` descriptors.
+///
+/// ```swift
+/// extension EnvironmentKeys {
+///     var theme: EnvironmentStorage<ColorScheme> {
+///         .init(defaultValue: .light)
+///     }
+/// }
+/// ```
+///
+/// Access values via `node.environment`:
+///
+/// ```swift
+/// node.environment.theme         // read (walks up hierarchy to nearest setter)
+/// node.environment.theme = .dark // write (stores here, visible to descendants)
+/// ```
+public struct EnvironmentKeys: Sendable {
+    public init() {}
+}
+
+// MARK: - EnvironmentContext
+
+/// Provides `@dynamicMemberLookup` access to a model node's environment storage via `EnvironmentKeys`.
+///
+/// Obtained from `node.environment` inside your model implementation. Reads walk up the hierarchy
+/// to the nearest ancestor that has set the value; writes store on this node and are inherited
+/// by all descendants.
+///
+/// ```swift
+/// let current = node.environment.theme    // read — walks up hierarchy
+/// node.environment.theme = .dark          // write — visible to all descendants
+/// ```
+@dynamicMemberLookup
+public struct EnvironmentContext: Sendable {
+    let context: AnyContext?
+
+    init(context: AnyContext?) {
+        self.context = context
+    }
+
+    /// Reads or writes an environment value using a storage descriptor directly.
+    public subscript<V>(storage: EnvironmentStorage<V>) -> V {
+        get {
+            guard let context else { return storage.storage.defaultValue }
+            return context.environmentValue(for: storage.storage)
+        }
+        nonmutating set {
+            guard let context else { return }
+            context[storage.storage] = newValue
+        }
+    }
+
+    /// Reads or writes an environment value using a key path on `EnvironmentKeys`.
+    public subscript<V>(dynamicMember path: KeyPath<EnvironmentKeys, EnvironmentStorage<V>>) -> V {
+        get { self[EnvironmentKeys()[keyPath: path]] }
+        nonmutating set { self[EnvironmentKeys()[keyPath: path]] = newValue }
+    }
+}
+
+// MARK: - ContextKeys (deprecated)
+
+/// A namespace for declaring named context storage keys as computed properties.
+///
+/// - Important: Deprecated. Use ``LocalKeys`` for node-private storage or ``EnvironmentKeys``
+///   for top-down propagating storage.
+@available(*, deprecated, message: "Use LocalKeys for node-private storage or EnvironmentKeys for top-down propagating storage.")
 public struct ContextKeys: Sendable {
     public init() {}
 }
 
-// MARK: - ContextValues
+// MARK: - ContextValues (deprecated)
 
 /// Provides `@dynamicMemberLookup` access to a model node's context storage via `ContextKeys`.
 ///
-/// You obtain a `ContextValues` instance from `node.context` inside your model implementation.
-/// Properties declared on `ContextKeys` are directly accessible as dynamic members.
-///
-/// ```swift
-/// // Inside a model implementation (via node.context):
-/// let enabled = node.context.isFeatureEnabled   // read
-/// node.context.isFeatureEnabled = true           // write
-/// let current = node.context.theme              // reads nearest ancestor (.environment)
-/// node.context.theme = .dark                    // stores here, notifies descendants
-/// ```
+/// - Important: Deprecated. Use `node.local` for node-private storage or `node.environment`
+///   for top-down propagating storage.
+@available(*, deprecated, message: "Use node.local for node-private storage or node.environment for top-down propagating storage.")
 @dynamicMemberLookup
 public struct ContextValues: Sendable {
     // Optional: nil when the node is unanchored. Reads return defaultValue, writes are no-ops.
@@ -331,10 +567,6 @@ public struct ContextValues: Sendable {
 // MARK: - AnyContext typed storage subscript + context accessor
 
 extension AnyContext {
-    var context: ContextValues {
-        ContextValues(context: self)
-    }
-
     subscript<V>(storage: ContextStorage<V>) -> V {
         get {
             if !storage.isSystemStorage {
@@ -419,7 +651,13 @@ extension Model {
     subscript<V>(_metadata storage: ContextStorage<V>) -> V {
         // The subscript index must be Hashable for keypath formation. We use a wrapper
         // that hashes/equals on storage.key so distinct storages produce distinct paths.
-        get { node.context[storage] }
-        set { node.context[storage] = newValue }
+        get {
+            guard let context = node._context else { return storage.defaultValue }
+            switch storage.propagation {
+            case .local: return context[storage]
+            case .environment: return context.environmentValue(for: storage)
+            }
+        }
+        set { node._context?[storage] = newValue }
     }
 }

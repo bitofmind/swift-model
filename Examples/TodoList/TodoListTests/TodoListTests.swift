@@ -7,7 +7,7 @@ import Testing
 /// Tests drive undo/redo via `model.node.undoSystem` — the same API the app's
 /// views use — and assert state through `expect` so that reactive
 /// propagation is fully awaited before each expectation.
-@Suite(.modelTesting(.removing([.context, .preference])) { $0.undoSystem.backend = ModelUndoStack() })
+@Suite(.modelTesting(.removing([.local, .environment, .preference])) { $0.undoSystem.backend = ModelUndoStack() })
 struct TodoListTests {
 
     // MARK: - Initial state

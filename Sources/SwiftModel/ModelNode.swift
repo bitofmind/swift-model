@@ -71,59 +71,91 @@ public struct ModelNode<M: Model> {
 extension ModelNode: @unchecked Sendable {}
 
 public extension ModelNode {
-    /// Typed access to per-node context storage via `@dynamicMemberLookup`.
+    /// Typed access to this node's local (node-private) storage via `@dynamicMemberLookup`.
     ///
-    /// Properties declared as extensions on `ContextKeys` are accessible as
-    /// `node.context.myKey` (read) and `node.context.myKey = value` (write).
-    ///
-    /// ## Local context (default)
-    ///
-    /// Local context is private to this node. Reading returns only what this node has set.
+    /// Properties declared as extensions on `LocalKeys` are accessible as
+    /// `node.local.myKey` (read) and `node.local.myKey = value` (write).
+    /// The value is private to this node — no other node in the hierarchy sees it.
     ///
     /// ```swift
-    /// extension ContextKeys {
-    ///     var isEditing: ContextStorage<Bool> { .init(defaultValue: false) }
+    /// extension LocalKeys {
+    ///     var isEditing: LocalStorage<Bool> { .init(defaultValue: false) }
     /// }
     ///
     /// // Inside the model:
-    /// node.context.isEditing = true
-    /// let editing = node.context.isEditing  // true
+    /// node.local.isEditing = true
+    /// let editing = node.local.isEditing  // true
     /// ```
+    var local: LocalValues {
+        LocalValues(context: _context)
+    }
+
+    /// Removes a previously stored local value from this node, resetting it to `defaultValue`.
     ///
-    /// ## Environment context (`.environment` propagation)
+    /// Fires observation notifications so any active observers re-evaluate.
     ///
-    /// Environment context flows downward: a write on any ancestor is visible to all descendants.
-    /// Reading walks up the hierarchy to the nearest ancestor that has set the value.
+    /// - Parameter key: A key path on `LocalKeys` identifying the storage entry to remove.
+    func removeLocal<V>(_ key: KeyPath<LocalKeys, LocalStorage<V>>) {
+        let storage = LocalKeys()[keyPath: key]
+        _context?.removeEnvironmentValue(for: storage.storage)
+    }
+
+    /// Typed access to this node's top-down propagating storage via `@dynamicMemberLookup`.
+    ///
+    /// Properties declared as extensions on `EnvironmentKeys` are accessible as
+    /// `node.environment.myKey` (read) and `node.environment.myKey = value` (write).
+    ///
+    /// Writes store the value on this node and make it visible to all descendants.
+    /// Reads walk up the hierarchy to the nearest ancestor that has set the value,
+    /// returning the storage's `defaultValue` if no ancestor has set it.
     ///
     /// ```swift
-    /// extension ContextKeys {
-    ///     var theme: ContextStorage<ColorScheme> {
-    ///         .init(defaultValue: .light, propagation: .environment)
+    /// extension EnvironmentKeys {
+    ///     var theme: EnvironmentStorage<ColorScheme> {
+    ///         .init(defaultValue: .light)
     ///     }
     /// }
     ///
     /// // Parent sets the theme:
-    /// parentNode.context.theme = .dark
+    /// parentNode.environment.theme = .dark
     ///
     /// // Child reads it (returns .dark — inherited from parent):
-    /// let current = childNode.context.theme
+    /// let current = childNode.environment.theme
     ///
     /// // Child overrides locally:
-    /// childNode.context.theme = .light
+    /// childNode.environment.theme = .light
     /// // Now childNode and its descendants see .light; others still see .dark
     /// ```
-    var context: ContextValues {
-        ContextValues(context: _context)
+    var environment: EnvironmentContext {
+        EnvironmentContext(context: _context)
     }
 
-    /// Removes a previously stored environment context value from this node.
+    /// Removes a previously stored environment value from this node.
     ///
     /// After removal this node will inherit the value from the nearest ancestor that has set it,
     /// or return the storage's `defaultValue` if no ancestor has set it.
     ///
     /// Fires observation notifications so any active observers re-evaluate.
     ///
-    /// - Parameter key: A key path on `ContextKeys` identifying the storage entry to remove.
+    /// - Parameter key: A key path on `EnvironmentKeys` identifying the storage entry to remove.
+    func removeEnvironment<V>(_ key: KeyPath<EnvironmentKeys, EnvironmentStorage<V>>) {
+        let storage = EnvironmentKeys()[keyPath: key]
+        _context?.removeEnvironmentValue(for: storage.storage)
+    }
+
+    /// Typed access to per-node context storage via `@dynamicMemberLookup`.
+    ///
+    /// - Deprecated: Use `node.local` for node-private storage or `node.environment` for
+    ///   top-down propagating storage.
+    @available(*, deprecated, message: "Use node.local for node-private storage or node.environment for top-down propagating storage.")
+    var context: ContextValues {
+        ContextValues(context: _context)
+    }
+
+    /// Removes a previously stored context value from this node.
+    ///
+    /// - Deprecated: Use `removeLocal(_:)` or `removeEnvironment(_:)`.
+    @available(*, deprecated, message: "Use removeLocal(_:) or removeEnvironment(_:).")
     func removeContext<V>(_ key: KeyPath<ContextKeys, ContextStorage<V>>) {
         let storage = ContextKeys()[keyPath: key]
         _context?.removeEnvironmentValue(for: storage)

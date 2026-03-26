@@ -65,12 +65,12 @@ struct DependencyTests {
         #expect(childResult.value == "C1c1")
     }
 
-    @Test(.modelTesting(exhaustivity: .off)) func testDependencyInTask() async {
+    @Test(.modelTesting) func testDependencyInTask() async {
         let testResult = TestResult()
         let model = TaskModel().withAnchor {
             $0.testResult = testResult
         }
-        await expect(model.taskDone == true, timeoutNanoseconds: 5_000_000_000)
+        await settle { model.taskDone == true }
 
         #expect(testResult.value == "task")
     }

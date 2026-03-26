@@ -145,7 +145,7 @@ extension Model where Self: Observable {
             
             // Dispatch willSet+didSet together to main registrar (for SwiftUI safety)
             if let mainReg = context.mainObservationRegistrar {
-                mainCall {
+                context.mainCallQueue {
                     mainReg.willSet(self, keyPath: path)
                     mainReg.didSet(self, keyPath: path)
                 }
@@ -396,7 +396,7 @@ let backgroundCall = BackgroundCallQueue()
 ///
 /// Nesting is handled correctly: if a `withBatchedUpdates` scope is already active on this
 /// thread, the inner call simply runs `body` directly without creating a second batch.
-func _withBatchedUpdates<T>(_ body: () throws -> T) rethrows -> T {
+func _withBatchedUpdates<T>(_ mainCallQueue: MainCallQueue = mainCall, _ body: () throws -> T) rethrows -> T {
     guard threadLocals.pendingObservationNotifications == nil else {
         return try body()
     }
@@ -405,7 +405,7 @@ func _withBatchedUpdates<T>(_ body: () throws -> T) rethrows -> T {
         let pending = threadLocals.pendingObservationNotifications!
         threadLocals.pendingObservationNotifications = nil
         for notification in pending { notification() }
-        mainCall.drainIfOnMain()
+        mainCallQueue.drainIfOnMain()
     }
     return try body()
 }

@@ -18,7 +18,7 @@ struct DiagnosticMemoizeTest {
         model.value = 5
         await expect(model.value == 5)
 
-        await expect(model.doubled == 10, timeoutNanoseconds: 5_000_000_000)
+        await expect(model.doubled == 10)
     }
 
     /// Test WITHOUT sleep: Access immediately after mutation.
@@ -26,7 +26,7 @@ struct DiagnosticMemoizeTest {
     /// With dual registrar implementation, background registrar fires synchronously,
     /// so we get fresh values immediately (no race condition).
     @Test func testWithoutSleep() async throws {
-        let model = BasicMemoizeModel().withAnchor(options: [.disableMemoizeCoalescing])
+        let model = withModelOptions([.disableMemoizeCoalescing]) { BasicMemoizeModel().withAnchor() }
 
         _ = model.doubled
         await expect(model.accessCount == 1)
@@ -48,7 +48,7 @@ struct DiagnosticMemoizeTest {
         model.value = 5
         await expect(model.value == 5)
 
-        await expect(model.doubled == 10, timeoutNanoseconds: 2_000_000_000)
+        await expect(model.doubled == 10)
     }
 }
 

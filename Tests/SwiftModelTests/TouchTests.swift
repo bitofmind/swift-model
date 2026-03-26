@@ -52,7 +52,7 @@ struct TouchTests {
 
     /// Verifies that writing the same Equatable value is silent by default (AccessCollector path).
     @Test func testSameValueWriteIsSilent() async {
-        let model = TouchModel().withAnchor(options: [.disableObservationRegistrar])
+        let model = withModelOptions([.disableObservationRegistrar]) { TouchModel().withAnchor() }
 
         // Same-value write — no notification expected
         model.count = 5
@@ -72,14 +72,14 @@ struct TouchTests {
     func testTouchFiresNotificationWithoutChangingValue(observationPath: ObservationPath) async {
         switch observationPath {
         case .accessCollector:
-            let model = TouchModel().withAnchor(options: observationPath.options)
+            let model = observationPath.withOptions { TouchModel().withAnchor() }
             model.node.touch(\.count)
             await expect {
                 model.notifications == [5]
                 model.count == 5
             }
         case .observationRegistrar:
-            let model = TouchModelCoalescing().withAnchor(options: observationPath.options)
+            let model = observationPath.withOptions { TouchModelCoalescing().withAnchor() }
             model.node.touch(\.count)
             await expect {
                 model.notified == true
@@ -94,7 +94,7 @@ struct TouchTests {
     func testTouchThenRealWrite(observationPath: ObservationPath) async {
         switch observationPath {
         case .accessCollector:
-            let model = TouchModel().withAnchor(options: observationPath.options)
+            let model = observationPath.withOptions { TouchModel().withAnchor() }
 
             model.node.touch(\.count)
             await expect(model.notifications == [5])
@@ -105,7 +105,7 @@ struct TouchTests {
                 model.count == 7
             }
         case .observationRegistrar:
-            let model = TouchModelCoalescing().withAnchor(options: observationPath.options)
+            let model = observationPath.withOptions { TouchModelCoalescing().withAnchor() }
 
             model.node.touch(\.count)
             await expect(model.notified == true)
@@ -127,7 +127,7 @@ struct TouchTests {
     /// When memoize's onUpdate fires, it runs under threadLocals.forceObservation=true, so
     /// Observed { c } also bypasses its isSame check and delivers the notification.
     @Test func testTouchPropagatesThroughMemoize() async {
-        let model = MemoTouchModel().withAnchor(options: [.disableObservationRegistrar])
+        let model = withModelOptions([.disableObservationRegistrar]) { MemoTouchModel().withAnchor() }
 
         // Warm up the memoize cache — c == a + b == 3
         await expect(model.c == 3)

@@ -45,7 +45,7 @@ struct MemoizeDirtyObservationTests {
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testDirtyPathMatrix(config: TestConfig) async throws {
         print("\n========== Testing: \(config.name) ==========")
-        let model = DirtyTrackingModel().withAnchor(options: config.options)
+        let model = withModelOptions(config.options) { DirtyTrackingModel().withAnchor() }
 
         // Use Observed stream for consistent testing across both paths
         let updates = LockIsolated<[Int]>([])
@@ -227,7 +227,7 @@ struct MemoizeDirtyObservationTests {
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testDirtyPathWithAccessCollector() async throws {
         // Disable ObservationRegistrar to force AccessCollector path
-        let model = DirtyTrackingModel().withAnchor(options: [.disableObservationRegistrar])
+        let model = withModelOptions([.disableObservationRegistrar]) { DirtyTrackingModel().withAnchor() }
 
         let observationCount = LockIsolated(0)
         let observedValues = LockIsolated<[Int]>([])
@@ -493,7 +493,7 @@ struct MemoizeDirtyObservationTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testMemoizeTrackingNotLostAfterIsSameTrue_BothPaths(path: ObservationPath) async throws {
-        let model = ConditionalMemoizeModel().withAnchor(options: path.options)
+        let model = path.withOptions { ConditionalMemoizeModel().withAnchor() }
 
         let updates = LockIsolated<[[Int]]>([])
         let stream = Observed { model.segments }
@@ -527,7 +527,7 @@ struct MemoizeDirtyObservationTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testMemoizeTrackingSurvivedManyIsSameTrueCycles(path: ObservationPath) async throws {
-        let model = ConditionalMemoizeModel().withAnchor(options: path.options)
+        let model = path.withOptions { ConditionalMemoizeModel().withAnchor() }
 
         let updates = LockIsolated<[[Int]]>([])
         let stream = Observed { model.segments }
@@ -566,7 +566,7 @@ struct MemoizeDirtyObservationTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testProduceCalledAfterRapidMutations(path: ObservationPath) async throws {
-        let model = DirtyTrackingModel().withAnchor(options: path.options)
+        let model = path.withOptions { DirtyTrackingModel().withAnchor() }
         let computeCountBefore = model.computeCount.value
 
         let updates = LockIsolated<[Int]>([])
@@ -624,7 +624,7 @@ struct MemoizeDirtyObservationTests {
     @Test(arguments: ObservationPath.allCases)
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func testSubscriptionNotLostAfterUpdateCycle(path: ObservationPath) async throws {
-        let model = DirtyTrackingModel().withAnchor(options: path.options)
+        let model = path.withOptions { DirtyTrackingModel().withAnchor() }
 
         let updates = LockIsolated<[Int]>([])
         let stream = Observed { model.computed }

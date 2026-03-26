@@ -388,11 +388,11 @@ struct ModelDependencyOverrideTests {
         let customDep = EnvDep(state: "custom")
 
         try await waitUntilRemoved {
-            let host = Host(items: [
+            let host = path.withOptions { Host(items: [
                 Consumer(id: 1).withDependencies { $0[EnvDep.self] = customDep }
-            ]).withAnchor(options: path.options) {
+            ]).withAnchor {
                 $0.testResult = testResult
-            }
+            } }
 
             // Wait for activation of both the consumer and its dep.
             try await waitUntil(testResult.value.contains("on:1:custom"))
@@ -420,12 +420,12 @@ struct ModelDependencyOverrideTests {
         let depB = EnvDep(state: "B")
 
         try await waitUntilRemoved {
-            let host = Host(items: [
+            let host = path.withOptions { Host(items: [
                 Consumer(id: 1).withDependencies { $0[EnvDep.self] = depA },
                 Consumer(id: 2).withDependencies { $0[EnvDep.self] = depB },
-            ]).withAnchor(options: path.options) {
+            ]).withAnchor {
                 $0.testResult = testResult
-            }
+            } }
 
             try await waitUntil(
                 testResult.value.contains("on:1:A") && testResult.value.contains("on:2:B")
@@ -531,9 +531,9 @@ struct ModelDependencyOverrideTests {
         let dep = EnvDep(state: "dynamic")
 
         try await waitUntilRemoved {
-            let host = Host().withAnchor(options: path.options) {
+            let host = path.withOptions { Host().withAnchor {
                 $0.testResult = testResult
-            }
+            } }
 
             // Add child after anchor is already active.
             host.items.append(
@@ -564,13 +564,13 @@ struct ModelDependencyOverrideTests {
         let customDep = EnvDep(state: "custom")
 
         try await waitUntilRemoved {
-            let host = Host(items: [
+            let host = path.withOptions { Host(items: [
                 Consumer(id: 1),  // uses the dep injected at the host level
                 Consumer(id: 2).withDependencies { $0[EnvDep.self] = customDep },
-            ]).withAnchor(options: path.options) {
+            ]).withAnchor {
                 $0.testResult = testResult
                 $0[EnvDep.self] = defaultDep  // inject default for all children
-            }
+            } }
 
             try await waitUntil(
                 testResult.value.contains("on:1:default") && testResult.value.contains("on:2:custom")
@@ -670,12 +670,12 @@ struct ModelDependencyOverrideTests {
 
         try await waitUntilRemoved {
             // Inject dep at Container level — same as StreamsModel.withDependencies { $0.streamEnvironment = ... }
-            let container = Container(items: [
+            let container = path.withOptions { Container(items: [
                 Item(id: 1),  // plain — no withDependencies, inherits from Container
-            ]).withAnchor(options: path.options) {
+            ]).withAnchor {
                 $0.testResult = testResult
                 $0[EnvDep.self] = customDep
-            }
+            } }
 
             try await waitUntil(testResult.value.contains("itemOn:1:inherited"))
 
@@ -701,13 +701,13 @@ struct ModelDependencyOverrideTests {
         let overrideDep = EnvDep(state: "override")
 
         try await waitUntilRemoved {
-            let container = Container(items: [
+            let container = path.withOptions { Container(items: [
                 Item(id: 1),  // inherits containerDep
                 Item(id: 2).withDependencies { $0[EnvDep.self] = overrideDep },  // overrides
-            ]).withAnchor(options: path.options) {
+            ]).withAnchor {
                 $0.testResult = testResult
                 $0[EnvDep.self] = containerDep
-            }
+            } }
 
             try await waitUntil(
                 testResult.value.contains("itemOn:1:container") &&
@@ -743,10 +743,10 @@ struct ModelDependencyOverrideTests {
         let customDep = EnvDep(state: "live")
 
         try await waitUntilRemoved {
-            let container = Container().withAnchor(options: path.options) {
+            let container = path.withOptions { Container().withAnchor {
                 $0.testResult = testResult
                 $0[EnvDep.self] = customDep
-            }
+            } }
 
             // Add a plain Item after the Container is already active —
             // same as StreamsModel.updateSegments adding StreamModel(id:config:)
@@ -776,12 +776,12 @@ struct ModelDependencyOverrideTests {
 
         try await waitUntilRemoved {
             // `a` uses default (testValue = "test"); `b` has an explicit override.
-            let root = TwoContainersModel(
+            let root = path.withOptions { TwoContainersModel(
                 a: Container(items: [Item(id: 1)]),  // no withDependencies — inherits testValue
                 b: Container(items: [Item(id: 2)]).withDependencies { $0[EnvDep.self] = overrideDep }
-            ).withAnchor(options: path.options) {
+            ).withAnchor {
                 $0.testResult = testResult
-            }
+            } }
 
             try await waitUntil(
                 testResult.value.contains("itemOn:1:test") &&
@@ -816,12 +816,12 @@ struct ModelDependencyOverrideTests {
         // Outer host holds two containers side-by-side, analogous to:
         //   struct EditorModel { var streams: StreamsModel; var contextPreviewStreams: StreamsModel }
         try await waitUntilRemoved {
-            let root = TwoContainersModel(
+            let root = path.withOptions { TwoContainersModel(
                 a: Container(items: [Item(id: 1)]).withDependencies { $0[EnvDep.self] = depA },
                 b: Container(items: [Item(id: 2)]).withDependencies { $0[EnvDep.self] = depB }
-            ).withAnchor(options: path.options) {
+            ).withAnchor {
                 $0.testResult = testResult
-            }
+            } }
 
             try await waitUntil(
                 testResult.value.contains("itemOn:1:envA") &&
@@ -867,16 +867,16 @@ struct ModelDependencyOverrideTests {
         let isolatedDep = EnvDep(state: "isolated")
 
         try await waitUntilRemoved {
-            let root = TwoContainersModel(
+            let root = path.withOptions { TwoContainersModel(
                 // `a` has no override → its Item resolves EnvDep via root DependencyValues,
                 // anchoring primaryDep at rootParent.dependencyContexts[ObjectIdentifier(EnvDep)]
                 a: Container(items: [Item(id: 1)]),
                 // `b` injects its own dep → its Items MUST see "isolated" not "primary"
                 b: Container(items: [Item(id: 2)]).withDependencies { $0[EnvDep.self] = isolatedDep }
-            ).withAnchor(options: path.options) {
+            ).withAnchor {
                 $0.testResult = testResult
                 $0[EnvDep.self] = primaryDep  // root-level dep — container `a` inherits this
-            }
+            } }
 
             try await waitUntil(
                 testResult.value.contains("itemOn:1:primary") &&
@@ -925,11 +925,11 @@ struct ModelDependencyOverrideTests {
         let customDep = EnvDep(state: "custom")
 
         try await waitUntilRemoved {
-            let root = SingleChildParent()
-                .withAnchor(options: path.options) {
+            let root = path.withOptions { SingleChildParent()
+                .withAnchor {
                     $0.testResult = testResult
                     $0[EnvDep.self] = customDep
-                }
+                } }
 
             // The single child resolves EnvDep by walking up to root's DependencyValues.
             try await waitUntil(testResult.value.contains("childOn:custom"))
@@ -955,12 +955,12 @@ struct ModelDependencyOverrideTests {
         let depB = EnvDep(state: "depB")
 
         try await waitUntilRemoved {
-            let root = TwoSingleChildParentsModel(
+            let root = path.withOptions { TwoSingleChildParentsModel(
                 a: SingleChildParent().withDependencies { $0[EnvDep.self] = depA },
                 b: SingleChildParent().withDependencies { $0[EnvDep.self] = depB }
-            ).withAnchor(options: path.options) {
+            ).withAnchor {
                 $0.testResult = testResult
-            }
+            } }
 
             try await waitUntil(
                 testResult.value.contains("childOn:depA") &&
@@ -1214,8 +1214,8 @@ struct ModelDependencyOverrideTests {
         let testResult = TestResult()
 
         try await waitUntilRemoved {
-            let root = ParentWithInitAssignment()
-                .withAnchor(options: path.options) { $0.testResult = testResult }
+            let root = path.withOptions { ParentWithInitAssignment()
+                .withAnchor { $0.testResult = testResult } }
 
             try await waitUntil(
                 testResult.value.contains("itemOn:1:test") &&

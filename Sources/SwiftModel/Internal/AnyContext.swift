@@ -42,6 +42,13 @@ class AnyContext: @unchecked Sendable {
     private let _backgroundObservationRegistrar: Any?
     let cancellations = Cancellations()
 
+    let backgroundCallQueue: BackgroundCallQueue
+    let mainCallQueue: MainCallQueue
+
+    /// Set by `TestAccess` on the root context to receive task lifecycle events.
+    /// Always `nil` in production — the delegate check is a single `Optional` load.
+    weak var taskLifecycleDelegate: (any TaskLifecycleDelegate)?
+
     private(set) var anyModificationActiveCount = 0
     private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] = [:]
     private var _modificationCount = 0
@@ -306,10 +313,14 @@ class AnyContext: @unchecked Sendable {
 
     let isObservable: Bool
 
-    init(lock: NSRecursiveLock, options: ModelOption, parent: AnyContext?, isObservable: Bool) {
+    init(lock: NSRecursiveLock, parent: AnyContext?, isObservable: Bool) {
         self.lock = lock
-        self.options = parent?.options ?? options
+        self.options = parent?.options ?? ModelOption.current
         self.isObservable = isObservable
+        // Inherit queues from root so the whole hierarchy under one anchor shares them.
+        // Each root creates fresh instances, isolating parallel test runs from each other.
+        self.backgroundCallQueue = parent?.backgroundCallQueue ?? BackgroundCallQueue()
+        self.mainCallQueue = parent?.mainCallQueue ?? MainCallQueue()
         
         // Use ObservationRegistrar unless disabled
         let useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
@@ -332,7 +343,7 @@ class AnyContext: @unchecked Sendable {
     deinit {
     }
 
-    var activeTasks: [(modelName: String, fileAndLines: [FileAndLine])] {
+    var activeTasks: [(modelName: String, tasks: [(name: String, fileAndLine: FileAndLine)])] {
         allChildren.reduce(into: cancellations.activeTasks) {
             $0.append(contentsOf: $1.activeTasks)
         }
@@ -669,7 +680,7 @@ class AnyContext: @unchecked Sendable {
                         model = model.initialCopy
                     }
                     assert(model.context == nil)
-                    let child = Context<D>(model: model, lock: lock, options: self.options, dependencies: { _ in }, parent: self)
+                    let child = Context<D>(model: model, lock: lock, dependencies: { _ in }, parent: self)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
                     dependencyContexts[ObjectIdentifier(D.self)] = child
                     model.withContextAdded(context: child)
