@@ -411,7 +411,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // Hard cap: absolute maximum regardless of activity (5s safety cap).
         // Fires only when tasks are stuck in an infinite loop producing constant changes.
         // TestAccessOverrides.hardCapNanoseconds allows output snapshot tests to override.
-        let hardCap = TestAccessOverrides.hardCapNanoseconds ?? max(5 * NSEC_PER_SEC, scaledTimeout * 30)
+        let hardCap = TestAccessOverrides.hardCapNanoseconds ?? max(5 * nanosPerSecond, scaledTimeout * 30)
 
         await TesterAssertContextBase.$assertContext.withValue(context) {
 
