@@ -607,8 +607,18 @@ extension ModelTestingTrait: TestTrait, SuiteTrait {
 
     public func prepare(for test: Test) async throws {
         // On Swift 6.0 TestScoping.provideScope is not available.
-        // The trait is registered but cannot wrap the test body.
-        // Users should use andTester() for exhaustion checking on Swift 6.0.
+        // The trait is registered but cannot wrap the test body — report an issue
+        // so the user knows to switch to withModelTesting { } instead.
+        reportIssue(
+            "@Test(.modelTesting) requires Swift 6.1 or later. " +
+            "On Swift 6.0, wrap your test body with withModelTesting { } instead:\n\n" +
+            "    @Test func example() async {\n" +
+            "        await withModelTesting {\n" +
+            "            let model = MyModel().withAnchor()\n" +
+            "            await expect { model.value == \"expected\" }\n" +
+            "        }\n" +
+            "    }"
+        )
     }
 }
 #endif
