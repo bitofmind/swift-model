@@ -31,3 +31,88 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and test
         run: swift test
+
+  android:
+    name: Android (aarch64)
+    # macos-15 uses Apple Silicon (arm64), enabling hardware-accelerated
+    # arm64 Android emulation without slow QEMU software emulation.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Swift 6.3 open-source toolchain
+        # The Xcode-bundled Swift does not include the Android SDK support
+        # added in Swift 6.3, so we install the open-source toolchain.
+        run: |
+          curl -fsSL \
+            https://download.swift.org/swift-6.3-release/xcode/swift-6.3-RELEASE/swift-6.3-RELEASE-osx.pkg \
+            -o /tmp/swift-6.3.pkg
+          sudo installer -pkg /tmp/swift-6.3.pkg -target /
+          echo "/Library/Developer/Toolchains/swift-6.3-RELEASE.xctoolchain/usr/bin" >> $GITHUB_PATH
+
+      - name: Install Swift Android SDK
+        run: |
+          swift sdk install \
+            https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_android.artifactbundle.tar.gz \
+            --checksum 2f2942c4bcea7965a08665206212c66991dabe23725aeec7c4365fc91acad088
+
+      - name: Build macOS tests (seeds index store for Android cross-compilation)
+        # Workaround for two Swift 6.3 cross-compilation issues:
+        #
+        # 1. Index store bug: the cross-compiler writes index units to the HOST
+        #    (macOS) store instead of the Android store. Building macOS tests
+        #    first seeds those units; the next step copies them to the Android
+        #    path so SPM's test-discovery step can find them.
+        #
+        # 2. XCTestCaseEntry: SPM generates `all-discovered-tests.swift` (a
+        #    backward-compatibility shim) compiled for the HOST. It references
+        #    `XCTestCaseEntry`, which exists in the macOS 15 SDK but was removed
+        #    in macOS 26. If this step breaks after a macOS runner upgrade, the
+        #    root cause is likely that removal — check whether SPM has been
+        #    updated to skip the XCTest shim for cross-compilation targets.
+        run: swift build --build-tests
+
+      - name: Seed Android index store from macOS build
+        run: |
+          MACOS_STORE=".build/arm64-apple-macosx/debug/index/store/v5"
+          ANDROID_STORE=".build/aarch64-unknown-linux-android28/debug/index/store/v5"
+          mkdir -p "$ANDROID_STORE/units" "$ANDROID_STORE/records"
+          cp "$MACOS_STORE/units/"* "$ANDROID_STORE/units/"
+          # Records live in subdirectories — copy each one.
+          for subdir in "$MACOS_STORE/records/"/*/; do
+            name=$(basename "$subdir")
+            mkdir -p "$ANDROID_STORE/records/$name"
+            cp "$subdir"* "$ANDROID_STORE/records/$name/"
+          done
+
+      - name: Build SwiftModelTests for Android
+        run: |
+          swift build \
+            --swift-sdk aarch64-unknown-linux-android28 \
+            --build-tests
+
+      - name: Run SwiftModelTests on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 28
+          arch: arm64-v8a
+          target: google_apis
+          emulator-options: -no-snapshot -noaudio -no-boot-anim
+          script: |
+            # Locate Swift runtime .so files inside the installed SDK bundle.
+            SDK_BUNDLE="$HOME/Library/org.swift.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle"
+            SWIFT_LIBS="$SDK_BUNDLE/swift-android/swift-resources/usr/lib/swift-aarch64/android"
+            echo "Swift runtime libs: $SWIFT_LIBS"
+
+            # Push Swift runtime libraries to the emulator.
+            adb push "$SWIFT_LIBS" /data/local/tmp/swift-libs
+
+            # Locate the test runner binary produced by --build-tests.
+            TEST_BIN=$(find .build/aarch64-unknown-linux-android28/debug \
+              -maxdepth 1 -type f ! -name "*.d" | head -1)
+            echo "Test binary: $TEST_BIN"
+
+            # Push and run the test binary.
+            adb push "$TEST_BIN" /data/local/tmp/swift-tests
+            adb shell chmod +x /data/local/tmp/swift-tests
+            adb shell "LD_LIBRARY_PATH=/data/local/tmp/swift-libs /data/local/tmp/swift-tests"
