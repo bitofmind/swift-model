@@ -81,6 +81,12 @@ jobs:
             https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_android.artifactbundle.tar.gz \
             --checksum 2f2942c4bcea7965a08665206212c66991dabe23725aeec7c4365fc91acad088
 
+          # The SDK bundle ships a setup script that must be run after install.
+          # It creates the ndk-sysroot/ directory (referenced by swift-sdk.json's
+          # sdkRootPath) by symlinking from the pre-installed Android NDK.
+          SDK_DIR="$HOME/Library/org.swift.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle/swift-android"
+          bash "$SDK_DIR/scripts/setup-android-sdk.sh"
+
       - name: Seed Android index store from macOS build
         run: |
           MACOS_STORE=".build/arm64-apple-macosx/debug/index/store/v5"
@@ -94,36 +100,11 @@ jobs:
             cp "$subdir"* "$ANDROID_STORE/records/$name/"
           done
 
-      - name: Debug Android SDK and NDK structure
-        run: |
-          SDK="$HOME/Library/org.swift.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle"
-          echo "=== SDK top-level ==="
-          ls "$SDK/"
-          echo "=== swift-android contents ==="
-          ls "$SDK/swift-android/"
-          echo "=== semaphore.h in SDK bundle ==="
-          find "$SDK" -name "semaphore.h" 2>/dev/null | head -10
-          echo "=== Pre-installed NDK ==="
-          ls "${ANDROID_HOME}/ndk/" 2>/dev/null || echo "No NDK at ANDROID_HOME/ndk"
-          echo "=== ANDROID_NDK_HOME ==="
-          echo "${ANDROID_NDK_HOME:-not set}"
-          echo "=== xcode-select ==="
-          xcode-select -p
-
       - name: Build SwiftModelTests for Android
         run: |
-          # The Swift 6.3 cross-compiler needs the Android NDK sysroot headers
-          # to compile the SwiftOverlayShims C module (LibcOverlayShims.h includes
-          # <semaphore.h>). The SDK bundle's sysroot path isn't resolved correctly
-          # on this host, so we pass the pre-installed NDK headers explicitly.
-          NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_HOME}/ndk/$(ls "${ANDROID_HOME}/ndk/" | sort -V | tail -1)}"
-          SYSROOT="$NDK_HOME/toolchains/llvm/prebuilt/darwin-aarch64/sysroot"
-          echo "Using NDK sysroot: $SYSROOT"
           swift build \
             --swift-sdk aarch64-unknown-linux-android28 \
-            --build-tests \
-            -Xcc "-I$SYSROOT/usr/include" \
-            -Xcc "-I$SYSROOT/usr/include/aarch64-linux-android"
+            --build-tests
 
       - name: Run SwiftModelTests on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
