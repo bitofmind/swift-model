@@ -2,7 +2,7 @@
 
 A full-featured standup meeting manager: create and edit standups, record live meetings with a timer and speech-to-text transcript, and review past meeting records. This is the most comprehensive example in the suite, covering nearly every SwiftModel feature.
 
-This is a refactoring of Apple's [Scrumdinger](https://developer.apple.com/tutorials/app-dev-training/getting-started-with-scrumdinger) sample app, which [Point-Free](https://www.pointfree.co) also adapted in both [plain vanilla SwiftUI](https://github.com/pointfreeco/syncups) and [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/SyncUps).
+Based on Apple's [Scrumdinger](https://developer.apple.com/tutorials/app-dev-training/getting-started-with-scrumdinger) tutorial app.
 
 ## What it demonstrates
 

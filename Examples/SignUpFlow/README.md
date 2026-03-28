@@ -2,7 +2,6 @@
 
 A multi-step sign-up form that guides the user through Basics → Personal Info → Topics → Summary, with the ability to jump back and edit any step from the summary screen. Demonstrates enum-based navigation, shared state, and environment context propagation.
 
-This is a refactoring of a [sample app](https://github.com/pointfreeco/episode-code-samples/blob/main/0270-shared-state-pt3/swift-composable-architecture/Examples/CaseStudies/SwiftUICaseStudies/SignUpFlow.swift) from [Point-Free](https://www.pointfree.co)'s [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture).
 
 ## What it demonstrates
 

@@ -1,0 +1,329 @@
+[← Back to README](../README.md)
+
+## Models and Composition
+
+Models are the central building block in SwiftModel. A model declares state together with operations, that composes with other models to provide a model hierarchy for propagating dependencies and events.
+
+You use the SwiftModel's macro `@Model` to set your type up for model composition and observation tracking.
+
+```swift
+import SwiftModel
+
+@Model struct CountModel {
+  var count = 0
+
+  func decrementTapped() {
+    count -= 1
+  }
+
+  func incrementTapped() {
+    count += 1
+  }
+}
+```
+
+> **`@Model` structs behave like SwiftUI's `@State`** — the struct is a lightweight handle into a reference-counted backing store. Writing `count += 1` doesn't mutate the struct; it writes through a context pointer to the shared store. This is why setters are non-mutating: you can write `model.count = 5` on a `let model`, and why `[weak self]` is both unnecessary and rejected by the compiler.
+>
+> This hybrid — value-type surface, reference backing — is intentional. **Value semantics** make testing, diffing, and undo trivial: a point-in-time snapshot is just a cheap struct copy, no extra infrastructure needed. **Reference semantics** handle what value types can't: shared mutable state without wrapper hacks, and any-thread mutation without `@MainActor` hops.
+
+### No Retain Cycles — a structural guarantee
+
+Models are structs, so the **compiler** makes retain cycles impossible: you cannot take a `weak` reference to a struct. `[weak self]` is a compile error, not a discipline. This is categorically stronger than class-based architectures (including TCA's `Store` and plain `@Observable` ViewModels) where avoiding retain cycles requires `[weak self]` discipline in every closure.
+
+In practice you can freely store callbacks as `let` properties and capture `self` without risk:
+
+```swift
+@Model struct RecordMeetingModel {
+    let onSave: @Sendable (String) -> Void
+    let onDiscard: @Sendable () -> Void
+}
+
+@Model struct AppModel {
+    var recording: RecordMeetingModel? = nil
+
+    func startRecording() {
+        recording = RecordMeetingModel(
+            onSave: { transcript in
+                self.saveTranscript(transcript)  // safe — no retain cycle
+            },
+            onDiscard: {
+                self.recording = nil             // safe — no retain cycle
+            }
+        )
+    }
+}
+```
+
+The strong ownership lives in the model hierarchy (parent → child). Closures that capture `self` capture a context pointer — not a strong object reference — so cycles are structurally impossible.
+
+### Composition
+
+A model can be composed by other models where the most common composition is to have either an inline model, an optional model, or a collection of models.
+
+```swift
+@Model struct CounterRowModel {
+  var counter = CountModel()
+}
+```
+
+```swift
+@Model struct AppModel {
+  var counters: [CounterRowModel] = []
+  var factPrompt: FactPromptModel? = nil
+
+  var sum: Int {
+    counters.reduce(0) { $0 + $1.counter.count }
+  }
+}
+```
+
+> A model has an identity and conforms to `Identifiable` using a default generated id unless overridden by your model. This is e.g. used to identify models in arrays.
+
+> Often it is more convenient and safer to use an [`IdentifiedArray`](https://github.com/pointfreeco/swift-identified-collections) instead of a plain array.
+
+For SwiftModel to be able to detect a composition of models, any container holding other models (directly or indirectly) needs to conform to the `ModelContainer` protocol. This is part of what the `@Model` macro provides a model, but if you nest models insides custom enum and struct types, SwiftModel provides the `@ModelContainer` macro:
+
+```swift
+@ModelContainer enum Path {
+  case detail(StandupDetail)
+  case meeting(Meeting, standup: Standup)
+  case record(RecordMeeting)
+}
+```
+
+`@ModelContainer` works equally well on structs, which makes it useful for reusable wrapper types. For example, a generic paginated list that holds a model alongside metadata:
+
+```swift
+@ModelContainer struct Paginated<Item: Model> {
+    var items: [Item]
+    var currentPage: Int
+    var hasMore: Bool
+}
+
+@Model struct FeedModel {
+    var posts: Paginated<PostModel> = Paginated(items: [], currentPage: 0, hasMore: true)
+}
+```
+
+SwiftModel will correctly traverse into `Paginated.items` for activation, observation, and event propagation — the wrapper is transparent to the model hierarchy.
+
+### Model Anchor
+
+A model is backed by a behind the scenes context that holds a model's shared state, its relation to other models, overridden dependencies etc.
+
+This context is weakly held by the model which helps avoiding memory cycles when e.g. using callback closures. A model will hold a strong reference to its children, but someone has to hold a strong reference to the root model. This is typically done by using an explicit `withAnchor()` modifier on the root model.
+
+```swift
+struct MyApp: App {
+  let model = AppModel().withAnchor()
+
+  var body: some Scene {
+    WindowGroup {
+      AppView(model: model)
+    }
+  }
+}
+```
+
+If a view is not called more than once, you can create the model with an anchor inline:
+
+```swift
+#Preview {
+  CounterView(model: CounterModel().withAnchor())
+}
+```
+
+If you need to keep a reference to both the model and the anchor separately, use `returningAnchor()`:
+
+```swift
+let (model, anchor) = AppModel().returningAnchor()
+```
+
+### Model Life Stages
+
+A SwiftModel model goes through different life stages. It starts out in the initial state. This is typically just for a really brief period between calling the initializer and being added to a model hierarchy of anchored models.
+
+```swift
+func addButtonTapped() {
+  let row = CounterRowModel(...) // Initial state
+  counters.append(row) // row is anchored
+}
+```
+
+Once an initial model is added to an anchored model, it is set up with a supporting context and becomes anchored.
+
+If the model is later removed from the parent's anchored model, it will lose its supporting context and enter a destructed state.
+
+> A model can also be copied into a frozen copy where the state will become immutable. This is used e.g. when printing state updates, and while running unit tests, to be able to compare previous states of a model with later ones.
+
+### Model Activation
+
+The `Model` protocol provides an `onActivate()` extension point that is called by SwiftModel once the model becomes part of anchored model hierarchy. This is a perfect place to populate a model's state from its dependencies and to set up listeners on child events and state changes.
+
+> Any parent will always be activated before its children to allow the parent to set up listeners on child events and value changes. Once a parent is deactivated it will cancel its own activities before deactivating its children.
+
+```swift
+func onActivate() {
+  if standup.attendees.isEmpty {
+    standup.attendees.append(Attendee(id: Attendee.ID(node.uuid())))
+  }
+}
+```
+
+You can also compose activation logic from the outside using the `withActivation(_:)` modifier. This is useful when you want to attach behavior to a model without modifying its source, or when building test setups and previews:
+
+```swift
+let model = StandupModel()
+    .withActivation { $0.loadFromDisk() }
+    .withAnchor()
+```
+
+Multiple `withActivation` calls are additive — each closure runs in order when the model activates.
+
+### Sharing of Models
+
+A model is typically instantiated and assigned to one place in the hierarchy, but the same *instance* can live at multiple points simultaneously. This is different from TCA's `@Shared`, which synchronises a *value type* across reducers — SwiftModel sharing is richer: the shared model has full lifecycle, sends and receives events, and runs `onActivate()` like any other model.
+
+SwiftModel supports sharing with the following implications:
+
+- A shared model will inherit the dependencies at its initial point of entry to the model hierarchy.
+- The shared model is activated on initial anchoring and deactivated once the last reference of the model is removed.
+- An event sent from a shared model will be coalesced and receivers will only see a single event (even though it was sent from all its locations in the model hierarchy).
+- Similarly a shared model will only receive sent events at most once.
+
+### Debugging State Changes
+
+SwiftModel keeps track of all model state changes and can print diffs, trigger lists, and value snapshots to help you understand what's happening at runtime.
+
+Enable debug output for the lifetime of a model by adding a modifier before anchoring:
+
+```swift
+AppModel().withDebug().withAnchor()
+```
+
+Or configure what gets printed using `DebugOptions`:
+
+```swift
+// Print a diff of the whole model tree whenever anything changes
+AppModel().withDebug([.changes()]).withAnchor()
+
+// Also show which properties triggered the update
+AppModel().withDebug([.triggers(), .changes()]).withAnchor()
+
+// Use a custom label and output stream
+AppModel().withDebug([.changes(), .name("App"), .printer(myStream)]).withAnchor()
+```
+
+The trigger format can be `.name` (default), `.withValue` (old → new), or `.withDiff` (structured diff — useful when the trigger value is itself a model):
+
+```swift
+// "AppModel.filter: \"a\" → \"b\""
+AppModel().withDebug([.triggers(.withValue), .changes()]).withAnchor()
+
+// Full structured diff of the triggering property
+AppModel().withDebug([.triggers(.withDiff), .changes()]).withAnchor()
+```
+
+Diffs default to `.compact` style (only the changed lines and their structural ancestors). Pass a `DiffStyle` to change this:
+
+```swift
+// Show every unchanged sibling as "… (N unchanged)"
+model.debug([.changes(.diff(.collapsed))])
+
+// Show the full before/after context
+model.debug([.changes(.diff(.full))])
+```
+
+To debug a specific expression or enable debug output only temporarily on a live model, use `debug()` on the model directly — it returns a `Cancellable` you can cancel when done:
+
+```swift
+// Watch only a specific sub-expression
+model.debug([.triggers(), .changes()]) { model.filter }
+
+// Enable temporarily
+let cancel = model.debug()
+// ... do work ...
+cancel.cancel()
+```
+
+The same `DebugOptions` are also accepted by `memoize` and `Observed`, so you can trace individual computed values or observation-driven side effects:
+
+```swift
+// Print triggers and the new value whenever a memoized result changes
+node.memoize(for: "sorted", debug: [.triggers(), .changes(.value)]) { items.sorted() }
+
+// Print which dependency triggered an Observed update
+node.forEach(Observed(debug: [.triggers(.withValue)]) { model.count }) { value in ... }
+```
+
+> Debug output is only active in `DEBUG` builds.
+
+> The leading underscore on `_printChanges` and `_withPrintChanges` is intentional — it mirrors the convention used by SwiftUI's own `_printChanges()` and TCA's `_printChanges()`. The underscore signals that this is a supported but debug-only tool that should not remain in production code. It is deliberately unsearchable to discourage leaving calls in shipping builds.
+
+## SwiftUI Integration
+
+SwiftModel has been designed to integrate well with SwiftUI. Where you typically conform your models to `ObservableObject` in plain vanilla SwiftUI projects, and get access and view updates by using `@ObservedObject` in your SwiftUI views. In SwiftModel you instead apply `@Model` to your models and use `@ObservedModel` to trigger your views to update on state changes.
+
+```swift
+struct CounterView: View {
+  @ObservedModel var model: CounterModel
+
+  var body: some View {
+    HStack {
+      Button("-") { model.decrementTapped() }
+      Text("\(model.count)")
+      Button("+") { model.incrementTapped() }
+    }
+  }
+}
+```
+
+Access to embedded models and derived properties are straight forward as well.
+
+```swift
+struct AppView: View {
+  @ObservedModel var model: AppModel
+
+  var body: some View {
+    ZStack(alignment: .bottom) {
+      List {
+        Text("Sum: \(model.sum)")
+
+        ForEach(model.counters) { row in
+          CounterRowView(model: row)
+        }
+      }
+
+      if let factPrompt = model.factPrompt {
+        FactPromptView(model: factPrompt)
+      }
+    }
+  }
+}
+```
+
+> `@ObservedModel` has been carefully crafted to only trigger view updates when properties you are accessing from your view is updated. In comparison, `@ObservedObject` will trigger a view update no matter what `@Published` property is updated in your `ObservableObject` model object.
+
+### iOS 17+ Observation Compatibility
+
+On iOS 17+, macOS 14+, tvOS 17+, and watchOS 10+, SwiftModel provides enhanced compatibility with Swift's native observation infrastructure. The `@Model` macro works seamlessly with types that conform to the `Observable` protocol (typically via the `@Observable` macro). Models automatically integrate with the platform's `ObservationRegistrar` when available, providing seamless observation support.
+
+**When you need `@ObservedModel`:**
+- **Always needed** if you require bindings to your model's properties (e.g., for forms, text fields, steppers)
+- **Optional** on iOS 17+ for observation-only use cases (reading properties without creating bindings)
+
+**Why Apple's `@Bindable` doesn't work with Models:**
+
+Apple's `@Bindable` property wrapper (introduced in iOS 17+) is designed to work with reference types (classes) that conform to the `Observable` protocol. However, SwiftModel's `@Model` types are value types (structs) with reference semantics. While the `Observable` protocol itself doesn't require reference types, Apple chose to restrict `@Bindable`'s initializers to only accept classes. This design decision means you cannot use `@Bindable` with Models.
+
+For bindings with Models, continue to use `@ObservedModel` on all iOS versions, which provides the same binding capabilities as `@Bindable` while also supporting SwiftModel's value-type architecture.
+
+### Bindings
+
+The `@ObservedModel` also expose bindings to a model's properties:
+
+```swift
+Stepper(value: $model.count) {
+  Text("\(model.count)")
+}
+```

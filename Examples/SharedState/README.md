@@ -2,7 +2,6 @@
 
 A tabbed app demonstrating how SwiftModel enables multiple views to share state without tightly coupling their models together.
 
-This is a refactoring of a [sample app](https://github.com/pointfreeco/swift-composable-architecture/blob/main/Examples/CaseStudies/SwiftUICaseStudies/01-GettingStarted-SharedState.swift) from [Point-Free](https://www.pointfree.co)'s [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture).
 
 ## What it demonstrates
 
