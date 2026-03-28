@@ -94,23 +94,36 @@ jobs:
             cp "$subdir"* "$ANDROID_STORE/records/$name/"
           done
 
-      - name: Debug Android SDK structure
+      - name: Debug Android SDK and NDK structure
         run: |
           SDK="$HOME/Library/org.swift.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle"
-          echo "=== Top-level ==="
+          echo "=== SDK top-level ==="
           ls "$SDK/"
           echo "=== swift-android contents ==="
           ls "$SDK/swift-android/"
-          echo "=== semaphore.h search ==="
+          echo "=== semaphore.h in SDK bundle ==="
           find "$SDK" -name "semaphore.h" 2>/dev/null | head -10
+          echo "=== Pre-installed NDK ==="
+          ls "${ANDROID_HOME}/ndk/" 2>/dev/null || echo "No NDK at ANDROID_HOME/ndk"
+          echo "=== ANDROID_NDK_HOME ==="
+          echo "${ANDROID_NDK_HOME:-not set}"
           echo "=== xcode-select ==="
           xcode-select -p
 
       - name: Build SwiftModelTests for Android
         run: |
+          # The Swift 6.3 cross-compiler needs the Android NDK sysroot headers
+          # to compile the SwiftOverlayShims C module (LibcOverlayShims.h includes
+          # <semaphore.h>). The SDK bundle's sysroot path isn't resolved correctly
+          # on this host, so we pass the pre-installed NDK headers explicitly.
+          NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_HOME}/ndk/$(ls "${ANDROID_HOME}/ndk/" | sort -V | tail -1)}"
+          SYSROOT="$NDK_HOME/toolchains/llvm/prebuilt/darwin-aarch64/sysroot"
+          echo "Using NDK sysroot: $SYSROOT"
           swift build \
             --swift-sdk aarch64-unknown-linux-android28 \
-            --build-tests
+            --build-tests \
+            -Xcc "-I$SYSROOT/usr/include" \
+            -Xcc "-I$SYSROOT/usr/include/aarch64-linux-android"
 
       - name: Run SwiftModelTests on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
