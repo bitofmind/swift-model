@@ -40,6 +40,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Build macOS tests (seeds index store for Android cross-compilation)
+        # Workaround for two Swift 6.3 cross-compilation issues:
+        #
+        # 1. Index store bug: the cross-compiler writes index units to the HOST
+        #    (macOS) store instead of the Android store. Building macOS tests
+        #    first seeds those units; the next step copies them to the Android
+        #    path so SPM's test-discovery step can find them.
+        #
+        # 2. XCTestCaseEntry: SPM generates `all-discovered-tests.swift` (a
+        #    backward-compatibility shim) compiled for the HOST. It references
+        #    `XCTestCaseEntry`, which exists in the macOS 15 SDK but was removed
+        #    in macOS 26. If this step breaks after a macOS runner upgrade, the
+        #    root cause is likely that removal — check whether SPM has been
+        #    updated to skip the XCTest shim for cross-compilation targets.
+        #
+        # This step intentionally runs BEFORE installing Swift 6.3 so it uses
+        # the Xcode-bundled Swift, which is compatible with all project dependencies
+        # (some dependencies don't compile cleanly under the open-source Swift 6.3
+        # toolchain due to Swift Testing API differences).
+        run: swift build --build-tests
+
       - name: Install Swift 6.3 open-source toolchain
         # The Xcode-bundled Swift does not include the Android SDK support
         # added in Swift 6.3, so we install the open-source toolchain.
@@ -55,22 +76,6 @@ jobs:
           swift sdk install \
             https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_android.artifactbundle.tar.gz \
             --checksum 2f2942c4bcea7965a08665206212c66991dabe23725aeec7c4365fc91acad088
-
-      - name: Build macOS tests (seeds index store for Android cross-compilation)
-        # Workaround for two Swift 6.3 cross-compilation issues:
-        #
-        # 1. Index store bug: the cross-compiler writes index units to the HOST
-        #    (macOS) store instead of the Android store. Building macOS tests
-        #    first seeds those units; the next step copies them to the Android
-        #    path so SPM's test-discovery step can find them.
-        #
-        # 2. XCTestCaseEntry: SPM generates `all-discovered-tests.swift` (a
-        #    backward-compatibility shim) compiled for the HOST. It references
-        #    `XCTestCaseEntry`, which exists in the macOS 15 SDK but was removed
-        #    in macOS 26. If this step breaks after a macOS runner upgrade, the
-        #    root cause is likely that removal — check whether SPM has been
-        #    updated to skip the XCTest shim for cross-compilation targets.
-        run: swift build --build-tests
 
       - name: Seed Android index store from macOS build
         run: |
