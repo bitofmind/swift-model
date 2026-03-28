@@ -128,7 +128,7 @@ For async effects and dependencies, override them at the anchor site:
 | Model events | Manual callbacks | Actions | **Typed streams, any direction** |
 | Undo / Redo | DIY | DIY | **Built-in** |
 | Hierarchy queries | None | None | **Built-in** |
-| Context propagation | `@Environment` | None | **Model-layer environment + preferences** |
+| Context propagation | View `@Environment` only | None | **Model-layer environment + preferences** |
 | Shared state | Manual | `@Shared` (value sync) | **Model dependency (live instance)** |
 | Thread safety | `@MainActor` discipline | `@MainActor` discipline | **Lock-based, any thread** |
 | Learning curve | Minimal | Very steep | **Moderate** |
@@ -141,7 +141,7 @@ For async effects and dependencies, override them at the anchor site:
 
 **[Async lifetime](Docs/Lifecycle.md)** — `node.task`, `node.forEach`, reactive streams with `Observed`, `onActivate`, `withActivation` for composable behaviour injection, `observeAnyModification`, transactions, and cancellation groups.
 
-**[Undo and redo](Docs/Lifecycle.md#undo-and-redo)** — `node.trackUndo()` with selective key-path tracking, `UndoManager` integration, and observable `canUndo` / `canRedo`.
+**[Undo and redo](Docs/Undo.md)** — `node.trackUndo()` with selective key-path tracking, `UndoManager` integration, and observable `canUndo` / `canRedo`.
 
 **[Dependency injection](Docs/Dependencies.md)** — `@ModelDependency`, per-model and per-hierarchy overrides, preview values, and test overrides at the anchor site.
 

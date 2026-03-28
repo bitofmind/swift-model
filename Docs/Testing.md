@@ -44,9 +44,9 @@ The `expect` builder block accepts any number of predicates. Using `==` gives yo
 
 ```swift
 await expect {
-    model.count == 42          // diff on failure
-    model.isLoading == false   // diff on failure
-    model.title.hasPrefix("A") // plain bool — no diff
+    model.count == 42          // diff on failure: shows actual vs expected
+    model.isLoading == false   // diff on failure: shows actual vs expected
+    model.title.hasPrefix("A") // no left/right diff — but model.title is still tracked as asserted
 }
 ```
 
@@ -124,10 +124,16 @@ struct MyTests {
 }
 ```
 
-You can also temporarily change exhaustivity for part of a test body:
+You can also temporarily change exhaustivity for part of a test body using either an absolute value or a relative modifier:
 
 ```swift
+// Absolute — turn exhaustivity off entirely for this block
 await withExhaustivity(.off) {
+    model.triggerSideEffects()
+}
+
+// Relative — remove a specific category while keeping the rest
+await withExhaustivity(.removing(.state)) {
     model.triggerSideEffects()
 }
 ```
@@ -176,28 +182,35 @@ For tests that only care about the end result and not intermediate timer ticks, 
 
 ### Settling
 
-Models that perform async work during activation — loading data in `onActivate()`, subscribing to streams, or triggering `forEach` callbacks — may not be fully ready when `withAnchor()` returns. Use `settle()` as the first assertion to wait for the model to reach a stable state and reset the exhaustivity baseline:
+Models that perform async work during activation — loading data in `onActivate()`, subscribing to streams, or triggering `forEach` callbacks — may not be fully ready when `withAnchor()` returns. Asserting every intermediate state change produced during activation is tedious and brittle. Use `settle()` to wait for activation to complete, then reset the exhaustivity baseline so your test only covers post-activation behaviour:
 
 ```swift
-@Model struct ItemListModel {
+@Model struct DashboardModel {
     var items: [Item] = []
+    var isLoading = false
+    var lastSyncDate: Date? = nil
 
     func onActivate() {
         node.task {
+            isLoading = true
             items = try await fetchItems()
+            isLoading = false
+            lastSyncDate = .now
         }
     }
 }
 
-@Test(.modelTesting) func testItemSelection() async {
-    let model = ItemListModel().withAnchor()
+@Test(.modelTesting) func testRefresh() async {
+    let model = DashboardModel().withAnchor()
 
-    // Wait for onActivate() task to finish and stabilize.
-    await settle { model.items.count > 0 }
+    // Four state changes happen during activation: isLoading (true), items,
+    // isLoading (false), lastSyncDate. settle() lets all of that complete
+    // and clears the baseline so the test only cares about what happens after.
+    await settle()
 
     // Baseline is now clean — only changes after this point are tracked.
-    model.selectItem(id: model.items[0].id)
-    await expect { model.selectedItem != nil }
+    model.refresh()
+    await expect { model.lastSyncDate != nil }
 }
 ```
 
@@ -229,6 +242,52 @@ await expect { model.didSend(.loaded) }
 ```
 
 Without `settle()`, the test would need to assert every intermediate state change caused by activation — brittle and unnecessary when you only care about the steady state.
+
+### Failure Messages
+
+SwiftModel produces specific, actionable failure messages for every category. Here is what each looks like.
+
+**`expect` predicate not met** — shows actual vs expected with a diff:
+
+```
+Expectation not met: Counter.count: …
+
+    − 99
+    + 3
+
+(Expected: −, Actual: +)
+```
+
+**Unasserted state change** — shows the property and its final value:
+
+```
+State not exhausted: …
+
+Modifications not asserted:
+
+    Counter.count == 42
+```
+
+**Unasserted event** — names the event type and the model it came from:
+
+```
+Event `CounterModel.Event.incrementTapped` sent from `CounterModel` was not handled
+```
+
+**Active tasks still running** — names each task and links to its registration call site in Xcode:
+
+```
+Models of type `SyncModel` have 2 active tasks still running
+Active task 'upload' of `SyncModel` still running  → SyncModel.swift:34
+Active task 'validate' of `SyncModel` still running  → SyncModel.swift:35
+```
+
+**Probe called but not consumed** — shows the argument values that were passed:
+
+```
+Expected probe not called "onFact":
+    (id: 2, fact: "2 is a perfect number.")
+```
 
 ### Refactor-Resilient Tests
 

@@ -112,12 +112,12 @@ node.removeLocal(\.isFeatureEnabled)
 
 ### Environment storage — top-down propagation
 
-For values that should automatically flow to all descendants — like a colour scheme, a selection state, or an editing mode — extend `EnvironmentKeys` with a computed property returning an `EnvironmentStorage` descriptor:
+For values that should automatically flow to all descendants — like a login state, an onboarding flag, or an editing mode — extend `EnvironmentKeys` with a computed property returning an `EnvironmentStorage` descriptor:
 
 ```swift
 extension EnvironmentKeys {
-    var colorScheme: EnvironmentStorage<ColorScheme> {
-        .init(defaultValue: .light)
+    var isLoggedIn: EnvironmentStorage<Bool> {
+        .init(defaultValue: false)
     }
 }
 ```
@@ -125,20 +125,20 @@ extension EnvironmentKeys {
 A write on any ancestor is visible to all descendants. Reading walks up the hierarchy to the nearest ancestor that has set the value, returning `defaultValue` if none has:
 
 ```swift
-// Parent sets the scheme for its entire subtree:
-parentModel.node.environment.colorScheme = .dark
+// Root model sets the login state for its entire subtree:
+rootModel.node.environment.isLoggedIn = true
 
-// Any descendant reads it (returns .dark — inherited from parent):
-let scheme = childModel.node.environment.colorScheme
+// Any descendant reads it (returns true — inherited from root):
+let loggedIn = childModel.node.environment.isLoggedIn
 
 // A child can locally override it; only that child and its descendants see the override:
-childModel.node.environment.colorScheme = .light
+childModel.node.environment.isLoggedIn = false
 ```
 
 To remove a local override and go back to inheriting from the nearest ancestor:
 
 ```swift
-node.removeEnvironment(\.colorScheme)
+node.removeEnvironment(\.isLoggedIn)
 ```
 
 ### Preferences — bottom-up aggregation
@@ -178,22 +178,22 @@ Both reads and writes participate in SwiftModel's observation system: wrapping a
 
 ### Common patterns
 
-**Propagating a colour scheme / theme:**
+**Propagating app-wide state (e.g. login, onboarding):**
 
 ```swift
 extension EnvironmentKeys {
-    var theme: EnvironmentStorage<AppTheme> {
-        .init(defaultValue: .default)
+    var isLoggedIn: EnvironmentStorage<Bool> {
+        .init(defaultValue: false)
     }
 }
 
-// Root model sets the theme once:
+// Root model sets the state once:
 func onActivate() {
-    node.environment.theme = userPreferences.theme
+    node.environment.isLoggedIn = authService.isLoggedIn
 }
 
 // Any descendant reads it:
-let colors = node.environment.theme.colors
+let loggedIn = node.environment.isLoggedIn
 ```
 
 **Aggregating unsaved-changes across a subtree:**

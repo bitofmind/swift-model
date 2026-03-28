@@ -258,8 +258,6 @@ node.forEach(Observed(debug: [.triggers(.withValue)]) { model.count }) { value i
 
 > Debug output is only active in `DEBUG` builds.
 
-> The leading underscore on `_printChanges` and `_withPrintChanges` is intentional — it mirrors the convention used by SwiftUI's own `_printChanges()` and TCA's `_printChanges()`. The underscore signals that this is a supported but debug-only tool that should not remain in production code. It is deliberately unsearchable to discourage leaving calls in shipping builds.
-
 ## SwiftUI Integration
 
 SwiftModel has been designed to integrate well with SwiftUI. Where you typically conform your models to `ObservableObject` in plain vanilla SwiftUI projects, and get access and view updates by using `@ObservedObject` in your SwiftUI views. In SwiftModel you instead apply `@Model` to your models and use `@ObservedModel` to trigger your views to update on state changes.
