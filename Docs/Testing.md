@@ -99,7 +99,7 @@ Assert that a model sent an event using `didSend(_:)` inside an `expect` block:
 
 ### Exhaustivity
 
-By default the trait enforces exhaustivity across six categories — any unasserted effect in any category fails the test at the end of the test function:
+By default the trait enforces exhaustivity across seven categories — any unasserted effect in any category fails the test at the end of the test function:
 
 - **`.state`** — every state change must be consumed by an `expect` block
 - **`.events`** — every event sent via `node.send()` must be observed with `didSend(_:)`

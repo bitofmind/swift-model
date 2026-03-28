@@ -51,3 +51,47 @@ node.forEach(node.event(fromType: StandupDetail.self)) { event, standupDetail in
   }
 }
 ```
+
+### Event Routing
+
+By default events travel to `[.self, .ancestors]` — the sending model and all of its parents. Override this with an explicit `to:` argument:
+
+```swift
+node.send(AppEvent.syncRequired, to: .descendants)       // broadcast down
+node.send(AppEvent.refresh, to: [.self, .children])      // only immediate children
+node.send(AppEvent.logout, to: [.self, .ancestors, .descendants])  // entire tree
+```
+
+Available relations:
+
+| Relation | Direction |
+|---|---|
+| `.self` | The sending model only |
+| `.ancestors` | All parents and grandparents (default upward path) |
+| `.descendants` | All children and grandchildren |
+| `.children` | Direct children only |
+| `.dependencies` | Dependency models at each visited node |
+
+### Events vs. Callbacks
+
+The right choice depends on coupling:
+
+**Use a callback closure** when the parent creates the child and already knows what to do. It is simpler, more explicit, and directly testable with `TestProbe`:
+
+```swift
+@Model struct RecordMeetingModel {
+    let onSave: @Sendable (String) -> Void
+    let onDiscard: @Sendable () -> Void
+}
+```
+
+**Use events** when the communication crosses several levels of the hierarchy, when multiple models might listen, or when you want to avoid threading a closure through intermediaries:
+
+```swift
+// Any ancestor can listen — no closure threading required
+node.forEach(node.event(of: AppEvent.logout)) {
+    user = nil
+}
+```
+
+Events are also a natural fit when the sender doesn't know who the receiver is — for example, a deep leaf model that triggers a navigation pop or a global state reset at the root.

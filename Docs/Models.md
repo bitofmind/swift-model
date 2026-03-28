@@ -191,72 +191,9 @@ SwiftModel supports sharing with the following implications:
 - An event sent from a shared model will be coalesced and receivers will only see a single event (even though it was sent from all its locations in the model hierarchy).
 - Similarly a shared model will only receive sent events at most once.
 
-### Debugging State Changes
+## Debugging
 
-SwiftModel keeps track of all model state changes and can print diffs, trigger lists, and value snapshots to help you understand what's happening at runtime.
-
-Enable debug output for the lifetime of a model by adding a modifier before anchoring:
-
-```swift
-AppModel().withDebug().withAnchor()
-```
-
-Or configure what gets printed using `DebugOptions`:
-
-```swift
-// Print a diff of the whole model tree whenever anything changes
-AppModel().withDebug([.changes()]).withAnchor()
-
-// Also show which properties triggered the update
-AppModel().withDebug([.triggers(), .changes()]).withAnchor()
-
-// Use a custom label and output stream
-AppModel().withDebug([.changes(), .name("App"), .printer(myStream)]).withAnchor()
-```
-
-The trigger format can be `.name` (default), `.withValue` (old → new), or `.withDiff` (structured diff — useful when the trigger value is itself a model):
-
-```swift
-// "AppModel.filter: \"a\" → \"b\""
-AppModel().withDebug([.triggers(.withValue), .changes()]).withAnchor()
-
-// Full structured diff of the triggering property
-AppModel().withDebug([.triggers(.withDiff), .changes()]).withAnchor()
-```
-
-Diffs default to `.compact` style (only the changed lines and their structural ancestors). Pass a `DiffStyle` to change this:
-
-```swift
-// Show every unchanged sibling as "… (N unchanged)"
-model.debug([.changes(.diff(.collapsed))])
-
-// Show the full before/after context
-model.debug([.changes(.diff(.full))])
-```
-
-To debug a specific expression or enable debug output only temporarily on a live model, use `debug()` on the model directly — it returns a `Cancellable` you can cancel when done:
-
-```swift
-// Watch only a specific sub-expression
-model.debug([.triggers(), .changes()]) { model.filter }
-
-// Enable temporarily
-let cancel = model.debug()
-// ... do work ...
-cancel.cancel()
-```
-
-The same `DebugOptions` are also accepted by `memoize` and `Observed`, so you can trace individual computed values or observation-driven side effects:
-
-```swift
-// Print triggers and the new value whenever a memoized result changes
-node.memoize(for: "sorted", debug: [.triggers(), .changes(.value)]) { items.sorted() }
-
-// Print which dependency triggered an Observed update
-node.forEach(Observed(debug: [.triggers(.withValue)]) { model.count }) { value in ... }
-```
-
-> Debug output is only active in `DEBUG` builds.
+See **[Debugging](Debugging.md)** for `withDebug()`, diff styles, trigger tracing, and `DebugOptions` for `memoize` and `Observed`.
 
 ## SwiftUI Integration
 
@@ -301,20 +238,6 @@ struct AppView: View {
 ```
 
 > `@ObservedModel` has been carefully crafted to only trigger view updates when properties you are accessing from your view is updated. In comparison, `@ObservedObject` will trigger a view update no matter what `@Published` property is updated in your `ObservableObject` model object.
-
-### iOS 17+ Observation Compatibility
-
-On iOS 17+, macOS 14+, tvOS 17+, and watchOS 10+, SwiftModel provides enhanced compatibility with Swift's native observation infrastructure. The `@Model` macro works seamlessly with types that conform to the `Observable` protocol (typically via the `@Observable` macro). Models automatically integrate with the platform's `ObservationRegistrar` when available, providing seamless observation support.
-
-**When you need `@ObservedModel`:**
-- **Always needed** if you require bindings to your model's properties (e.g., for forms, text fields, steppers)
-- **Optional** on iOS 17+ for observation-only use cases (reading properties without creating bindings)
-
-**Why Apple's `@Bindable` doesn't work with Models:**
-
-Apple's `@Bindable` property wrapper (introduced in iOS 17+) is designed to work with reference types (classes) that conform to the `Observable` protocol. However, SwiftModel's `@Model` types are value types (structs) with reference semantics. While the `Observable` protocol itself doesn't require reference types, Apple chose to restrict `@Bindable`'s initializers to only accept classes. This design decision means you cannot use `@Bindable` with Models.
-
-For bindings with Models, continue to use `@ObservedModel` on all iOS versions, which provides the same binding capabilities as `@Bindable` while also supporting SwiftModel's value-type architecture.
 
 ### Bindings
 

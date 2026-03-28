@@ -153,6 +153,8 @@ For async effects and dependencies, override them at the anchor site:
 
 **[Testing](Docs/Testing.md)** — `expect { }`, `settle()`, `require()`, `TestProbe`, exhaustivity control per category, time-control with `TestClock`, and `withModelTesting` for non-trait contexts.
 
+**[Debugging](Docs/Debugging.md)** — `withDebug()`, diff styles, trigger tracing, and `DebugOptions` for `memoize` and `Observed`.
+
 ## Examples
 
 | Example | What it shows |
@@ -175,3 +177,7 @@ Clone the repo and open any example in Xcode to run it immediately.
 **Not a Combine replacement.** SwiftModel uses `async`/`await` throughout. Combine is supported via `node.onReceive(_:)` for projects that need it, but is not required.
 
 **Not magic.** The `@Model` macro is a code generator. Expand it in Xcode (`Editor → Expand Macro`) to see exactly what it produces. No runtime swizzling, no reflection.
+
+---
+
+If SwiftModel is useful to you, a star helps others find it. Issues and pull requests are welcome — this is a spare-time project, so responses may take a day or two.

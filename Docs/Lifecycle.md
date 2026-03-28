@@ -270,7 +270,7 @@ The closure is non-throwing by design — transactions have no rollback, so a th
 ```swift
 func onActivate() {
     // Show unsaved-changes indicator whenever anything in the form changes
-    node.forEach(observeAnyModification()) { [weak self] _ in
+    node.forEach(observeAnyModification()) { _ in
         hasUnsavedChanges = true
     }
 }
