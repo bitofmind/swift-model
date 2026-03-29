@@ -21,7 +21,11 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "600.0.0"),
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.6.0"),
-        .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.6"),
+        // Pin below 1.19.0: that version introduced Testing.Attachment conformances using
+        // canImport(AppKit/UIKit) guards that evaluate against the macOS HOST during Android
+        // cross-compilation (a Swift 6.3 compiler bug), causing build failures for Android.
+        // 1.18.x uses #if os(macOS) / #if os(iOS) guards (target-based, correct).
+        .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", "1.18.6"..<"1.19.0"),
         .package(url: "https://github.com/apple/swift-collections", from: "1.1.0"),
         .package(url: "https://github.com/pointfreeco/swift-identified-collections", from: "1.1.0"),
         .package(url: "https://github.com/pointfreeco/swift-concurrency-extras", from: "1.3.0"),
