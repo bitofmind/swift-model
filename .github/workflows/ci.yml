@@ -56,12 +56,13 @@ jobs:
           swift sdk install \
             "https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_android.artifactbundle.tar.gz" \
             --checksum 2f2942c4bcea7965a08665206212c66991dabe23725aeec7c4365fc91acad088
-          # GitHub Actions containers set HOME=/github/home rather than /root,
-          # so locate the setup script dynamically instead of hardcoding the path.
-          BUNDLE_DIR="$HOME/.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle"
-          SETUP_SCRIPT=$(find "$BUNDLE_DIR" -name "setup-android-sdk.sh" 2>/dev/null | head -1)
+          # swift sdk install uses FileManager.homeDirectoryForCurrentUser (getpwuid)
+          # on Linux, which returns /root regardless of the $HOME env var. GitHub
+          # Actions containers set HOME=/github/home, but the bundle always lands
+          # in /root/.swiftpm/swift-sdks/ when running as the root container user.
+          SETUP_SCRIPT=$(find /root/.swiftpm/swift-sdks -name "setup-android-sdk.sh" 2>/dev/null | head -1)
           if [ -z "$SETUP_SCRIPT" ]; then
-            echo "setup-android-sdk.sh not found. Bundle contents:"; find "$BUNDLE_DIR" | head -20; exit 1
+            echo "setup-android-sdk.sh not found. Bundle contents:"; find /root/.swiftpm | head -20; exit 1
           fi
           bash "$SETUP_SCRIPT"
 
