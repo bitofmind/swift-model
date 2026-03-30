@@ -21,6 +21,7 @@ jobs:
   linux:
     name: Linux (Swift ${{ matrix.swift }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:

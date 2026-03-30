@@ -520,7 +520,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             fail("State did not settle: model IDs kept diverging after the predicate passed. This may indicate a backgroundCallQueue loop or an unresolvable ID mismatch.", at: fileAndLine)
                             return
                         }
-                        await backgroundCall.waitForCurrentItems()
+                        await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
                         await Task.yield()
                         // Count as progress — backgroundCall draining counts as activity.
                         lastProgressTime = DispatchTime.now().uptimeNanoseconds
@@ -553,7 +553,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             // context as a version number.
                             var lastChangeVersion = self.context.modificationCount
                             while true {
-                                await backgroundCall.waitForCurrentItems()
+                                await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
                                 await Task.yield()
                                 let currentVersion = self.context.modificationCount
                                 if currentVersion == lastChangeVersion {
@@ -959,8 +959,9 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             await bgQueue.waitForCurrentItems(deadline: deadline)
             // waitUntilIdle() ensures the drain loop's post-batch Task.yield() has run
             // so stream consumers have had a scheduler turn before we re-check.
+            // Use the same deadline so a starved drain loop doesn't cause an indefinite hang.
             if !bgQueue.isIdle {
-                await bgQueue.waitUntilIdle()
+                await bgQueue.waitUntilIdle(deadline: deadline)
             }
             await Task.yield()
             // Draining the queue counts as progress — it may have delivered an update.

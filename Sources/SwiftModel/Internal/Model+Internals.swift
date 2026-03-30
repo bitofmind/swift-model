@@ -211,16 +211,40 @@ private func callQueueIsIdle(_ state: LockIsolated<CallQueueState?>) -> Bool {
     state.value == nil
 }
 
-private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>) async {
+private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, deadline: UInt64 = .max) async {
     await withCheckedContinuation { cont in
+        let resumed = LockIsolated(false)
         let shouldResume = state.withValue { s -> Bool in
             if s != nil {
-                s!.onIdleCallbacks.append { cont.resume() }
+                s!.onIdleCallbacks.append {
+                    resumed.withValue { r in
+                        guard !r else { return }
+                        r = true
+                        cont.resume()
+                    }
+                }
                 return false
             }
             return true
         }
-        if shouldResume { cont.resume() }
+        if shouldResume {
+            cont.resume()
+            return
+        }
+        if deadline < .max {
+            Task {
+                // Sleep until deadline then resume if the drain loop hasn't gone idle yet.
+                let now = DispatchTime.now().uptimeNanoseconds
+                if deadline > now {
+                    try? await Task.sleep(nanoseconds: deadline - now)
+                }
+                resumed.withValue { r in
+                    guard !r else { return }
+                    r = true
+                    cont.resume()
+                }
+            }
+        }
     }
 }
 
@@ -321,8 +345,9 @@ struct MainCallQueue: @unchecked Sendable {
     var isIdle: Bool { callQueueIsIdle(state) }
 
     /// Suspends until the drain task goes idle (all calls flushed including `Task.yield()`).
-    func waitUntilIdle() async {
-        await callQueueWaitUntilIdle(state)
+    /// Pass a `deadline` (absolute uptime nanoseconds) to bound the wait; defaults to `.max` (unbounded).
+    func waitUntilIdle(deadline: UInt64 = .max) async {
+        await callQueueWaitUntilIdle(state, deadline: deadline)
     }
 
     /// Suspends until all items currently in the queue have been processed, or the deadline passes.
@@ -361,8 +386,9 @@ struct BackgroundCallQueue: @unchecked Sendable {
     var isIdle: Bool { callQueueIsIdle(state) }
 
     /// Suspends until the drain task goes idle (all calls flushed including `Task.yield()`).
-    func waitUntilIdle() async {
-        await callQueueWaitUntilIdle(state)
+    /// Pass a `deadline` (absolute uptime nanoseconds) to bound the wait; defaults to `.max` (unbounded).
+    func waitUntilIdle(deadline: UInt64 = .max) async {
+        await callQueueWaitUntilIdle(state, deadline: deadline)
     }
 
     /// Suspends until all items currently in the queue have been processed, or the deadline passes.
