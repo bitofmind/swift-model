@@ -56,8 +56,14 @@ jobs:
           swift sdk install \
             "https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_android.artifactbundle.tar.gz" \
             --checksum 2f2942c4bcea7965a08665206212c66991dabe23725aeec7c4365fc91acad088
-          SDK_DIR="$HOME/.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle/swift-android"
-          bash "$SDK_DIR/scripts/setup-android-sdk.sh"
+          # GitHub Actions containers set HOME=/github/home rather than /root,
+          # so locate the setup script dynamically instead of hardcoding the path.
+          BUNDLE_DIR="$HOME/.swiftpm/swift-sdks/swift-6.3-RELEASE_android.artifactbundle"
+          SETUP_SCRIPT=$(find "$BUNDLE_DIR" -name "setup-android-sdk.sh" 2>/dev/null | head -1)
+          if [ -z "$SETUP_SCRIPT" ]; then
+            echo "setup-android-sdk.sh not found. Bundle contents:"; find "$BUNDLE_DIR" | head -20; exit 1
+          fi
+          bash "$SETUP_SCRIPT"
 
       - name: Build Linux tests (seed index store for Android cross-compilation)
         # Workaround for a Swift 6.3 cross-compilation bug: the cross-compiler
