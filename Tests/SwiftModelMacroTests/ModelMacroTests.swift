@@ -1,6 +1,10 @@
+import Testing
+
+// SwiftModelMacros is a host-only macro target; it is not compiled for cross-compilation
+// targets like Android. Guard everything else so the target compiles as an empty stub there.
+#if canImport(SwiftModelMacros)
 import SwiftSyntaxMacros
 import SwiftSyntaxMacrosTestSupport
-import Testing
 import SwiftModelMacros
 import Dependencies
 import MacroTesting
@@ -486,3 +490,5 @@ struct ModelMacroTests {
         }
     }
 }
+
+#endif // canImport(SwiftModelMacros)

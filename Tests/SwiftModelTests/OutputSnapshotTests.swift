@@ -1,3 +1,4 @@
+#if !os(Android)
 import Foundation
 import Testing
 @testable import SwiftModel
@@ -797,3 +798,4 @@ struct TimeoutFailureTests {
         }
     }
 }
+#endif
