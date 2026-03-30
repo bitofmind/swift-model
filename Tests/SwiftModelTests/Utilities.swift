@@ -3,6 +3,7 @@ import ConcurrencyExtras
 import Dependencies
 import Foundation
 import IssueReporting
+import Testing
 
 @propertyWrapper
 final class Locked<Value> {
@@ -227,4 +228,37 @@ enum UpdatePath: String, CaseIterable {
 
 func withModelOptions<T>(_ options: ModelOption, _ body: () throws -> T) rethrows -> T {
     try ModelOption.$current.withValue(options, operation: body)
+}
+
+// MARK: - Background call isolation test trait
+
+/// A test trait that gives each test its own isolated `BackgroundCallQueue`,
+/// preventing parallel tests from observing each other's in-flight `Observed`
+/// pipeline updates.
+///
+/// Use on suites that explicitly call `await backgroundCall.waitUntilIdle()` or
+/// `await backgroundCall.waitForCurrentItems()` — those that don't use `.modelTesting`
+/// (which already provides per-test isolation automatically).
+struct BackgroundCallIsolationTrait: TestTrait, SuiteTrait {
+    var isRecursive: Bool { true }
+}
+
+#if swift(>=6.1)
+extension BackgroundCallIsolationTrait: TestScoping {
+    func provideScope(
+        for test: Test,
+        testCase: Test.Case?,
+        performing function: @Sendable () async throws -> Void
+    ) async throws {
+        try await _BackgroundCallLocals.$queue.withValue(BackgroundCallQueue()) {
+            try await function()
+        }
+    }
+}
+#endif
+
+extension Trait where Self == BackgroundCallIsolationTrait {
+    /// Gives each test its own `BackgroundCallQueue`, preventing parallel tests from
+    /// observing each other's in-flight `Observed` pipeline updates.
+    static var backgroundCallIsolation: Self { Self() }
 }

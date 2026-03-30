@@ -378,9 +378,23 @@ struct BackgroundCallQueue: @unchecked Sendable {
 /// Use `drain()`/`drainIfOnMain()` for synchronous flush from main-thread code paths.
 let mainCall = MainCallQueue()
 
+/// Global fallback when no test-local queue is active.
+private let _globalBackgroundCallQueue = BackgroundCallQueue()
+
+/// Task-local override for `backgroundCall`. Set by `.modelTesting`'s `provideScope` so
+/// each test runs against its own isolated queue — parallel tests cannot observe each
+/// other's in-flight `Observed` updates.
+enum _BackgroundCallLocals {
+    @TaskLocal static var queue: BackgroundCallQueue? = nil
+}
+
 /// Delivers Observed pipeline updates on a background thread.
 /// Use `isIdle`/`waitUntilIdle()` in tests to wait for the pipeline to settle.
-let backgroundCall = BackgroundCallQueue()
+/// Inside a `.modelTesting` test scope the task-local queue is returned, providing
+/// per-test isolation; outside tests the global singleton is used.
+var backgroundCall: BackgroundCallQueue {
+    _BackgroundCallLocals.queue ?? _globalBackgroundCallQueue
+}
 
 // MARK: - Batched observation updates
 

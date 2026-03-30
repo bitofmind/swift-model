@@ -201,7 +201,7 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         // Wait for the backgroundCall drain queue to finish processing any teardown
         // side-effects (onCancel callbacks, stream finalizations) that were dispatched
         // during onRemoval(). This ensures post-teardown assertions see final state.
-        await tester.access.context.backgroundCallQueue.waitUntilIdle()
+        await backgroundCall.waitUntilIdle()
     }
 
     package var exhaustivity: Exhaustivity {

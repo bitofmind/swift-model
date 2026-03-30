@@ -12,6 +12,7 @@ import ConcurrencyExtras
 ///
 /// Note: Dirty tracking is always enabled and cannot be disabled.
 /// The matrix helps us identify exactly which combinations have issues.
+@Suite(.backgroundCallIsolation)
 struct MemoizeDirtyObservationTests {
 
     // MARK: - Test Configuration Helper

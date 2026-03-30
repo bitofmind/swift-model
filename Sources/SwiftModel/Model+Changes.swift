@@ -543,8 +543,7 @@ private extension ModelNode {
                     isSame: nil,
                     useWithObservationTracking: useWithObservationTracking,
                     useCoalescing: useCoalescing,
-                    didModify: didModifyCallback,
-                    backgroundCallQueue: context.backgroundCallQueue
+                    didModify: didModifyCallback
                 ) {
                     // When called from a coalesced performUpdate (either the withObservationTracking
                     // or AccessCollector path): always call produce() so that dependency tracking
