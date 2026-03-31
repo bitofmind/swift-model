@@ -1,3 +1,4 @@
+import ConcurrencyExtras
 import Testing
 import Observation
 @testable import SwiftModel
@@ -25,8 +26,8 @@ struct MemoizePerformanceTests {
         let milliseconds = elapsed.components.attoseconds / 1_000_000_000_000_000
 
         print("Bulk updates (1000 items) took: \(milliseconds)ms")
-        print("Sort was called: \(model.sortCallCount) times")
-        print("Accesses: \(model.sortAccessCount)")
+        print("Sort was called: \(model.sortCallCount.value) times")
+        print("Accesses: \(model.sortAccessCount.value)")
 
         // Verify correctness
         #expect(model.sorted.allSatisfy { $0.value == 1 })
@@ -52,8 +53,8 @@ struct MemoizePerformanceTests {
         let milliseconds = elapsed.components.attoseconds / 1_000_000_000_000_000
 
         print("Bulk updates with transaction (1000 items) took: \(milliseconds)ms")
-        print("Sort was called: \(model.sortCallCount) times")
-        print("Accesses: \(model.sortAccessCount)")
+        print("Sort was called: \(model.sortCallCount.value) times")
+        print("Accesses: \(model.sortAccessCount.value)")
 
         // Verify correctness
         #expect(model.sorted.allSatisfy { $0.value == 1 })
@@ -75,11 +76,11 @@ struct MemoizePerformanceTests {
         let milliseconds = elapsed.components.attoseconds / 1_000_000_000_000_000
 
         print("1000 repeated accesses took: \(milliseconds)ms")
-        print("Sort was called: \(model.sortCallCount) times")
-        print("Accesses: \(model.sortAccessCount)")
+        print("Sort was called: \(model.sortCallCount.value) times")
+        print("Accesses: \(model.sortAccessCount.value)")
 
         // Should only compute once
-        #expect(model.sortCallCount == 1)
+        #expect(model.sortCallCount.value == 1)
     }
 
     @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
@@ -101,8 +102,8 @@ struct MemoizePerformanceTests {
         let milliseconds = elapsed.components.attoseconds / 1_000_000_000_000_000
 
         print("🔍 Bulk updates with nested Models (1000 items) took: \(milliseconds)ms")
-        print("🔍 Sort was called: \(model.sortCallCount) times")
-        print("🔍 Accesses: \(model.sortAccessCount)")
+        print("🔍 Sort was called: \(model.sortCallCount.value) times")
+        print("🔍 Accesses: \(model.sortAccessCount.value)")
 
         // Verify correctness
         #expect(model.sorted.allSatisfy { $0.value == 1 })
@@ -128,8 +129,8 @@ struct MemoizePerformanceTests {
         let milliseconds = elapsed.components.attoseconds / 1_000_000_000_000_000
 
         print("🔍 Bulk updates with nested Models + transaction (1000 items) took: \(milliseconds)ms")
-        print("🔍 Sort was called: \(model.sortCallCount) times")
-        print("🔍 Accesses: \(model.sortAccessCount)")
+        print("🔍 Sort was called: \(model.sortCallCount.value) times")
+        print("🔍 Accesses: \(model.sortAccessCount.value)")
 
         // Verify correctness
         #expect(model.sorted.allSatisfy { $0.value == 1 })
@@ -153,8 +154,8 @@ struct MemoizePerformanceTests {
             }
             
             _ = model.sorted  // Initial setup
-            let initialComputes = model.sortCallCount
-            
+            let initialComputes = model.sortCallCount.value
+
             let start = ContinuousClock.now
             model.transaction {
                 for i in 0..<model.items.count {
@@ -164,8 +165,8 @@ struct MemoizePerformanceTests {
             _ = model.sorted
             let elapsed = ContinuousClock.now - start
             let ms = Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
-            
-            let recomputes = model.sortCallCount - initialComputes
+
+            let recomputes = model.sortCallCount.value - initialComputes
             resultsWithout.append((recomputes, ms))
         }
         
@@ -174,8 +175,8 @@ struct MemoizePerformanceTests {
             let model = BenchmarkModel(itemCount: 100).withAnchor()
             
             _ = model.sorted  // Initial setup
-            let initialComputes = model.sortCallCount
-            
+            let initialComputes = model.sortCallCount.value
+
             let start = ContinuousClock.now
             // NO TRANSACTION - test coalescing outside transaction where it works
             for i in 0..<model.items.count {
@@ -186,8 +187,8 @@ struct MemoizePerformanceTests {
             _ = model.sorted
             let elapsed = ContinuousClock.now - start
             let ms = Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
-            
-            let recomputes = model.sortCallCount - initialComputes
+
+            let recomputes = model.sortCallCount.value - initialComputes
             resultsWith.append((recomputes, ms))
         }
         
@@ -263,7 +264,7 @@ struct MemoizePerformanceTests {
                 let model = withModelOptions(config.options) { BenchmarkModel(itemCount: mutationCount).withAnchor() }
 
                 _ = model.sorted  // Initial setup
-                let initialComputes = model.sortCallCount
+                let initialComputes = model.sortCallCount.value
 
                 let start = ContinuousClock.now
 
@@ -278,14 +279,14 @@ struct MemoizePerformanceTests {
                         model.items[i].value += 1
                     }
                 }
-                
+
                 // Force final access - this synchronizes with any pending background work
                 // by requiring the context lock, ensuring all computations complete
                 _ = model.sorted
                 let elapsed = ContinuousClock.now - start
                 let ms = Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
-                
-                let computes = model.sortCallCount - initialComputes
+
+                let computes = model.sortCallCount.value - initialComputes
                 allResults[config.name, default: []].append((computes, ms))
             }
         }
@@ -380,22 +381,22 @@ struct MemoizePerformanceTests {
         
         // Initial setup
         _ = model.sorted
-        let initialComputes = model.sortCallCount
-        
+        let initialComputes = model.sortCallCount.value
+
         print("\n=== Verifying Dirty Tracking Fix ===")
         print("Initial computes: \(initialComputes)")
-        
+
         // Mutation in transaction with dirty tracking enabled (default)
         model.transaction {
             for i in 0..<model.items.count {
                 model.items[i].value += 1
             }
         }
-        
+
         // Access after transaction
         _ = model.sorted
-        
-        let finalComputes = model.sortCallCount
+
+        let finalComputes = model.sortCallCount.value
         let computes = finalComputes - initialComputes
         
         print("Computes with dirty tracking in transaction: \(computes)")
@@ -437,23 +438,23 @@ struct MemoizePerformanceTests {
 
                 // Initial setup - this establishes observation
                 _ = model.sorted
-                let initialComputes = model.sortCallCount
-                
+                let initialComputes = model.sortCallCount.value
+
                 let start = ContinuousClock.now
-                
+
                 // Many mutations without accessing the computed property
                 for i in 0..<model.items.count {
                     model.items[i].value += 1
                 }
-                
+
                 // Single access AFTER all mutations (lazy evaluation)
                 _ = model.sorted
-                
+
                 let elapsed = ContinuousClock.now - start
                 let ns = elapsed.components.seconds * 1_000_000_000 + Int64(elapsed.components.attoseconds / 1_000_000_000)
                 let durationMs = Double(ns) / 1_000_000
-                
-                let computes = model.sortCallCount - initialComputes
+
+                let computes = model.sortCallCount.value - initialComputes
                 computeCounts.append(computes)
                 durations.append(durationMs)
             }
@@ -486,17 +487,19 @@ struct MemoizePerformanceTests {
     }
 
     var items: [Item] = []
-    var sortCallCount = 0
-    var sortAccessCount = 0
+    // LockIsolated avoids triggering @Model withMutation, preventing an infinite
+    // OT performUpdate loop when these counters are incremented inside produce().
+    let sortCallCount = LockIsolated(0)
+    let sortAccessCount = LockIsolated(0)
 
     init(itemCount: Int) {
         self.items = (0..<itemCount).map { Item(id: $0, value: 0) }
     }
 
     var sorted: [Item] {
-        sortAccessCount += 1
+        sortAccessCount.withValue { $0 += 1 }
         return node.memoize(for: "sorted") {
-            sortCallCount += 1
+            sortCallCount.withValue { $0 += 1 }
             return items.sorted { $0.id < $1.id }
         }
     }
@@ -509,17 +512,19 @@ struct MemoizePerformanceTests {
     }
 
     var items: [ItemModel] = []
-    var sortCallCount = 0
-    var sortAccessCount = 0
+    // LockIsolated avoids triggering @Model withMutation, preventing an infinite
+    // OT performUpdate loop when these counters are incremented inside produce().
+    let sortCallCount = LockIsolated(0)
+    let sortAccessCount = LockIsolated(0)
 
     init(itemCount: Int) {
         self.items = (0..<itemCount).map { ItemModel(id: $0, value: 0) }
     }
 
     var sorted: [ItemModel] {
-        sortAccessCount += 1
+        sortAccessCount.withValue { $0 += 1 }
         return node.memoize(for: "sorted") {
-            sortCallCount += 1
+            sortCallCount.withValue { $0 += 1 }
             return items.sorted { $0.id < $1.id }
         }
     }
