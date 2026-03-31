@@ -8,8 +8,10 @@ struct FactClient {
 extension FactClient: DependencyKey {
     static let liveValue = FactClient(
         fetch: { number in
-            let (data, _) = try await URLSession.shared.data(from: URL(string: "http://numbersapi.com/\(number)")!)
-            return String(decoding: data, as: UTF8.self)
+            struct Response: Decodable { let fact: String }
+            let (data, _) = try await URLSession.shared.data(from: URL(string: "https://catfact.ninja/fact")!)
+            let response = try JSONDecoder().decode(Response.self, from: data)
+            return "\(number) is a great number. Also: \(response.fact)"
         }
     )
 }

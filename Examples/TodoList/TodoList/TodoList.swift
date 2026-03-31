@@ -62,6 +62,10 @@ extension PreferenceKeys {
         // Only track `items` for undo — typing in the new-item field is ephemeral
         // and does not pollute the undo stack.
         node.trackUndo(\.items)
+
+        // Targeted debug: print only when items.count or completedCount changes.
+        // Contrast with .withDebug() which would also fire on every newItemTitle keystroke.
+        node.forEach(Observed(debug: [.triggers(), .changes()]) { (items.count, completedCount) }) { _ in }
     }
 
     func addItemTapped() {
@@ -227,7 +231,7 @@ typealias TodoListRootView = TodoListView
 
 #Preview {
     let stack = ModelUndoStack()
-    let model = TodoListModel().withAnchor(withDependencies: { $0.undoSystem.backend = stack })
+    let model = TodoListModel().withAnchor { $0.undoSystem.backend = stack }
     model.items = [
         TodoItem(title: "Buy groceries"),
         TodoItem(title: "Walk the dog", isDone: true),

@@ -7,102 +7,102 @@ import Dependencies
 
 @Suite(.modelTesting)
 struct StandupsListTests {
-  @Test func testAdd() async throws {
-    let standupList = StandupsList().withAnchor {
-      $0.continuousClock = ImmediateClock()
-      $0.dataManager = .mock()
-      $0.uuid = .incrementing
-    }
+    @Test func testAdd() async throws {
+        let standupList = StandupsList().withAnchor {
+            $0.continuousClock = ImmediateClock()
+            $0.dataManager = .mock()
+            $0.uuid = .incrementing
+        }
 
-    let standup0 = Standup(
-      id: Standup.ID(UUID(0)),
-      attendees: [
-        Attendee(id: Attendee.ID(UUID(1)))
-      ]
-    )
-    standupList.addStandupButtonTapped()
-    let addStandup = try await require(standupList.destination?.add)
-    await expect(addStandup.form.standup == standup0)
-
-    var standup1 = standup0
-    standup1.title = "Engineering"
-    let standup1Final = standup1
-    addStandup.form.standup = standup1Final
-    await expect(addStandup.form.standup == standup1Final)
-
-    let expectedStandup = standup1Final
-    addStandup.add(addStandup.form.standup)
-    await expect {
-      standupList.destination == nil
-      standupList.standupDetails.map(\.standup) == [expectedStandup]
-    }
-  }
-
-  @Test func testAdd_ValidatedAttendees() async throws {
-    let uuid = UUIDGenerator.incrementing
-    let standupList = StandupsList().withActivation {
-      $0.destination = $0.addDestination(
-        for: Standup(
-          id: Standup.ID(uuidString: "deadbeef-dead-beef-dead-beefdeadbeef")!,
-          attendees: [
-            Attendee(id: Attendee.ID(uuid()), name: ""),
-            Attendee(id: Attendee.ID(uuid()), name: "    "),
-          ],
-          title: "Design"
+        let standup0 = Standup(
+            id: Standup.ID(UUID(0)),
+            attendees: [
+                Attendee(id: Attendee.ID(UUID(1)))
+            ]
         )
-      )
-    }.withAnchor {
-      $0.continuousClock = ImmediateClock()
-      $0.dataManager = .mock()
-      $0.uuid = uuid
+        standupList.addStandupButtonTapped()
+        let addStandup = try await require(standupList.destination?.add)
+        await expect(addStandup.form.standup == standup0)
+
+        var standup1 = standup0
+        standup1.title = "Engineering"
+        let standup1Final = standup1
+        addStandup.form.standup = standup1Final
+        await expect(addStandup.form.standup == standup1Final)
+
+        let expectedStandup = standup1Final
+        addStandup.add(addStandup.form.standup)
+        await expect {
+            standupList.destination == nil
+            standupList.standupDetails.map(\.standup) == [expectedStandup]
+        }
     }
 
-    let addStandup = try await require(standupList.destination?.add)
-    addStandup.add(addStandup.form.standup)
+    @Test func testAdd_ValidatedAttendees() async throws {
+        let uuid = UUIDGenerator.incrementing
+        let standupList = StandupsList().withActivation {
+            $0.destination = $0.addDestination(
+                for: Standup(
+                    id: Standup.ID(uuidString: "deadbeef-dead-beef-dead-beefdeadbeef")!,
+                    attendees: [
+                        Attendee(id: Attendee.ID(uuid()), name: ""),
+                        Attendee(id: Attendee.ID(uuid()), name: "    "),
+                    ],
+                    title: "Design"
+                )
+            )
+        }.withAnchor {
+            $0.continuousClock = ImmediateClock()
+            $0.dataManager = .mock()
+            $0.uuid = uuid
+        }
 
-    await expect {
-      standupList.destination == nil
-      standupList.standupDetails.map(\.standup) == [
-        Standup(
-          id: Standup.ID(uuidString: "deadbeef-dead-beef-dead-beefdeadbeef")!,
-          attendees: [
-            Attendee(id: Attendee.ID(UUID(0)))
-          ],
-          title: "Design"
-        )
-      ]
-    }
-  }
+        let addStandup = try await require(standupList.destination?.add)
+        addStandup.add(addStandup.form.standup)
 
-  @Test func testLoadingDataDecodingFailed() async throws {
-    let standupList = StandupsList().withAnchor {
-      $0.continuousClock = ImmediateClock()
-      $0.dataManager = .mock(
-        initialData: Data("!@#$ BAD DATA %^&*()".utf8)
-      )
-    }
-
-    let dataFailedToLoad = try await require(standupList.destination?.dataFailedToLoad)
-
-    dataFailedToLoad() // confirm
-    await expect {
-      standupList.standupDetails.map(\.standup) == [
-        .mock,
-        .designMock,
-        .engineeringMock,
-      ]
-    }
-  }
-
-  @Test func testLoadingDataFileNotFound() async throws {
-    let standupList = StandupsList().withAnchor {
-      $0.continuousClock = ImmediateClock()
-      $0.dataManager.load = { _ in
-        struct FileNotFound: Error {}
-        throw FileNotFound()
-      }
+        await expect {
+            standupList.destination == nil
+            standupList.standupDetails.map(\.standup) == [
+                Standup(
+                    id: Standup.ID(uuidString: "deadbeef-dead-beef-dead-beefdeadbeef")!,
+                    attendees: [
+                        Attendee(id: Attendee.ID(UUID(0)))
+                    ],
+                    title: "Design"
+                )
+            ]
+        }
     }
 
-    await expect(standupList.destination == nil)
-  }
+    @Test func testLoadingDataDecodingFailed() async throws {
+        let standupList = StandupsList().withAnchor {
+            $0.continuousClock = ImmediateClock()
+            $0.dataManager = .mock(
+                initialData: Data("!@#$ BAD DATA %^&*()".utf8)
+            )
+        }
+
+        let dataFailedToLoad = try await require(standupList.destination?.dataFailedToLoad)
+
+        dataFailedToLoad() // confirm
+        await expect {
+            standupList.standupDetails.map(\.standup) == [
+                .mock,
+                .designMock,
+                .engineeringMock,
+            ]
+        }
+    }
+
+    @Test func testLoadingDataFileNotFound() async throws {
+        let standupList = StandupsList().withAnchor {
+            $0.continuousClock = ImmediateClock()
+            $0.dataManager.load = { _ in
+                struct FileNotFound: Error {}
+                throw FileNotFound()
+            }
+        }
+
+        await expect(standupList.destination == nil)
+    }
 }

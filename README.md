@@ -4,28 +4,27 @@
 [![Platforms](https://img.shields.io/badge/Platforms-macOS%2011%20%7C%20iOS%2014%20%7C%20tvOS%2014%20%7C%20watchOS%206%20%7C%20Linux-blue.svg)](https://swift.org)
 [![Swift Package Manager](https://img.shields.io/badge/SPM-compatible-brightgreen.svg)](https://swift.org/package-manager)
 
-Composable models for SwiftUI — structured async lifetime, exhaustive testing, and fine-grained observation from iOS 14.
+Composable models for SwiftUI — struct-based, automatic async lifetime, exhaustive testing, and dependency injection from iOS 14.
 
 ```swift
-@Model struct CounterModel {
-    var count = 0
-    func incrementTapped() { count += 1 }
-    func factButtonTapped() {
-        node.task {
-            let fact = try await node.factClient.fetch(count)
-            onFact(count, fact)
-        } catch: { error in
-            alert = Alert(message: error.localizedDescription)
+@Model struct SearchModel {
+    var query   = ""
+    var results: [Repo] = []
+
+    func onActivate() {
+        // Cancel-in-flight: each new query cancels the previous search.
+        // No stored Task. No [weak self]. Cancelled automatically when removed.
+        node.forEach(Observed { query }, cancelPrevious: true) { q in
+            results = (try? await node.gitHubClient.search(q)) ?? []
         }
     }
 }
 ```
 
-- No retain cycles — ever. Structs + weak context. The **compiler** enforces this, not a convention.
-- Exhaustive tests that check **final state**, not action sequences — refactor freely without rewriting tests.
-- `node.task { }` starts work tied to the model lifetime — auto-cancelled on removal, no `Task` storage needed.
-- Works from any thread. No `@MainActor` required in model logic.
-- Built-in undo/redo, hierarchy traversal, and preference propagation.
+- **No retain cycles, ever.** Structs can't capture `self` — the compiler makes retain cycles impossible, not just unlikely.
+- **Lifetime-tied tasks.** `node.task` and `node.forEach` are cancelled when the model is removed. No stored `Task`, no `deinit`, no manual cleanup.
+- **Exhaustive tests.** Any state change you didn't assert is a test failure. Refactor freely — tests check *what changed*, not *how you got there*.
+- **Dependency injection anywhere.** Override per model, per hierarchy level, or per test — with a trailing closure at the call site.
 
 ## Install
 
@@ -40,35 +39,42 @@ Composable models for SwiftUI — structured async lifetime, exhaustive testing,
 ```swift
 import SwiftModel
 
-@Model struct CounterModel {
-    var count = 0
-    func decrementTapped() { count -= 1 }
-    func incrementTapped() { count += 1 }
+@Model struct SearchModel {
+    var query   = ""
+    var results: [Repo] = []
+
+    func onActivate() {
+        // Cancel-in-flight. With a plain @Observable class you'd need a stored
+        // Task, [weak self] in every closure, and a deinit for cleanup. Here it's one line.
+        node.forEach(Observed { query }, cancelPrevious: true) { q in
+            results = (try? await node.gitHubClient.search(q)) ?? []
+        }
+    }
 }
 ```
 
-`@Model` gives the struct observable storage, a `node` interface for async work and dependencies, and everything needed to participate in the model hierarchy.
+`@Model` gives the struct observable storage, a `node` interface for async work and dependencies, and everything needed to participate in the model hierarchy. `Observed { query }` tracks any Swift value expression and emits whenever its result changes — not just simple properties. (Apple added a similar `Observations` type in iOS 26; `Observed` works from iOS 14.)
+
+`node.gitHubClient` accesses the `GitHubClient` dependency via a `DependencyValues` keypath — the same keypath used to override it in tests and previews, with no change to the model itself.
 
 ### Connect it to a view
 
 ```swift
 import SwiftUI
 
-struct CounterView: View {
-    @ObservedModel var model: CounterModel
+struct SearchView: View {
+    @ObservedModel var model: SearchModel
+
     var body: some View {
-        HStack {
-            Button("-") { model.decrementTapped() }
-            Text("\(model.count)")
-            Button("+") { model.incrementTapped() }
-        }
+        List(model.results) { repo in Text(repo.name) }
+            .searchable(text: $model.query)
     }
 }
 
-@main struct MyApp: App {
-    let model = CounterModel().withAnchor()
+@main struct SearchApp: App {
+    let model = SearchModel().withAnchor()
     var body: some Scene {
-        WindowGroup { CounterView(model: model) }
+        WindowGroup { SearchView(model: model) }
     }
 }
 ```
@@ -77,28 +83,18 @@ struct CounterView: View {
 
 ### Test exhaustively
 
-No test harness setup required. Call the method, assert the state, and any side effect you didn't assert is a test failure:
+No test harness setup required. Override dependencies at the call site, drive the model, assert the final state — any unasserted change is a failure:
 
 ```swift
 import Testing
 import SwiftModel
 
-@Test(.modelTesting) func testIncrement() async {
-    let model = CounterModel().withAnchor()
-    model.incrementTapped()
-    await expect(model.count == 1)
-}
-```
-
-For async effects and dependencies, override them at the anchor site:
-
-```swift
-@Test(.modelTesting) func testFactFetch() async {
-    let model = CounterModel().withAnchor {
-        $0.factClient.fetch = { n in "\(n) is a perfect number." }
+@Test(.modelTesting) func testSearch() async {
+    let model = SearchModel().withAnchor {
+        $0.gitHubClient.search = { _ in Repo.mocks }
     }
-    model.factButtonTapped()
-    await expect { model.fact != nil }
+    model.query = "swift"
+    await expect(!model.results.isEmpty)
 }
 ```
 
@@ -106,7 +102,26 @@ For async effects and dependencies, override them at the anchor site:
 
 ## Why @Model and not just @Observable?
 
-`@Observable` handles reactive state well. It leaves the rest to you:
+`@Observable` handles reactive state well. It leaves the rest to you. Here's the same model written with `@Observable`:
+
+```swift
+@Observable class SearchModel {
+    var query = "" { didSet { scheduleSearch() } }
+    var results: [Repo] = []
+    private var searchTask: Task<Void, Never>?
+
+    private func scheduleSearch() {
+        searchTask?.cancel()
+        searchTask = Task { [weak self] in   // forget this → retain cycle
+            guard !Task.isCancelled, let self else { return }
+            self.results = (try? await GitHubClient.live.search(self.query)) ?? []
+        }
+    }
+    deinit { searchTask?.cancel() }          // forget this → tasks outlive the view
+}
+```
+
+`GitHubClient.live` is hardcoded — there is no clean path to inject a test double.
 
 | | `@Observable` class | SwiftModel `@Model` |
 |---|---|---|
@@ -160,11 +175,10 @@ For async effects and dependencies, override them at the anchor site:
 | Example | What it shows |
 |---|---|
 | [CounterFact](Examples/CounterFact) | Nested models, async effects with error handling, dependency injection |
+| [Search](Examples/Search) | Cancel-in-flight search, per-item async loading, `TestProbe`, `withActivation` in previews and tests |
+| [Onboarding](Examples/Onboarding) | 3-step sign-up wizard: `@ModelContainer` enum navigation, `cancelPrevious: true` for async username availability, `node.local`, `node.task` with `catch:` |
+| [TodoList](Examples/TodoList) | Undo/redo with selective tracking, preference aggregation, targeted debug with `Observed(debug:)` |
 | [Standups](Examples/Standups) | Complete app: navigation, timers, speech recognition, persistence, exhaustive tests |
-| [TodoList](Examples/TodoList) | Undo/redo with selective tracking, preference aggregation |
-| [SharedState](Examples/SharedState) | Shared model identity across tabs — one instance, multiple views |
-| [SignUpFlow](Examples/SignUpFlow) | Enum-based stack navigation, environment propagation, shared model state |
-| [SignUpFlow (dependency)](Examples/SignUpFlowUsingDependency) | Same flow using `@ModelDependency` — compare the two approaches side by side |
 
 Clone the repo and open any example in Xcode to run it immediately.
 
@@ -177,6 +191,10 @@ Clone the repo and open any example in Xcode to run it immediately.
 **Not a Combine replacement.** SwiftModel uses `async`/`await` throughout. Combine is supported via `node.onReceive(_:)` for projects that need it, but is not required.
 
 **Not magic.** The `@Model` macro is a code generator. Expand it in Xcode (`Editor → Expand Macro`) to see exactly what it produces. No runtime swizzling, no reflection.
+
+## Acknowledgements
+
+SwiftModel uses [swift-dependencies](https://github.com/pointfreeco/swift-dependencies) by [Point-Free](https://www.pointfree.co) for its dependency injection system. The ideas around exhaustive testing and structured async effects were directly inspired by [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture) — SwiftModel takes a different approach, but Point-Free's work on the problem space has been invaluable.
 
 ---
 

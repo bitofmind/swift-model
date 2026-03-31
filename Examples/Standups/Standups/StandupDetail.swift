@@ -5,194 +5,215 @@ import Speech
 import SwiftUINavigation
 
 @Model struct StandupDetail: Sendable {
-  fileprivate(set) var destination: Destination?
-  var standup: Standup
+    fileprivate(set) var destination: Destination?
+    var standup: Standup
 
-  var id: Standup.ID { standup.id }
+    var id: Standup.ID { standup.id }
 
-  enum Event {
-    case deleteStandup
-    case startMeeting
-  }
-
-  @ModelContainer @CasePathable
-  @dynamicMemberLookup
-  enum Destination: Sendable {
-    case speechRecognitionRestricted(continue: @Sendable () -> Void)
-    case deleteStandup(confirm: @Sendable () -> Void)
-    case speechRecognitionDenied(continue: @Sendable () -> Void, openSettings: @Sendable () -> Void)
-    case edit(form: StandupForm, save: @Sendable (Standup) -> Void, discard: @Sendable () -> Void)
-  }
-
-  func deleteButtonTapped() {
-    destination = .deleteStandup {
-      node.send(.deleteStandup)
+    enum Event {
+        case deleteStandup
+        case startMeeting
     }
-  }
 
-  func deleteMeetings(atOffsets indices: IndexSet) {
-    standup.meetings.remove(atOffsets: indices)
-  }
+    @ModelContainer @CasePathable
+    @dynamicMemberLookup
+    enum Destination: Sendable {
+        case speechRecognitionRestricted(continue: @Sendable () -> Void)
+        case deleteStandup(confirm: @Sendable () -> Void)
+        case speechRecognitionDenied(continue: @Sendable () -> Void, openSettings: @Sendable () -> Void)
+        case edit(form: StandupForm, save: @Sendable (Standup) -> Void, discard: @Sendable () -> Void)
+    }
 
-  func editButtonTapped() {
-    destination = .edit(
-      form: StandupForm(standup: standup),
-      save: { standupToSave in
-        standup = standupToSave
-        destination = nil
-      },
-      discard: {
-        destination = nil
-      }
-    )
-  }
-
-  func startMeetingButtonTapped() {
-    switch node.speechClient.authorizationStatus() {
-    case .notDetermined, .authorized:
-      node.send(.startMeeting)
-    case .denied:
-      destination = .speechRecognitionDenied {
-        node.send(.startMeeting)
-      } openSettings: {
-        node.task {
-          await node.openSettings()
+    func deleteButtonTapped() {
+        destination = .deleteStandup {
+            node.send(.deleteStandup)
         }
-      }    
-    case .restricted:
-      destination = .speechRecognitionRestricted {
-        node.send(.startMeeting)
-      }
-    @unknown default: break
     }
-  }
+
+    func deleteMeetings(atOffsets indices: IndexSet) {
+        standup.meetings.remove(atOffsets: indices)
+    }
+
+    func editButtonTapped() {
+        destination = .edit(
+            form: StandupForm(standup: standup),
+            save: { standupToSave in
+                standup = standupToSave
+                destination = nil
+            },
+            discard: {
+                destination = nil
+            }
+        )
+    }
+
+    func startMeetingButtonTapped() {
+        switch node.speechClient.authorizationStatus() {
+        case .notDetermined, .authorized:
+            node.send(.startMeeting)
+        case .denied:
+            destination = .speechRecognitionDenied {
+                node.send(.startMeeting)
+            } openSettings: {
+                node.task {
+                    await node.openSettings()
+                }
+            }    
+        case .restricted:
+            destination = .speechRecognitionRestricted {
+                node.send(.startMeeting)
+            }
+        @unknown default: break
+        }
+    }
 }
 
 struct StandupDetailView: View {
-  @ObservedModel var model: StandupDetail
+    @ObservedModel var model: StandupDetail
 
-  var body: some View {
-    List {
-      Section {
-        Button {
-          model.startMeetingButtonTapped()
-        } label: {
-          Label("Start Meeting", systemImage: "timer")
-            .font(.headline)
-            .foregroundColor(.accentColor)
-        }
-        HStack {
-          Label("Length", systemImage: "clock")
-          Spacer()
-          Text(model.standup.duration.formatted(.units()))
-        }
+    var body: some View {
+        List {
+            Section {
+                Button {
+                    model.startMeetingButtonTapped()
+                } label: {
+                    Label("Start Meeting", systemImage: "timer")
+                        .font(.headline)
+                        .foregroundColor(.accentColor)
+                }
+                HStack {
+                    Label("Length", systemImage: "clock")
+                    Spacer()
+                    Text(model.standup.duration.formatted(.units()))
+                }
 
-        HStack {
-          Label("Theme", systemImage: "paintpalette")
-          Spacer()
-          Text(model.standup.theme.name)
-            .padding(4)
-            .foregroundColor(model.standup.theme.accentColor)
-            .background(model.standup.theme.mainColor)
-            .cornerRadius(4)
-        }
-      } header: {
-        Text("Standup Info")
-      }
-
-      if !model.standup.meetings.isEmpty {
-        Section {
-          ForEach(model.standup.meetings) { meeting in
-            NavigationLink(value: AppFeature.Path.meeting(meeting, standup: model.standup)) {
-              HStack {
-                Image(systemName: "calendar")
-                Text(meeting.date, style: .date)
-                Text(meeting.date, style: .time)
-              }
+                HStack {
+                    Label("Theme", systemImage: "paintpalette")
+                    Spacer()
+                    Text(model.standup.theme.name)
+                        .padding(4)
+                        .foregroundColor(model.standup.theme.accentColor)
+                        .background(model.standup.theme.mainColor)
+                        .cornerRadius(4)
+                }
+            } header: {
+                Text("Standup Info")
             }
-          }
-          .onDelete { indices in
-            model.deleteMeetings(atOffsets: indices)
-          }
-        } header: {
-          Text("Past meetings")
-        }
-      }
 
-      Section {
-        ForEach(model.standup.attendees) { attendee in
-          Label(attendee.name, systemImage: "person")
-        }
-      } header: {
-        Text("Attendees")
-      }
+            if !model.standup.meetings.isEmpty {
+                Section {
+                    ForEach(model.standup.meetings) { meeting in
+                        NavigationLink(value: AppFeature.Path.meeting(meeting, standup: model.standup)) {
+                            HStack {
+                                Image(systemName: "calendar")
+                                Text(meeting.date, style: .date)
+                                Text(meeting.date, style: .time)
+                            }
+                        }
+                    }
+                    .onDelete { indices in
+                        model.deleteMeetings(atOffsets: indices)
+                    }
+                } header: {
+                    Text("Past meetings")
+                }
+            }
 
-      Section {
-        Button("Delete") {
-          model.deleteButtonTapped()
+            Section {
+                ForEach(model.standup.attendees) { attendee in
+                    Label(attendee.name, systemImage: "person")
+                }
+            } header: {
+                Text("Attendees")
+            }
+
+            Section {
+                Button("Delete") {
+                    model.deleteButtonTapped()
+                }
+                .foregroundColor(.red)
+                .frame(maxWidth: .infinity)
+            }
         }
-        .foregroundColor(.red)
-        .frame(maxWidth: .infinity)
-      }
-    }
-    .navigationTitle(model.standup.title)
-    .toolbar {
-      Button("Edit") {
-        model.editButtonTapped()
-      }
-    }
-    .sheet(item: $model.destination.edit, id: \.form.standup.id) { edit in
-      NavigationStack {
-        StandupFormView(model: edit.form)
-          .navigationTitle(model.standup.title)
-          .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-              Button("Cancel", action: edit.discard)
+        .navigationTitle(model.standup.title)
+        .toolbar {
+            Button("Edit") {
+                model.editButtonTapped()
             }
-            ToolbarItem(placement: .confirmationAction) {
-              Button("Done") {
-                edit.save(edit.form.standup)
-              }
+        }
+        .sheet(item: $model.destination.edit, id: \.form.standup.id) { edit in
+            VStack(spacing: 0) {
+#if os(macOS)
+                Text(model.standup.title)
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding([.horizontal, .top])
+                StandupFormView(model: edit.form)
+                Divider()
+                HStack {
+                    Button("Cancel", action: edit.discard)
+                    Spacer()
+                    Button("Done") {
+                        edit.save(edit.form.standup)
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+                .padding()
+#else
+                HStack {
+                    Button("Cancel", action: edit.discard)
+                    Spacer()
+                    Text(model.standup.title).font(.headline)
+                    Spacer()
+                    Button { edit.save(edit.form.standup) } label: {
+                        Text("Done").bold()
+                    }
+                }
+                .padding()
+                Divider()
+                StandupFormView(model: edit.form)
+#endif
             }
-          }
-      }
+#if os(macOS)
+            .frame(minWidth: 350, minHeight: 320)
+#endif
+        }
+        .alert(item: $model.destination.speechRecognitionRestricted) { _ in
+            Text("Speech recognition restricted")
+        } actions: { onContinue in
+            Button("Continue without recording", action: onContinue)
+            Button("Cancel", role: .cancel) { }
+        } message: { _ in
+            Text("Your device does not support speech recognition and so your meeting will not be recorded.")
+        }
+        .alert(item: $model.destination.deleteStandup) { _ in
+            Text("Delete?")
+        } actions: { onConfirm in
+            Button("Yes", action: onConfirm)
+            Button("Nevermind", role: .cancel) { }
+        } message: { _ in
+            Text("Are you sure you want to delete this meeting?")
+        }
+        .alert(item: $model.destination.speechRecognitionDenied) { _ in
+            Text("Speech recognition denied")
+        } actions: { onContinue, onOpenSettings in
+            Button("Continue without recording", action: onContinue)
+            Button("Open settings", action: onOpenSettings)
+            Button("Cancel", role: .cancel) { }
+        } message: { _ in
+            Text(
+                """
+                You previously denied speech recognition and so your meeting meeting will not be \
+                recorded. You can enable speech recognition in settings, or you can continue without \
+                recording.
+                """
+            )
+        }
     }
-    .alert(item: $model.destination.speechRecognitionRestricted) { _ in
-      Text("Speech recognition restricted")
-    } actions: { onContinue in
-      Button("Continue without recording", action: onContinue)
-      Button("Cancel", role: .cancel) { }
-    } message: { _ in
-      Text("Your device does not support speech recognition and so your meeting will not be recorded.")
-    }
-    .alert(item: $model.destination.deleteStandup) { _ in
-      Text("Delete?")
-    } actions: { onConfirm in
-      Button("Yes", action: onConfirm)
-      Button("Nevermind", role: .cancel) { }
-    } message: { _ in
-      Text("Are you sure you want to delete this meeting?")
-    }
-    .alert(item: $model.destination.speechRecognitionDenied) { _ in
-      Text("Speech recognition denied")
-    } actions: { onContinue, onOpenSettings in
-      Button("Continue without recording", action: onContinue)
-      Button("Open settings", action: onOpenSettings)
-      Button("Cancel", role: .cancel) { }
-    } message: { _ in
-      Text(
-        """
-        You previously denied speech recognition and so your meeting meeting will not be \
-        recorded. You can enable speech recognition in settings, or you can continue without \
-        recording.
-        """
-      )
-    }
-  }
 }
 
 #Preview {
-  NavigationStack {
-    StandupDetailView(model: StandupDetail(standup: .mock).withAnchor())
-  }
+    NavigationStack {
+        StandupDetailView(model: StandupDetail(standup: .mock).withAnchor())
+    }
 }

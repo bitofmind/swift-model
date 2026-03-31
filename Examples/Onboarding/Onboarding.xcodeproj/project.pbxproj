@@ -7,98 +7,101 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		F60DAA1E299FC9DC00589B17 /* Dependencies in Frameworks */ = {isa = PBXBuildFile; productRef = F60DAA1D299FC9DC00589B17 /* Dependencies */; };
-		F6155FE22BAC3C38007039DA /* SwiftUINavigation in Frameworks */ = {isa = PBXBuildFile; productRef = F6155FE12BAC3C38007039DA /* SwiftUINavigation */; };
-		F61EBCD42786139400F098A8 /* SharedStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F61EBCD32786139400F098A8 /* SharedStateTests.swift */; };
-		F6E72B632781F53E00A8FC45 /* SignUpFlowApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6E72B622781F53E00A8FC45 /* SignUpFlowApp.swift */; };
-		F6E72B652781F53E00A8FC45 /* SignUpFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6E72B642781F53E00A8FC45 /* SignUpFlow.swift */; };
-		F6F3F1732B48483B003A9305 /* SwiftModel in Frameworks */ = {isa = PBXBuildFile; productRef = F6F3F1722B48483B003A9305 /* SwiftModel */; };
+		2D572C96378861690D70A07A /* Dependencies in Frameworks */ = {isa = PBXBuildFile; productRef = 3EC9CC602640AC976CCF7FFB /* Dependencies */; };
+		62E138827BA9D79DF87008D2 /* OnboardingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C47AF7CB5A60BC3AAAC9DD55 /* OnboardingTests.swift */; };
+		F5EDCF6E2274762DB27BA6C0 /* ValidationClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6B8A95ED26572309DEA74D0 /* ValidationClient.swift */; };
+		8194159B9A778979BAA3B93C /* OnboardingApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA1BDD2A984C1F61B06E4BBF /* OnboardingApp.swift */; };
+		44E79B4CF5438E8B8392AADB /* OnboardingFeature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 256541660ADF8ED828E051E3 /* OnboardingFeature.swift */; };
+		8E69D577897A6B60CF1B8D63 /* SwiftModel in Frameworks */ = {isa = PBXBuildFile; productRef = E1C7B8BDBACF267A3A8347DD /* SwiftModel */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		F61EBCDA278615AE00F098A8 /* PBXContainerItemProxy */ = {
+		D2B73A374BF7C903B583A6AF /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = F6FB1FD22778D5D9005BB6B6 /* Project object */;
+			containerPortal = BB8D05A7232236015FD13C84 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = F6E72B5F2781F53E00A8FC45;
-			remoteInfo = SignUpFlowUsingDependency;
+			remoteGlobalIDString = 1840628131086E17EEF6E15E;
+			remoteInfo = Onboarding;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		F61EBCD12786139400F098A8 /* SignUpFlowUsingDependencyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SignUpFlowUsingDependencyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		F61EBCD32786139400F098A8 /* SharedStateTests.swift */ = {isa = PBXFileReference; indentWidth = 2; lastKnownFileType = sourcecode.swift; path = SharedStateTests.swift; sourceTree = "<group>"; tabWidth = 2; };
-		F6D9D2242AF26C0C00EBFB91 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = SOURCE_ROOT; };
-		F6E72B602781F53E00A8FC45 /* SignUpFlowUsingDependency.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SignUpFlowUsingDependency.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		F6E72B622781F53E00A8FC45 /* SignUpFlowApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignUpFlowApp.swift; sourceTree = "<group>"; };
-		F6E72B642781F53E00A8FC45 /* SignUpFlow.swift */ = {isa = PBXFileReference; indentWidth = 2; lastKnownFileType = sourcecode.swift; path = SignUpFlow.swift; sourceTree = "<group>"; tabWidth = 2; };
-		F6F3F1712B4847FD003A9305 /* swift-model */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = "swift-model"; path = ../..; sourceTree = "<group>"; };
+		529F9720F86854EE9ADAD7E4 /* OnboardingTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OnboardingTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C47AF7CB5A60BC3AAAC9DD55 /* OnboardingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingTests.swift; sourceTree = "<group>"; };
+		B6B8A95ED26572309DEA74D0 /* ValidationClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValidationClient.swift; sourceTree = "<group>"; };
+		388072CC3352C71046A8025A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		9BA1AF7676BC4D1125163B97 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = SOURCE_ROOT; };
+		15FB32F3486C6834AA0CFE57 /* Onboarding.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Onboarding.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		DA1BDD2A984C1F61B06E4BBF /* OnboardingApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingApp.swift; sourceTree = "<group>"; };
+		256541660ADF8ED828E051E3 /* OnboardingFeature.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingFeature.swift; sourceTree = "<group>"; };
+		D30B8FB16441264137799958 /* swift-model */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = "swift-model"; path = ../..; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		F61EBCCE2786139400F098A8 /* Frameworks */ = {
+		99D14A47CF91F22FC607CB51 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		F6E72B5D2781F53E00A8FC45 /* Frameworks */ = {
+		9F6135422D6267CC189DED61 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F6F3F1732B48483B003A9305 /* SwiftModel in Frameworks */,
-				F60DAA1E299FC9DC00589B17 /* Dependencies in Frameworks */,
-				F6155FE22BAC3C38007039DA /* SwiftUINavigation in Frameworks */,
+				8E69D577897A6B60CF1B8D63 /* SwiftModel in Frameworks */,
+				2D572C96378861690D70A07A /* Dependencies in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		F61EBCD22786139400F098A8 /* SignUpFlowTests */ = {
+		C50FA2B2E173F78E5487E9DC /* OnboardingTests */ = {
 			isa = PBXGroup;
 			children = (
-				F61EBCD32786139400F098A8 /* SharedStateTests.swift */,
+				C47AF7CB5A60BC3AAAC9DD55 /* OnboardingTests.swift */,
 			);
-			path = SignUpFlowTests;
+			path = OnboardingTests;
 			sourceTree = "<group>";
 		};
-		F65C3C662780EC3A00209918 /* Frameworks */ = {
+		35F11DF5194D38B362E5C1DB /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
-		F6E72B612781F53E00A8FC45 /* SignUpFlow */ = {
+		C93946B46F33D1708CDC264A /* Onboarding */ = {
 			isa = PBXGroup;
 			children = (
-				F6D9D2242AF26C0C00EBFB91 /* README.md */,
-				F6E72B622781F53E00A8FC45 /* SignUpFlowApp.swift */,
-				F6E72B642781F53E00A8FC45 /* SignUpFlow.swift */,
+				9BA1AF7676BC4D1125163B97 /* README.md */,
+				DA1BDD2A984C1F61B06E4BBF /* OnboardingApp.swift */,
+				B6B8A95ED26572309DEA74D0 /* ValidationClient.swift */,
+				256541660ADF8ED828E051E3 /* OnboardingFeature.swift */,
+				388072CC3352C71046A8025A /* Info.plist */,
 			);
-			path = SignUpFlow;
+			path = Onboarding;
 			sourceTree = "<group>";
 		};
-		F6FB1FD12778D5D9005BB6B6 = {
+		9F4136975F3C219829D8A555 = {
 			isa = PBXGroup;
 			children = (
-				F6F3F1712B4847FD003A9305 /* swift-model */,
-				F6E72B612781F53E00A8FC45 /* SignUpFlow */,
-				F61EBCD22786139400F098A8 /* SignUpFlowTests */,
-				F6FB1FDF2778D5DD005BB6B6 /* Products */,
-				F65C3C662780EC3A00209918 /* Frameworks */,
+				D30B8FB16441264137799958 /* swift-model */,
+				C93946B46F33D1708CDC264A /* Onboarding */,
+				C50FA2B2E173F78E5487E9DC /* OnboardingTests */,
+				B0CC9F02F2D9A1177FA464F9 /* Products */,
+				35F11DF5194D38B362E5C1DB /* Frameworks */,
 			);
 			indentWidth = 4;
 			sourceTree = "<group>";
 			tabWidth = 4;
 		};
-		F6FB1FDF2778D5DD005BB6B6 /* Products */ = {
+		B0CC9F02F2D9A1177FA464F9 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				F6E72B602781F53E00A8FC45 /* SignUpFlowUsingDependency.app */,
-				F61EBCD12786139400F098A8 /* SignUpFlowUsingDependencyTests.xctest */,
+				15FB32F3486C6834AA0CFE57 /* Onboarding.app */,
+				529F9720F86854EE9ADAD7E4 /* OnboardingTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -106,66 +109,65 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		F61EBCD02786139400F098A8 /* SignUpFlowUsingDependencyTests */ = {
+		047F55F13853AF5C5DC6AFF7 /* OnboardingTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = F61EBCD92786139400F098A8 /* Build configuration list for PBXNativeTarget "SignUpFlowUsingDependencyTests" */;
+			buildConfigurationList = 18E47167E1725629D5849356 /* Build configuration list for PBXNativeTarget "OnboardingTests" */;
 			buildPhases = (
-				F61EBCCD2786139400F098A8 /* Sources */,
-				F61EBCCE2786139400F098A8 /* Frameworks */,
-				F61EBCCF2786139400F098A8 /* Resources */,
+				85F892A7BFCE20C888B4C6B1 /* Sources */,
+				99D14A47CF91F22FC607CB51 /* Frameworks */,
+				D017C48A0DAFDEE01D44FEE5 /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				F61EBCDB278615AE00F098A8 /* PBXTargetDependency */,
+				69F6B29403822522207A4FC8 /* PBXTargetDependency */,
 			);
-			name = SignUpFlowUsingDependencyTests;
-			productName = SignUpFlowUsingDependencyTests;
-			productReference = F61EBCD12786139400F098A8 /* SignUpFlowUsingDependencyTests.xctest */;
+			name = OnboardingTests;
+			productName = OnboardingTests;
+			productReference = 529F9720F86854EE9ADAD7E4 /* OnboardingTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		F6E72B5F2781F53E00A8FC45 /* SignUpFlowUsingDependency */ = {
+		1840628131086E17EEF6E15E /* Onboarding */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = F6E72B6D2781F54100A8FC45 /* Build configuration list for PBXNativeTarget "SignUpFlowUsingDependency" */;
+			buildConfigurationList = D143D126C93C47A963184773 /* Build configuration list for PBXNativeTarget "Onboarding" */;
 			buildPhases = (
-				F6E72B5C2781F53E00A8FC45 /* Sources */,
-				F6E72B5D2781F53E00A8FC45 /* Frameworks */,
-				F6E72B5E2781F53E00A8FC45 /* Resources */,
+				E29C55987BC72C1C7F9D5C99 /* Sources */,
+				9F6135422D6267CC189DED61 /* Frameworks */,
+				7FE38FD177B999ED5EB344CB /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
-			name = SignUpFlowUsingDependency;
+			name = Onboarding;
 			packageProductDependencies = (
-				F60DAA1D299FC9DC00589B17 /* Dependencies */,
-				F6F3F1722B48483B003A9305 /* SwiftModel */,
-				F6155FE12BAC3C38007039DA /* SwiftUINavigation */,
+				3EC9CC602640AC976CCF7FFB /* Dependencies */,
+				E1C7B8BDBACF267A3A8347DD /* SwiftModel */,
 			);
-			productName = SignUpFlowUsingDependency;
-			productReference = F6E72B602781F53E00A8FC45 /* SignUpFlowUsingDependency.app */;
+			productName = Onboarding;
+			productReference = 15FB32F3486C6834AA0CFE57 /* Onboarding.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		F6FB1FD22778D5D9005BB6B6 /* Project object */ = {
+		BB8D05A7232236015FD13C84 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1320;
-				LastUpgradeCheck = 2630;
+				LastUpgradeCheck = 2640;
 				TargetAttributes = {
-					F61EBCD02786139400F098A8 = {
+					047F55F13853AF5C5DC6AFF7 = {
 						CreatedOnToolsVersion = 13.2.1;
-						TestTargetID = F6E72B5F2781F53E00A8FC45;
+						TestTargetID = 1840628131086E17EEF6E15E;
 					};
-					F6E72B5F2781F53E00A8FC45 = {
+					1840628131086E17EEF6E15E = {
 						CreatedOnToolsVersion = 13.2.1;
 					};
 				};
 			};
-			buildConfigurationList = F6FB1FD52778D5D9005BB6B6 /* Build configuration list for PBXProject "SignUpFlowUsingDependency" */;
+			buildConfigurationList = 8C07AB37D1E01CA10755E410 /* Build configuration list for PBXProject "Onboarding" */;
 			compatibilityVersion = "Xcode 13.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -173,30 +175,29 @@
 				en,
 				Base,
 			);
-			mainGroup = F6FB1FD12778D5D9005BB6B6;
+			mainGroup = 9F4136975F3C219829D8A555;
 			packageReferences = (
-				F60DAA1C299FC9DC00589B17 /* XCRemoteSwiftPackageReference "swift-dependencies" */,
-				F6155FE02BAC3B5F007039DA /* XCRemoteSwiftPackageReference "swiftui-navigation" */,
+				51C36D3E26341581AC24A0AA /* XCRemoteSwiftPackageReference "swift-dependencies" */,
 			);
-			productRefGroup = F6FB1FDF2778D5DD005BB6B6 /* Products */;
+			productRefGroup = B0CC9F02F2D9A1177FA464F9 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				F6E72B5F2781F53E00A8FC45 /* SignUpFlowUsingDependency */,
-				F61EBCD02786139400F098A8 /* SignUpFlowUsingDependencyTests */,
+				1840628131086E17EEF6E15E /* Onboarding */,
+				047F55F13853AF5C5DC6AFF7 /* OnboardingTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		F61EBCCF2786139400F098A8 /* Resources */ = {
+		D017C48A0DAFDEE01D44FEE5 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		F6E72B5E2781F53E00A8FC45 /* Resources */ = {
+		7FE38FD177B999ED5EB344CB /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -206,35 +207,36 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		F61EBCCD2786139400F098A8 /* Sources */ = {
+		85F892A7BFCE20C888B4C6B1 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F61EBCD42786139400F098A8 /* SharedStateTests.swift in Sources */,
+				62E138827BA9D79DF87008D2 /* OnboardingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		F6E72B5C2781F53E00A8FC45 /* Sources */ = {
+		E29C55987BC72C1C7F9D5C99 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				F6E72B652781F53E00A8FC45 /* SignUpFlow.swift in Sources */,
-				F6E72B632781F53E00A8FC45 /* SignUpFlowApp.swift in Sources */,
+				F5EDCF6E2274762DB27BA6C0 /* ValidationClient.swift in Sources */,
+				44E79B4CF5438E8B8392AADB /* OnboardingFeature.swift in Sources */,
+				8194159B9A778979BAA3B93C /* OnboardingApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		F61EBCDB278615AE00F098A8 /* PBXTargetDependency */ = {
+		69F6B29403822522207A4FC8 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = F6E72B5F2781F53E00A8FC45 /* SignUpFlowUsingDependency */;
-			targetProxy = F61EBCDA278615AE00F098A8 /* PBXContainerItemProxy */;
+			target = 1840628131086E17EEF6E15E /* Onboarding */;
+			targetProxy = D2B73A374BF7C903B583A6AF /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		F61EBCD72786139400F098A8 /* Debug */ = {
+		F5E85AAF98371152AA97C81D /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -244,28 +246,24 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
-				ENABLE_APP_SANDBOX = YES;
-				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = swift.model.SignUpFlowUsingDependencyTests;
+				PRODUCT_BUNDLE_IDENTIFIER = swift.model.OnboardingTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
-				REGISTER_APP_GROUPS = YES;
+				REGISTER_APP_GROUPS = NO;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "appletvos appletvsimulator iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				TARGETED_DEVICE_FAMILY = "1,2,3";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SignUpFlowUsingDependency.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SignUpFlowUsingDependency";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Onboarding.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Onboarding";
 			};
 			name = Debug;
 		};
-		F61EBCD82786139400F098A8 /* Release */ = {
+		E04102E934FAF7DD6A5E26E9 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -275,34 +273,30 @@
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = "";
-				ENABLE_APP_SANDBOX = YES;
-				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = swift.model.SignUpFlowUsingDependencyTests;
+				PRODUCT_BUNDLE_IDENTIFIER = swift.model.OnboardingTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
-				REGISTER_APP_GROUPS = YES;
+				REGISTER_APP_GROUPS = NO;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "appletvos appletvsimulator iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				TARGETED_DEVICE_FAMILY = "1,2,3";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SignUpFlowUsingDependency.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/SignUpFlowUsingDependency";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Onboarding.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Onboarding";
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
 		};
-		F6E72B6B2781F54100A8FC45 /* Debug */ = {
+		0A832E01A6B9D200781AFAA0 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
@@ -311,19 +305,19 @@
 				ENABLE_TESTING_SEARCH_PATHS = YES;
 				OTHER_LDFLAGS = "$(inherited) -weak_framework Testing";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Onboarding/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = swift.model.SignUpFlowUsingDependency;
+				PRODUCT_BUNDLE_IDENTIFIER = swift.model.Onboarding;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
@@ -332,16 +326,15 @@
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = "1,2,3";
-				TVOS_DEPLOYMENT_TARGET = 16.0;
 			};
 			name = Debug;
 		};
-		F6E72B6C2781F54100A8FC45 /* Release */ = {
+		B4540B6C6CDCF0CBE2DBF3B3 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
@@ -350,19 +343,19 @@
 				ENABLE_TESTING_SEARCH_PATHS = YES;
 				OTHER_LDFLAGS = "$(inherited) -weak_framework Testing";
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Onboarding/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = swift.model.SignUpFlowUsingDependency;
+				PRODUCT_BUNDLE_IDENTIFIER = swift.model.Onboarding;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
@@ -371,16 +364,14 @@
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = "1,2,3";
-				TVOS_DEPLOYMENT_TARGET = 16.0;
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
 		};
-		F6FB1FED2778D5DD005BB6B6 /* Debug */ = {
+		5C4D320756AB34DAB2EF3326 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
@@ -415,7 +406,6 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_TESTING_SEARCH_PATHS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
@@ -443,11 +433,10 @@
 			};
 			name = Debug;
 		};
-		F6FB1FEE2778D5DD005BB6B6 /* Release */ = {
+		CBDF2A47986777A4C71E5D43 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++17";
@@ -482,7 +471,6 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_TESTING_SEARCH_PATHS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -506,29 +494,29 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		F61EBCD92786139400F098A8 /* Build configuration list for PBXNativeTarget "SignUpFlowUsingDependencyTests" */ = {
+		18E47167E1725629D5849356 /* Build configuration list for PBXNativeTarget "OnboardingTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				F61EBCD72786139400F098A8 /* Debug */,
-				F61EBCD82786139400F098A8 /* Release */,
+				F5E85AAF98371152AA97C81D /* Debug */,
+				E04102E934FAF7DD6A5E26E9 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		F6E72B6D2781F54100A8FC45 /* Build configuration list for PBXNativeTarget "SignUpFlowUsingDependency" */ = {
+		D143D126C93C47A963184773 /* Build configuration list for PBXNativeTarget "Onboarding" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				F6E72B6B2781F54100A8FC45 /* Debug */,
-				F6E72B6C2781F54100A8FC45 /* Release */,
+				0A832E01A6B9D200781AFAA0 /* Debug */,
+				B4540B6C6CDCF0CBE2DBF3B3 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		F6FB1FD52778D5D9005BB6B6 /* Build configuration list for PBXProject "SignUpFlowUsingDependency" */ = {
+		8C07AB37D1E01CA10755E410 /* Build configuration list for PBXProject "Onboarding" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				F6FB1FED2778D5DD005BB6B6 /* Debug */,
-				F6FB1FEE2778D5DD005BB6B6 /* Release */,
+				5C4D320756AB34DAB2EF3326 /* Debug */,
+				CBDF2A47986777A4C71E5D43 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -536,40 +524,27 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		F60DAA1C299FC9DC00589B17 /* XCRemoteSwiftPackageReference "swift-dependencies" */ = {
+		51C36D3E26341581AC24A0AA /* XCRemoteSwiftPackageReference "swift-dependencies" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/pointfreeco/swift-dependencies";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.3.9;
-			};
-		};
-		F6155FE02BAC3B5F007039DA /* XCRemoteSwiftPackageReference "swiftui-navigation" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/pointfreeco/swiftui-navigation";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.5.5;
+				minimumVersion = 1.0.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		F60DAA1D299FC9DC00589B17 /* Dependencies */ = {
+		3EC9CC602640AC976CCF7FFB /* Dependencies */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = F60DAA1C299FC9DC00589B17 /* XCRemoteSwiftPackageReference "swift-dependencies" */;
+			package = 51C36D3E26341581AC24A0AA /* XCRemoteSwiftPackageReference "swift-dependencies" */;
 			productName = Dependencies;
 		};
-		F6155FE12BAC3C38007039DA /* SwiftUINavigation */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = F6155FE02BAC3B5F007039DA /* XCRemoteSwiftPackageReference "swiftui-navigation" */;
-			productName = SwiftUINavigation;
-		};
-		F6F3F1722B48483B003A9305 /* SwiftModel */ = {
+		E1C7B8BDBACF267A3A8347DD /* SwiftModel */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SwiftModel;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
-	rootObject = F6FB1FD22778D5D9005BB6B6 /* Project object */;
+	rootObject = BB8D05A7232236015FD13C84 /* Project object */;
 }

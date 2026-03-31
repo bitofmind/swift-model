@@ -66,3 +66,5 @@ node.forEach(Observed(debug: [.triggers(.withValue)]) { model.count }) { value i
 ```
 
 > Debug output is only active in `DEBUG` builds.
+
+**Targeted debug in practice** — the [TodoList](../Examples/TodoList) example uses `Observed(debug:)` inside `onActivate()` to trace only `items.count` and `completedCount`, avoiding noise from unrelated property changes (e.g., `newItemTitle` keystrokes). The [Search](../Examples/Search) example demonstrates `withDebug()` at the app level alongside `cancelPrevious: true` on `forEach` to show cancel-in-flight behaviour.

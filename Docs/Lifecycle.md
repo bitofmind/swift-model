@@ -302,6 +302,70 @@ func onActivate() {
 }
 ```
 
+### Customising Activation with `withActivation`
+
+`withActivation` lets you attach extra setup that runs after `onActivate()`, without modifying the model itself. Unlike setting properties in the initialiser, `withActivation` runs after the model is live — so you can start tasks, register observers, and call `node.forEach`, all tied to the model's lifetime.
+
+The primary use case is injecting async or cancellable work from the call site:
+
+```swift
+// Preview — inject a task that shows the loading state and then populates results,
+// all without touching SearchModel itself. The task is cancelled when the preview closes.
+#Preview("Loading → Results") {
+    SearchModel()
+        .withActivation { model in
+            model.node.task {
+                model.isSearching = true
+                try await Task.sleep(for: .milliseconds(500))
+                model.results = Repo.mocks.map { SearchResultItem(repo: $0) }
+                model.isSearching = false
+            }
+        }
+        .withAnchor()
+}
+```
+
+`withActivation` is also the right tool for cross-cutting concerns that the model itself shouldn't know about — analytics, logging, or bridging to external systems:
+
+```swift
+// Attach a logging observer at the call site without touching onActivate.
+// The observer is cancelled automatically when the model is deactivated.
+model.withActivation { m in
+    m.node.forEach(Observed { m.isSearching }) { isSearching in
+        logger.info("Search in progress: \(isSearching)")
+    }
+}
+```
+
+In tests, this lets you verify side effects by injecting observers rather than by adding test-only code to the model:
+
+```swift
+// Verify that isSearching toggles correctly during a search,
+// by observing it from outside the model.
+@Test func searchTogglesLoadingState() async {
+    var loadingStates: [Bool] = []
+    let model = SearchModel()
+        .withActivation { m in
+            m.node.forEach(Observed { m.isSearching }) { loadingStates.append($0) }
+        }
+        .withAnchor {
+            $0.continuousClock = ImmediateClock()
+            $0.gitHubClient.search = { _ in Repo.mocks }
+        }
+    model.query = "swift"
+    await expect(!model.results.isEmpty)
+    #expect(loadingStates.contains(true))
+}
+```
+
+The closure receives the live model instance and runs synchronously as part of activation, after `onActivate()` returns. Multiple `withActivation` calls can be chained — each closure runs in order.
+
+This pattern keeps the model's own `onActivate()` free of call-site concerns, while still allowing callers to inject behaviour without subclassing or wrapping.
+
 ## Undo and Redo
 
 Undo/redo support is covered in the **[Undo and Redo](Undo.md)** guide.
+
+## Debugging
+
+`debug()` and `Observed(debug:)` for tracing state changes and side effects are covered in the **[Debugging](Debugging.md)** guide.

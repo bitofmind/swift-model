@@ -10,7 +10,6 @@
 		CA0934B62A12A9680020DEF5 /* SwiftUINavigation in Frameworks */ = {isa = PBXBuildFile; productRef = CA0934B52A12A9680020DEF5 /* SwiftUINavigation */; };
 		DC7CE4E729E9E6E4006B6263 /* ding.wav in Resources */ = {isa = PBXBuildFile; fileRef = DC7CE4E629E9E6E4006B6263 /* ding.wav */; };
 		DC808D7729E9C3AD0072B4A9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DC808D7629E9C3AD0072B4A9 /* Assets.xcassets */; };
-		DC808D8E29E9C3AD0072B4A9 /* StandupsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC808D8D29E9C3AD0072B4A9 /* StandupsUITests.swift */; };
 		DC808DA029E9C4340072B4A9 /* DataManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC808D9F29E9C4340072B4A9 /* DataManager.swift */; };
 		DC808DA529E9C4C70072B4A9 /* OpenSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC808DA429E9C4C70072B4A9 /* OpenSettings.swift */; };
 		DC808DA729E9C4D60072B4A9 /* SpeechRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC808DA629E9C4D60072B4A9 /* SpeechRecognizer.swift */; };
@@ -42,13 +41,6 @@
 			remoteGlobalIDString = DC808D6E29E9C3AC0072B4A9;
 			remoteInfo = Standups;
 		};
-		DC808D8A29E9C3AD0072B4A9 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = DC808D6729E9C3AC0072B4A9 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = DC808D6E29E9C3AC0072B4A9;
-			remoteInfo = Standups;
-		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
@@ -58,8 +50,6 @@
 		DC808D7629E9C3AD0072B4A9 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		DC808D7F29E9C3AD0072B4A9 /* StandupsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StandupsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DC808D8329E9C3AD0072B4A9 /* StandupFormTests.swift */ = {isa = PBXFileReference; indentWidth = 2; lastKnownFileType = sourcecode.swift; path = StandupFormTests.swift; sourceTree = "<group>"; tabWidth = 2; };
-		DC808D8929E9C3AD0072B4A9 /* StandupsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StandupsUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		DC808D8D29E9C3AD0072B4A9 /* StandupsUITests.swift */ = {isa = PBXFileReference; indentWidth = 2; lastKnownFileType = sourcecode.swift; path = StandupsUITests.swift; sourceTree = "<group>"; tabWidth = 2; };
 		DC808D9F29E9C4340072B4A9 /* DataManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataManager.swift; sourceTree = "<group>"; };
 		DC808DA429E9C4C70072B4A9 /* OpenSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenSettings.swift; sourceTree = "<group>"; };
 		DC808DA629E9C4D60072B4A9 /* SpeechRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognizer.swift; sourceTree = "<group>"; };
@@ -98,13 +88,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		DC808D8629E9C3AD0072B4A9 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -123,7 +106,6 @@
 				DC808D7029E9C3AC0072B4A9 /* Products */,
 				DC808D7129E9C3AC0072B4A9 /* Standups */,
 				DC808D8229E9C3AD0072B4A9 /* StandupsTests */,
-				DC808D8C29E9C3AD0072B4A9 /* StandupsUITests */,
 				DC808DA129E9C4490072B4A9 /* Frameworks */,
 			);
 			sourceTree = "<group>";
@@ -133,7 +115,6 @@
 			children = (
 				DC808D6F29E9C3AC0072B4A9 /* Standups.app */,
 				DC808D7F29E9C3AD0072B4A9 /* StandupsTests.xctest */,
-				DC808D8929E9C3AD0072B4A9 /* StandupsUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -167,14 +148,6 @@
 				DC8C2B0F29EB086A00C65286 /* StandupsListTests.swift */,
 			);
 			path = StandupsTests;
-			sourceTree = "<group>";
-		};
-		DC808D8C29E9C3AD0072B4A9 /* StandupsUITests */ = {
-			isa = PBXGroup;
-			children = (
-				DC808D8D29E9C3AD0072B4A9 /* StandupsUITests.swift */,
-			);
-			path = StandupsUITests;
 			sourceTree = "<group>";
 		};
 		DC808D9E29E9C4040072B4A9 /* Dependencies */ = {
@@ -239,24 +212,6 @@
 			productReference = DC808D7F29E9C3AD0072B4A9 /* StandupsTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		DC808D8829E9C3AD0072B4A9 /* StandupsUITests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = DC808D9929E9C3AD0072B4A9 /* Build configuration list for PBXNativeTarget "StandupsUITests" */;
-			buildPhases = (
-				DC808D8529E9C3AD0072B4A9 /* Sources */,
-				DC808D8629E9C3AD0072B4A9 /* Frameworks */,
-				DC808D8729E9C3AD0072B4A9 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				DC808D8B29E9C3AD0072B4A9 /* PBXTargetDependency */,
-			);
-			name = StandupsUITests;
-			productName = StandupsUITests;
-			productReference = DC808D8929E9C3AD0072B4A9 /* StandupsUITests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -271,10 +226,6 @@
 						CreatedOnToolsVersion = 14.3;
 					};
 					DC808D7E29E9C3AD0072B4A9 = {
-						CreatedOnToolsVersion = 14.3;
-						TestTargetID = DC808D6E29E9C3AC0072B4A9;
-					};
-					DC808D8829E9C3AD0072B4A9 = {
 						CreatedOnToolsVersion = 14.3;
 						TestTargetID = DC808D6E29E9C3AC0072B4A9;
 					};
@@ -301,7 +252,6 @@
 			targets = (
 				DC808D6E29E9C3AC0072B4A9 /* Standups */,
 				DC808D7E29E9C3AD0072B4A9 /* StandupsTests */,
-				DC808D8829E9C3AD0072B4A9 /* StandupsUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -317,13 +267,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		DC808D7D29E9C3AD0072B4A9 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		DC808D8729E9C3AD0072B4A9 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -364,14 +307,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		DC808D8529E9C3AD0072B4A9 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				DC808D8E29E9C3AD0072B4A9 /* StandupsUITests.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -379,11 +314,6 @@
 			isa = PBXTargetDependency;
 			target = DC808D6E29E9C3AC0072B4A9 /* Standups */;
 			targetProxy = DC808D8029E9C3AD0072B4A9 /* PBXContainerItemProxy */;
-		};
-		DC808D8B29E9C3AD0072B4A9 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = DC808D6E29E9C3AC0072B4A9 /* Standups */;
-			targetProxy = DC808D8A29E9C3AD0072B4A9 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -424,7 +354,6 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_TESTING_SEARCH_PATHS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
@@ -490,7 +419,6 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_TESTING_SEARCH_PATHS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -528,7 +456,6 @@
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_TESTING_SEARCH_PATHS = YES;
-				OTHER_LDFLAGS = "$(inherited) -weak_framework Testing";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "To transcribe meeting notes.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -542,6 +469,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					Testing,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = swift.model.Standups;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -564,7 +496,6 @@
 				DEVELOPMENT_TEAM = VFRXY8HC3H;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_TESTING_SEARCH_PATHS = YES;
-				OTHER_LDFLAGS = "$(inherited) -weak_framework Testing";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "To transcribe meeting notes.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -578,6 +509,11 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					Testing,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = swift.model.Standups;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "appletvos appletvsimulator iphoneos iphonesimulator macosx";
@@ -634,50 +570,6 @@
 			};
 			name = Release;
 		};
-		DC808D9A29E9C3AD0072B4A9 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = VFRXY8HC3H;
-				ENABLE_APP_SANDBOX = YES;
-				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = swift.model.StandupsUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				SUPPORTED_PLATFORMS = "appletvos appletvsimulator iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				TARGETED_DEVICE_FAMILY = "1,2,3";
-				TEST_TARGET_NAME = Standups;
-			};
-			name = Debug;
-		};
-		DC808D9B29E9C3AD0072B4A9 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = VFRXY8HC3H;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = swift.model.StandupsUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SUPPORTED_PLATFORMS = "appletvos appletvsimulator iphoneos iphonesimulator macosx";
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				TARGETED_DEVICE_FAMILY = "1,2,3";
-				TEST_TARGET_NAME = Standups;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -704,15 +596,6 @@
 			buildConfigurations = (
 				DC808D9729E9C3AD0072B4A9 /* Debug */,
 				DC808D9829E9C3AD0072B4A9 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		DC808D9929E9C3AD0072B4A9 /* Build configuration list for PBXNativeTarget "StandupsUITests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				DC808D9A29E9C3AD0072B4A9 /* Debug */,
-				DC808D9B29E9C3AD0072B4A9 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -46,23 +46,16 @@
     },
     {
       "target" : {
-        "containerPath" : "container:Examples/SharedState/SharedState.xcodeproj",
-        "identifier" : "F61EBCD02786139400F098A8",
-        "name" : "SharedStateTests"
+        "containerPath" : "container:Examples/Onboarding/Onboarding.xcodeproj",
+        "identifier" : "047F55F13853AF5C5DC6AFF7",
+        "name" : "OnboardingTests"
       }
     },
     {
       "target" : {
-        "containerPath" : "container:Examples/SignUpFlow/SignUpFlow.xcodeproj",
-        "identifier" : "F61EBCD02786139400F098A8",
-        "name" : "SignUpFlowTests"
-      }
-    },
-    {
-      "target" : {
-        "containerPath" : "container:Examples/SignUpFlowUsingDependency/SignUpFlowUsingDependency.xcodeproj",
-        "identifier" : "F61EBCD02786139400F098A8",
-        "name" : "SignUpFlowUsingDependencyTests"
+        "containerPath" : "container:Examples/Search/Search.xcodeproj",
+        "identifier" : "A06EEE4D42E1D0968EDCC168",
+        "name" : "SearchTests"
       }
     },
     {

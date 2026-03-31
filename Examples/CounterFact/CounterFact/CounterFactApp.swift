@@ -1,6 +1,5 @@
 import SwiftUI
 import SwiftModel
-import XCTestDynamicOverlay
 
 @main
 struct CounterFactApp: App {
@@ -12,9 +11,7 @@ struct CounterFactApp: App {
 #if os(macOS)
                 EmptyView()
 #endif
-                if !_XCTIsTesting {
-                    AppView(model: model)
-                }
+                AppView(model: model)
             }
 #if !os(macOS)
             .navigationViewStyle(.stack)
