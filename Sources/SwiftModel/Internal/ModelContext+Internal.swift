@@ -144,7 +144,25 @@ extension Model {
 
 extension ModelContext {
     func willAccess<T>(_ model: M, at path: KeyPath<M, T>&Sendable) -> (() -> Void)? {
-        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, context.isObservable, let observable = model as? any Observable&Model {
+        // Skip ObservationRegistrar tracking during AccessCollector performUpdate recomputation.
+        //
+        // When both conditions hold:
+        //   1. isInsideAsyncPerformUpdate == true  (we're inside a coalesced performUpdate)
+        //   2. ModelAccess.active != nil            (we're inside usingActiveAccess(collector))
+        // we are in an AccessCollector recomputation that has no outer withObservationTracking
+        // scope. Calling observable.access here would register nothing useful but acquires the
+        // registrar's internal lock, causing severe lock contention on Linux (~133K calls/iteration
+        // for a sort over 100 items × 100 mutations with NoCoalescing).
+        //
+        // The OT (withObservationTracking) path sets isInsideAsyncPerformUpdate=true too, but
+        // inside withObservationTracking, ModelAccess.active is nil — so the guard is not
+        // triggered and the tracking works correctly.
+        //
+        // Initial AccessCollector setup and ForceObserver registration also do NOT set
+        // isInsideAsyncPerformUpdate, so they are unaffected.
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, context.isObservable,
+           let observable = model as? any Observable&Model,
+           !(threadLocals.isInsideAsyncPerformUpdate && ModelAccess.active != nil) {
             observable.access(path: path, from: context)
         }
 
