@@ -7,7 +7,7 @@ import IssueReporting
 /// functions can hold a reference without knowing the concrete root model type.
 package protocol _AnyModelTestScope: AnyObject, Sendable {
     func assert(
-        settleResetting: Exhaustivity?,
+        settleResetting: _ExhaustivityBits?,
         fileID: StaticString,
         filePath: StaticString,
         line: UInt,
@@ -27,7 +27,7 @@ package protocol _AnyModelTestScope: AnyObject, Sendable {
     func checkExhaustion(at fileAndLine: FileAndLine)
     func cancelAndCleanup()
     func waitForTeardown() async
-    var exhaustivity: Exhaustivity { get set }
+    var exhaustivity: _ExhaustivityBits { get set }
 }
 
 // MARK: - Task-local test scope
@@ -53,10 +53,10 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
     /// Initial exhaustivity from the trait that created this scope.
     /// Passed to `withAnchor()` so the tester is configured correctly,
     /// and used as the starting value for the mutable `exhaustivity` property.
-    package let initialExhaustivity: Exhaustivity
+    package let initialExhaustivity: _ExhaustivityBits
     package let dependencies: @Sendable (inout ModelDependencies) -> Void
 
-    package init(exhaustivity: Exhaustivity, dependencies: @escaping @Sendable (inout ModelDependencies) -> Void) {
+    package init(exhaustivity: _ExhaustivityBits, dependencies: @escaping @Sendable (inout ModelDependencies) -> Void) {
         self.initialExhaustivity = exhaustivity
         self._exhaustivity = exhaustivity
         self.dependencies = dependencies
@@ -83,7 +83,7 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
     package var concrete: (any _AnyModelTestScope)? { lock.withLock { _concrete } }
     package var registrationFileAndLine: FileAndLine? { lock.withLock { _registrationFileAndLine } }
 
-    package func assert(settleResetting: Exhaustivity? = nil, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt, predicates: [AssertBuilder.Predicate]) async {
+    package func assert(settleResetting: _ExhaustivityBits? = nil, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt, predicates: [AssertBuilder.Predicate]) async {
         guard let c = concrete else {
             reportIssue("No model was anchored in this .modelTesting test. Call withAnchor() first.", fileID: fileID, filePath: filePath, line: line, column: column)
             return
@@ -128,14 +128,14 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
         await concrete?.waitForTeardown()
     }
 
-    package var exhaustivity: Exhaustivity {
+    package var exhaustivity: _ExhaustivityBits {
         get { lock.withLock { _concrete?.exhaustivity ?? _exhaustivity } }
         set { lock.withLock {
             _exhaustivity = newValue
             _concrete?.exhaustivity = newValue
         }}
     }
-    private var _exhaustivity: Exhaustivity = .full
+    private var _exhaustivity: _ExhaustivityBits = .full
 }
 
 // MARK: - Concrete type-erased scope
@@ -149,7 +149,7 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
     }
 
     package func assert(
-        settleResetting: Exhaustivity? = nil,
+        settleResetting: _ExhaustivityBits? = nil,
         fileID: StaticString,
         filePath: StaticString,
         line: UInt,
@@ -204,8 +204,8 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         await backgroundCall.waitUntilIdle()
     }
 
-    package var exhaustivity: Exhaustivity {
-        get { tester.exhaustivity }
-        set { tester.exhaustivity = newValue }
+    package var exhaustivity: _ExhaustivityBits {
+        get { tester.access.lock { tester.access.exhaustivity } }
+        set { tester.access.lock { tester.access.exhaustivity = newValue } }
     }
 }

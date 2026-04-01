@@ -83,7 +83,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     // expectedState against lastState to catch unasserted changes.
     var expectedState: Root
 
-    var exhaustivity: Exhaustivity = .full
+    var exhaustivity: _ExhaustivityBits = .full
     var showSkippedAssertions = false
 
     // Pending unasserted state transitions, keyed by root-relative keypath. Populated by
@@ -124,7 +124,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         var debugInfo: () -> String
         /// Which exhaustivity category this update belongs to. Defaults to `.state` for
         /// regular property writes; `.local` for `node.local` writes; `.environment` for `node.environment` writes.
-        var area: Exhaustivity
+        var area: _ExhaustivityBits
         var fromDescription: (() -> String)?
         var toDescription: (() -> String)?
         /// The typed `to` value stored as Any, for use in willAccess during history evaluation.
@@ -461,7 +461,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         reportIssue(message, fileID: fileAndLine.fileID, filePath: fileAndLine.filePath, line: fileAndLine.line, column: fileAndLine.column)
     }
 
-    func fail(_ message: String, for area: Exhaustivity, at fileAndLine: FileAndLine) {
+    func fail(_ message: String, for area: _ExhaustivityBits, at fileAndLine: FileAndLine) {
         if lock({ exhaustivity.contains(area) }) {
             fail(message, at: fileAndLine)
         } else if lock({ showSkippedAssertions }) {
@@ -492,11 +492,11 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         return max(floor, yieldLatencyNs * 100)
     }
 
-    func expect(settleResetting: Exhaustivity? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
+    func expect(settleResetting: _ExhaustivityBits? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
         await expect(timeoutNanoseconds: 1_000_000_000, settleResetting: settleResetting, at: fileAndLine, predicates: predicates, enableExhaustionTest: enableExhaustionTest)
     }
 
-    func expect(timeoutNanoseconds timeout: UInt64, settleResetting: Exhaustivity? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
+    func expect(timeoutNanoseconds timeout: UInt64, settleResetting: _ExhaustivityBits? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
         let calibrationStart = DispatchTime.now().uptimeNanoseconds
         await Task.yield()
         let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
@@ -1282,7 +1282,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             let allUpdates = snapshotUpdates.values.flatMap { $0 }
             // Partition by area so state, local, environment, and preference storage are each reported
             // independently and respect their respective exhaustivity flags.
-            for area: Exhaustivity in [.state, .local, .environment, .preference] {
+            for area: _ExhaustivityBits in [.state, .local, .environment, .preference] {
                 let updates = allUpdates.filter { $0.area == area }
                 if !updates.isEmpty {
                     let descriptions = updates.map { $0.debugInfo() }
@@ -1308,7 +1308,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             // root-relative WritableKeyPath and cannot be put in valueUpdates.
             let depMetaUpdates = lock { dependencyMetadataUpdates }
             if !depMetaUpdates.isEmpty {
-                for area: Exhaustivity in [.local, .environment] {
+                for area: _ExhaustivityBits in [.local, .environment] {
                     let updates = depMetaUpdates.values.filter { $0.area == area }
                     if !updates.isEmpty {
                         let descriptions = updates.map { $0.debugInfo() }

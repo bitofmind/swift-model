@@ -128,7 +128,7 @@ public func settle(
         return
     }
     await scope.assert(
-        settleResetting: resetting,
+        settleResetting: resetting.apply(to: .full),
         fileID: fileID,
         filePath: filePath,
         line: line,
@@ -158,7 +158,7 @@ public func settle(
         return
     }
     await scope.assert(
-        settleResetting: resetting,
+        settleResetting: resetting.apply(to: .full),
         fileID: fileID,
         filePath: filePath,
         line: line,
@@ -369,7 +369,7 @@ public func require<T>(
 ///
 /// > Important: Must be called inside a `@Test(.modelTesting)` function.
 public func withExhaustivity(
-    _ modifier: ExhaustivityModifier,
+    _ modifier: Exhaustivity,
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
     line: UInt = #line,
@@ -423,7 +423,7 @@ public func withExhaustivity(
 ///   - dependencies: A closure to override dependencies for all models anchored in this scope.
 ///   - body: The test body. Call `withAnchor()` inside to connect a model to the scope.
 public func withModelTesting(
-    exhaustivity: ExhaustivityModifier = .full,
+    exhaustivity: Exhaustivity = .full,
     dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in },
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
@@ -462,7 +462,7 @@ public func withModelTesting(
 ///   - dependencies: A closure to override dependencies for all models anchored in this scope.
 ///   - body: The test body. Call `withAnchor()` inside to connect a model.
 public func withModelTesting(
-    _ modifier: ExhaustivityModifier,
+    _ modifier: Exhaustivity,
     dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in },
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
@@ -479,7 +479,7 @@ public func withModelTesting(
 }
 
 private func _withModelTestingImpl(
-    modifier: ExhaustivityModifier,
+    modifier: Exhaustivity,
     dependencies: @escaping @Sendable (inout ModelDependencies) -> Void,
     fileID: StaticString,
     filePath: StaticString,
@@ -532,10 +532,10 @@ private func _withModelTestingImpl(
 /// factory on `Trait` instead.
 public struct ModelTestingTrait: Sendable {
     /// The exhaustivity modifier applied relative to the enclosing scope's exhaustivity.
-    let modifier: ExhaustivityModifier
+    let modifier: Exhaustivity
     let dependencies: @Sendable (inout ModelDependencies) -> Void
 
-    init(modifier: ExhaustivityModifier, dependencies: @escaping @Sendable (inout ModelDependencies) -> Void) {
+    init(modifier: Exhaustivity, dependencies: @escaping @Sendable (inout ModelDependencies) -> Void) {
         self.modifier = modifier
         self.dependencies = dependencies
     }
@@ -602,7 +602,7 @@ extension Trait where Self == ModelTestingTrait {
     /// }
     /// ```
     ///
-    /// Pass an `ExhaustivityModifier` (from `Exhaustivity.adding(_:)` / `.removing(_:)`) as the
+    /// Pass an `Exhaustivity` (from `Exhaustivity.adding(_:)` / `.removing(_:)`) as the
     /// first argument to compose with the enclosing scope's exhaustivity:
     ///
     /// ```swift
@@ -614,10 +614,10 @@ extension Trait where Self == ModelTestingTrait {
     /// ```
     ///
     /// - Parameters:
-    ///   - modifier: An `ExhaustivityModifier` to apply relative to the enclosing scope.
+    ///   - modifier: An `Exhaustivity` to apply relative to the enclosing scope.
     ///   - dependencies: A closure to override dependencies for the model.
     public static func modelTesting(
-        _ modifier: ExhaustivityModifier,
+        _ modifier: Exhaustivity,
         dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in }
     ) -> Self {
         Self(modifier: modifier, dependencies: dependencies)
@@ -654,7 +654,7 @@ extension Trait where Self == ModelTestingTrait {
     ///     preset (`.off`, `.full`, `.state`) or a relative modifier (`.removing(.events)`).
     ///   - dependencies: A closure to override dependencies for the model.
     public static func modelTesting(
-        exhaustivity: ExhaustivityModifier = .full,
+        exhaustivity: Exhaustivity = .full,
         dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in }
     ) -> Self {
         Self(modifier: exhaustivity, dependencies: dependencies)
@@ -662,7 +662,7 @@ extension Trait where Self == ModelTestingTrait {
 
     /// Activates model testing infrastructure with default settings.
     public static var modelTesting: Self {
-        Self(modifier: ExhaustivityModifier { _ in .full }, dependencies: { _ in })
+        Self(modifier: Exhaustivity { _ in .full }, dependencies: { _ in })
     }
 }
 

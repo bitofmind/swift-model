@@ -191,7 +191,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         guard !threadLocals.isAccessingMetadataStorage else { return }
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
         let mc = metadataModelContext()
-        let storageArea: Exhaustivity = storage.propagation == .environment ? .environment : .local
+        let storageArea: _ExhaustivityBits = storage.propagation == .environment ? .environment : .local
         let closureOpt = threadLocals.withValue(storageArea, at: \.modificationArea) {
             threadLocals.withValue(storage.name, at: \.storageName) {
                 mc.willAccess(readModel, at: typedPath)
@@ -225,7 +225,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // Same re-entry guard as willAccessStorage: the TestAccess.didModify closure reads
             // model.context![path] which goes through the context getter → willAccessStorage → loop.
             if !threadLocals.isAccessingMetadataStorage {
-                let storageArea: Exhaustivity = storage.propagation == .environment ? .environment : .local
+                let storageArea: _ExhaustivityBits = storage.propagation == .environment ? .environment : .local
                 threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
                     threadLocals.withValue(storageArea, at: \.modificationArea) {
                         threadLocals.withValue(storage.name, at: \.storageName) {

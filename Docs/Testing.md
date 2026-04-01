@@ -130,9 +130,9 @@ This catches "fire-and-forget" mutations — an error that appeared and cleared,
 To focus a test on only some categories, pass an exhaustivity argument to `.modelTesting`:
 
 ```swift
-// Absolute exhaustivity — use ExhaustivityModifier presets:
+// Absolute exhaustivity — use Exhaustivity presets or array literals:
 @Test(.modelTesting(exhaustivity: .off))
-@Test(.modelTesting(exhaustivity: .state.adding(.events)))  // only state + events
+@Test(.modelTesting(exhaustivity: [.state, .events]))  // only state + events
 
 // Relative modifier — composes with the enclosing suite's exhaustivity
 @Suite(.modelTesting(.removing(.events)))

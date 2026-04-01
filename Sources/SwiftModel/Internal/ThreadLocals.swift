@@ -19,7 +19,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// When non-nil, `TestAccess.didModify` and `willAccess` tag their `ValueUpdate`/`Access`
     /// entries with this area instead of the default `.state`. Set by `Context<M>` around
     /// the typed context storage path calls so context changes are reported under `.local`.
-    var modificationArea: Exhaustivity? = nil
+    var modificationArea: _ExhaustivityBits? = nil
     /// Guards against infinite recursion in `willAccessStorage`/`didModifyStorage`.
     /// Reading `readModel[keyPath: \M[_metadata: storage]]` inside the TestAccess closure
     /// re-enters `willAccessStorage` through the context getter. This flag breaks that cycle.

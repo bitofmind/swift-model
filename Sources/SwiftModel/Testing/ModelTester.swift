@@ -30,7 +30,7 @@ public final class ModelTester<M: Model> {
     var cleanupHandledExternally = false
 
     // Internal designated init — options are read from `ModelOption.current` (TaskLocal) by AnyContext.
-    init(_ model: M, exhaustivity: Exhaustivity = .full, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
+    init(_ model: M, exhaustivity: _ExhaustivityBits = .full, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
         let fl = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         fileAndLine = fl
         access = TestAccess(model: model, dependencies: dependencies, fileAndLine: fl)
@@ -70,7 +70,7 @@ public extension Model {
     @available(*, deprecated, message: "Use @Test(.modelTesting) with withAnchor() and the global expect { } / require(_:) functions instead.")
     func andTester(exhaustivity: Exhaustivity = .full, withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
         assertInitialState(function: function)
-        let tester = ModelTester(self, exhaustivity: exhaustivity, dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
+        let tester = ModelTester(self, exhaustivity: exhaustivity.apply(to: .full), dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
         return (tester.model, tester)
     }
 }
@@ -124,9 +124,14 @@ public extension ModelTester {
     /// tester.exhaustivity = [.state, .events] // ignore tasks and probes
     /// tester.exhaustivity = .off              // skip all exhaustion checks
     /// ```
+    ///
+    /// Setting a relative modifier (e.g. `.removing(.events)`) applies against `.full` as the base.
     var exhaustivity: Exhaustivity {
-        get { access.lock { access.exhaustivity } }
-        set { access.lock { access.exhaustivity = newValue } }
+        get {
+            let bits = access.lock { access.exhaustivity }
+            return Exhaustivity { _ in bits }
+        }
+        set { access.lock { access.exhaustivity = newValue.apply(to: .full) } }
     }
 
     /// When `true`, prints each assertion that was skipped due to `exhaustivity` settings rather
@@ -155,50 +160,112 @@ public extension ModelTester {
     }
 }
 
-/// An option set that controls which categories of side effects the `ModelTester` checks for exhaustion.
-///
-/// The tester fails a test if any effect in an enabled category is not consumed by an `assert` call
-/// before the tester is deallocated (or before the next `assert`).
-///
-/// - `state`: model state changes must be asserted.
-/// - `events`: events sent via `node.send()` must be asserted with `model.didSend(_:)`.
-/// - `tasks`: async tasks launched by the model must complete or be cancelled within the test.
-/// - `probes`: values emitted by installed `TestProbe` instances must be asserted.
-/// - `local`: writes to node-private storage via `node.local` must be asserted.
-/// - `environment`: writes to top-down propagating storage via `node.environment` must be asserted.
-/// - `preference`: writes to preference storage via `node.preference` must be asserted.
-///
-/// Use `.off` to disable all checks, or compose individual members:
-///
-/// ```swift
-/// tester.exhaustivity = [.state, .events]  // only check state and events
-/// tester.exhaustivity = .off               // don't check anything
-/// ```
-public struct Exhaustivity: OptionSet, Equatable, Sendable {
-    public let rawValue: Int
+// Package-internal bitmask used by TestAccess at runtime.
+package struct _ExhaustivityBits: OptionSet, Equatable, Sendable {
+    package let rawValue: Int
 
-    public init(rawValue: Int) {
+    package init(rawValue: Int) {
         self.rawValue = rawValue
     }
+
+    package static let state = Self(rawValue: 1 << 0)
+    package static let events = Self(rawValue: 1 << 1)
+    package static let tasks = Self(rawValue: 1 << 2)
+    package static let probes = Self(rawValue: 1 << 3)
+    package static let local = Self(rawValue: 1 << 4)
+    package static let preference = Self(rawValue: 1 << 5)
+    package static let environment = Self(rawValue: 1 << 6)
+    package static let transitions = Self(rawValue: 1 << 7)
+    package static let off: Self = []
+    package static let full: Self = [.state, .events, .tasks, .probes, .local, .environment, .preference]
 }
 
-public extension Exhaustivity {
-    /// Require all model state changes to be consumed by `assert` blocks.
-    static let state = Self(rawValue: 1 << 0)
-    /// Require all events sent via `node.send()` to be observed inside `assert` blocks.
-    static let events = Self(rawValue: 1 << 1)
-    /// Require all async tasks started by the model to complete or be cancelled before the tester deallocates.
-    static let tasks = Self(rawValue: 1 << 2)
-    /// Require all values emitted by installed `TestProbe` instances to be consumed.
-    static let probes = Self(rawValue: 1 << 3)
-    /// Require all node-private storage changes (via `node.local`) to be consumed by `assert` blocks.
-    static let local = Self(rawValue: 1 << 4)
-    /// Require all preference storage changes (via `node.preference`) to be consumed by `assert` blocks.
-    static let preference = Self(rawValue: 1 << 5)
-    /// Require all top-down propagating storage changes (via `node.environment`) to be consumed by `assert` blocks.
-    static let environment = Self(rawValue: 1 << 6)
+/// Controls which categories of side effects the testing framework checks for exhaustion.
+///
+/// Pass an `Exhaustivity` value to `@Test(.modelTesting(exhaustivity:))`,
+/// `@Suite(.modelTesting(exhaustivity:))`, `withModelTesting(exhaustivity:)`,
+/// `withExhaustivity(_:)`, or `settle(resetting:)`.
+///
+/// **Absolute presets** set exhaustivity regardless of the parent scope:
+/// ```swift
+/// @Suite(.modelTesting(exhaustivity: .off))    // → no checks
+/// @Suite(.modelTesting(exhaustivity: .full))   // → all standard checks (default)
+/// @Suite(.modelTesting(exhaustivity: .state))  // → state only
+/// ```
+///
+/// **Array literals** compose absolute presets:
+/// ```swift
+/// @Suite(.modelTesting(exhaustivity: [.state, .events]))  // → state + events only
+/// ```
+///
+/// **Relative factories** compose on top of the inherited scope's exhaustivity:
+/// ```swift
+/// @Suite(.modelTesting(.removing(.events)))    // → inherited − .events
+/// @Suite(.modelTesting(.adding(.transitions))) // → inherited + .transitions
+/// ```
+///
+/// **Instance chaining** chains from a preset:
+/// ```swift
+/// @Suite(.modelTesting(exhaustivity: .full.removing(.events)))   // → .full − .events
+/// @Suite(.modelTesting(exhaustivity: .off.adding(.state)))       // → .state only
+/// ```
+public struct Exhaustivity: Sendable, ExpressibleByArrayLiteral {
+    let transform: @Sendable (_ExhaustivityBits) -> _ExhaustivityBits
 
-    /// Require state changes to be asserted in the order they occurred (FIFO history mode).
+    /// Creates an exhaustivity value from an explicit transform closure.
+    package init(_ transform: @escaping @Sendable (_ExhaustivityBits) -> _ExhaustivityBits) {
+        self.transform = transform
+    }
+
+    /// Creates an exhaustivity that is the union of all elements (absolute preset).
+    ///
+    /// Each element is interpreted as an absolute preset. Relative modifiers (`.adding`, `.removing`)
+    /// are unusual in array literals; use explicit preset names (`.state`, `.events`, etc.) instead.
+    ///
+    /// ```swift
+    /// @Suite(.modelTesting(exhaustivity: [.state, .events]))
+    /// await settle(resetting: [.state, .events])
+    /// ```
+    public init(arrayLiteral elements: Exhaustivity...) {
+        let bits = elements.reduce(_ExhaustivityBits.off) { $0.union($1.apply(to: .off)) }
+        self.init { _ in bits }
+    }
+
+    /// Applies this exhaustivity value against a base and returns the resolved bits.
+    package func apply(to base: _ExhaustivityBits) -> _ExhaustivityBits {
+        transform(base)
+    }
+
+    // MARK: - Absolute presets (ignore the inherited exhaustivity)
+
+    /// All standard exhaustivity checks. This is the default.
+    public static var full: Self { Self { _ in .full } }
+
+    /// No exhaustivity checks.
+    public static var off: Self { Self { _ in .off } }
+
+    /// State changes only.
+    public static var state: Self { Self { _ in .state } }
+
+    /// Sent events only.
+    public static var events: Self { Self { _ in .events } }
+
+    /// Async tasks only.
+    public static var tasks: Self { Self { _ in .tasks } }
+
+    /// `TestProbe` values only.
+    public static var probes: Self { Self { _ in .probes } }
+
+    /// Node-private storage (`node.local`) only.
+    public static var local: Self { Self { _ in .local } }
+
+    /// Preference storage (`node.preference`) only.
+    public static var preference: Self { Self { _ in .preference } }
+
+    /// Top-down propagating storage (`node.environment`) only.
+    public static var environment: Self { Self { _ in .environment } }
+
+    /// FIFO transition-order exhaustivity.
     ///
     /// When `.transitions` is included, `expect` evaluates predicates against recorded history
     /// in FIFO order rather than the live model value. Each property write creates a separate
@@ -208,187 +275,60 @@ public extension Exhaustivity {
     ///
     /// Not included in `.full` by default — opt in explicitly when you want strict ordering:
     /// ```swift
-    /// @Suite(.modelTesting(exhaustivity: .full.union(.transitions)))
+    /// @Suite(.modelTesting(exhaustivity: .adding(.transitions)))
     /// ```
-    static let transitions = Self(rawValue: 1 << 7)
+    public static var transitions: Self { Self { _ in .transitions } }
 
-    /// Exhaustivity is completely disabled — no side effects need to be asserted.
-    static let off: Self = []
-    /// All categories are checked. This is the default.
-    static let full: Self = [.state, .events, .tasks, .probes, .local, .environment, .preference]
+    // MARK: - Relative factories (compose with the inherited exhaustivity)
 
-    /// Require all context storage changes to be consumed by `assert` blocks.
-    ///
-    /// - Deprecated: Use `[.local, .environment]` to cover both storage kinds, or just
-    ///   `.local` / `.environment` to target one specifically.
-    @available(*, deprecated, message: "Use [.local, .environment] to cover both storage kinds, or .local/.environment to target one specifically.")
-    static var context: Self { [.local, .environment] }
-}
-
-public extension Exhaustivity {
-    /// Returns exhaustivity with the given categories added.
-    ///
-    /// ```swift
-    /// @Test(.modelTesting(exhaustivity: .off.adding(.state)))
-    /// ```
-    func adding(_ other: Self) -> Self { self.union(other) }
-
-    /// Returns exhaustivity with the given categories removed.
-    ///
-    /// ```swift
-    /// @Test(.modelTesting(exhaustivity: .full.removing(.events)))
-    /// ```
-    func removing(_ other: Self) -> Self { self.subtracting(other) }
-
-    /// Returns a modifier that adds the given categories to the inherited exhaustivity.
-    ///
-    /// When used in `@Test(.modelTesting(...))`, `@Suite(.modelTesting(...))`, or
-    /// `withExhaustivity(_:)`, the modifier is applied on top of the enclosing scope's
-    /// exhaustivity, composing rather than resetting it:
-    ///
-    /// ```swift
-    /// @Suite(.modelTesting(.removing(.events)))   // → .full − .events
-    /// struct MyTests {
-    ///     @Test(.modelTesting(.removing(.tasks))) // → (.full − .events) − .tasks
-    ///     func example() async {
-    ///         await withExhaustivity(.adding(.events)) { // → adds .events back
-    ///             ...
-    ///         }
-    ///     }
-    /// }
-    /// ```
-    static func adding(_ other: Self) -> ExhaustivityModifier {
-        ExhaustivityModifier { $0.union(other) }
-    }
-
-    /// Returns a modifier that removes the given categories from the inherited exhaustivity.
-    ///
-    /// When used in `@Test(.modelTesting(...))`, `@Suite(.modelTesting(...))`, or
-    /// `withExhaustivity(_:)`, the modifier is applied on top of the enclosing scope's
-    /// exhaustivity, composing rather than resetting it:
-    ///
-    /// ```swift
-    /// @Suite(.modelTesting(.removing(.events)))   // → .full − .events
-    /// struct MyTests {
-    ///     @Test(.modelTesting(.removing(.tasks))) // → (.full − .events) − .tasks
-    ///     func example() async { }
-    /// }
-    /// ```
-    static func removing(_ other: Self) -> ExhaustivityModifier {
-        ExhaustivityModifier { $0.subtracting(other) }
-    }
-}
-
-/// A modification to an `Exhaustivity` value passed to `@Test(.modelTesting(...))`,
-/// `@Suite(.modelTesting(...))`, `withModelTesting(exhaustivity:)`, or `withExhaustivity(_:)`.
-///
-/// Use the **relative** static factories to compose on top of the parent scope's exhaustivity:
-/// ```swift
-/// @Suite(.modelTesting(.removing(.events)))    // → inherited − .events
-/// @Suite(.modelTesting(.adding(.transitions))) // → inherited + .transitions
-/// ```
-///
-/// Use the **absolute** static presets to set exhaustivity regardless of the parent scope:
-/// ```swift
-/// @Suite(.modelTesting(.off))    // → .off
-/// @Suite(.modelTesting(.full))   // → .full
-/// @Suite(.modelTesting(.state))  // → .state only
-/// ```
-///
-/// Chain from a preset using instance `adding`/`removing`:
-/// ```swift
-/// @Suite(.modelTesting(.full.removing(.events)))   // → .full − .events
-/// @Suite(.modelTesting(.off.adding(.state)))        // → .state only
-/// ```
-///
-/// Or use the labeled `exhaustivity:` form for clarity:
-/// ```swift
-/// @Suite(.modelTesting(exhaustivity: .off))
-/// await withModelTesting(exhaustivity: .removing(.events)) { ... }
-/// ```
-public struct ExhaustivityModifier: Sendable {
-    let transform: @Sendable (Exhaustivity) -> Exhaustivity
-
-    /// Creates a modifier from an explicit transform closure.
-    public init(_ transform: @escaping @Sendable (Exhaustivity) -> Exhaustivity) {
-        self.transform = transform
-    }
-
-    /// Applies this modifier to a base exhaustivity and returns the result.
-    public func apply(to base: Exhaustivity) -> Exhaustivity {
-        transform(base)
-    }
-
-    // MARK: - Relative modifiers (compose with the inherited exhaustivity)
-
-    /// Returns a modifier that adds the given categories to the inherited exhaustivity.
+    /// Returns an exhaustivity that adds the given categories to the inherited exhaustivity.
     ///
     /// ```swift
     /// @Suite(.modelTesting(.adding(.transitions)))  // → inherited + .transitions
     /// ```
-    public static func adding(_ other: Exhaustivity) -> Self {
-        Self { $0.union(other) }
+    ///
+    /// In free-context positions (e.g. `settle(resetting:)`) the implicit base is `.off`,
+    /// so `.adding(.transitions)` resets only the transitions category.
+    public static func adding(_ other: Self) -> Self {
+        let bitsToAdd = other.apply(to: .off)
+        return Self { $0.union(bitsToAdd) }
     }
 
-    /// Returns a modifier that removes the given categories from the inherited exhaustivity.
+    /// Returns an exhaustivity that removes the given categories from the inherited exhaustivity.
     ///
     /// ```swift
     /// @Suite(.modelTesting(.removing(.events)))  // → inherited − .events
     /// ```
-    public static func removing(_ other: Exhaustivity) -> Self {
-        Self { $0.subtracting(other) }
+    ///
+    /// In free-context positions (e.g. `settle(resetting:)`) the implicit base is `.full`,
+    /// so `.removing(.events)` resets everything except events.
+    public static func removing(_ other: Self) -> Self {
+        let bitsToRemove = other.apply(to: .off)
+        return Self { $0.subtracting(bitsToRemove) }
     }
-
-    // MARK: - Absolute preset modifiers (ignore the inherited exhaustivity)
-
-    /// All standard exhaustivity checks. Equivalent to `Exhaustivity.full`.
-    public static var full: Self { Self { _ in .full } }
-
-    /// No exhaustivity checks. Equivalent to `Exhaustivity.off`.
-    public static var off: Self { Self { _ in .off } }
-
-    /// State exhaustivity only. Equivalent to `Exhaustivity.state`.
-    public static var state: Self { Self { _ in .state } }
-
-    /// Event exhaustivity only. Equivalent to `Exhaustivity.events`.
-    public static var events: Self { Self { _ in .events } }
-
-    /// Task exhaustivity only. Equivalent to `Exhaustivity.tasks`.
-    public static var tasks: Self { Self { _ in .tasks } }
-
-    /// Probe exhaustivity only. Equivalent to `Exhaustivity.probes`.
-    public static var probes: Self { Self { _ in .probes } }
-
-    /// Node-private storage exhaustivity only. Equivalent to `Exhaustivity.local`.
-    public static var local: Self { Self { _ in .local } }
-
-    /// Preference storage exhaustivity only. Equivalent to `Exhaustivity.preference`.
-    public static var preference: Self { Self { _ in .preference } }
-
-    /// Top-down propagating storage exhaustivity only. Equivalent to `Exhaustivity.environment`.
-    public static var environment: Self { Self { _ in .environment } }
-
-    /// FIFO transition-order exhaustivity only. Equivalent to `Exhaustivity.transitions`.
-    public static var transitions: Self { Self { _ in .transitions } }
 
     // MARK: - Instance chaining
 
-    /// Returns a new modifier that adds the given categories to the result of this modifier.
+    /// Returns a new exhaustivity that adds the given categories to the result of this one.
     ///
     /// ```swift
-    /// @Suite(.modelTesting(.off.adding(.state)))   // → .state only
+    /// .off.adding(.state)                 // → .state only
+    /// .off.adding([.state, .events])      // → .state + .events
     /// ```
-    public func adding(_ other: Exhaustivity) -> Self {
-        Self { self.apply(to: $0).union(other) }
+    public func adding(_ other: Self) -> Self {
+        let bitsToAdd = other.apply(to: .off)
+        return Self { self.apply(to: $0).union(bitsToAdd) }
     }
 
-    /// Returns a new modifier that removes the given categories from the result of this modifier.
+    /// Returns a new exhaustivity that removes the given categories from the result of this one.
     ///
     /// ```swift
-    /// @Suite(.modelTesting(.full.removing(.events)))  // → .full − .events
+    /// .full.removing(.events)             // → .full − .events
+    /// .full.removing([.state, .events])   // → .full − .state − .events
     /// ```
-    public func removing(_ other: Exhaustivity) -> Self {
-        Self { self.apply(to: $0).subtracting(other) }
+    public func removing(_ other: Self) -> Self {
+        let bitsToRemove = other.apply(to: .off)
+        return Self { self.apply(to: $0).subtracting(bitsToRemove) }
     }
 }
 
