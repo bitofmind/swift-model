@@ -86,10 +86,13 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     var exhaustivity: Exhaustivity = .full
     var showSkippedAssertions = false
 
-    // Pending unasserted state changes, keyed by root-relative keypath. Populated by
-    // didModify; entries are cleared when the corresponding path is asserted. Any
+    // Pending unasserted state transitions, keyed by root-relative keypath. Populated by
+    // didModify; front entries are consumed when the corresponding path is asserted. Any
     // remaining entries at exhaustion time are reported as failures.
-    var valueUpdates: [PartialKeyPath<Root>: ValueUpdate] = [:]
+    //
+    // Each write appends a new entry to the FIFO queue for that path, preserving all
+    // intermediate transitions. The front of the queue is the oldest unasserted transition.
+    var valueUpdates: [PartialKeyPath<Root>: [ValueUpdate]] = [:]
 
     // Pending unasserted context storage writes on dependency models. Dependency models have no
     // root-relative WritableKeyPath (they live in dependencyContexts, not children), so
@@ -110,20 +113,22 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     // General task counter (Phase 5): tracks all currently-running tasks in the hierarchy.
     private var _activeTaskCount: Int = 0
 
-    // Captures a pending state change: how to apply it to a Root snapshot, and how to
+    // Captures a single state transition: how to apply it to a Root snapshot, and how to
     // describe it for exhaustion-failure messages.
+    //
+    // In transitions mode, each property write creates a new ValueUpdate entry appended
+    // to a FIFO queue. The queue preserves all intermediate transitions (e.g. false → true,
+    // true → false) rather than collapsing them into a single last-write-wins entry.
     struct ValueUpdate {
         var apply: (inout Root) -> Void
         var debugInfo: () -> String
         /// Which exhaustivity category this update belongs to. Defaults to `.state` for
         /// regular property writes; `.local` for `node.local` writes; `.environment` for `node.environment` writes.
         var area: Exhaustivity
-        // Change chain for improved failure messages (nil for dependency storage updates).
-        // When a path is written more than once between asserts, successive writes accumulate
-        // the history so the message shows the full journey: "false → true → false".
         var fromDescription: (() -> String)?
-        var throughDescriptions: [() -> String] = []
         var toDescription: (() -> String)?
+        /// The typed `to` value stored as Any, for use in willAccess during history evaluation.
+        var rawValue: Any
     }
 
     struct Event {
@@ -250,14 +255,55 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // in-flight detection guarantee.
         let isContainerTypeValue = Value.self is any ModelContainer.Type
 
-        return {
+        // Transitions mode: when there are queued (unasserted) writes for this path,
+        // set a thread-local override so the Context subscript yields the front-of-queue
+        // historical value instead of the live model value. This ensures the predicate
+        // evaluates against transitions in FIFO order rather than the latest live value.
+        //
+        // When the queue is empty, no override is needed — the live model value matches
+        // the expected value (no unasserted writes). We must NOT fall back to reading
+        // expectedState[keyPath:] because deep paths through container types (Optional<Child>,
+        // array elements) use cursor keypaths whose getters force-unwrap and crash on stale
+        // snapshot copies.
+        //
+        // Skip model-typed and container-typed values: the override yields a frozen copy,
+        // and chained access through frozen model instances (e.g. .dependency.value) would
+        // hit unanchored model nodes. Leaf properties within containers get their own FIFO
+        // entries and overrides.
+        if !isContextOrPreferenceStorage, !fullPaths.isEmpty, !isModelTypeValue, !isContainerTypeValue {
+            let overrideValue: Value? = self.lock {
+                guard self.exhaustivity.contains(.transitions),
+                      let front = self.valueUpdates[fullPaths[0]]?.first,
+                      let typed = front.rawValue as? Value else {
+                    return nil
+                }
+                return typed
+            }
+            if let overrideValue {
+                threadLocals.transitionOverrideValue = overrideValue
+            }
+        }
+
+        return { [weak self] in
+            // Consume the transition override from the thread-local. When called from the
+            // Context subscript path, the Context already yielded this value to the predicate.
+            // When called from willAccessStorage/willAccessPreference paths (which don't go
+            // through the Context subscript), this clears a stale override.
+            let overrideConsumed = threadLocals.transitionOverrideValue
+            threadLocals.transitionOverrideValue = nil
+
+            let value: Value
             // For preference paths, use the pre-computed aggregated value if available.
             // willAccessPreferenceValue sets threadLocals.precomputedPreferenceValue before
             // invoking this closure so we don't re-read via model.context![path] — which
             // re-enters preferenceValue under a lock and causes lock-ordering deadlocks.
-            let value: Value
             if isPreference, let precomputed = threadLocals.precomputedPreferenceValue, let typed = precomputed as? Value {
                 value = frozenCopy(typed)
+            } else if overrideConsumed != nil, let typed = overrideConsumed as? Value {
+                // Transitions mode: use the same override value that was yielded to the predicate.
+                // Guard with != nil first to avoid the Swift gotcha where `nil as? T`
+                // succeeds when T is an Optional type (producing .some(nil)).
+                value = typed
             } else {
                 value = frozenCopy(model.context![path])
             }
@@ -333,7 +379,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     let update = ValueUpdate(
                         apply: { _ in },  // dependency storage not in Root snapshot
                         debugInfo: { "\(String(describing: M.self)).\(prefix).\(name ?? "UNKNOWN") == \(String(customDumping: value))" },
-                        area: area
+                        area: area,
+                        rawValue: value as Any
                     )
                     if area == .preference {
                         self.dependencyPreferenceUpdates[key] = update
@@ -349,27 +396,21 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             let value = frozenCopy(model.context![path])
             self.lock {
                 for fullPath in fullPaths {
-                    // Build change chain for improved failure messages.
-                    // On first write to this path: capture the original expectedState value.
-                    // On subsequent writes: preserve the original "from" and accumulate intermediates,
-                    // so the message shows the full history: "false → true → false".
+                    // Transitions mode: each write appends a new entry to the FIFO queue.
+                    // The "from" value is the previous entry's "to" value (if any), or
+                    // the current lastState value (which matches expectedState on the
+                    // first write after an assert).
                     let chainFrom: (() -> String)?
-                    var chainThrough: [() -> String]
-                    if let existing = self.valueUpdates[fullPath],
-                       let existingFrom = existing.fromDescription {
-                        chainFrom = existingFrom
-                        chainThrough = existing.throughDescriptions
-                        if let existingTo = existing.toDescription {
-                            chainThrough.append(existingTo)
-                        }
+                    if let lastEntry = self.valueUpdates[fullPath]?.last,
+                       let lastTo = lastEntry.toDescription {
+                        // Subsequent write: "from" is the previous entry's "to"
+                        chainFrom = lastTo
                     } else {
-                        // First write: capture lastState value inside the lock.
+                        // First write to this path since last assert: capture lastState.
                         // We use lastState rather than expectedState because deep paths through
                         // container types (Optional<Child>, array elements) use keypaths whose
                         // get closures force-unwrap — expectedState may have a nil/stale container
                         // while lastState is always kept in sync with the live model structure.
-                        // On the first write to a path after an assert the two values are identical,
-                        // so the "from" description is the same either way.
                         let capturedOriginal: Value = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
                             self.lastState[keyPath: fullPath]
                         }
@@ -378,36 +419,31 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                                 String(customDumping: capturedOriginal)
                             }
                         }
-                        chainThrough = []
                     }
                     let capturedFrom = chainFrom
-                    let capturedThrough = chainThrough
                     let toDesc: () -> String = {
-                        // Use includeInMirror so @Model child values show their fields and ModelID.
-                        // This makes it clear which instance was assigned (important when a child
-                        // model is replaced with a new instance that has the same field values).
                         threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
                             String(customDumping: value)
                         }
                     }
 
-                    self.valueUpdates[fullPath] = ValueUpdate(
+                    let entry = ValueUpdate(
                         apply: { $0[keyPath: fullPath] = value },
                         debugInfo: {
                             let prop = prefix.map { "\($0).\(name ?? "UNKNOWN")" } ?? (name ?? "UNKNOWN")
                             let label = "\(String(describing: M.self)).\(prop)"
                             if let from = capturedFrom {
-                                let parts = [from()] + capturedThrough.map { $0() } + [toDesc()]
-                                return "\(label): \(parts.joined(separator: " → "))"
+                                return "\(label): \(from()) → \(toDesc())"
                             } else {
                                 return "\(label) == \(toDesc())"
                             }
                         },
                         area: area,
                         fromDescription: capturedFrom,
-                        throughDescriptions: capturedThrough,
-                        toDescription: toDesc
+                        toDescription: toDesc,
+                        rawValue: value as Any
                     )
+                    self.valueUpdates[fullPath, default: []].append(entry)
 
                     self.lastState[keyPath: fullPath] = value
                 }
@@ -487,6 +523,13 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             var failures: [TesterAssertContext.Failure] = []
             var passedAccesses: [TesterAssertContext.Access] = []
             while true {
+                // Defensive: clear any stale transition override that might linger on this
+                // pthread thread from a previous iteration. The willAccess callback normally
+                // clears it, but skipped-callback paths (e.g. destructed model branch in
+                // Context._read) can leave it set. Clearing here ensures each predicate
+                // evaluation starts from a known-clean state.
+                threadLocals.transitionOverrideValue = nil
+
                 failures = []
                 passedAccesses = []
 
@@ -524,6 +567,11 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     // match lastState (the live model). This guards against the predicate
                     // passing transiently while a backgroundCall batch is still committing
                     // changes (IDs would diverge because frozenCopy includes generation IDs).
+                    //
+                    // In transitions mode, accesses that read from the FIFO queue (historical
+                    // values) are skipped here — they don't correspond to live model values
+                    // and comparing them against lastState would always fail.
+                    //
                     // frozenCopy walks Optional<M> children which calls _swift_getKeyPath to
                     // create dynamic ContainerCursor key paths. _swift_getKeyPath needs the Swift
                     // runtime lock — calling it while holding NSRecursiveLock deadlocks when the
@@ -562,6 +610,10 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                                     // frozenCopy transforms model identity and the cursor no longer matches.
                                     // Leaf accesses recorded within the container are checked independently.
                                     if access.isContainerTypeValue { return result }
+                                    // Transitions mode: skip settlement check for accesses that read
+                                    // from the FIFO queue. Their captured value is historical (the
+                                    // front-of-queue value) and will not match lastState (the live value).
+                                    if self.exhaustivity.contains(.transitions) && self.valueUpdates[access.path] != nil { return result }
                                     // Compare the predicate-time captured value against lastState directly.
                                     // Using only `last` (which reflects the current live state) and comparing
                                     // against the captured value is safe and sufficient: if the IDs match,
@@ -672,24 +724,35 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             return
                         }
 
-                        // Step 3: Model has settled. Mark all asserted paths as handled,
-                        // advance expectedState, and run the exhaustion check.
+                        // Step 3: Model has settled. Consume asserted transitions, advance
+                        // expectedState, and run the exhaustion check.
                         lock {
-                            // Sync expectedState to lastState for the asserted changes.
-                            // Applying access values (predicate-time frozen copies) would write
-                            // stale ModelContext.frozenCopy IDs into expectedState. Since
-                            // ModelContext.== compares by frozenCopy.id, any child write after
-                            // the predicate ran would cause expectedState != lastState in the
-                            // structural diff, producing a false "not equal but no diff detected"
-                            // failure. Assigning lastState directly keeps all IDs in sync.
-                            // The exhaustion check relies on valueUpdates (layer-3) to catch
-                            // any unasserted changes, which is comprehensive: every property
-                            // write via @Model fires didModify and adds a valueUpdates entry.
+                            // Sync expectedState to lastState for structural consistency.
+                            // Individual consumed.apply(&expectedState) is unsafe because deep
+                            // paths through container types (Optional<Child>, array elements)
+                            // use cursor keypaths whose setters force-unwrap — expectedState may
+                            // have a nil/stale container. Assigning lastState directly keeps all
+                            // container structures and IDs in sync. Remaining FIFO entries in
+                            // valueUpdates are caught by Layer 3 of the exhaustion check.
                             expectedState = lastState
 
+                            let isTransitions = exhaustivity.contains(.transitions)
                             for access in passedAccesses {
-                                // Clear the pending update — this path has been asserted.
-                                valueUpdates[access.path] = nil
+                                if valueUpdates[access.path] != nil {
+                                    if isTransitions {
+                                        // Transitions mode: pop only the front (oldest unasserted) entry.
+                                        // Subsequent writes remain for the next assertion to consume.
+                                        valueUpdates[access.path]!.removeFirst()
+                                        if valueUpdates[access.path]!.isEmpty {
+                                            valueUpdates[access.path] = nil
+                                        }
+                                    } else {
+                                        // Non-transitions mode (last-write-wins): clear all entries.
+                                        // The assertion consumed the final value; intermediate writes
+                                        // do not need to be individually asserted.
+                                        valueUpdates[access.path] = nil
+                                    }
+                                }
                                 // For dependency context storage, run the additional cleanup (clears
                                 // dependencyMetadataUpdates for this storage key+context).
                                 access.additionalCleanup?()
@@ -702,7 +765,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             }
                         }
 
-                        if enableExhaustionTest {
+                        if enableExhaustionTest && !exhaustivity.contains(.transitions) {
                             // Step 4: Check that no other state changed without being
                             // asserted. Diffs expectedState against lastState.
                             // IMPORTANT: Must be called outside the lock. checkExhaustion calls
@@ -711,6 +774,10 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             // acquires context.rootPaths — also guarded by the same lock. If we
                             // are suspended via an async withValue and resume on a different thread,
                             // the NSRecursiveLock is not re-entrant across threads and deadlocks.
+                            //
+                            // Skipped in transitions mode: remaining FIFO entries are pending future
+                            // assertions, not failures. They will be caught at test teardown via
+                            // checkExhaustion(includeUpdates: false) from the withModelTesting cleanup.
                             checkExhaustion(at: fileAndLine, includeUpdates: true)
                         }
 
@@ -796,15 +863,17 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
 
                     // Now apply state mutations under the lock (no diffMessage/customDump here).
                     lock {
-                        for failure in failures {
-                            for access in failure.accesses {
-                                access.apply(&expectedState)
-                            }
-                        }
+                        // Sync expectedState for structural consistency (see Step 3 comment).
+                        expectedState = lastState
 
                         for access in passedAccesses {
-                            access.apply(&expectedState)
-                            valueUpdates[access.path] = nil
+                            // Pop front entry from FIFO queue if present.
+                            if valueUpdates[access.path] != nil {
+                                valueUpdates[access.path]!.removeFirst()
+                                if valueUpdates[access.path]!.isEmpty {
+                                    valueUpdates[access.path] = nil
+                                }
+                            }
                             access.additionalCleanup?()
                         }
 
@@ -912,16 +981,18 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
 
             // Now apply state mutations under the lock (no diffMessage/customDump here).
             lock {
-                for failure in failures {
-                    for access in failure.accesses {
-                        access.apply(&expectedState)
-                    }
-                }
+                // Sync expectedState for structural consistency (see Step 3 comment).
+                expectedState = lastState
 
                 for access in passedAccesses {
-                    valueUpdates[access.path] = nil
+                    // Pop front entry from FIFO queue if present.
+                    if valueUpdates[access.path] != nil {
+                        valueUpdates[access.path]!.removeFirst()
+                        if valueUpdates[access.path]!.isEmpty {
+                            valueUpdates[access.path] = nil
+                        }
+                    }
                     access.additionalCleanup?()
-                    access.apply(&expectedState)
                 }
 
                 for index in context.eventsSent.reversed() { events.remove(at: index) }
@@ -1204,11 +1275,15 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // just set to lastState. Layer 3 catches any writes that fired after that reset.
         // On the timeout/deinit path, layer 3 catches changes invisible to the struct
         // diff (e.g. multiple writes to the same property that ended at the same value).
+        //
+        // With FIFO queues, each remaining entry in each queue is an unasserted transition.
         if !reportedStateFailure {
+            // Flatten all queue entries into a single list for reporting.
+            let allUpdates = snapshotUpdates.values.flatMap { $0 }
             // Partition by area so state, local, environment, and preference storage are each reported
             // independently and respect their respective exhaustivity flags.
             for area: Exhaustivity in [.state, .local, .environment, .preference] {
-                let updates = snapshotUpdates.values.filter { $0.area == area }
+                let updates = allUpdates.filter { $0.area == area }
                 if !updates.isEmpty {
                     let descriptions = updates.map { $0.debugInfo() }
                     let areaTitle: String

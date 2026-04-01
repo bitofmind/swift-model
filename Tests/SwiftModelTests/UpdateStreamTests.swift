@@ -144,7 +144,7 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test(.modelTesting(exhaustivity: .full.subtracting(.tasks)))
+    @Test(.modelTesting(exhaustivity: .full.removing(.tasks)))
     func testRace() async throws {
         let model = RaceModel().withAnchor()
 
@@ -160,7 +160,7 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test(.modelTesting(exhaustivity: .full.subtracting(.tasks)))
+    @Test(.modelTesting(exhaustivity: .full.removing(.tasks)))
     func testRaceVariant() async throws {
         let model = RaceModel().withAnchor()
 
@@ -277,7 +277,7 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test(.modelTesting(exhaustivity: .full.subtracting(.tasks)))
+    @Test(.modelTesting(exhaustivity: .full.removing(.tasks)))
     func testComputed() async throws {
         let model = ComputedModel().withAnchor()
 
@@ -308,7 +308,7 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test(.modelTesting(exhaustivity: .full.subtracting(.tasks)))
+    @Test(.modelTesting(exhaustivity: .full.removing(.tasks)))
     func testMemoize() async throws {
         let model = withModelOptions([.disableMemoizeCoalescing]) { ComputedModel().withAnchor() }
 

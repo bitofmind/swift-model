@@ -428,14 +428,28 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         _read {
             lock.lock()
             if unprotectedIsDestructed {
+                // Clear any pending transition override. The destructed branch does not
+                // call callback?(), so without this the override would linger on the
+                // pthread thread and could corrupt unrelated reads on the same thread.
+                threadLocals.transitionOverrideValue = nil
                 if let last = reference.model {
                     yield last[keyPath: path]
                 } else {
                     yield readModel[keyPath: path]
                 }
             } else {
+                // isMutating must be checked FIRST: a willSet/didSet re-entrant read
+                // must always see modifyModel. A stale transition override left on the
+                // thread by a prior test must never intercept an in-progress mutation.
                 if isMutating { // Handle will and did set recursion
                     yield modifyModel[keyPath: path]
+                } else if threadLocals.transitionOverrideValue != nil, let override = threadLocals.transitionOverrideValue as? T {
+                    // Transitions mode: yield the historical front-of-queue value placed
+                    // by TestAccess.willAccess. Leave it set for the willAccess callback
+                    // to consume after the yield.
+                    // Guard != nil first to avoid the Swift gotcha: `nil as? T` succeeds
+                    // for Optional<T>, producing .some(nil).
+                    yield override
                 } else {
                     yield readModel[keyPath: path]
                 }

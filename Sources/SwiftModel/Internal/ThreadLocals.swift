@@ -56,6 +56,12 @@ final class ThreadLocals: @unchecked Sendable {
     /// `withObservationTracking` tracking — even when `isDirty=false` due to a concurrent
     /// `onUpdate` clearing it before this `performUpdate`'s `observe()` runs.
     var isInsideAsyncPerformUpdate = false
+    /// When non-nil, the Context subscript `_read` returns this value instead of the live
+    /// model value. Set by `TestAccess.willAccess` in transitions mode so that predicate
+    /// evaluation sees the front-of-queue historical value (or the expectedState baseline)
+    /// rather than the current live state.
+    /// Consumed by the `willAccess` returned closure after the Context subscript yields.
+    var transitionOverrideValue: Any? = nil
 
     fileprivate init() {}
 

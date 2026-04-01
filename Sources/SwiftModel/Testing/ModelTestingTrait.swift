@@ -341,57 +341,24 @@ public func require<T>(
     try await require(expression(), fileID: fileID, filePath: filePath, line: line, column: column)
 }
 
-/// Runs `body` with exhaustivity temporarily set to `exhaustivity` for the active
-/// `.modelTesting` test scope.
+/// Runs `body` with exhaustivity set by the given modifier for the active `.modelTesting` scope.
 ///
-/// Any calls to `expect { }` inside `body` will use the new exhaustivity. When `body`
+/// Any calls to `expect { }` inside `body` will use the modified exhaustivity. When `body`
 /// returns the previous exhaustivity is restored.
 ///
+/// Use absolute presets to override the current exhaustivity entirely:
 /// ```swift
-/// @Test(.modelTesting) func example() async {
-///     let model = MyModel().withAnchor()
-///     model.doSomething()
-///     await expect { model.state == .done }
-///
-///     // From here on, ignore events:
-///     await withExhaustivity(.off) {
-///         model.triggerSideEffects()
-///     }
+/// await withExhaustivity(.off) {
+///     model.triggerSideEffects()  // nothing checked inside
 /// }
 /// ```
 ///
-/// > Important: Must be called inside a `@Test(.modelTesting)` function.
-public func withExhaustivity(
-    _ exhaustivity: Exhaustivity,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column,
-    _ body: @Sendable () async throws -> Void
-) async rethrows {
-    guard let scope = _ModelTestingLocals.scope else {
-        reportIssue("withExhaustivity() must be called inside a @Test(.modelTesting) test function", fileID: fileID, filePath: filePath, line: line, column: column)
-        try await body()
-        return
-    }
-    let previous = scope.exhaustivity
-    scope.exhaustivity = exhaustivity
-    defer { scope.exhaustivity = previous }
-    try await body()
-}
-
-/// Runs `body` with exhaustivity modified relative to the current scope's exhaustivity.
-///
-/// The `modifier` is applied to the *current* exhaustivity — it adds or removes categories
-/// without fully resetting the inherited value. When `body` returns the previous exhaustivity
-/// is restored.
-///
+/// Use relative modifiers to adjust the current exhaustivity without replacing it:
 /// ```swift
 /// @Suite(.modelTesting(.removing(.events)))
 /// struct MyTests {
 ///     @Test func example() async {
-///         let model = MyModel().withAnchor()
-///         // Inside this block, events are added back temporarily:
+///         // Add events back temporarily for this block:
 ///         await withExhaustivity(.adding(.events)) {
 ///             model.doSomething()
 ///             await expect { model.didSend(.tapped) }
@@ -447,19 +414,16 @@ public func withExhaustivity(
 /// Exhaustion is checked when the closure returns, then all background teardown work
 /// completes before `withModelTesting` itself returns.
 ///
-/// When called inside `@Suite(.modelTesting)` or another `withModelTesting`, the exhaustivity
-/// defaults to `.full` regardless of the enclosing scope. Use the
-/// `withModelTesting(_ modifier:)` overload to compose with the outer exhaustivity.
-///
 /// Dependency overrides passed here are applied before any overrides in `withAnchor()`,
 /// so `withAnchor`-level overrides win (same precedence as `.modelTesting(dependencies:)`).
 ///
 /// - Parameters:
-///   - exhaustivity: Which side-effect categories to check. Defaults to `.full`.
+///   - exhaustivity: Exhaustivity modifier to apply. Defaults to `.full`. Pass an absolute
+///     preset (`.off`, `.full`, `.state`) or a relative modifier (`.removing(.events)`).
 ///   - dependencies: A closure to override dependencies for all models anchored in this scope.
 ///   - body: The test body. Call `withAnchor()` inside to connect a model to the scope.
 public func withModelTesting(
-    exhaustivity: Exhaustivity = .full,
+    exhaustivity: ExhaustivityModifier = .full,
     dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in },
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
@@ -468,14 +432,14 @@ public func withModelTesting(
     _ body: @Sendable () async throws -> Void
 ) async rethrows {
     try await _withModelTestingImpl(
-        modifier: ExhaustivityModifier { _ in exhaustivity },
+        modifier: exhaustivity,
         dependencies: dependencies,
         fileID: fileID, filePath: filePath, line: line, column: column,
         body
     )
 }
 
-/// Creates an inline model-testing scope with a relative exhaustivity modifier.
+/// Creates an inline model-testing scope with an exhaustivity modifier.
 ///
 /// The modifier is applied on top of the enclosing scope's exhaustivity, so nested
 /// calls compose rather than reset:
@@ -494,7 +458,7 @@ public func withModelTesting(
 /// ```
 ///
 /// - Parameters:
-///   - modifier: Applied relative to the enclosing scope's exhaustivity.
+///   − modifier: Applied on top of the enclosing scope's exhaustivity.
 ///   - dependencies: A closure to override dependencies for all models anchored in this scope.
 ///   - body: The test body. Call `withAnchor()` inside to connect a model.
 public func withModelTesting(
@@ -686,14 +650,14 @@ extension Trait where Self == ModelTestingTrait {
     /// ```
     ///
     /// - Parameters:
-    ///   - exhaustivity: Which side-effect categories to check (absolute). Defaults to `.full`.
+    ///   - exhaustivity: Exhaustivity modifier to apply. Defaults to `.full`. Pass an absolute
+    ///     preset (`.off`, `.full`, `.state`) or a relative modifier (`.removing(.events)`).
     ///   - dependencies: A closure to override dependencies for the model.
     public static func modelTesting(
-        exhaustivity: Exhaustivity = .full,
+        exhaustivity: ExhaustivityModifier = .full,
         dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in }
     ) -> Self {
-        // Wrap the absolute value in a modifier that ignores the inherited exhaustivity.
-        Self(modifier: ExhaustivityModifier { _ in exhaustivity }, dependencies: dependencies)
+        Self(modifier: exhaustivity, dependencies: dependencies)
     }
 
     /// Activates model testing infrastructure with default settings.
