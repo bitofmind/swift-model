@@ -156,7 +156,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let snap = readModel
         let modifyCallbacksForPath = modifyCallbacks[path]?.values.compactMap { $0(false, false) } ?? []
         callbacks.append {
-            mc.invokeDidModify(snap, at: path)
+            mc.invokeDidModify(snap, at: path)?()
             for c in modifyCallbacksForPath { c() }
         }
         var didModifyCallbacks: [() -> Void] = []
@@ -221,7 +221,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             let mc = metadataModelContext()
 
             lock { self.didModify() }
-            modelContext.invokeDidModify(readModel, at: untypedPath)
+            modelContext.invokeDidModify(readModel, at: untypedPath)?()
             // Same re-entry guard as willAccessStorage: the TestAccess.didModify closure reads
             // model.context![path] which goes through the context getter → willAccessStorage → loop.
             if !threadLocals.isAccessingMetadataStorage {
@@ -229,7 +229,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
                     threadLocals.withValue(storageArea, at: \.modificationArea) {
                         threadLocals.withValue(storage.name, at: \.storageName) {
-                            mc.invokeDidModify(readModel, at: typedPath)
+                            mc.invokeDidModify(readModel, at: typedPath)?()
                         }
                     }
                 }
@@ -298,12 +298,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             let mc = metadataModelContext()
 
             lock { self.didModify() }
-            modelContext.invokeDidModify(readModel, at: untypedPath)
+            modelContext.invokeDidModify(readModel, at: untypedPath)?()
             if !threadLocals.isAccessingMetadataStorage {
                 threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
                     threadLocals.withValue(.preference, at: \.modificationArea) {
                         threadLocals.withValue(storage.name, at: \.storageName) {
-                            mc.invokeDidModify(readModel, at: typedPath)
+                            mc.invokeDidModify(readModel, at: typedPath)?()
                         }
                     }
                 }
@@ -331,7 +331,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     override func notifyPreferenceChange<V>(_ storage: PreferenceStorage<V>) {
         let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[preferenceKey: storage.key]
         lock { self.didModify() }
-        modelContext.invokeDidModify(readModel, at: untypedPath)
+        modelContext.invokeDidModify(readModel, at: untypedPath)?()
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
         let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
         runPostLockCallbacks(postLockCallbacks)
@@ -473,11 +473,16 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 isMutating = false
 
                 // Invoke observation notifications via shared helper — no closure allocation.
-                modelContext.invokeDidModify(readModel, at: path)
+                // The returned activeAccess callback (TestAccess/AccessCollector) is run AFTER
+                // lock.unlock() to avoid a lock-ordering deadlock: the callback's rootPaths call
+                // acquires the parent context lock (child→parent), which inverts the order used
+                // by onAnyModification's withModificationActiveCount (parent→child).
+                let activeAccessCallback = modelContext.invokeDidModify(readModel, at: path)
 
                 let postLockCallbacks = buildPostLockCallbacks(for: path)
                 lock.unlock()
 
+                activeAccessCallback?()
                 runPostLockCallbacks(postLockCallbacks)
             }
         }
@@ -504,11 +509,14 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             isMutating = false
 
             // Invoke observation notifications via shared helper — no closure allocation.
-            modelContext.invokeDidModify(readModel, at: path)
+            // Run the returned activeAccess callback after lock.unlock() (same deadlock
+            // avoidance as in the _modify subscript above).
+            let activeAccessCallback = modelContext.invokeDidModify(readModel, at: path)
 
             let postLockCallbacks = buildPostLockCallbacks(for: path)
             lock.unlock()
 
+            activeAccessCallback?()
             runPostLockCallbacks(postLockCallbacks)
         }
         return result
@@ -778,7 +786,7 @@ private final class PathCollector<M: Model>: ModelAccess, @unchecked Sendable {
         // the `as? KeyPath<M, T>` downcast we still have the same Sendable key path object.
         // We use `unsafeBitCast` to reattach the Sendable marker without a dynamic check.
         let sendablePath = unsafeBitCast(typedPath, to: (KeyPath<M, T> & Sendable).self)
-        invokers.append { mc, m in mc.invokeDidModify(m, at: sendablePath) }
+        invokers.append { mc, m in mc.invokeDidModify(m, at: sendablePath)?() }
         return nil
     }
 }

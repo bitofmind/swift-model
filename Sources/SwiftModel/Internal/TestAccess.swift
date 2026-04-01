@@ -283,29 +283,45 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     //
     // For dependency model context storage (no root-relative path exists), the update is stored
     // in dependencyMetadataUpdates instead of valueUpdates.
+    //
+    // IMPORTANT: rootPaths is computed inside the returned closure (i.e. post-lock), NOT here
+    // in the method body. Computing it here while the model's context lock is held causes a
+    // lock-ordering deadlock on Linux:
+    //   – rootPaths walks up to the parent, acquiring parent.lock while child.lock is held
+    //     (child → parent order).
+    //   – onAnyModification's withModificationActiveCount holds parent.lock and then iterates
+    //     children, acquiring child.lock (parent → child order).
+    // Running the closure after lock.unlock() in Context._modify/transaction breaks the cycle.
     override func didModify<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
         guard let path = path as? WritableKeyPath<M, Value> else { return nil }
 
-        let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
-        guard let rootPaths else {
-            fatalError()
-        }
-
-        let fullPaths = rootPaths.map { $0.appending(path: path) }
+        // Capture thread-locals here (at call time, while still inside the model lock scope).
+        // They may change on other threads by the time the returned closure is invoked.
         let area = threadLocals.modificationArea ?? .state
         // For context/preference storage, storageName carries the property name captured via
         // #function in the LocalKeys/EnvironmentKeys/PreferenceKeys declaration (e.g. "isDarkMode").
         // Fall back to propertyName(from:path:) for regular @Model properties.
         let storageName = threadLocals.storageName
 
-        // Dependency model context/preference storage: no root-relative path exists. Track the
-        // update separately so checkExhaustion can report it if not asserted.
-        if fullPaths.isEmpty, (area == .local || area == .environment || area == .preference), let modelContext = model.context {
-            let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
-            let name = storageName ?? propertyName(from: model, path: path)
-            let prefix = area == .preference ? "preference" : area == .environment ? "environment" : "local"
-            return { [weak self] in
-                guard let self else { return }
+        return { [weak self] in
+            guard let self else { return }
+
+            // rootPaths is computed here, OUTSIDE the model lock, to avoid the deadlock
+            // described above. The model hierarchy is stable at this point (no lock needed
+            // to safely read the parent-child structure for an active model).
+            let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
+            guard let rootPaths else {
+                fatalError()
+            }
+
+            let fullPaths = rootPaths.map { $0.appending(path: path) }
+
+            // Dependency model context/preference storage: no root-relative path exists. Track the
+            // update separately so checkExhaustion can report it if not asserted.
+            if fullPaths.isEmpty, (area == .local || area == .environment || area == .preference), let modelContext = model.context {
+                let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
+                let name = storageName ?? propertyName(from: model, path: path)
+                let prefix = area == .preference ? "preference" : area == .environment ? "environment" : "local"
                 let value = frozenCopy(modelContext[path])
                 self.lock {
                     let update = ValueUpdate(
@@ -319,12 +335,11 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         self.dependencyMetadataUpdates[key] = update  // covers .local and .environment
                     }
                 }
+                return
             }
-        }
 
-        let name = storageName ?? propertyName(from: model, path: path)
-        let prefix: String? = area == .preference ? "preference" : area == .local ? "local" : area == .environment ? "environment" : nil
-        return {
+            let name = storageName ?? propertyName(from: model, path: path)
+            let prefix: String? = area == .preference ? "preference" : area == .local ? "local" : area == .environment ? "environment" : nil
             let value = frozenCopy(model.context![path])
             self.lock {
                 for fullPath in fullPaths {
