@@ -109,6 +109,24 @@ By default the trait enforces exhaustivity across seven categories — any unass
 - **`.environment`** — every `node.environment` write must be consumed by an `expect` block
 - **`.preference`** — every `node.preference` write must be consumed by an `expect` block
 
+State exhaustion failures show the full change chain from the baseline, so you always know what the property was before and after the write:
+
+```
+State not exhausted: …
+
+Modifications not asserted:
+
+    SearchModel.isLoading: false → true
+```
+
+Properties that were written and then returned to their original value are also detected, with the full journey shown:
+
+```
+    SearchModel.error: nil → NetworkError.timeout → nil
+```
+
+This catches "fire-and-forget" mutations — an error that appeared and cleared, a loading flag that toggled on and off — that would otherwise be invisible to a test asserting only the final state.
+
 To focus a test on only some categories, pass an exhaustivity argument to `.modelTesting`:
 
 ```swift

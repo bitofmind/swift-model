@@ -118,6 +118,12 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         /// Which exhaustivity category this update belongs to. Defaults to `.state` for
         /// regular property writes; `.local` for `node.local` writes; `.environment` for `node.environment` writes.
         var area: Exhaustivity
+        // Change chain for improved failure messages (nil for dependency storage updates).
+        // When a path is written more than once between asserts, successive writes accumulate
+        // the history so the message shows the full journey: "false → true → false".
+        var fromDescription: (() -> String)?
+        var throughDescriptions: [() -> String] = []
+        var toDescription: (() -> String)?
     }
 
     struct Event {
@@ -343,19 +349,64 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             let value = frozenCopy(model.context![path])
             self.lock {
                 for fullPath in fullPaths {
+                    // Build change chain for improved failure messages.
+                    // On first write to this path: capture the original expectedState value.
+                    // On subsequent writes: preserve the original "from" and accumulate intermediates,
+                    // so the message shows the full history: "false → true → false".
+                    let chainFrom: (() -> String)?
+                    var chainThrough: [() -> String]
+                    if let existing = self.valueUpdates[fullPath],
+                       let existingFrom = existing.fromDescription {
+                        chainFrom = existingFrom
+                        chainThrough = existing.throughDescriptions
+                        if let existingTo = existing.toDescription {
+                            chainThrough.append(existingTo)
+                        }
+                    } else {
+                        // First write: capture lastState value inside the lock.
+                        // We use lastState rather than expectedState because deep paths through
+                        // container types (Optional<Child>, array elements) use keypaths whose
+                        // get closures force-unwrap — expectedState may have a nil/stale container
+                        // while lastState is always kept in sync with the live model structure.
+                        // On the first write to a path after an assert the two values are identical,
+                        // so the "from" description is the same either way.
+                        let capturedOriginal: Value = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+                            self.lastState[keyPath: fullPath]
+                        }
+                        chainFrom = {
+                            threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
+                                String(customDumping: capturedOriginal)
+                            }
+                        }
+                        chainThrough = []
+                    }
+                    let capturedFrom = chainFrom
+                    let capturedThrough = chainThrough
+                    let toDesc: () -> String = {
+                        // Use includeInMirror so @Model child values show their fields and ModelID.
+                        // This makes it clear which instance was assigned (important when a child
+                        // model is replaced with a new instance that has the same field values).
+                        threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
+                            String(customDumping: value)
+                        }
+                    }
+
                     self.valueUpdates[fullPath] = ValueUpdate(
                         apply: { $0[keyPath: fullPath] = value },
                         debugInfo: {
                             let prop = prefix.map { "\($0).\(name ?? "UNKNOWN")" } ?? (name ?? "UNKNOWN")
-                            // Use includeInMirror so @Model child values show their fields and ModelID.
-                            // This makes it clear which instance was assigned (important when a child
-                            // model is replaced with a new instance that has the same field values).
-                            let valueDescription = threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
-                                String(customDumping: value)
+                            let label = "\(String(describing: M.self)).\(prop)"
+                            if let from = capturedFrom {
+                                let parts = [from()] + capturedThrough.map { $0() } + [toDesc()]
+                                return "\(label): \(parts.joined(separator: " → "))"
+                            } else {
+                                return "\(label) == \(toDesc())"
                             }
-                            return "\(String(describing: M.self)).\(prop) == \(valueDescription)"
                         },
-                        area: area
+                        area: area,
+                        fromDescription: capturedFrom,
+                        throughDescriptions: capturedThrough,
+                        toDescription: toDesc
                     )
 
                     self.lastState[keyPath: fullPath] = value
