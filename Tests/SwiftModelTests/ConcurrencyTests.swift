@@ -1,5 +1,4 @@
 import Testing
-import ConcurrencyExtras
 import Foundation
 @testable import SwiftModel
 

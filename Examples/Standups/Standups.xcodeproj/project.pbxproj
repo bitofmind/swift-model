@@ -16,6 +16,7 @@
 		DC808DAB29E9C51D0072B4A9 /* Meeting.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC808DAA29E9C51D0072B4A9 /* Meeting.swift */; };
 		DC808DAD29E9C52A0072B4A9 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC808DAC29E9C52A0072B4A9 /* Models.swift */; };
 		DC808DB629E9C58F0072B4A9 /* Tagged in Frameworks */ = {isa = PBXBuildFile; productRef = DC808DB529E9C58F0072B4A9 /* Tagged */; };
+		F6045EB32F7D00410036A5F4 /* AsyncAlgorithms in Frameworks */ = {isa = PBXBuildFile; productRef = F6045EB22F7D00410036A5F4 /* AsyncAlgorithms */; };
 		F624D6F72AB758C100213669 /* StandupDetailTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC8C2B0D29EB085600C65286 /* StandupDetailTests.swift */; };
 		F624D6F82AB8ABA800213669 /* RecordMeetingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC8C2B0B29EB084900C65286 /* RecordMeetingTests.swift */; };
 		F660EB812B0BA24300B17D32 /* CasePaths in Frameworks */ = {isa = PBXBuildFile; productRef = F660EB802B0BA24300B17D32 /* CasePaths */; };
@@ -78,6 +79,7 @@
 				F6CDB5B92AB5903F00574552 /* IdentifiedCollections in Frameworks */,
 				F6F3F1762B484992003A9305 /* SwiftModel in Frameworks */,
 				CA0934B62A12A9680020DEF5 /* SwiftUINavigation in Frameworks */,
+				F6045EB32F7D00410036A5F4 /* AsyncAlgorithms in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -189,6 +191,7 @@
 				F6CDB5B82AB5903F00574552 /* IdentifiedCollections */,
 				F660EB802B0BA24300B17D32 /* CasePaths */,
 				F6F3F1752B484992003A9305 /* SwiftModel */,
+				F6045EB22F7D00410036A5F4 /* AsyncAlgorithms */,
 			);
 			productName = Standups;
 			productReference = DC808D6F29E9C3AC0072B4A9 /* Standups.app */;
@@ -245,6 +248,7 @@
 				CA0934B42A12A9680020DEF5 /* XCRemoteSwiftPackageReference "swiftui-navigation" */,
 				F6CDB5B72AB5903F00574552 /* XCRemoteSwiftPackageReference "swift-identified-collections" */,
 				F660EB7F2B0BA24300B17D32 /* XCRemoteSwiftPackageReference "swift-case-paths" */,
+				F6045EB12F7D00410036A5F4 /* XCRemoteSwiftPackageReference "swift-async-algorithms" */,
 			);
 			productRefGroup = DC808D7029E9C3AC0072B4A9 /* Products */;
 			projectDirPath = "";
@@ -619,6 +623,14 @@
 				minimumVersion = 0.10.0;
 			};
 		};
+		F6045EB12F7D00410036A5F4 /* XCRemoteSwiftPackageReference "swift-async-algorithms" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-async-algorithms.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.1.3;
+			};
+		};
 		F660EB7F2B0BA24300B17D32 /* XCRemoteSwiftPackageReference "swift-case-paths" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/pointfreeco/swift-case-paths";
@@ -647,6 +659,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = DC808DB429E9C58F0072B4A9 /* XCRemoteSwiftPackageReference "swift-tagged" */;
 			productName = Tagged;
+		};
+		F6045EB22F7D00410036A5F4 /* AsyncAlgorithms */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F6045EB12F7D00410036A5F4 /* XCRemoteSwiftPackageReference "swift-async-algorithms" */;
+			productName = AsyncAlgorithms;
 		};
 		F660EB802B0BA24300B17D32 /* CasePaths */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -1,5 +1,5 @@
 import Foundation
-import ConcurrencyExtras
+import Dependencies
 import IssueReporting
 
 public extension ModelNode {

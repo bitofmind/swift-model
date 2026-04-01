@@ -1,6 +1,6 @@
 import Foundation
 import CustomDump
-import ConcurrencyExtras
+import Dependencies
 
 // MARK: - Debug options
 

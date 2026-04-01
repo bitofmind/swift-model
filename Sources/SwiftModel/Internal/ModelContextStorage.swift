@@ -1,4 +1,4 @@
-import ConcurrencyExtras
+import Dependencies
 
 // Sentinel thrown by `environmentValue(for:)` to short-circuit ancestor traversal.
 private struct EnvironmentValueFound: Error {

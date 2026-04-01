@@ -1,5 +1,5 @@
 import Foundation
-import ConcurrencyExtras
+import Dependencies
 
 /// A stable, unique identity value assigned to each live model instance.
 ///

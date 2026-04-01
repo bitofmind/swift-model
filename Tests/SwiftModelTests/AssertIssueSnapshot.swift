@@ -1,3 +1,4 @@
+#if !os(Android)
 import Foundation
 import IssueReporting
 import InlineSnapshotTesting
@@ -79,3 +80,4 @@ final class CapturingIssueReporter: IssueReporter, @unchecked Sendable {
         lock.withLock { messages.append(m) }
     }
 }
+#endif

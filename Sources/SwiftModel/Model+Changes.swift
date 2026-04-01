@@ -1,7 +1,6 @@
 import Foundation
-import AsyncAlgorithms
 import CustomDump
-import ConcurrencyExtras
+import Dependencies
 import Observation
 
 /// A stream for observing changes to model properties.
@@ -543,8 +542,7 @@ private extension ModelNode {
                     isSame: nil,
                     useWithObservationTracking: useWithObservationTracking,
                     useCoalescing: useCoalescing,
-                    didModify: didModifyCallback,
-                    backgroundCallQueue: context.backgroundCallQueue
+                    didModify: didModifyCallback
                 ) {
                     // When called from a coalesced performUpdate (either the withObservationTracking
                     // or AccessCollector path): always call produce() so that dependency tracking

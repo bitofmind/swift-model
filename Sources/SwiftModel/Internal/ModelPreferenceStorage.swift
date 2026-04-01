@@ -1,4 +1,4 @@
-import ConcurrencyExtras
+import Dependencies
 
 // MARK: - PreferenceStorage
 

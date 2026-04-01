@@ -539,15 +539,19 @@ private func _withModelTestingImpl(
         dependencies(&deps)
     }
     let pending = _PendingModelTestScope(exhaustivity: resolvedExhaustivity, dependencies: mergedDependencies)
-    try await _ModelTestingLocals.$scope.withValue(pending) {
-        try await body()
-    }
-    // After the body completes, run exhaustion checks and wait for all background
-    // teardown work (onCancel callbacks, stream finalizations) to finish so that
-    // post-scope assertions see the final state.
-    if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
-        concrete.checkExhaustion(at: fl)
-        await concrete.waitForTeardown()
+    let testQueue = BackgroundCallQueue()
+    try await _BackgroundCallLocals.$queue.withValue(testQueue) {
+        try await _ModelTestingLocals.$scope.withValue(pending) {
+            try await body()
+        }
+        // After the body completes, run exhaustion checks and wait for all background
+        // teardown work (onCancel callbacks, stream finalizations) to finish so that
+        // post-scope assertions see the final state. Both run inside the task-local
+        // scope so any backgroundCall work from onRemoval() uses the per-test queue.
+        if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
+            concrete.checkExhaustion(at: fl)
+            await concrete.waitForTeardown()
+        }
     }
 }
 
@@ -592,12 +596,18 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
         let parentExhaustivity = _ModelTestingLocals.scope?.exhaustivity ?? .full
         let resolvedExhaustivity = modifier.apply(to: parentExhaustivity)
         let pending = _PendingModelTestScope(exhaustivity: resolvedExhaustivity, dependencies: dependencies)
-        try await _ModelTestingLocals.$scope.withValue(pending) {
-            try await function()
-        }
-        // After the test body completes, run exhaustion check.
-        if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
-            concrete.checkExhaustion(at: fl)
+        // Give each test its own BackgroundCallQueue so parallel tests cannot observe
+        // each other's in-flight Observed pipeline updates.
+        let testQueue = BackgroundCallQueue()
+        try await _BackgroundCallLocals.$queue.withValue(testQueue) {
+            try await _ModelTestingLocals.$scope.withValue(pending) {
+                try await function()
+            }
+            // After the test body completes, run exhaustion check (still inside the
+            // test-local queue scope so any teardown backgroundCall work uses testQueue).
+            if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
+                concrete.checkExhaustion(at: fl)
+            }
         }
     }
 }
@@ -607,18 +617,8 @@ extension ModelTestingTrait: TestTrait, SuiteTrait {
 
     public func prepare(for test: Test) async throws {
         // On Swift 6.0 TestScoping.provideScope is not available.
-        // The trait is registered but cannot wrap the test body — report an issue
-        // so the user knows to switch to withModelTesting { } instead.
-        reportIssue(
-            "@Test(.modelTesting) requires Swift 6.1 or later. " +
-            "On Swift 6.0, wrap your test body with withModelTesting { } instead:\n\n" +
-            "    @Test func example() async {\n" +
-            "        await withModelTesting {\n" +
-            "            let model = MyModel().withAnchor()\n" +
-            "            await expect { model.value == \"expected\" }\n" +
-            "        }\n" +
-            "    }"
-        )
+        // The trait is registered but cannot wrap the test body.
+        // Users should use andTester() for exhaustion checking on Swift 6.0.
     }
 }
 #endif

@@ -283,29 +283,45 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     //
     // For dependency model context storage (no root-relative path exists), the update is stored
     // in dependencyMetadataUpdates instead of valueUpdates.
+    //
+    // IMPORTANT: rootPaths is computed inside the returned closure (i.e. post-lock), NOT here
+    // in the method body. Computing it here while the model's context lock is held causes a
+    // lock-ordering deadlock on Linux:
+    //   – rootPaths walks up to the parent, acquiring parent.lock while child.lock is held
+    //     (child → parent order).
+    //   – onAnyModification's withModificationActiveCount holds parent.lock and then iterates
+    //     children, acquiring child.lock (parent → child order).
+    // Running the closure after lock.unlock() in Context._modify/transaction breaks the cycle.
     override func didModify<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
         guard let path = path as? WritableKeyPath<M, Value> else { return nil }
 
-        let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
-        guard let rootPaths else {
-            fatalError()
-        }
-
-        let fullPaths = rootPaths.map { $0.appending(path: path) }
+        // Capture thread-locals here (at call time, while still inside the model lock scope).
+        // They may change on other threads by the time the returned closure is invoked.
         let area = threadLocals.modificationArea ?? .state
         // For context/preference storage, storageName carries the property name captured via
         // #function in the LocalKeys/EnvironmentKeys/PreferenceKeys declaration (e.g. "isDarkMode").
         // Fall back to propertyName(from:path:) for regular @Model properties.
         let storageName = threadLocals.storageName
 
-        // Dependency model context/preference storage: no root-relative path exists. Track the
-        // update separately so checkExhaustion can report it if not asserted.
-        if fullPaths.isEmpty, (area == .local || area == .environment || area == .preference), let modelContext = model.context {
-            let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
-            let name = storageName ?? propertyName(from: model, path: path)
-            let prefix = area == .preference ? "preference" : area == .environment ? "environment" : "local"
-            return { [weak self] in
-                guard let self else { return }
+        return { [weak self] in
+            guard let self else { return }
+
+            // rootPaths is computed here, OUTSIDE the model lock, to avoid the deadlock
+            // described above. The model hierarchy is stable at this point (no lock needed
+            // to safely read the parent-child structure for an active model).
+            let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
+            guard let rootPaths else {
+                fatalError()
+            }
+
+            let fullPaths = rootPaths.map { $0.appending(path: path) }
+
+            // Dependency model context/preference storage: no root-relative path exists. Track the
+            // update separately so checkExhaustion can report it if not asserted.
+            if fullPaths.isEmpty, (area == .local || area == .environment || area == .preference), let modelContext = model.context {
+                let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
+                let name = storageName ?? propertyName(from: model, path: path)
+                let prefix = area == .preference ? "preference" : area == .environment ? "environment" : "local"
                 let value = frozenCopy(modelContext[path])
                 self.lock {
                     let update = ValueUpdate(
@@ -319,12 +335,11 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         self.dependencyMetadataUpdates[key] = update  // covers .local and .environment
                     }
                 }
+                return
             }
-        }
 
-        let name = storageName ?? propertyName(from: model, path: path)
-        let prefix: String? = area == .preference ? "preference" : area == .local ? "local" : area == .environment ? "environment" : nil
-        return {
+            let name = storageName ?? propertyName(from: model, path: path)
+            let prefix: String? = area == .preference ? "preference" : area == .local ? "local" : area == .environment ? "environment" : nil
             let value = frozenCopy(model.context![path])
             self.lock {
                 for fullPath in fullPaths {
@@ -520,9 +535,9 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             fail("State did not settle: model IDs kept diverging after the predicate passed. This may indicate a backgroundCallQueue loop or an unresolvable ID mismatch.", at: fileAndLine)
                             return
                         }
-                        await self.context.backgroundCallQueue.waitForCurrentItems()
+                        await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
                         await Task.yield()
-                        // Count as progress — backgroundCallQueue draining counts as activity.
+                        // Count as progress — backgroundCall draining counts as activity.
                         lastProgressTime = DispatchTime.now().uptimeNanoseconds
                         continue
                     }
@@ -553,7 +568,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             // context as a version number.
                             var lastChangeVersion = self.context.modificationCount
                             while true {
-                                await self.context.backgroundCallQueue.waitForCurrentItems()
+                                await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
                                 await Task.yield()
                                 let currentVersion = self.context.modificationCount
                                 if currentVersion == lastChangeVersion {
@@ -929,37 +944,42 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     ///   The value is written directly to `lastState` synchronously. A `Task.yield()`
     ///   is sufficient — no need to wait for `backgroundCall` at all.
     ///
-    /// - **Memoized conditions** (e.g. `model.conditional` after a dependency change):
-    ///   The memoize cache is only updated after `backgroundCall` runs `performUpdate`.
-    ///   Needs a FIFO sentinel via `waitForCurrentItems` to ensure the cache is fresh.
+    /// - **Async conditions** (memoized properties, `Observed` streams):
+    ///   Both go through `backgroundCall` — memoize's performUpdate and Observed stream
+    ///   updates all use the same per-test task-local queue. A FIFO sentinel via
+    ///   `waitForCurrentItems` ensures the update has run before re-checking.
     ///
     /// Escalation by retry count:
     ///   0-1: Just yield — free and instant. Covers fast conditions on the first retry.
-    ///   2+:  Use `waitForCurrentItems(deadline: yieldRoundNs * 20)`. Under 100x load
-    ///        with yieldRoundNs≈50ms the deadline is ~1s — enough for the queue to drain
-    ///        to our performUpdate, but bounded so it doesn't consume the full test budget.
+    ///   2+:  Use `waitForCurrentItems(deadline: ...)` then `waitUntilIdle()`. Ensures
+    ///        the drain loop's post-batch yield has run so stream consumers have run.
     /// Returns `true` if a state modification was observed during the wait (progress was made).
     @discardableResult
     private func waitForModification(timeoutNanoseconds remaining: UInt64, yieldRoundNs: UInt64, retryCount: Int = 0) async -> Bool {
         guard remaining > 0 else { return false }
 
-        // After two quick-yield retries, escalate to a sentinel wait when backgroundCallQueue
-        // has pending work. This gives fast conditions a free early-exit while ensuring
-        // memoized conditions get enough time for performUpdate to run.
-        if retryCount >= 2 && !context.backgroundCallQueue.isIdle {
+        // After two quick-yield retries, escalate to a sentinel wait when the pipeline
+        // queue has pending work. This gives fast conditions a free early-exit while
+        // ensuring memoized and Observed-stream conditions get enough time to settle.
+        let bgQueue = backgroundCall
+        if retryCount >= 2 && !bgQueue.isIdle {
             // FIFO sentinel: suspend until all items currently in the queue have been
-            // processed. When it fires, our performUpdate (if any) has already run.
+            // processed. When it fires, any pending performUpdate has already run.
             //
             // Deadline: use the full remaining timeout. By retry 2, fast conditions
             // (e.g. testCancelInFlight) have already passed on an earlier quick-yield
-            // retry, so we know this is a genuinely async condition that needs the
-            // backgroundCallQueue queue to drain. Waiting up to `remaining` is safe and
-            // ensures deep queues under heavy parallel load are fully covered.
+            // retry, so we know this is a genuinely async condition. Waiting up to
+            // `remaining` ensures deep queues under heavy parallel load are covered.
             let deadline = DispatchTime.now().uptimeNanoseconds + remaining
-            await context.backgroundCallQueue.waitForCurrentItems(deadline: deadline)
+            await bgQueue.waitForCurrentItems(deadline: deadline)
+            // waitUntilIdle() ensures the drain loop's post-batch Task.yield() has run
+            // so stream consumers have had a scheduler turn before we re-check.
+            // Use the same deadline so a starved drain loop doesn't cause an indefinite hang.
+            if !bgQueue.isIdle {
+                await bgQueue.waitUntilIdle(deadline: deadline)
+            }
             await Task.yield()
-            // Draining the backgroundCallQueue counts as progress — it may have delivered
-            // a memoize performUpdate that changed state.
+            // Draining the queue counts as progress — it may have delivered an update.
             return true
         }
 
@@ -985,9 +1005,9 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             }
         }
 
-        // If a modification arrived, yield once so backgroundCallQueue gets a scheduler
-        // turn to process the resulting performUpdate before the outer loop re-checks.
-        if didModify.value || !context.backgroundCallQueue.isIdle {
+        // If a modification arrived (or the pipeline queue is still busy), yield once so
+        // it gets a scheduler turn to process any resulting updates before re-checking.
+        if didModify.value || !backgroundCall.isIdle {
             await Task.yield()
         }
 
