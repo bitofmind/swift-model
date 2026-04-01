@@ -485,15 +485,11 @@ struct DualRegistrarTests {
         try await waitUntil(values.value.contains(0))
         #expect(values.value.contains(0), "Should have initial value 0")
         
-        // Change observable. waitUntilIdle() waits for the backgroundCall drain loop to
-        // fully finish — including its post-batch Task.yield() — so that by the time we
-        // return, performUpdate has run (delivering 10 to the stream) AND the stream
-        // consumer task has had at least one scheduler turn to process it.
-        // waitForCurrentItems() is not sufficient: its sentinel fires during the same
-        // batch as performUpdate, before the drain loop yields, so the consumer may not
-        // have run yet.
+        // Change observable. waitForCurrentItems() cooperatively waits on backgroundCall's
+        // drain loop, ensuring performUpdate has run before we poll. Then waitUntil gives
+        // the stream consumer task scheduler turns to process the yielded value.
         observable.value = 5
-        await backgroundCall.waitUntilIdle()
+        await backgroundCall.waitForCurrentItems()
         try await waitUntil(values.value.contains(10))
         
         #expect(values.value.contains(10), "Observed should track @Observable changes via @Model")
