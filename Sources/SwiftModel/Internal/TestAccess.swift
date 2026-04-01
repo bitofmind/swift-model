@@ -417,16 +417,22 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // timeouts (e.g. 1 ms passed by output-snapshot tests) must be respected as-is so
         // tests that intentionally probe failure messages don't wait unexpectedly long under
         // heavy parallel load.
-        let scaledTimeout = timeout >= nanosPerSecond ? max(timeout, yieldLatencyNs * 100) : timeout
+        //
+        // Cap at 10 s: on a heavily loaded CI (500 ms yield latency), the uncapped formula
+        // (yieldLatency × 100 = 50 s) would make genuinely failing tests wait ~50 s before
+        // reporting. 10 s gives ~20 scheduler rounds at 500 ms — enough for any legitimate
+        // condition while keeping failure feedback fast.
+        let scaledTimeout = timeout >= nanosPerSecond ? min(10 * nanosPerSecond, max(timeout, yieldLatencyNs * 100)) : timeout
         // One scheduler round at the current pace. Used as the minimum poll interval so
         // for-await loop bodies always get at least one full cooperative-pool turn per
         // waitForModification call, even under heavy parallel test load.
         let yieldRoundNs = max(1_000_000, yieldLatencyNs) // floor at 1ms for lightly loaded runs
         let context = TesterAssertContext(events: { self.lock { self.events } }, fileAndLine: fileAndLine)
-        // Hard cap: absolute maximum regardless of activity (5s safety cap).
-        // Fires only when tasks are stuck in an infinite loop producing constant changes.
+        // Hard cap: absolute maximum even when the model IS making progress (e.g. infinite
+        // mutation loop). Capped at 30 s — triple the scaledTimeout cap so legitimately busy
+        // models have headroom, while runaway loops get caught well within CI job timeouts.
         // TestAccessOverrides.hardCapNanoseconds allows output snapshot tests to override.
-        let hardCap = TestAccessOverrides.hardCapNanoseconds ?? max(5 * nanosPerSecond, scaledTimeout * 30)
+        let hardCap = TestAccessOverrides.hardCapNanoseconds ?? min(30 * nanosPerSecond, max(5 * nanosPerSecond, scaledTimeout * 10))
 
         await TesterAssertContextBase.$assertContext.withValue(context) {
 
@@ -901,9 +907,9 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         let calibrationStart = DispatchTime.now().uptimeNanoseconds
         await Task.yield()
         let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
-        let scaledTimeout = max(nanosPerSecond, yieldLatencyNs * 100)
+        let scaledTimeout = min(10 * nanosPerSecond, max(nanosPerSecond, yieldLatencyNs * 100))
         let yieldRoundNs = max(1_000_000, yieldLatencyNs)
-        let hardCap = TestAccessOverrides.hardCapNanoseconds ?? max(5 * nanosPerSecond, scaledTimeout * 30)
+        let hardCap = TestAccessOverrides.hardCapNanoseconds ?? min(30 * nanosPerSecond, max(5 * nanosPerSecond, scaledTimeout * 10))
 
         let start = DispatchTime.now().uptimeNanoseconds
         var lastProgressTime = start
