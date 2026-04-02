@@ -62,6 +62,12 @@ final class ThreadLocals: @unchecked Sendable {
     /// rather than the current live state.
     /// Consumed by the `willAccess` returned closure after the Context subscript yields.
     var transitionOverrideValue: Any? = nil
+    /// Monotonically incrementing counter set when an outer `node.transaction { }` begins.
+    /// Each outer transaction gets a new unique ID; nested transactions see the outer ID.
+    /// `TestAccess.didModify` captures this at write time so multiple writes to the same
+    /// path within one transaction can be coalesced into a single `valueUpdates` entry.
+    /// Zero means the write occurred outside any transaction.
+    var currentTransactionID: UInt = 0
 
     fileprivate init() {}
 

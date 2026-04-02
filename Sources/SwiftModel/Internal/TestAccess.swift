@@ -129,6 +129,10 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         var toDescription: (() -> String)?
         /// The typed `to` value stored as Any, for use in willAccess during history evaluation.
         var rawValue: Any
+        /// The `threadLocals.currentTransactionID` captured when this entry was written.
+        /// Non-zero means the write occurred inside a `node.transaction { }`. Used to coalesce
+        /// multiple writes to the same path within one transaction into a single FIFO entry.
+        var transactionID: UInt = 0
     }
 
     struct Event {
@@ -354,6 +358,10 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // #function in the LocalKeys/EnvironmentKeys/PreferenceKeys declaration (e.g. "isDarkMode").
         // Fall back to propertyName(from:path:) for regular @Model properties.
         let storageName = threadLocals.storageName
+        // Capture the transaction ID so the post-lock closure can coalesce multiple writes
+        // to the same path within a single transaction into one valueUpdates entry.
+        // Zero means outside any transaction — never coalesce.
+        let capturedTxID: UInt = threadLocals.postTransactions != nil ? threadLocals.currentTransactionID : 0
 
         return { [weak self] in
             guard let self else { return }
@@ -396,15 +404,25 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             let value = frozenCopy(model.context![path])
             self.lock {
                 for fullPath in fullPaths {
-                    // Transitions mode: each write appends a new entry to the FIFO queue.
-                    // The "from" value is the previous entry's "to" value (if any), or
-                    // the current lastState value (which matches expectedState on the
-                    // first write after an assert).
-                    let chainFrom: (() -> String)?
-                    if let lastEntry = self.valueUpdates[fullPath]?.last,
-                       let lastTo = lastEntry.toDescription {
+                    // Transaction coalescing: if the last entry for this path was written
+                    // during the same transaction, replace it rather than appending. This
+                    // ensures one transaction = one FIFO entry, matching Observed/memoize
+                    // behaviour where a transaction also produces a single update notification.
+                    let isTransactionReplacement = capturedTxID != 0
+                        && self.valueUpdates[fullPath]?.last?.transactionID == capturedTxID
+
+                    // The "from" description:
+                    //   • When replacing: keep the original first-write "from" so the transition
+                    //     arrow reads "original → final" rather than "intermediate → final".
+                    //   • When appending after an existing entry: chain from its "to".
+                    //   • First write to this path: capture current lastState.
+                    let capturedFrom: (() -> String)?
+                    if isTransactionReplacement {
+                        capturedFrom = self.valueUpdates[fullPath]!.last!.fromDescription
+                    } else if let lastEntry = self.valueUpdates[fullPath]?.last,
+                              let lastTo = lastEntry.toDescription {
                         // Subsequent write: "from" is the previous entry's "to"
-                        chainFrom = lastTo
+                        capturedFrom = lastTo
                     } else {
                         // First write to this path since last assert: capture lastState.
                         // We use lastState rather than expectedState because deep paths through
@@ -414,13 +432,13 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         let capturedOriginal: Value = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
                             self.lastState[keyPath: fullPath]
                         }
-                        chainFrom = {
+                        capturedFrom = {
                             threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
                                 String(customDumping: capturedOriginal)
                             }
                         }
                     }
-                    let capturedFrom = chainFrom
+
                     let toDesc: () -> String = {
                         threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
                             String(customDumping: value)
@@ -441,9 +459,14 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         area: area,
                         fromDescription: capturedFrom,
                         toDescription: toDesc,
-                        rawValue: value as Any
+                        rawValue: value as Any,
+                        transactionID: capturedTxID
                     )
-                    self.valueUpdates[fullPath, default: []].append(entry)
+                    if isTransactionReplacement {
+                        self.valueUpdates[fullPath]![self.valueUpdates[fullPath]!.count - 1] = entry
+                    } else {
+                        self.valueUpdates[fullPath, default: []].append(entry)
+                    }
 
                     self.lastState[keyPath: fullPath] = value
                 }

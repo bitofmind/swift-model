@@ -629,6 +629,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 return try callback()
             }
 
+            // Assign a new unique ID to this transaction so TestAccess can coalesce
+            // multiple writes to the same path into a single valueUpdates entry.
+            threadLocals.currentTransactionID &+= 1
             threadLocals.postTransactions = []
             defer {
                 let posts = threadLocals.postTransactions!

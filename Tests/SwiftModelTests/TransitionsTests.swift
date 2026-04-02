@@ -20,6 +20,16 @@ private struct LoadingModel {
             isLoading = false
         }
     }
+
+    /// Writes to `result` multiple times inside a single transaction.
+    /// One transaction = one logical state change — only ONE FIFO entry should be produced.
+    func loadInTransaction(steps: Int) {
+        node.transaction {
+            for i in 1...steps {
+                result = "step\(i)"
+            }
+        }
+    }
 }
 
 // MARK: - Passing tests (correct patterns)
@@ -55,6 +65,27 @@ struct TransitionsTests {
         await expect { model.result == "first" }   // consumes nil → "first"
         await expect { model.result == "second" }  // consumes "first" → "second"
         await expect { model.result == "third" }   // consumes "second" → "third"
+    }
+
+    // MARK: Transaction coalescing
+
+    /// A transaction counts as ONE transition regardless of how many writes it contains.
+    /// Writing to `result` 10 times inside a transaction should produce a single FIFO
+    /// entry showing the final value — not 10 intermediate entries.
+    @Test func transactionCoalescedToSingleTransition() async {
+        let model = LoadingModel().withAnchor()
+        model.loadInTransaction(steps: 10)
+        // One assertion is enough — the entire transaction is a single transition.
+        await expect { model.result == "step10" }
+    }
+
+    /// Two back-to-back transactions produce two separate FIFO entries.
+    @Test func twoTransactionsProduceTwoTransitions() async {
+        let model = LoadingModel().withAnchor()
+        model.loadInTransaction(steps: 3)   // first → "step3"
+        model.loadInTransaction(steps: 2)   // second → "step2"
+        await expect { model.result == "step3" }  // consumes first transaction
+        await expect { model.result == "step2" }  // consumes second transaction
     }
 
     // MARK: Async task pattern
