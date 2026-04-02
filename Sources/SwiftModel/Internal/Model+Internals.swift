@@ -232,12 +232,16 @@ private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, dead
             return
         }
         if deadline < .max {
-            Task {
-                // Sleep until deadline then resume if the drain loop hasn't gone idle yet.
-                let now = DispatchTime.now().uptimeNanoseconds
-                if deadline > now {
-                    try? await Task.sleep(nanoseconds: deadline - now)
-                }
+            // Use DispatchQueue instead of Task for deadline enforcement.
+            // A Task must be *scheduled* on the cooperative pool before it can
+            // register its sleep timer.  Under pool saturation (many parallel tests
+            // on a 2-vCPU CI runner) the Task may never start, leaving the
+            // continuation permanently suspended.  DispatchQueue.asyncAfter
+            // registers a kernel-level timer immediately, independent of the
+            // cooperative pool.
+            let now = DispatchTime.now().uptimeNanoseconds
+            let delay = deadline > now ? deadline - now : 0
+            DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
                 resumed.withValue { r in
                     guard !r else { return }
                     r = true
@@ -261,12 +265,11 @@ private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>
                 }
             }
             if deadline < .max {
-                Task {
-                    // Sleep until deadline then resume if sentinel hasn't fired yet.
-                    let now = DispatchTime.now().uptimeNanoseconds
-                    if deadline > now {
-                        try? await Task.sleep(nanoseconds: deadline - now)
-                    }
+                // Use DispatchQueue instead of Task — same rationale as
+                // callQueueWaitUntilIdle above.
+                let now = DispatchTime.now().uptimeNanoseconds
+                let delay = deadline > now ? deadline - now : 0
+                DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
                     resumed.withValue { r in
                         guard !r else { return }
                         r = true

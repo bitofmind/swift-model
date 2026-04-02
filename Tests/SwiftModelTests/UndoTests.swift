@@ -420,19 +420,27 @@ struct UndoObservationTests {
             }
         }
 
+        print("[UNDO-DIAG \(updatePath)] anchored, writing value=99")
         model.items[0].value = 99
+        print("[UNDO-DIAG \(updatePath)] entering first expect")
         await expect {
             model.items[0].value == 99
             model.node.undoSystem.canUndo == true
         }
+        print("[UNDO-DIAG \(updatePath)] first expect passed")
 
         // Undo the item value change — observer should see the revert
+        print("[UNDO-DIAG \(updatePath)] calling stack.undo()")
         stack.undo()
+        print("[UNDO-DIAG \(updatePath)] stack.undo() returned, canUndo=\(stack.canUndo) canRedo=\(stack.canRedo)")
+        print("[UNDO-DIAG \(updatePath)] model.items[0].value=\(model.items[0].value)")
+        print("[UNDO-DIAG \(updatePath)] entering second expect")
         await expect {
             model.items[0].value == 0
             model.node.undoSystem.canUndo == false
             model.node.undoSystem.canRedo == true
         }
+        print("[UNDO-DIAG \(updatePath)] second expect passed")
     }
 }
 

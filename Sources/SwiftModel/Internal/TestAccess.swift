@@ -535,6 +535,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     // If the timeout has elapsed even here, fall through to the failure path so
                     // the assert doesn't spin forever when isEqualIncludingIds is permanently false.
                     if !isEqualIncludingIds {
+                        let elapsedMs = (DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+                        print("[EXPECT-DIAG] isEqualIncludingIds=false, elapsed=\(elapsedMs)ms, retrying after bgQueue drain")
                         if start.distance(to: DispatchTime.now().uptimeNanoseconds) > hardCap {
                             // Hard cap hit: the model has been continuously producing changes
                             // and IDs never converged. Report as failure.
@@ -790,6 +792,16 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 let elapsed = lastProgressTime.distance(to: DispatchTime.now().uptimeNanoseconds)
                 let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
                 retryCount += 1
+
+                // Diagnostic: log loop status at key retryCount thresholds to trace hangs.
+                if retryCount == 1 || retryCount == 5 || retryCount == 20 || retryCount % 100 == 0 {
+                    let elapsedMs = (DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+                    let failedCount = failures.count
+                    let passedCount = passedAccesses.count
+                    let bgIdle = backgroundCall.isIdle
+                    print("[EXPECT-DIAG] retry=\(retryCount) elapsed=\(elapsedMs)ms passed=\(passedCount) failed=\(failedCount) remaining=\(remaining/1_000_000)ms bgIdle=\(bgIdle) hardCap=\(hardCap/1_000_000)ms scaledTimeout=\(scaledTimeout/1_000_000)ms")
+                }
+
                 let didProgress = await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: yieldRoundNs, retryCount: retryCount)
                 if didProgress { lastProgressTime = DispatchTime.now().uptimeNanoseconds }
             }
