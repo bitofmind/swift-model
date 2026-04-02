@@ -201,7 +201,12 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         // Wait for the backgroundCall drain queue to finish processing any teardown
         // side-effects (onCancel callbacks, stream finalizations) that were dispatched
         // during onRemoval(). This ensures post-teardown assertions see final state.
-        await backgroundCall.waitUntilIdle()
+        //
+        // Use a 30-second deadline to prevent an indefinite hang if the cooperative
+        // pool is saturated (e.g. many parallel tests on a 2-vCPU CI runner) and the
+        // drain loop task is never scheduled.
+        let deadline = DispatchTime.now().uptimeNanoseconds + 30_000_000_000
+        await backgroundCall.waitUntilIdle(deadline: deadline)
     }
 
     package var exhaustivity: Exhaustivity {

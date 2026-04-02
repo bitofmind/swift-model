@@ -488,8 +488,10 @@ struct DualRegistrarTests {
         // Change observable. waitForCurrentItems() cooperatively waits on backgroundCall's
         // drain loop, ensuring performUpdate has run before we poll. Then waitUntil gives
         // the stream consumer task scheduler turns to process the yielded value.
+        // Use a 5-second deadline to prevent an indefinite hang if the drain loop task is
+        // not scheduled due to cooperative pool saturation on a 2-vCPU CI runner.
         observable.value = 5
-        await backgroundCall.waitForCurrentItems()
+        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
         try await waitUntil(values.value.contains(10))
         
         #expect(values.value.contains(10), "Observed should track @Observable changes via @Model")

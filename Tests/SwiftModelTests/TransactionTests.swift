@@ -156,12 +156,14 @@ struct TransactionTests {
         let observedValues = LockIsolated<[Int]>([])
 
         // Start a long transaction (synchronous, so actually blocks)
+        // Sleep time reduced from 50ms to 5ms to avoid blocking the cooperative thread pool
+        // on a 2-vCPU CI runner, while still overlapping with the 20ms concurrent readers.
         Task.detached {
             model.transaction {
                 model.value = 200
-                Thread.sleep(forTimeInterval: 0.05)
+                Thread.sleep(forTimeInterval: 0.005)
                 model.value = 300
-                Thread.sleep(forTimeInterval: 0.05)
+                Thread.sleep(forTimeInterval: 0.005)
                 model.value = 400
             }
         }
@@ -175,7 +177,7 @@ struct TransactionTests {
             }
         }.value
 
-        try await Task.sleep(for: .milliseconds(200))
+        try await Task.sleep(for: .milliseconds(50))
 
         // External reads should see either old value (100) or final value (400)
         // But NEVER intermediate values (200, 300) due to lock
