@@ -6,98 +6,91 @@ import Dependencies
 
 /// Controls what a `node.debug`, `memoize(debug:)`, or `Observed(debug:)` call prints.
 ///
-/// Build a value using the static factory members and combine them in an array literal:
+/// Use `.all` for the common case (both trigger and change output), or the static
+/// factory methods to enable only one kind of output:
 ///
 /// ```swift
-/// node.debug([.triggers, .changes]) { count }
-/// node.memoize(for: "sorted", debug: [.triggers(.withValue), .changes(.value)]) { … }
+/// node.debug()                                    // triggers + changes (default)
+/// node.debug(.triggers(.withValue))               // just triggers with old → new values
+/// node.debug(.init(name: "App"))                  // all output with a custom label
+///
+/// memoize(debug: .all) { ... }                    // on with defaults
+/// memoize(debug: .init(name: "sorted")) { ... }   // on with a custom label
+/// memoize { ... }                                 // no debug (nil = disabled)
 /// ```
-public struct DebugOptions: ExpressibleByArrayLiteral, Sendable {
-    var options: [DebugOption]
+public struct DebugOptions: Sendable {
+    /// How (or whether) to report which dependencies triggered an update.
+    var triggers: TriggerFormat?
 
-    public init(arrayLiteral elements: DebugOption...) {
-        self.options = elements
-    }
+    /// How (or whether) to report the observed/memoized value when it changes.
+    var changes: ChangeFormat?
 
-    init(_ options: [DebugOption]) {
-        self.options = options
-    }
+    /// When `true`, child model properties are not tracked as dependencies.
+    var isShallow: Bool
 
-    // MARK: Convenience shorthands (allow passing a single option without brackets)
+    /// Label used in debug output. Defaults to the model's type name when `nil`.
+    var name: String?
 
-    /// Print the name of each dependency that changed: `"AppModel.filter"`.
-    public static let triggers: DebugOptions = [.triggers()]
+    /// Output destination. Defaults to `print()` when `nil`.
+    var printer: (any TextOutputStream & Sendable)?
 
-    /// Print each changed dependency with its old → new value: `"AppModel.filter: \"a\" → \"b\""`.
-    public static let triggerValues: DebugOptions = [.triggers(.withValue)]
-
-    /// Print a structured diff of each dependency's value when it triggers.
+    /// Creates a `DebugOptions` value.
     ///
-    /// More verbose than `.triggerValues` but reveals exactly which property changed
-    /// inside a nested model — useful when `triggerValues` shows `TypeName() → TypeName()`.
-    public static let triggerDiffs: DebugOptions = [.triggers(.withDiff)]
-
-    /// Print a diff of the observed value when it changes.
-    public static let changes: DebugOptions = [.changes()]
-
-    /// Don't follow sub-model properties when tracking dependencies.
-    public static let shallow: DebugOptions = [.shallow]
-
-    var triggerFormat: TriggerFormat? {
-        for case .triggers(let f) in options { return f }
-        return nil
+    /// All parameters have sensible defaults so calling `.init()` produces full output —
+    /// triggers with `.name` format and changes with `.diff()` format.
+    ///
+    /// - Parameters:
+    ///   - triggers: How to format trigger output; `nil` suppresses trigger lines.
+    ///   - changes: How to format change output; `nil` suppresses change lines.
+    ///   - isShallow: When `true`, child model properties are not tracked as dependencies.
+    ///   - name: Custom label. Defaults to the model's type name when `nil`.
+    ///   - printer: Custom output stream. Defaults to `print()` when `nil`.
+    public init(
+        triggers: TriggerFormat? = .name,
+        changes: ChangeFormat? = .diff(),
+        isShallow: Bool = false,
+        name: String? = nil,
+        printer: (any TextOutputStream & Sendable)? = nil
+    ) {
+        self.triggers = triggers
+        self.changes = changes
+        self.isShallow = isShallow
+        self.name = name
+        self.printer = printer
     }
 
-    var changeFormat: ChangeFormat? {
-        for case .changes(let f) in options { return f }
-        return nil
+    // MARK: - Shorthands
+
+    /// Enables all output: triggers with `.name` format and changes with `.diff()` format.
+    ///
+    /// Equivalent to `DebugOptions()`.
+    public static let all = Self()
+
+    /// Enables trigger output only, with the specified format.
+    ///
+    /// ```swift
+    /// node.debug(.triggers())              // triggers with .name format (default)
+    /// node.debug(.triggers(.withValue))    // triggers showing old → new value
+    /// node.debug(.triggers(.withDiff))     // triggers with a structured diff
+    /// ```
+    public static func triggers(_ format: TriggerFormat = .name) -> Self {
+        .init(triggers: format, changes: nil)
     }
 
-    var isShallow: Bool {
-        options.contains { if case .shallow = $0 { return true }; return false }
-    }
-
-    var name: String? {
-        for case .name(let n) in options { return n }
-        return nil
-    }
-
-    var printer: (any TextOutputStream & Sendable)? {
-        for case .printer(let p) in options { return p }
-        return nil
+    /// Enables change output only, with the specified format.
+    ///
+    /// ```swift
+    /// node.debug(.changes())               // diff format (default)
+    /// node.debug(.changes(.value))         // new value only
+    /// node.debug(.changes(.diff(.full)))   // full diff with all context
+    /// ```
+    public static func changes(_ format: ChangeFormat = .diff()) -> Self {
+        .init(triggers: nil, changes: format)
     }
 
     var effectivePrinter: any TextOutputStream & Sendable {
         printer ?? PrintTextOutputStream()
     }
-}
-
-/// A single debug configuration element. Combine multiple in a `DebugOptions` array literal.
-public enum DebugOption: Sendable {
-    /// Print the name (and optionally value) of each dependency that triggered an update.
-    case triggers(TriggerFormat = .name)
-
-    /// Print the observed/memoized value when it changes.
-    case changes(ChangeFormat = .diff())
-
-    /// Don't propagate observation into sub-model properties.
-    case shallow
-
-    /// Override the label used in debug output (default: type name).
-    case name(String)
-
-    /// Override the output destination (default: `print()`).
-    case printer(any TextOutputStream & Sendable)
-}
-
-public extension DebugOption {
-    /// Shorthand for `.triggers()` — use when the default `.name` format is wanted.
-    /// Allows `[.triggers, .name("...")]` instead of `[.triggers(), .name("...")]`.
-    static var triggers: Self { .triggers() }
-
-    /// Shorthand for `.changes()` — use when the default `.diff` format is wanted.
-    /// Allows `[.changes, .name("...")]` instead of `[.changes(), .name("...")]`.
-    static var changes: Self { .changes() }
 }
 
 /// Controls how a diff is displayed when comparing old and new values.
@@ -185,10 +178,8 @@ public extension Model where Self: Sendable {
     @available(*, deprecated, renamed: "debug()")
     @discardableResult
     func _printChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Cancellable {
-        var opts = DebugOptions([DebugOption.changes()])
-        if let name { opts = DebugOptions(opts.options + [.name(name)]) }
-        if !(printer is PrintTextOutputStream) { opts = DebugOptions(opts.options + [.printer(printer)]) }
-        return debug(opts)
+        let p: (any TextOutputStream & Sendable)? = (printer is PrintTextOutputStream) ? nil : printer
+        return debug(.init(triggers: nil, name: name, printer: p))
     }
 
     // MARK: - debug
@@ -199,24 +190,24 @@ public extension Model where Self: Sendable {
     ///
     /// ```swift
     /// func onActivate() {
-    ///     node.debug()                                        // diff output, whole model
-    ///     node.debug([.changes(.value)])                     // print new value instead of diff
-    ///     node.debug([.changes(), .name("MyModel")])        // custom label
-    ///     node.debug([.triggers, .changes()])               // also show which properties changed
+    ///     node.debug()                                    // triggers + diff output (default)
+    ///     node.debug(.changes(.value))                   // print new value instead of diff
+    ///     node.debug(.init(name: "MyModel"))             // custom label
+    ///     node.debug(.triggers(.withValue))              // just show which properties changed
     /// }
     /// ```
     ///
     /// To track which specific properties triggered an update in a sub-expression,
-    /// use the closure form: `node.debug([.triggers]) { expression }`
+    /// use the closure form: `node.debug(.triggers()) { expression }`
     ///
     /// Only active in `DEBUG` builds. Returns a `Cancellable` you can cancel early.
     @discardableResult
-    func debug(_ options: DebugOptions = [.changes()]) -> Cancellable {
+    func debug(_ options: DebugOptions = .all) -> Cancellable {
 #if DEBUG
         guard let context = enforcedContext() else { return EmptyCancellable() }
         let label = options.name ?? typeDescription
         let printerBox = PrinterBox(options.effectivePrinter)
-        let changeFormat = options.changeFormat
+        let changeFormat = options.changes
 
         // Snapshot helper: renders the model to a string via customDump, capturing the
         // current live values of all properties including child models. We store rendered
@@ -277,16 +268,16 @@ public extension Model where Self: Sendable {
     /// ```swift
     /// func onActivate() {
     ///     // Print which dependency changed and the new computed value
-    ///     node.debug([.triggers, .changes]) { (count, filter) }
+    ///     node.debug(.all) { (count, filter) }
     ///
     ///     // Watch a memoized result with a custom label
-    ///     node.debug([.triggers, .name("sortedItems")]) { sortedItems }
+    ///     node.debug(.init(name: "sortedItems")) { sortedItems }
     /// }
     /// ```
     ///
     /// Only active in `DEBUG` builds.
     @discardableResult
-    func debug<T: Sendable>(_ options: DebugOptions = [.triggers(), .changes()], _ access: @Sendable @escaping () -> T) -> Cancellable {
+    func debug<T: Sendable>(_ options: DebugOptions = .all, _ access: @Sendable @escaping () -> T) -> Cancellable {
 #if DEBUG
         guard let context = enforcedContext() else { return EmptyCancellable() }
         let label = options.name ?? typeDescription
@@ -481,10 +472,10 @@ private func collapsedLineDiff(_ rawDiff: String) -> String {
 // MARK: - memoizeDebugSetup
 
 /// Sets up debug observation for a `memoize` call.
-/// Returns nil values for all three when `options` is empty (zero cost path).
+/// Returns nil values for all three when `options` is nil (zero cost path).
 ///
 /// - Parameters:
-///   - options: The `DebugOptions` passed to `memoize(debug:)`.
+///   - options: The `DebugOptions` passed to `memoize(debug:)`, or nil to disable.
 ///   - label: The human-readable label used in printed output.
 /// - Returns: A tuple of:
 ///   - `debugPrint`: Closure to call after each memoize update with `(newValue, previousValue)`.
@@ -492,19 +483,19 @@ private func collapsedLineDiff(_ rawDiff: String) -> String {
 ///   - `debugCollectorBox`: Box holding the `DebugAccessCollector`; run `produce()` through
 ///     `usingActiveAccess(collectorBox.value)` after first `update()` to register trigger callbacks.
 func memoizeDebugSetup<T: Sendable>(
-    options: DebugOptions,
+    options: DebugOptions?,
     label: String
 ) -> (
     debugPrint: (@Sendable (T, T?) -> Void)?,
     debugPreviousValue: LockIsolated<T?>?,
     debugCollectorBox: LockIsolated<DebugAccessCollector?>?
 ) {
-    guard !options.options.isEmpty else {
+    guard let options else {
         return (nil, nil, nil)
     }
 
-    let debugTriggerFormat = options.triggerFormat
-    let debugChangeFormat = options.changeFormat
+    let debugTriggerFormat = options.triggers
+    let debugChangeFormat = options.changes
     let debugPrinterBox = PrinterBox(options.effectivePrinter)
     // Store lazy closures so that expensive operations (e.g. LCS diff) run in debugPrint,
     // outside the context lock, rather than blocking it during the onModify callback.
@@ -804,8 +795,8 @@ func debugObserve<T: Sendable>(
 ) -> @Sendable () -> Void {
 #if DEBUG
     let printerBox = PrinterBox(options.effectivePrinter)
-    let triggerFormat = options.triggerFormat
-    let changeFormat = options.changeFormat
+    let triggerFormat = options.triggers
+    let changeFormat = options.changes
 
     // Collect lazy trigger closures fired by the DebugAccessCollector's onModify callbacks.
     // Using closures (rather than pre-computed strings) defers expensive work (e.g. LCS diff)

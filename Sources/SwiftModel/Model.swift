@@ -161,8 +161,8 @@ public extension Model {
     ///
     /// ```swift
     /// AppModel().withDebug().withAnchor()
-    /// AppModel().withDebug([.triggers, .changes]).withAnchor()
-    /// AppModel().withDebug([.changes(), .name("App"), .printer(myStream)]).withAnchor()
+    /// AppModel().withDebug(.triggers(.withValue)).withAnchor()
+    /// AppModel().withDebug(.init(name: "App", printer: myStream)).withAnchor()
     /// ```
     ///
     /// To enable debugging only temporarily on a live model, use `debug()` on the model
@@ -173,7 +173,7 @@ public extension Model {
     /// // ... do work ...
     /// cancel.cancel()
     /// ```
-    func withDebug(_ options: DebugOptions = [.changes()]) -> Self where Self: Sendable {
+    func withDebug(_ options: DebugOptions = .all) -> Self where Self: Sendable {
         withActivation {
             $0.debug(options)
         }
@@ -182,10 +182,8 @@ public extension Model {
     /// - Deprecated: Use ``withDebug()`` instead.
     @available(*, deprecated, renamed: "withDebug()")
     func _withPrintChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Self where Self: Sendable {
-        var opts: [DebugOption] = [.changes()]
-        if let name { opts.append(.name(name)) }
-        if !(printer is PrintTextOutputStream) { opts.append(.printer(printer)) }
-        return withDebug(DebugOptions(opts))
+        let p: (any TextOutputStream & Sendable)? = (printer is PrintTextOutputStream) ? nil : printer
+        return withDebug(.init(triggers: nil, name: name, printer: p))
     }
 
     /// Prints a message each time this model is activated or deactivated.

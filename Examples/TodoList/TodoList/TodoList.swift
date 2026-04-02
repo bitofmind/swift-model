@@ -65,7 +65,7 @@ extension PreferenceKeys {
 
         // Targeted debug: print only when items.count or completedCount changes.
         // Contrast with .withDebug() which would also fire on every newItemTitle keystroke.
-        node.forEach(Observed(debug: [.triggers(), .changes()]) { (items.count, completedCount) }) { _ in }
+        node.forEach(Observed(debug: .all) { (items.count, completedCount) }) { _ in }
     }
 
     func addItemTapped() {

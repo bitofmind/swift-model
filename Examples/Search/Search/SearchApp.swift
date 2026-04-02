@@ -8,7 +8,7 @@ struct SearchApp: App {
     // here: it does a full customDump + LCS diff of the *entire* tree on every change,
     // which becomes expensive when there are many nested child models (SearchResultItems).
     // Use the targeted `Observed(debug:)` inside a model's onActivate() instead.
-    let model = AppModel().withDebug([.triggers()]).withAnchor()
+    let model = AppModel().withDebug(.triggers()).withAnchor()
 
     var body: some Scene {
         WindowGroup {

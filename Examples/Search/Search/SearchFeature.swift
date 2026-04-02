@@ -103,7 +103,7 @@ enum SortOption: String, CaseIterable, Sendable {
         // Targeted debug: print only when the *results* count changes — not on every keystroke.
         // Observing `query` here would fire on every character typed; `results.count` only
         // fires when a search completes. Compare to `.withDebug()` on AppModel which prints everything.
-        node.forEach(Observed(debug: [.triggers(), .changes()]) { results.count }) { _ in }
+        node.forEach(Observed(debug: .all) { results.count }) { _ in }
 
         // Debounce + cancel-in-flight: wait 300 ms after the last keystroke before
         // searching, then cancel any still-running previous search.

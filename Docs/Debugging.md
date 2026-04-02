@@ -7,47 +7,47 @@ SwiftModel keeps track of all model state changes and can print diffs, trigger l
 Enable debug output for the lifetime of a model by adding a modifier before anchoring:
 
 ```swift
-AppModel().withDebug().withAnchor()
+AppModel().withDebug().withAnchor()   // triggers (name format) + changes (diff) — the default
 ```
 
-Or configure what gets printed using `DebugOptions`:
+Pass a `DebugOptions` value to configure exactly what gets printed. Use the static factory methods for common cases:
 
 ```swift
-// Print a diff of the whole model tree whenever anything changes
-AppModel().withDebug([.changes()]).withAnchor()
+// Print only a diff of the whole model tree (no trigger lines)
+AppModel().withDebug(.changes()).withAnchor()
 
-// Also show which properties triggered the update
-AppModel().withDebug([.triggers(), .changes()]).withAnchor()
+// Print only which properties triggered updates (no diff)
+AppModel().withDebug(.triggers()).withAnchor()
 
-// Use a custom label and output stream
-AppModel().withDebug([.changes(), .name("App"), .printer(myStream)]).withAnchor()
+// Use a custom label and output stream (triggers + changes still on by default)
+AppModel().withDebug(.init(name: "App", printer: myStream)).withAnchor()
 ```
 
 The trigger format can be `.name` (default), `.withValue` (old → new), or `.withDiff` (structured diff — useful when the trigger value is itself a model):
 
 ```swift
-// "AppModel.filter: \"a\" → \"b\""
-AppModel().withDebug([.triggers(.withValue), .changes()]).withAnchor()
+// Triggers show "AppModel.filter: \"a\" → \"b\""; changes diff also printed
+AppModel().withDebug(.init(triggers: .withValue)).withAnchor()
 
-// Full structured diff of the triggering property
-AppModel().withDebug([.triggers(.withDiff), .changes()]).withAnchor()
+// Triggers-only with full structured diff of each changed dependency
+AppModel().withDebug(.triggers(.withDiff)).withAnchor()
 ```
 
 Diffs default to `.compact` style (only the changed lines and their structural ancestors). Pass a `DiffStyle` to change this:
 
 ```swift
 // Show every unchanged sibling as "… (N unchanged)"
-model.debug([.changes(.diff(.collapsed))])
+model.debug(.changes(.diff(.collapsed)))
 
 // Show the full before/after context
-model.debug([.changes(.diff(.full))])
+model.debug(.changes(.diff(.full)))
 ```
 
 To debug a specific expression or enable debug output only temporarily on a live model, use `debug()` on the model directly — it returns a `Cancellable` you can cancel when done:
 
 ```swift
-// Watch only a specific sub-expression
-model.debug([.triggers(), .changes()]) { model.filter }
+// Watch only a specific sub-expression (triggers + changes)
+model.debug() { model.filter }
 
 // Enable temporarily
 let cancel = model.debug()
@@ -55,14 +55,14 @@ let cancel = model.debug()
 cancel.cancel()
 ```
 
-The same `DebugOptions` are also accepted by `memoize` and `Observed`, so you can trace individual computed values or observation-driven side effects:
+For `memoize` and `Observed`, the `debug:` parameter is `DebugOptions?` — omit it (or pass `nil`) to disable debug output, or pass a `DebugOptions` value to enable it:
 
 ```swift
-// Print triggers and the new value whenever a memoized result changes
-node.memoize(for: "sorted", debug: [.triggers(), .changes(.value)]) { items.sorted() }
+// Print the new value (no diff) whenever a memoized result changes
+node.memoize(for: "sorted", debug: .init(changes: .value)) { items.sorted() }
 
-// Print which dependency triggered an Observed update
-node.forEach(Observed(debug: [.triggers(.withValue)]) { model.count }) { value in ... }
+// Print which dependency triggered an Observed update (old → new value)
+node.forEach(Observed(debug: .triggers(.withValue)) { model.count }) { value in ... }
 ```
 
 > Debug output is only active in `DEBUG` builds.
