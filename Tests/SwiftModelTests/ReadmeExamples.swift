@@ -46,8 +46,8 @@ extension DependencyValues {
     func onActivate() {
         // Cancel-in-flight: each new query cancels the previous search.
         // No stored Task. No [weak self]. Cancelled automatically when removed.
-        node.forEach(Observed { query }, cancelPrevious: true) { q in
-            results = (try? await node.gitHubClient.search(q)) ?? []
+        node.task(id: query) { query in
+            results = (try? await node.gitHubClient.search(query)) ?? []
         }
     }
 }

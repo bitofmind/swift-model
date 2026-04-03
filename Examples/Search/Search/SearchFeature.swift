@@ -81,8 +81,9 @@ enum SortOption: String, CaseIterable, Sendable {
 /// Root search model.
 ///
 /// Demonstrates:
-/// - `node.forEach(Observed { query }, cancelPrevious: true)` — cancel-in-flight search.
+/// - `node.task(id:)` / `node.forEach(Observed { query }, cancelPrevious: true)` — cancel-in-flight search.
 ///   Each new query value cancels the previous in-flight search task before starting the next.
+///   Here `query` is debounced before searching, so the full `forEach(Observed { query }.debounce(...))` form is used.
 /// - `withActivation` — attach additional setup (e.g. load trending repos on launch) without
 ///   modifying `onActivate()` directly. Used in previews and tests.
 /// - Targeted `Observed(debug:)` — prints only when `query` or `results` change, not on every

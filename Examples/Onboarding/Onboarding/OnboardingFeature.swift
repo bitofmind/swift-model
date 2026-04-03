@@ -78,10 +78,10 @@ extension LocalKeys {
 
     func onActivate() {
         // Async username availability check on each keystroke.
-        // cancelPrevious: true cancels any in-flight check when the user keeps typing,
-        // so only the check for the most recently typed username completes.
-        node.forEach(Observed { username }, cancelPrevious: true) { name in
-            let trimmed = name.trimmingCharacters(in: .whitespaces)
+        // task(id:) restarts the check whenever `username` changes, cancelling any
+        // in-flight check so only the most recently typed value completes.
+        node.task(id: username) { username in
+            let trimmed = username.trimmingCharacters(in: .whitespaces)
             guard trimmed.count >= 3 else {
                 isCheckingAvailability = false
                 availabilityError = trimmed.isEmpty ? nil : "Username must be at least 3 characters."

@@ -82,6 +82,27 @@ extension VariableDeclSyntax {
         !isComputed && isInstance && !isImmutable && identifier != nil
     }
 
+    /// True when the getter is `private` or `fileprivate` (not merely the setter).
+    ///
+    /// `private(set) var x` has an accessible getter — only the setter is restricted,
+    /// so this returns `false`. A plain `private var x` or `fileprivate var x` restricts
+    /// the getter and returns `true`.
+    var isPrivateGetter: Bool {
+        for modifier in modifiers {
+            switch modifier.name.tokenKind {
+            case .keyword(.private), .keyword(.fileprivate):
+                // `private(set)` has a detail clause ("set") — only the setter is restricted.
+                // `private` with no detail restricts both getter and setter.
+                if modifier.detail == nil {
+                    return true
+                }
+            default:
+                break
+            }
+        }
+        return false
+    }
+
     func hasMacroApplication(_ name: String) -> Bool {
         for attribute in attributes {
             switch attribute {

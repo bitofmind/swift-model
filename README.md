@@ -14,8 +14,8 @@ Composable models for SwiftUI — struct-based, automatic async lifetime, exhaus
     func onActivate() {
         // Cancel-in-flight: each new query cancels the previous search.
         // No stored Task. No [weak self]. Cancelled automatically when removed.
-        node.forEach(Observed { query }, cancelPrevious: true) { q in
-            results = (try? await node.gitHubClient.search(q)) ?? []
+        node.task(id: query) { query in
+            results = (try? await node.gitHubClient.search(query)) ?? []
         }
     }
 }
@@ -46,14 +46,14 @@ import SwiftModel
     func onActivate() {
         // Cancel-in-flight. With a plain @Observable class you'd need a stored
         // Task, [weak self] in every closure, and a deinit for cleanup. Here it's one line.
-        node.forEach(Observed { query }, cancelPrevious: true) { q in
-            results = (try? await node.gitHubClient.search(q)) ?? []
+        node.task(id: query) { query in
+            results = (try? await node.gitHubClient.search(query)) ?? []
         }
     }
 }
 ```
 
-`@Model` gives the struct observable storage, a `node` interface for async work and dependencies, and everything needed to participate in the model hierarchy. `Observed { query }` tracks any Swift value expression and emits whenever its result changes — not just simple properties. (Apple added a similar `Observations` type in iOS 26; `Observed` works from iOS 14.)
+`@Model` gives the struct observable storage, a `node` interface for async work and dependencies, and everything needed to participate in the model hierarchy. `node.task(id:)` watches any value expression and restarts the async task whenever it changes — cancelling the previous in-flight task first. Under the hood it uses `Observed { query }`, which tracks any Swift value expression and emits whenever its result changes — not just simple properties. (Apple added a similar `Observations` type in iOS 26; `Observed` works from iOS 14.)
 
 `node.gitHubClient` accesses the `GitHubClient` dependency via a `DependencyValues` keypath — the same keypath used to override it in tests and previews, with no change to the model itself.
 
@@ -154,7 +154,7 @@ import SwiftModel
 
 **[Models and composition](Docs/Models.md)** — `@Model` macro, child models, optional and collection composition, `@ModelContainer` for navigation enums and reusable wrappers.
 
-**[Async lifetime](Docs/Lifecycle.md)** — `node.task`, `node.forEach`, reactive streams with `Observed`, `onActivate`, `withActivation` for composable behaviour injection, `observeAnyModification`, transactions, and cancellation groups.
+**[Async lifetime](Docs/Lifecycle.md)** — `node.task`, `node.task(id:)` for restart-on-change, `node.onChange(of:)` for old/new value transitions, `node.forEach`, reactive streams with `Observed`, `onActivate`, `withActivation` for composable behaviour injection, `observeAnyModification`, transactions, and cancellation groups.
 
 **[Undo and redo](Docs/Undo.md)** — `node.trackUndo()` with selective key-path tracking, `UndoManager` integration, and observable `canUndo` / `canRedo`.
 
@@ -176,7 +176,7 @@ import SwiftModel
 |---|---|
 | [CounterFact](Examples/CounterFact) | Nested models, async effects with error handling, dependency injection |
 | [Search](Examples/Search) | Cancel-in-flight search, per-item async loading, `TestProbe`, `withActivation` in previews and tests |
-| [Onboarding](Examples/Onboarding) | 3-step sign-up wizard: `@ModelContainer` enum navigation, `cancelPrevious: true` for async username availability, `node.local`, `node.task` with `catch:` |
+| [Onboarding](Examples/Onboarding) | 3-step sign-up wizard: `@ModelContainer` enum navigation, `node.task(id:)` for async username availability check, `node.local`, `node.task` with `catch:` |
 | [TodoList](Examples/TodoList) | Undo/redo with selective tracking, preference aggregation, targeted debug with `Observed(debug:)` |
 | [Standups](Examples/Standups) | Complete app: navigation, timers, speech recognition, persistence, exhaustive tests |
 

@@ -331,7 +331,7 @@ public extension ModelNode {
     }
 }
 
-private extension Observed {
+extension Observed {
     init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false, debug: DebugOptions? = nil) {
         stream = AsyncStream { cont in
             // Detect whether accessed models use ObservationRegistrar.

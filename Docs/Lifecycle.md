@@ -79,17 +79,59 @@ node.forEach(Observed { count }) { count in
 
 The `Observed` stream automatically tracks which properties are accessed in its closure and will emit a new value whenever any of those properties change. For `Equatable` types, duplicate values are filtered out by default.
 
-`forEach` will by default complete its asynchronous work before handling the next value, but sometimes it is useful to cancel any previous work that might become outdated.
+`forEach` will by default complete its asynchronous work before handling the next value. For the common case of wanting to restart async work whenever a value changes — cancelling any in-flight work first — use `node.task(id:)`.
+
+#### Restart on Change: `node.task(id:)`
+
+`node.task(id:)` starts the task once immediately on activation, then cancels and restarts it each time the observed value changes. The emission-time value is passed directly to the operation, avoiding any race between when the task starts and when it reads the model.
 
 ```swift
-node.forEach(Observed { count }, cancelPrevious: true) { count in
-  state.isPrime = nil // Show spinner
-  state.isPrime = try await isPrime(count)
+node.task(id: count) { count in
+    state.isPrime = nil // Show spinner
+    state.isPrime = try await isPrime(count)
+} catch: { _ in }
+```
+
+This is a convenience over `node.forEach(Observed { count }, cancelPrevious: true) { count in ... }`, making the "restart on change" intent explicit at the call site.
+
+`node.task(id:)` accepts the same optional parameters as `node.forEach`: `initial`, `removeDuplicates`, `coalesceUpdates`, `name`, `isDetached`, and `priority`. Pass `initial: false` to skip the initial run and only react to subsequent changes.
+
+#### React to Value Transitions: `node.onChange(of:)`
+
+`node.onChange(of:)` calls its closure on each change, passing both the old and new value. This is the right tool when you need to react to a specific *transition* rather than just the latest value.
+
+```swift
+node.onChange(of: isLoggedIn) { wasLoggedIn, isNowLoggedIn in
+    if !wasLoggedIn && isNowLoggedIn {
+        await fetchUserProfile()
+    }
+}
+```
+
+When `initial: true` (the default), the closure is called once immediately on activation with `oldValue == newValue`. Pass `initial: false` to skip the initial call — the first real change will then report `(activationValue, firstChangedValue)` as `(old, new)`.
+
+Pass `cancelPrevious: true` for "latest wins" semantics — any still-running closure from a prior change is cancelled before the new one starts:
+
+```swift
+node.onChange(of: searchQuery, cancelPrevious: true) { _, query in
+    try await performSearch(query)
+} catch: { _ in }
+```
+
+`node.onChange(of:)` accepts the same optional parameters as `node.task(id:)`: `initial`, `removeDuplicates`, `coalesceUpdates`, `cancelPrevious`, `name`, `isDetached`, and `priority`.
+
+For more control — to chain `Observed` with async operators like `.debounce()`, or to iterate arbitrary `AsyncSequence` values — use `forEach` directly:
+
+```swift
+// Use forEach for debouncing or arbitrary AsyncSequences
+node.forEach(Observed { count }.debounce(for: .milliseconds(300)), cancelPrevious: true) { count in
+    state.isPrime = nil // Show spinner
+    state.isPrime = try await isPrime(count)
 }
 ```
 
 > **`cancelPrevious` vs `cancelInFlight()`**: these solve similar but distinct problems.
-> - `cancelPrevious: true` on `forEach` controls **per-element parallelism** — each new value from the sequence cancels the async work for the *previous* value. It's about keeping the handler up-to-date as values stream in.
+> - `cancelPrevious: true` on `forEach` (and the underlying mechanism of `task(id:)`) controls **per-element parallelism** — each new value from the sequence cancels the async work for the *previous* value. It's about keeping the handler up-to-date as values stream in.
 > - `cancelInFlight()` on a `Cancellable` controls **call-site deduplication** — calling the same function again cancels the task started by the *previous call*. It's about ensuring only one instance of a task runs at a time, regardless of any input stream.
 
 You can also use `Observed` directly as an `AsyncSequence`:

@@ -11,6 +11,11 @@ import CasePaths
     private(set) var standup: Standup
     private(set) var transcript = ""
 
+    // Delegate closures: stored as `let` constants, called when the meeting ends or is discarded.
+    //
+    // Unlike @Observable classes that require `[weak self]` to avoid retain cycles, SwiftModel
+    // structs cannot form retain cycles — the compiler makes it impossible. No special handling
+    // is needed here.
     let onSave: @Sendable (String) -> Void
     let onDiscard: @Sendable () -> Void
 
