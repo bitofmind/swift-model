@@ -386,16 +386,21 @@ struct DualRegistrarTests {
         try await waitUntil(values.value.contains(0))
         #expect(values.value.contains(0))
 
-        // onChange fires synchronously → enqueues performUpdate on the test's BackgroundCallQueue.
-        // waitForCurrentItems drains that queue so performUpdate runs and yields 10 to the stream.
-        // Then waitUntil gives the stream consumer task scheduler turns to process the yield.
+        // onChange fires synchronously → enqueues performUpdate on the BackgroundCallQueue.
+        // waitForCurrentItems drains the queue so performUpdate runs and yields to the stream.
+        // We trigger both changes back-to-back (after draining each) rather than polling with
+        // waitUntil between them: on a 2-vCPU CI runner the cooperative pool can be too
+        // saturated for polling to succeed within waitUntil's calibrated timeout.
+        // Instead we let `await task.value` (no hard timeout) do the final cooperative wait.
         observable.value = 5
         await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
-        try await waitUntil(values.value.contains(10))
-        #expect(values.value.contains(10), "Observed should track @Observable changes via @Model")
-
+        // waitForCurrentItems guarantees cont.yield(10) was called and tracking re-registered.
+        // Immediately trigger the next change — no need to poll for contains(10) first.
         observable.value = 10
+        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        // Consumer processes buffered values (10, 20) in order; breaks on ≥ 20.
         await task.value
+        #expect(values.value.contains(10), "Observed should track @Observable changes via @Model")
         #expect(values.value.contains(20), "Should continue tracking @Observable changes")
     }
 
