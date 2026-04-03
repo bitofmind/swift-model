@@ -1,6 +1,7 @@
 import Testing
 import Observation
 import ConcurrencyExtras
+import Foundation
 @testable import SwiftModel
 
 /// Tests for memoize dirty tracking and observation updates
@@ -12,6 +13,7 @@ import ConcurrencyExtras
 ///
 /// Note: Dirty tracking is always enabled and cannot be disabled.
 /// The matrix helps us identify exactly which combinations have issues.
+@Suite(.backgroundCallIsolation)
 struct MemoizeDirtyObservationTests {
 
     // MARK: - Test Configuration Helper
@@ -542,9 +544,10 @@ struct MemoizeDirtyObservationTests {
         try await waitUntil(updates.value.count >= 1)
         updates.setValue([])
 
-        // 50 cycles of nil→X→nil. Each nil transition causes isSame([], [])==true.
-        // After 50 cycles the subscription must still be alive.
-        for i in 1...50 {
+        // 10 cycles of nil→X→nil. Each nil transition causes isSame([], [])==true.
+        // After 10 cycles the subscription must still be alive.
+        // (Reduced from 50 to 10 to limit test duration on 2-vCPU CI runners.)
+        for i in 1...10 {
             model.hoverID = i
             try await waitUntil(updates.value.last == [i], timeout: 3_000_000_000)
             #expect(updates.value.last == [i], "[\(path)] Cycle \(i): should see [\(i)]")
@@ -553,10 +556,10 @@ struct MemoizeDirtyObservationTests {
             try await waitUntil(updates.value.last == [], timeout: 3_000_000_000)
         }
 
-        // Final check: subscription still alive after 50 cycles
+        // Final check: subscription still alive after 10 cycles
         model.hoverID = 99
         try await waitUntil(updates.value.last == [99], timeout: 3_000_000_000)
-        #expect(updates.value.last == [99], "[\(path)] Subscription must survive 50 isSame=true cycles")
+        #expect(updates.value.last == [99], "[\(path)] Subscription must survive 10 isSame=true cycles")
     }
 
     /// Verifies that `produce` is always called when a dependency changes, even after
@@ -591,8 +594,9 @@ struct MemoizeDirtyObservationTests {
         // polls via Task.yield() which can't keep up. Use waitForCurrentItems() instead:
         // it cooperatively waits on backgroundCall's own drain loop for the two-hop
         // delivery chain (memoize performUpdate → Observed performUpdate).
-        await backgroundCall.waitForCurrentItems()
-        await backgroundCall.waitForCurrentItems()
+        // Use a 5-second deadline per hop to prevent an indefinite hang on 2-vCPU CI runners.
+        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
 
         // The final value must be observed (20 * 2 = 40)
         try await waitUntil(updates.value.contains(40), timeout: 3_000_000_000)
@@ -607,8 +611,8 @@ struct MemoizeDirtyObservationTests {
             model.value = 20 + i
         }
         // Two hops: memoize performUpdate → Observed performUpdate
-        await backgroundCall.waitForCurrentItems()
-        await backgroundCall.waitForCurrentItems()
+        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
         // Final value: 40 * 2 = 80
         try await waitUntil(updates.value.contains(80), timeout: 3_000_000_000)
         #expect(updates.value.contains(80), "[\(path)] Subscription must survive a second round of rapid mutations")

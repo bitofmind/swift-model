@@ -10,6 +10,7 @@ import Foundation
 /// 2. With coalescing: N mutations → 1 update callback (via BackgroundCalls)
 /// 3. Coalescing works for both AccessCollector and withObservationTracking paths
 /// 4. Values remain fresh (not stale) with coalescing enabled
+@Suite(.backgroundCallIsolation)
 struct CoalescingTests {
     
     // MARK: - AccessCollector Path Tests

@@ -211,16 +211,44 @@ private func callQueueIsIdle(_ state: LockIsolated<CallQueueState?>) -> Bool {
     state.value == nil
 }
 
-private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>) async {
+private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, deadline: UInt64 = .max) async {
     await withCheckedContinuation { cont in
+        let resumed = LockIsolated(false)
         let shouldResume = state.withValue { s -> Bool in
             if s != nil {
-                s!.onIdleCallbacks.append { cont.resume() }
+                s!.onIdleCallbacks.append {
+                    resumed.withValue { r in
+                        guard !r else { return }
+                        r = true
+                        cont.resume()
+                    }
+                }
                 return false
             }
             return true
         }
-        if shouldResume { cont.resume() }
+        if shouldResume {
+            cont.resume()
+            return
+        }
+        if deadline < .max {
+            // Use DispatchQueue instead of Task for deadline enforcement.
+            // A Task must be *scheduled* on the cooperative pool before it can
+            // register its sleep timer.  Under pool saturation (many parallel tests
+            // on a 2-vCPU CI runner) the Task may never start, leaving the
+            // continuation permanently suspended.  DispatchQueue.asyncAfter
+            // registers a kernel-level timer immediately, independent of the
+            // cooperative pool.
+            let now = DispatchTime.now().uptimeNanoseconds
+            let delay = deadline > now ? deadline - now : 0
+            DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
+                resumed.withValue { r in
+                    guard !r else { return }
+                    r = true
+                    cont.resume()
+                }
+            }
+        }
     }
 }
 
@@ -237,12 +265,11 @@ private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>
                 }
             }
             if deadline < .max {
-                Task {
-                    // Sleep until deadline then resume if sentinel hasn't fired yet.
-                    let now = DispatchTime.now().uptimeNanoseconds
-                    if deadline > now {
-                        try? await Task.sleep(nanoseconds: deadline - now)
-                    }
+                // Use DispatchQueue instead of Task — same rationale as
+                // callQueueWaitUntilIdle above.
+                let now = DispatchTime.now().uptimeNanoseconds
+                let delay = deadline > now ? deadline - now : 0
+                DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
                     resumed.withValue { r in
                         guard !r else { return }
                         r = true
@@ -321,8 +348,9 @@ struct MainCallQueue: @unchecked Sendable {
     var isIdle: Bool { callQueueIsIdle(state) }
 
     /// Suspends until the drain task goes idle (all calls flushed including `Task.yield()`).
-    func waitUntilIdle() async {
-        await callQueueWaitUntilIdle(state)
+    /// Pass a `deadline` (absolute uptime nanoseconds) to bound the wait; defaults to `.max` (unbounded).
+    func waitUntilIdle(deadline: UInt64 = .max) async {
+        await callQueueWaitUntilIdle(state, deadline: deadline)
     }
 
     /// Suspends until all items currently in the queue have been processed, or the deadline passes.
@@ -361,8 +389,9 @@ struct BackgroundCallQueue: @unchecked Sendable {
     var isIdle: Bool { callQueueIsIdle(state) }
 
     /// Suspends until the drain task goes idle (all calls flushed including `Task.yield()`).
-    func waitUntilIdle() async {
-        await callQueueWaitUntilIdle(state)
+    /// Pass a `deadline` (absolute uptime nanoseconds) to bound the wait; defaults to `.max` (unbounded).
+    func waitUntilIdle(deadline: UInt64 = .max) async {
+        await callQueueWaitUntilIdle(state, deadline: deadline)
     }
 
     /// Suspends until all items currently in the queue have been processed, or the deadline passes.
@@ -378,9 +407,23 @@ struct BackgroundCallQueue: @unchecked Sendable {
 /// Use `drain()`/`drainIfOnMain()` for synchronous flush from main-thread code paths.
 let mainCall = MainCallQueue()
 
+/// Global fallback when no test-local queue is active.
+private let _globalBackgroundCallQueue = BackgroundCallQueue()
+
+/// Task-local override for `backgroundCall`. Set by `.modelTesting`'s `provideScope` so
+/// each test runs against its own isolated queue — parallel tests cannot observe each
+/// other's in-flight `Observed` updates.
+enum _BackgroundCallLocals {
+    @TaskLocal static var queue: BackgroundCallQueue? = nil
+}
+
 /// Delivers Observed pipeline updates on a background thread.
 /// Use `isIdle`/`waitUntilIdle()` in tests to wait for the pipeline to settle.
-let backgroundCall = BackgroundCallQueue()
+/// Inside a `.modelTesting` test scope the task-local queue is returned, providing
+/// per-test isolation; outside tests the global singleton is used.
+var backgroundCall: BackgroundCallQueue {
+    _BackgroundCallLocals.queue ?? _globalBackgroundCallQueue
+}
 
 // MARK: - Batched observation updates
 

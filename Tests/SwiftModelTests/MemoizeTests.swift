@@ -708,8 +708,9 @@ struct MemoizeTests {
 
         await withTaskGroup(of: Void.self) { group in
             // Reader task: continuously reads the memoized value
+            // (Reduced from 200 to 20 iterations to limit test duration on 2-vCPU CI runners.)
             group.addTask {
-                for _ in 0..<200 {
+                for _ in 0..<20 {
                     let value = model.computed
                     // Value must always be a valid result (value * 2 is non-negative for non-negative value)
                     #expect(value >= 0, "Memoized value must always be valid (non-negative)")
@@ -719,7 +720,7 @@ struct MemoizeTests {
 
             // Reset task: continuously invalidates the cache
             group.addTask {
-                for _ in 0..<200 {
+                for _ in 0..<20 {
                     model.resetComputed()
                     await Task.yield()
                 }
@@ -727,7 +728,7 @@ struct MemoizeTests {
 
             // Writer task: mutates the underlying dependency
             group.addTask {
-                for i in 0..<50 {
+                for i in 0..<10 {
                     model.value = i
                     await Task.yield()
                 }

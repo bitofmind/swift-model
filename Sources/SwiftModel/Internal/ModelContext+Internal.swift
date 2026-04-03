@@ -144,7 +144,25 @@ extension Model {
 
 extension ModelContext {
     func willAccess<T>(_ model: M, at path: KeyPath<M, T>&Sendable) -> (() -> Void)? {
-        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, context.isObservable, let observable = model as? any Observable&Model {
+        // Skip ObservationRegistrar tracking during AccessCollector performUpdate recomputation.
+        //
+        // When both conditions hold:
+        //   1. isInsideAsyncPerformUpdate == true  (we're inside a coalesced performUpdate)
+        //   2. ModelAccess.active != nil            (we're inside usingActiveAccess(collector))
+        // we are in an AccessCollector recomputation that has no outer withObservationTracking
+        // scope. Calling observable.access here would register nothing useful but acquires the
+        // registrar's internal lock, causing severe lock contention on Linux (~133K calls/iteration
+        // for a sort over 100 items × 100 mutations with NoCoalescing).
+        //
+        // The OT (withObservationTracking) path sets isInsideAsyncPerformUpdate=true too, but
+        // inside withObservationTracking, ModelAccess.active is nil — so the guard is not
+        // triggered and the tracking works correctly.
+        //
+        // Initial AccessCollector setup and ForceObserver registration also do NOT set
+        // isInsideAsyncPerformUpdate, so they are unaffected.
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, context.isObservable,
+           let observable = model as? any Observable&Model,
+           !(threadLocals.isInsideAsyncPerformUpdate && ModelAccess.active != nil) {
             observable.access(path: path, from: context)
         }
 
@@ -154,28 +172,44 @@ extension ModelContext {
 
     /// Performs all post-modify observation notifications inline (or deferred when batching).
     /// Called directly from Context._modify/transaction and any other post-modify site.
-    func invokeDidModify<T>(_ model: M, at path: KeyPath<M, T>&Sendable) {
+    ///
+    /// Returns the active-access callback (from TestAccess/AccessCollector) without executing it.
+    /// The caller is responsible for running the returned closure **after releasing the context lock**
+    /// to avoid a lock-ordering deadlock: TestAccess.didModify's closure calls rootPaths, which
+    /// acquires the parent context lock (child → parent order), while onAnyModification's
+    /// withModificationActiveCount holds the parent lock and tries to acquire child locks
+    /// (parent → child order). Running the closure post-lock breaks this cycle.
+    ///
+    /// For call sites that are already outside any context lock (didModifyStorage,
+    /// didModifyPreference, etc.) the returned closure may be called immediately with `?()`.
+    @discardableResult
+    func invokeDidModify<T>(_ model: M, at path: KeyPath<M, T>&Sendable) -> (() -> Void)? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let context, context.isObservable, let observable = model as? any Observable&Model {
             if threadLocals.pendingObservationNotifications != nil {
-                // Batched: defer registrar notifications; fire activeAccess immediately
-                // (TestAccess/AccessCollector need per-write granularity).
-                activeAccess?.didModify(model, at: path)?()
+                // Batched: defer registrar notifications; collect activeAccess callback for
+                // per-write granularity (caller will execute it immediately since it is already
+                // outside the context lock).
+                let callback = activeAccess?.didModify(model, at: path)
                 threadLocals.pendingObservationNotifications!.append {
                     observable.willSet(path: path, from: context)
                     observable.didSet(path: path, from: context)
                 }
+                return callback
             } else {
-                // Normal: fire inline.
+                // Normal: fire registrar notifications inline; return activeAccess callback
+                // for the caller to execute after releasing the context lock.
                 observable.willSet(path: path, from: context)
                 defer { observable.didSet(path: path, from: context) }
-                activeAccess?.didModify(model, at: path)?()
+                let callback = activeAccess?.didModify(model, at: path)
                 context.mainCallQueue.drainIfOnMain()
+                return callback
             }
         } else {
-            activeAccess?.didModify(model, at: path)?()
+            let callback = activeAccess?.didModify(model, at: path)
             if threadLocals.pendingObservationNotifications == nil {
                 (self.context?.mainCallQueue ?? mainCall).drainIfOnMain()
             }
+            return callback
         }
     }
 
@@ -187,7 +221,7 @@ extension ModelNode {
     }
 
     func withMutation<Member, T>(of model: M, keyPath: WritableKeyPath<M, Member>&Sendable, _ mutation: () throws -> T) rethrows -> T {
-        defer { _$modelContext.invokeDidModify(model, at: keyPath) }
+        defer { _$modelContext.invokeDidModify(model, at: keyPath)?() }
         return try mutation()
     }
 }

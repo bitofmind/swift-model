@@ -42,7 +42,6 @@ class AnyContext: @unchecked Sendable {
     private let _backgroundObservationRegistrar: Any?
     let cancellations = Cancellations()
 
-    let backgroundCallQueue: BackgroundCallQueue
     let mainCallQueue: MainCallQueue
 
     /// Set by `TestAccess` on the root context to receive task lifecycle events.
@@ -317,9 +316,6 @@ class AnyContext: @unchecked Sendable {
         self.lock = lock
         self.options = parent?.options ?? ModelOption.current
         self.isObservable = isObservable
-        // Inherit queues from root so the whole hierarchy under one anchor shares them.
-        // Each root creates fresh instances, isolating parallel test runs from each other.
-        self.backgroundCallQueue = parent?.backgroundCallQueue ?? BackgroundCallQueue()
         self.mainCallQueue = parent?.mainCallQueue ?? MainCallQueue()
         
         // Use ObservationRegistrar unless disabled
