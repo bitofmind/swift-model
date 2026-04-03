@@ -414,6 +414,89 @@ struct ModelMacroTests {
         }
     }
 
+    @Test func testModelPrivateProperty() {
+        assertMacro {
+            """
+            @Model struct MyModel {
+                private var animating = false
+            }
+            """
+        } expansion: {
+            #"""
+            struct MyModel {
+                private var animating = false {
+                    @storageRestrictions(initializes: _animating)
+                    init {
+                        _animating = newValue
+                    }
+                    _read {
+                        yield _$modelContext[model: self, path: \._animating]
+                    }
+                    nonmutating _modify {
+                        yield &_$modelContext[model: self, path: \._animating]
+                    }
+                }
+
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    visitor.visitStatically(at: \._animating, visibility: .private)
+                }
+
+                var _$contextInit: ModelContext<Self> = ModelContext<Self>()
+                {
+                    @storageRestrictions(initializes: _$modelContext)
+                    init(initialValue) {
+                        _$modelContext = initialValue
+                    }
+                    get {
+                        fatalError("_$contextInit is an initializer-only property and must never be read")
+                    }
+                    set {
+                        fatalError("_$contextInit is an initializer-only property and must never be written after initialization")
+                    }
+                }
+
+                public var _context: ModelContextAccess<Self> {
+                    ModelContextAccess(_$modelContext)
+                }
+
+                private var _$modelContext: ModelContext<Self>
+
+                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                    _$modelContext = update._$modelContext
+                }
+            }
+
+            extension MyModel: SwiftModel.Model {
+            }
+
+            extension MyModel: @unchecked Sendable {
+            }
+
+            extension MyModel: Identifiable {
+            }
+
+            extension MyModel: CustomReflectable {
+                public var customMirror: Mirror {
+                    node.mirror(of: self, children: [("animating", animating as Any)])
+                }
+            }
+
+            @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+            extension MyModel: Observation.Observable {
+            }
+
+            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+                public var description: String {
+                    node.description(of: self)
+                }
+                public var debugDescription: String {
+                    description
+                }
+            }
+            """#
+        }
+    }
+
     @Test func testModelDependency() {
         assertMacro(record: .never) {
             """

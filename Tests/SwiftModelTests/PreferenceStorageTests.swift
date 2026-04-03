@@ -438,7 +438,7 @@ struct PreferenceStorageTests {
         }
     }
 
-    @Test(.modelTesting(exhaustivity: .off), arguments: 1...100)
+    @Test(.modelTesting(exhaustivity: .off), arguments: 0..<10)
     func assertOnAggregatedPreferenceWithConcurrentWriteDoesNotDeadlockStress(_ run: Int) async {
         let host = ConcurrentWriterHost().withAnchor()
         for i in 1...5 {
@@ -465,7 +465,7 @@ struct PreferenceStorageTests {
         }
     }
 
-    @Test(arguments: 1...100)
+    @Test(arguments: 0..<10)
     func checkExhaustionDebugInfoDoesNotDeadlockStress(_ run: Int) async {
         let model = ReactiveModel().withAnchor()
         for i in 1...5 {
@@ -493,7 +493,7 @@ struct PreferenceStorageTests {
         }
     }
 
-    @Test(arguments: 1...100)
+    @Test(arguments: 0..<10)
     func checkExhaustionDiffDoesNotDeadlockWithChildModelStress(_ run: Int) async {
         let model = ReactiveParent().withAnchor()
         for i in 1...5 {

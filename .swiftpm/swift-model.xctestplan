@@ -13,7 +13,6 @@
   },
   "testTargets" : [
     {
-      "enabled" : false,
       "skippedTags" : {
         "tags" : [
           ".benchmark"

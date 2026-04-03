@@ -106,6 +106,13 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     var probes: [TestProbe] = []
     let fileAndLine: FileAndLine
 
+    // Per-model-type cache of private (non-exhaustively-tracked) key paths.
+    // Keyed by `ObjectIdentifier(M.self)`, values are the LOCAL (non-root-relative)
+    // WritableKeyPaths for properties declared `private` or `fileprivate` in that model type.
+    // Built lazily on first `didModify` for each model type by traversing one instance;
+    // since visibility is type-level, the result is the same for all instances of the type.
+    var privatePathsByType: [ObjectIdentifier: Set<AnyKeyPath>] = [:]
+
     // Activation task counter (Phase 3): tracks tasks created inside onActivate() that
     // have not yet begun executing their body. Reaches 0 when all such tasks have entered.
     private var _activationTasksInFlight: Int = 0
@@ -399,11 +406,28 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 return
             }
 
+            // Private properties are excluded from exhaustivity tracking: they cannot be
+            // observed from test code (no public getter), so requiring tests to assert them
+            // would produce false failures. We still update `lastState` so the settlement
+            // check (isEqualIncludingIds) works correctly when the test reads a private
+            // property via @testable import.
+            let isPrivate = self.isPrivatePath(path, in: model)
+
             let name = storageName ?? propertyName(from: model, path: path)
             let prefix: String? = area == .preference ? "preference" : area == .local ? "local" : area == .environment ? "environment" : nil
             let value = frozenCopy(model.context![path])
             self.lock {
                 for fullPath in fullPaths {
+                    // Private properties are not tracked for exhaustivity: tests cannot observe
+                    // them from outside the declaring type, so requiring assertions would produce
+                    // false failures. We still update lastState so the settlement check
+                    // (isEqualIncludingIds) works correctly when a test reads a private
+                    // property via @testable import.
+                    if isPrivate {
+                        self.lastState[keyPath: fullPath] = value
+                        continue
+                    }
+
                     // Transaction coalescing: if the last entry for this path was written
                     // during the same transaction, replace it rather than appending. This
                     // ensures one transaction = one FIFO entry, matching Observed/memoize
@@ -1377,6 +1401,31 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         }
     }
 
+    /// Returns `true` when `path` is declared `private`/`fileprivate` in model type `M`.
+    ///
+    /// Results are cached per model type: the first call for a given `M` traverses one
+    /// model instance to discover its private key paths (visibility is type-level, so
+    /// any instance gives the same result). Subsequent calls hit the cache directly.
+    ///
+    /// Must be called OUTSIDE `self.lock` because it acquires `self.lock` internally.
+    func isPrivatePath<M: Model, Value>(_ path: WritableKeyPath<M, Value>, in model: M) -> Bool {
+        let typeKey = ObjectIdentifier(M.self)
+        return lock {
+            if let cached = privatePathsByType[typeKey] {
+                return cached.contains(path)
+            }
+            // Build the set of private paths for M by traversing one instance.
+            // `visit(with:includeSelf:false)` calls the macro-generated `visit(with:)`
+            // body which emits `visitStatically(at: ..., visibility: .private)` for
+            // each private property. Our collector intercepts those calls.
+            var collector = LocalPrivatePathsCollector<M>()
+            model.visit(with: &collector, includeSelf: false)
+            let paths = collector.privatePaths
+            privatePathsByType[typeKey] = paths
+            return paths.contains(path)
+        }
+    }
+
     final class TesterAssertContext: TesterAssertContextBase, @unchecked Sendable {
         let events: () -> [Event]
         let fileAndLine: FileAndLine
@@ -1480,6 +1529,28 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     var assertContext: TesterAssertContext? {
         TesterAssertContextBase.assertContext as? TesterAssertContext
     }
+}
+
+// MARK: - LocalPrivatePathsCollector
+
+/// A `ModelVisitor` that collects the LOCAL (non-root-relative) key paths of all
+/// `private`/`fileprivate` properties declared on a single `@Model` type.
+///
+/// Plain-value private properties are recorded in `privatePaths`; model-typed and
+/// container-typed properties are skipped (their child hierarchies are still tracked).
+private struct LocalPrivatePathsCollector<State: Model>: ModelVisitor {
+    var privatePaths: Set<AnyKeyPath> = []
+
+    mutating func visit<T>(path: WritableKeyPath<State, T>, visibility: PropertyVisibility) {
+        if visibility == .private {
+            privatePaths.insert(path)
+        }
+    }
+
+    // Model- and container-typed properties are traversed normally (not treated as private
+    // even if the parent property itself is private). No-op to skip recursion here.
+    mutating func visit<T: Model>(path: WritableKeyPath<State, T>) { }
+    mutating func visit<T: ModelContainer>(path: WritableKeyPath<State, T>) { }
 }
 
 package struct UnwrapError: Error { package init() {} }

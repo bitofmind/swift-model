@@ -101,7 +101,7 @@ Assert that a model sent an event using `didSend(_:)` inside an `expect` block:
 
 By default the trait enforces exhaustivity across seven categories — any unasserted effect in any category fails the test at the end of the test function:
 
-- **`.state`** — every state change must be consumed by an `expect` block
+- **`.state`** — every state change must be consumed by an `expect` block. Properties declared `private` or `fileprivate` are excluded — tests can't read them, so they're never required to assert them. Note that `private(set)` properties have a public getter and *are* tracked.
 - **`.events`** — every event sent via `node.send()` must be observed with `didSend(_:)`
 - **`.tasks`** — all async tasks must complete or be cancelled before the test ends
 - **`.probes`** — every installed `TestProbe` invocation must be consumed by `wasCalled`
