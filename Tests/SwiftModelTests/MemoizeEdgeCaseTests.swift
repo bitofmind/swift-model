@@ -21,10 +21,9 @@ struct MemoizeEdgeCaseTests {
         let writeCount = LockIsolated(0)
 
         // Spawn multiple readers
-        // (Reduced from 10×100 to 3×10 iterations to limit test duration on 2-vCPU CI runners.)
-        let readers = (0..<3).map { _ in
+        let readers = (0..<10).map { _ in
             Task {
-                for _ in 0..<10 {
+                for _ in 0..<100 {
                     _ = model.computed
                     readCount.withValue { $0 += 1 }
                     try? await Task.sleep(for: .microseconds(10))
@@ -33,9 +32,9 @@ struct MemoizeEdgeCaseTests {
         }
 
         // Spawn multiple writers
-        let writers = (0..<2).map { i in
+        let writers = (0..<5).map { i in
             Task {
-                for j in 0..<5 {
+                for j in 0..<20 {
                     model.value = i * 100 + j
                     writeCount.withValue { $0 += 1 }
                     try? await Task.sleep(for: .microseconds(10))
@@ -48,8 +47,8 @@ struct MemoizeEdgeCaseTests {
             await task.value
         }
 
-        #expect(readCount.value == 30, "Should have 30 reads")
-        #expect(writeCount.value == 10, "Should have 10 writes")
+        #expect(readCount.value == 1000, "Should have 1000 reads")
+        #expect(writeCount.value == 100, "Should have 100 writes")
         // After all concurrent tasks complete, the cache must be coherent:
         // reading computed twice with no interleaved writes must return the same value.
         let snapshot1 = model.computed

@@ -544,10 +544,9 @@ struct MemoizeDirtyObservationTests {
         try await waitUntil(updates.value.count >= 1)
         updates.setValue([])
 
-        // 10 cycles of nil→X→nil. Each nil transition causes isSame([], [])==true.
-        // After 10 cycles the subscription must still be alive.
-        // (Reduced from 50 to 10 to limit test duration on 2-vCPU CI runners.)
-        for i in 1...10 {
+        // 50 cycles of nil→X→nil. Each nil transition causes isSame([], [])==true.
+        // After 50 cycles the subscription must still be alive.
+        for i in 1...50 {
             model.hoverID = i
             try await waitUntil(updates.value.last == [i], timeout: 3_000_000_000)
             #expect(updates.value.last == [i], "[\(path)] Cycle \(i): should see [\(i)]")
