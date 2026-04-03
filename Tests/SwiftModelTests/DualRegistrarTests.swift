@@ -367,41 +367,48 @@ struct DualRegistrarTests {
     ///   → withObservationTracking onChange fires synchronously
     ///   → schedules performUpdate on the test's BackgroundCallQueue
     ///   → performUpdate re-evaluates the closure, gets the new value, yields to the stream
+    ///
+    /// Each observable change is triggered only after the consumer has already processed the
+    /// previous stream value (consumer-driven signaling via AsyncStream). This guarantees
+    /// hasPendingUpdate is false and tracking is re-registered before the next change, making
+    /// coalescing and timing races on a saturated CI runner impossible.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-    @Test func testObservedStreamWithModelAccessingObservable() async throws {
+    @Test func testObservedStreamWithModelAccessingObservable() async {
         let observable = PureObservableModel()
         let model = ModelHoldingObservable(observable: observable).withAnchor()
 
         let values = LockIsolated<[Int]>([])
+        let (receivedStream, receivedCont) = AsyncStream<Int>.makeStream()
 
         let task = Task {
             for await value in Observed({ model.doubledObservableValue }) {
                 values.withValue { $0.append(value) }
+                receivedCont.yield(value)
                 if value >= 20 { break }
             }
+            receivedCont.finish()
         }
         defer { task.cancel() }
 
+        var iter = receivedStream.makeAsyncIterator()
+
         // Wait for the initial value (0) to be delivered.
-        try await waitUntil(values.value.contains(0))
+        _ = await iter.next()
         #expect(values.value.contains(0))
 
-        // onChange fires synchronously → enqueues performUpdate on the BackgroundCallQueue.
-        // waitForCurrentItems drains the queue so performUpdate runs and yields to the stream.
-        // We trigger both changes back-to-back (after draining each) rather than polling with
-        // waitUntil between them: on a 2-vCPU CI runner the cooperative pool can be too
-        // saturated for polling to succeed within waitUntil's calibrated timeout.
-        // Instead we let `await task.value` (no hard timeout) do the final cooperative wait.
+        // Set value=5 → doubledObservableValue=10.
+        // We set the next value only after iter.next() confirms the consumer processed the
+        // previous one, so hasPendingUpdate is always false and tracking is re-registered.
         observable.value = 5
-        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
-        // waitForCurrentItems guarantees cont.yield(10) was called and tracking re-registered.
-        // Immediately trigger the next change — no need to poll for contains(10) first.
-        observable.value = 10
-        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
-        // Consumer processes buffered values (10, 20) in order; breaks on ≥ 20.
-        await task.value
+        _ = await iter.next()
         #expect(values.value.contains(10), "Observed should track @Observable changes via @Model")
+
+        // Set value=10 → doubledObservableValue=20.
+        observable.value = 10
+        _ = await iter.next()
         #expect(values.value.contains(20), "Should continue tracking @Observable changes")
+
+        await task.value
     }
 
 }
