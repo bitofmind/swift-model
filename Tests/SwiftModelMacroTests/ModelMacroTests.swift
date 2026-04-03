@@ -497,6 +497,88 @@ struct ModelMacroTests {
         }
     }
 
+    @Test func testModelDependencyOnLetProperty() {
+        assertMacro(record: .never) {
+            """
+            @ModelDependency let foo: SomeModel
+            """
+        } diagnostics: {
+            """
+            @ModelDependency let foo: SomeModel
+            ┬───────────────
+            ╰─ 🛑 @ModelDependency requires a 'var' declaration
+            """
+        }
+    }
+
+    @Test func testModelDependencyOnStaticProperty() {
+        assertMacro(record: .never) {
+            """
+            @ModelDependency static var foo: SomeModel
+            """
+        } diagnostics: {
+            """
+            @ModelDependency static var foo: SomeModel
+            ┬───────────────
+            ╰─ 🛑 @ModelDependency cannot be applied to static properties
+            """
+        }
+    }
+
+    @Test func testModelDependencyOnComputedProperty() {
+        assertMacro(record: .never) {
+            """
+            @ModelDependency var computed: Int { 4711 }
+            """
+        } diagnostics: {
+            """
+            @ModelDependency var computed: Int { 4711 }
+            ┬───────────────
+            ╰─ 🛑 @ModelDependency cannot be applied to computed properties
+            """
+        }
+    }
+
+    @Test func testModelDependencyWithInitializer() {
+        assertMacro(record: .never) {
+            """
+            @ModelDependency var foo: SomeModel = SomeModel()
+            """
+        } diagnostics: {
+            """
+            @ModelDependency var foo: SomeModel = SomeModel()
+            ┬───────────────
+            ╰─ ⚠️ Initial value of a @ModelDependency property is ignored; the value is resolved from the dependency container
+            """
+        } expansion: {
+            """
+            var foo: SomeModel {
+                get {
+                    _$modelContext.dependency()
+                }
+            }
+            """
+        }
+    }
+
+    @Test func testModelIgnoredOnComputedProperty() {
+        assertMacro(record: .never) {
+            """
+            @_ModelIgnored var computed: Int { 4711 }
+            """
+        } diagnostics: {
+            """
+            @_ModelIgnored var computed: Int { 4711 }
+            ┬─────────────
+            ╰─ ⚠️ @ModelIgnored has no effect on computed properties
+            """
+        } expansion: {
+            """
+            var computed: Int { 4711 }
+            """
+        }
+    }
+
     @Test func testModelDependency() {
         assertMacro(record: .never) {
             """
