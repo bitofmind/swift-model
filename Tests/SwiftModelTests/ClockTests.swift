@@ -29,7 +29,10 @@ struct ClockTests {
         await clock.advance(by: .seconds(1))
         await expect(model.secondsElapsed == 1)
 
-        await clock.advance(by: .seconds(2))
+        await clock.advance(by: .seconds(1))
+        await expect(model.secondsElapsed == 2)
+
+        await clock.advance(by: .seconds(1))
         await expect(model.secondsElapsed == 3)
     }
 
