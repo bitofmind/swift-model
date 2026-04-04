@@ -579,6 +579,22 @@ struct ModelMacroTests {
         }
     }
 
+    @Test func testModelDependencyWithKeyPath() {
+        assertMacro(record: .never) {
+            """
+            @ModelDependency(\\.clock) var clock: ContinuousClock
+            """
+        } expansion: {
+            """
+            var clock: ContinuousClock {
+                get {
+                    _$modelContext.dependency(for: \\.clock)
+                }
+            }
+            """
+        }
+    }
+
     @Test func testModelDependency() {
         assertMacro(record: .never) {
             """

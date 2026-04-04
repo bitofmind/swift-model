@@ -41,6 +41,16 @@ There is also a convenience macro for dependencies:
 }
 ```
 
+`@ModelDependency` uses the property's declared type to identify the dependency (via `DependencyKey`). If you want to look up a dependency by key path instead — mirroring SwiftUI's `@Environment(\.keyPath)` syntax — you can pass a key path argument:
+
+```swift
+@Model struct TimerModel {
+    @ModelDependency(\.continuousClock) var clock: any Clock<Duration>
+}
+```
+
+This is useful when the property type is a protocol or other abstract type that has no `DependencyKey` conformance of its own, or simply to make the link to `DependencyValues` explicit and visible at the declaration site. For most cases though, accessing dependencies directly through `node` (e.g. `node.continuousClock`) tends to be more convenient since it doesn't require a dedicated property declaration.
+
 ### DependencyValues
 
 By also extending `DependencyValues` you will get more convenient access to commonly used dependencies:

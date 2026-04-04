@@ -71,10 +71,20 @@ public struct ModelDependencyMacro: AccessorMacro {
             context.diagnose(Diagnostic(node: node, message: ModelDependencyDiagnostic.initializerIgnored))
         }
 
-        let readAccessor: AccessorDeclSyntax =
-        """
-        get { _$modelContext.dependency() }
-        """
+        // Extract the key path argument, if any (e.g. @ModelDependency(\.clock)).
+        let keyPathArg: String?
+        if case .argumentList(let args) = node.arguments, let first = args.first {
+            keyPathArg = first.expression.trimmedDescription
+        } else {
+            keyPathArg = nil
+        }
+
+        let readAccessor: AccessorDeclSyntax
+        if let keyPath = keyPathArg {
+            readAccessor = "get { _$modelContext.dependency(for: \(raw: keyPath)) }"
+        } else {
+            readAccessor = "get { _$modelContext.dependency() }"
+        }
 
         return [readAccessor]
     }
