@@ -411,7 +411,14 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
 
     func expect(timeoutNanoseconds timeout: UInt64, settleResetting: Exhaustivity? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
         let calibrationStart = DispatchTime.now().uptimeNanoseconds
-        await Task.yield()
+        // Use a kernel-level dispatch hop instead of Task.yield() for calibration.
+        // On a saturated cooperative pool (e.g., 200+ parallel tests on 2 vCPUs),
+        // Task.yield() can suspend for minutes because the cooperative pool's ready
+        // queue is deeply backlogged. DispatchQueue.global() uses the kernel thread
+        // pool which is not subject to cooperative pool backpressure.
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { c.resume() }
+        }
         let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
         // Only apply adaptive scaling for the default (1 s) timeout or larger. Short explicit
         // timeouts (e.g. 1 ms passed by output-snapshot tests) must be respected as-is so
@@ -546,7 +553,12 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             return
                         }
                         await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
-                        await Task.yield()
+                        // Kernel dispatch hop instead of Task.yield() — see waitForModification
+                        // for the full rationale. Briefly suspends so stream consumers can run
+                        // without appending to the end of a backlogged cooperative pool queue.
+                        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                            DispatchQueue.global().async { c.resume() }
+                        }
                         // Count as progress — backgroundCall draining counts as activity.
                         lastProgressTime = DispatchTime.now().uptimeNanoseconds
                         continue
@@ -579,7 +591,10 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             var lastChangeVersion = self.context.modificationCount
                             while true {
                                 await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
-                                await Task.yield()
+                                // Kernel dispatch hop — see waitForModification for rationale.
+                                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                                    DispatchQueue.global().async { c.resume() }
+                                }
                                 let currentVersion = self.context.modificationCount
                                 if currentVersion == lastChangeVersion {
                                     // No changes this round. If tasks are still running,
@@ -910,7 +925,11 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     /// safety net (default 5 s, overridable via `TestAccessOverrides.hardCapNanoseconds`).
     func require<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
         let calibrationStart = DispatchTime.now().uptimeNanoseconds
-        await Task.yield()
+        // Same kernel-level hop as in expect(timeoutNanoseconds:) — avoids cooperative
+        // pool saturation hanging the calibration measurement.
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { c.resume() }
+        }
         let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
         let scaledTimeout = min(10 * nanosPerSecond, max(nanosPerSecond, yieldLatencyNs * 100))
         let yieldRoundNs = max(1_000_000, yieldLatencyNs)
@@ -952,8 +971,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     /// Uses an escalation strategy based on `retryCount` to balance two competing needs:
     ///
     /// - **Fast conditions** (e.g. a model property set by a cancellation handler):
-    ///   The value is written directly to `lastState` synchronously. A `Task.yield()`
-    ///   is sufficient — no need to wait for `backgroundCall` at all.
+    ///   The value is written directly to `lastState` synchronously. A short kernel
+    ///   timer is sufficient — no need to wait for `backgroundCall` at all.
     ///
     /// - **Async conditions** (memoized properties, `Observed` streams):
     ///   Both go through `backgroundCall` — memoize's performUpdate and Observed stream
@@ -961,65 +980,91 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     ///   `waitForCurrentItems` ensures the update has run before re-checking.
     ///
     /// Escalation by retry count:
-    ///   0-1: Just yield — free and instant. Covers fast conditions on the first retry.
-    ///   2+:  Use `waitForCurrentItems(deadline: ...)` then `waitUntilIdle()`. Ensures
-    ///        the drain loop's post-batch yield has run so stream consumers have run.
+    ///   0-1: Short kernel timer (1ms) — fast path for already-settled conditions.
+    ///   2+:  Use `waitForCurrentItems(deadline:)` then `waitUntilIdle()`. Ensures
+    ///        the drain loop has run so stream consumers have had a scheduler turn.
+    ///
+    /// All waiting is done via `onAnyModification` callbacks and `DispatchQueue.asyncAfter`
+    /// kernel timers — NOT `Task.yield()`. On a saturated cooperative pool (e.g., 200+
+    /// parallel tests on a 2-vCPU CI runner), `Task.yield()` appends the task to a deeply
+    /// backlogged ready-queue and can suspend for minutes. Kernel-level DispatchQueue timers
+    /// fire independently of cooperative pool queue depth.
+    ///
     /// Returns `true` if a state modification was observed during the wait (progress was made).
     @discardableResult
     private func waitForModification(timeoutNanoseconds remaining: UInt64, yieldRoundNs: UInt64, retryCount: Int = 0) async -> Bool {
         guard remaining > 0 else { return false }
 
-        // After two quick-yield retries, escalate to a sentinel wait when the pipeline
-        // queue has pending work. This gives fast conditions a free early-exit while
-        // ensuring memoized and Observed-stream conditions get enough time to settle.
         let bgQueue = backgroundCall
+
+        // A continuation slot shared between the onAnyModification callback and the
+        // DispatchQueue timer. Protected by LockIsolated so exactly one of them resumes
+        // the continuation (the first one sets slot to nil, preventing a double-resume).
+        let contSlot = LockIsolated<CheckedContinuation<Void, Never>?>(nil)
+        let didModify = LockIsolated(false)
+
+        // Resumes the continuation exactly once. Called from the onAnyModification
+        // callback (on the model-writing thread) and from the DispatchQueue timer.
+        let signal: @Sendable () -> Void = {
+            didModify.setValue(true)
+            contSlot.withValue { slot in
+                slot?.resume()
+                slot = nil
+            }
+        }
+
+        // Register BEFORE any queue drain so modifications during drain are captured.
+        let cancelModification = context.onAnyModification { _ in signal }
+        defer { cancelModification() }
+
+        // For retryCount >= 2 with pending queue items, drain the queue first.
+        // Any modifications that arrive during the drain are captured via signal().
         if retryCount >= 2 && !bgQueue.isIdle {
             // FIFO sentinel: suspend until all items currently in the queue have been
             // processed. When it fires, any pending performUpdate has already run.
             //
             // Deadline: use the full remaining timeout. By retry 2, fast conditions
-            // (e.g. testCancelInFlight) have already passed on an earlier quick-yield
-            // retry, so we know this is a genuinely async condition. Waiting up to
-            // `remaining` ensures deep queues under heavy parallel load are covered.
+            // (e.g. testCancelInFlight) have already passed on earlier retries, so we
+            // know this is a genuinely async condition.
             let deadline = DispatchTime.now().uptimeNanoseconds + remaining
             await bgQueue.waitForCurrentItems(deadline: deadline)
-            // waitUntilIdle() ensures the drain loop's post-batch Task.yield() has run
-            // so stream consumers have had a scheduler turn before we re-check.
-            // Use the same deadline so a starved drain loop doesn't cause an indefinite hang.
+            // waitUntilIdle() ensures the drain loop has fully settled so stream
+            // consumers have had a scheduling opportunity before we re-check.
             if !bgQueue.isIdle {
                 await bgQueue.waitUntilIdle(deadline: deadline)
             }
-            await Task.yield()
-            // Draining the queue counts as progress — it may have delivered an update.
-            return true
+            // If a modification was signalled during the drain, return now without
+            // starting another kernel timer.
+            if didModify.value { return true }
         }
 
-        // Early retries (0-1) or backgroundCallQueue already idle.
-        //
-        // backgroundCallQueue idle means either:
-        // A) performUpdate already ran — memoize cache is fresh, predicate will pass.
-        // B) No modification yet — register onAnyModification and sleep one round.
-        let didModify = LockIsolated(false)
-        let cancelModification = context.onAnyModification { _ in
-            return { didModify.setValue(true) }
-        }
-        defer { cancelModification() }
-
+        // Wait for either a modification signal or a kernel timer (whichever fires first).
+        // Timer delay:
+        // - Early retries (0-1): 1ms — fast path for already-satisfied conditions.
+        // - Later retries (2+): yieldRoundNs — avoids busy-spinning while waiting for
+        //   an async modification (e.g. forEach callback writing canUndo/canRedo).
         if !didModify.value {
-            // No modification yet. On early retries just yield (fast path for conditions
-            // that are already satisfied); on later retries sleep a full round to avoid
-            // busy-spinning while genuinely waiting for a future modification.
-            if retryCount < 2 {
-                await Task.yield()
-            } else {
-                try? await Task.sleep(nanoseconds: yieldRoundNs)
+            let delayNs: UInt64 = retryCount < 2 ? 1_000_000 : yieldRoundNs
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                let alreadyModified = contSlot.withValue { slot -> Bool in
+                    if didModify.value { return true }
+                    slot = cont
+                    return false
+                }
+                if alreadyModified {
+                    cont.resume()
+                    return
+                }
+                // Kernel-level timer: fires after delayNs regardless of how backlogged
+                // the Swift cooperative pool is. Uses the same LockIsolated guard as
+                // signal() to prevent double-resume.
+                DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delayNs))) {
+                    contSlot.withValue { slot in
+                        slot?.resume()
+                        slot = nil
+                    }
+                }
             }
-        }
-
-        // If a modification arrived (or the pipeline queue is still busy), yield once so
-        // it gets a scheduler turn to process any resulting updates before re-checking.
-        if didModify.value || !backgroundCall.isIdle {
-            await Task.yield()
         }
 
         return didModify.value

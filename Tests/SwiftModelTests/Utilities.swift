@@ -59,7 +59,12 @@ extension Optional where Wrapped: AnyObject {
                     reportIssue("waitUntilRemoved timed out after 5s — model was not released. Check for retain cycles.")
                     return
                 }
-                await Task.yield()
+                // Use Task.sleep (kernel timer) instead of Task.yield() to poll.
+                // Task.yield() on a saturated cooperative pool (200+ parallel tests
+                // on 2-vCPU CI) can suspend for minutes, making the deadline check
+                // above unreachable until long after the 5s deadline has elapsed.
+                // Task.sleep fires after exactly ~10ms regardless of pool saturation.
+                try? await Task.sleep(nanoseconds: 10_000_000)
             }
             // After the object is released, teardown closures dispatched during
             // onRemoval may still be held in backgroundCall's drain task queue.
@@ -146,8 +151,14 @@ func waitUntil(
 
     // Scale the timeout by current scheduler latency so that under heavy parallel
     // test load (e.g. 100x repetitions) we wait proportionally longer.
+    // Use a kernel-level dispatch hop for calibration instead of Task.yield() —
+    // on a saturated cooperative pool (200+ parallel tests on 2-vCPU CI),
+    // Task.yield() can suspend for minutes. DispatchQueue.global() uses the
+    // kernel thread pool which is unaffected by cooperative pool backpressure.
     let calibrationStart = DispatchTime.now().uptimeNanoseconds
-    await Task.yield()
+    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+        DispatchQueue.global().async { c.resume() }
+    }
     let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
     let scaledTimeout = max(timeout, yieldLatencyNs * 100)
 
@@ -162,15 +173,15 @@ func waitUntil(
             )
         }
 
-        // Yield cooperatively so the backgroundCall drain task (which drives Observed
-        // stream updates) gets scheduler turns. Under heavy parallel test load
-        // backgroundCall is almost always busy, so yielding interleaves with it
-        // naturally. We sleep the poll interval only when it's idle to avoid spinning.
-        if !backgroundCall.isIdle {
-            await Task.yield()
-        } else {
-            await Task.yield()
-            if condition() { return }
+        // Kernel-level dispatch hop instead of Task.yield() — same rationale as the
+        // calibration above. After the hop, re-check the condition and sleep one poll
+        // interval only when backgroundCall is idle (avoids busy-spinning while the
+        // drain task is actively delivering updates).
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { c.resume() }
+        }
+        if condition() { return }
+        if backgroundCall.isIdle {
             try await Task.sleep(nanoseconds: pollInterval)
         }
     }
