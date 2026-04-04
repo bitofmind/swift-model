@@ -426,7 +426,11 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // One scheduler round at the current pace. Used as the minimum poll interval so
         // for-await loop bodies always get at least one full cooperative-pool turn per
         // waitForModification call, even under heavy parallel test load.
-        let yieldRoundNs = max(1_000_000, yieldLatencyNs) // floor at 1ms for lightly loaded runs
+        // Cap at 500ms to prevent multi-minute sleeps when the cooperative pool was saturated
+        // during calibration (e.g. 200+ tests starting simultaneously on a 2-vCPU CI runner).
+        // Without the cap, Task.sleep(nanoseconds: yieldRoundNs) inside waitForModification
+        // could sleep for 10+ minutes, bypassing the hardCap timeout mechanism.
+        let yieldRoundNs = max(1_000_000, min(500_000_000, yieldLatencyNs)) // floor 1ms, cap 500ms
         let context = TesterAssertContext(events: { self.lock { self.events } }, fileAndLine: fileAndLine)
         // Hard cap: absolute maximum even when the model IS making progress (e.g. infinite
         // mutation loop). Capped at 30 s — triple the scaledTimeout cap so legitimately busy
