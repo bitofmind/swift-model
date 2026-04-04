@@ -18,7 +18,7 @@ public extension Cancellable {
     /// Cancel the activity of a model when  when `model.cancelAll(for: key)` is called for the  provided `key`
     ///
     ///     model.task { ... }.cancel(for: myKey)
-    @discardableResult
+    @inlinable @discardableResult
     func cancel(for key: some Hashable&Sendable) -> Self {
         cancel(for: key, cancelInFlight: false)
     }

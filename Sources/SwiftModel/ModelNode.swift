@@ -60,9 +60,9 @@ import Dependencies
 /// ```
 @dynamicMemberLookup
 public struct ModelNode<M: Model> {
-    internal let _$modelContext: ModelContext<M>
+    @usableFromInline internal let _$modelContext: ModelContext<M>
 
-    public init(_$modelContext: ModelContext<M>) {
+    @inlinable public init(_$modelContext: ModelContext<M>) {
         self._$modelContext = _$modelContext
     }
 }

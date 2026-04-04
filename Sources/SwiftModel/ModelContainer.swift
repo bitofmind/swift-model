@@ -105,6 +105,7 @@ extension Dictionary: ModelContainer where Value: ModelContainer {
 ///
 /// This overload is preferred by Swift's overload resolution when `T` conforms to `Equatable`,
 /// and is used by the `@ModelContainer` macro's synthesised `==` operator.
+@inlinable
 public func _modelEqual<T: Equatable>(_ lhs: T, _ rhs: T) -> Bool {
     lhs == rhs
 }
@@ -114,7 +115,7 @@ public func _modelEqual<T: Equatable>(_ lhs: T, _ rhs: T) -> Bool {
 /// This is the fallback overload used by the `@ModelContainer` macro's synthesised `==` operator
 /// when the associated value type is not `Equatable` (e.g. a plain `@Model` struct).
 /// Marked disfavored so the `Equatable` overload wins when `T` conforms to both.
-@_disfavoredOverload
+@_disfavoredOverload @inlinable
 public func _modelEqual<T: Identifiable>(_ lhs: T, _ rhs: T) -> Bool {
     lhs.id == rhs.id
 }
@@ -122,7 +123,7 @@ public func _modelEqual<T: Identifiable>(_ lhs: T, _ rhs: T) -> Bool {
 /// Returns `true` if all elements compare equal by id, for arrays of `Identifiable` types
 /// that are not `Equatable` (e.g. `[@Model]` arrays).
 /// Marked disfavored so the `Equatable` overload wins when `T` conforms to both.
-@_disfavoredOverload
+@_disfavoredOverload @inlinable
 public func _modelEqual<T: Identifiable>(_ lhs: [T], _ rhs: [T]) -> Bool {
     guard lhs.count == rhs.count else { return false }
     return zip(lhs, rhs).allSatisfy { _modelEqual($0, $1) }
@@ -132,6 +133,7 @@ public func _modelEqual<T: Identifiable>(_ lhs: [T], _ rhs: [T]) -> Bool {
 ///
 /// This overload is preferred by Swift's overload resolution when `T` conforms to `Hashable`,
 /// and is used by the `@ModelContainer` macro's synthesised `hash(into:)`.
+@inlinable
 public func _modelCombine<T: Hashable>(into hasher: inout Hasher, _ value: T) {
     hasher.combine(value)
 }
@@ -141,7 +143,7 @@ public func _modelCombine<T: Hashable>(into hasher: inout Hasher, _ value: T) {
 /// This is the fallback overload used by the `@ModelContainer` macro's synthesised `hash(into:)`
 /// when the associated value type is not `Hashable` (e.g. a plain `@Model` struct).
 /// Marked disfavored so the `Hashable` overload wins when `T` conforms to both.
-@_disfavoredOverload
+@_disfavoredOverload @inlinable
 public func _modelCombine<T: Identifiable>(into hasher: inout Hasher, _ value: T) {
     hasher.combine(value.id)
 }
@@ -149,19 +151,21 @@ public func _modelCombine<T: Identifiable>(into hasher: inout Hasher, _ value: T
 /// Feeds each element's id into `hasher` for arrays of `Identifiable` types that are not `Hashable`
 /// (e.g. `[@Model]` arrays).
 /// Marked disfavored so the `Hashable` overload wins when `T` conforms to both.
-@_disfavoredOverload
+@_disfavoredOverload @inlinable
 public func _modelCombine<T: Identifiable>(into hasher: inout Hasher, _ value: [T]) {
     for element in value { _modelCombine(into: &hasher, element) }
 }
 
 /// Fallback for types that are neither `Equatable` nor `Identifiable` (e.g. closure/function types).
 /// Such values can never be meaningfully compared for equality, so this always returns `false`.
+@inlinable
 public func _modelEqual<T>(_ lhs: T, _ rhs: T) -> Bool {
     false
 }
 
 /// Fallback for types that are neither `Hashable` nor `Identifiable` (e.g. closure/function types).
 /// Combines a stable zero value; closures cannot be hashed in any meaningful way.
+@inlinable
 public func _modelCombine<T>(into hasher: inout Hasher, _ value: T) {
     hasher.combine(0)
 }
@@ -185,6 +189,7 @@ public struct _ModelContainerCaseID: Hashable, @unchecked Sendable {
 /// Returns `AnyHashable(value.id)` for `Identifiable` types (covers `@Model` types).
 ///
 /// Preferred over the `Hashable` overload when `T` conforms to both.
+@inlinable
 public func _modelIdentity<T: Identifiable>(_ value: T) -> AnyHashable {
     AnyHashable(value.id)
 }
@@ -193,7 +198,7 @@ public func _modelIdentity<T: Identifiable>(_ value: T) -> AnyHashable {
 ///
 /// Used by the `@ModelContainer` macro's synthesised `var id` when the associated value
 /// is not `Identifiable` (e.g. plain `Int`, `String`, or a custom `Hashable` type).
-@_disfavoredOverload
+@_disfavoredOverload @inlinable
 public func _modelIdentity<T: Hashable>(_ value: T) -> AnyHashable {
     AnyHashable(value)
 }
@@ -201,7 +206,7 @@ public func _modelIdentity<T: Hashable>(_ value: T) -> AnyHashable {
 /// Fallback for types that are neither `Identifiable` nor `Hashable` (e.g. closures).
 ///
 /// Returns a stable zero placeholder; such values cannot be meaningfully identified.
-@_disfavoredOverload
+@_disfavoredOverload @inlinable
 public func _modelIdentity<T>(_ value: T) -> AnyHashable {
     AnyHashable(0)
 }
