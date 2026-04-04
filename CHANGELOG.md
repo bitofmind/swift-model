@@ -4,6 +4,35 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [Unreleased] — Exhaustivity Improvements + Convenience Helpers
+
+### Added
+- **`node.task(id:)`** — cancel-in-flight convenience. `node.task(id: query) { q in … }` restarts the async task whenever the expression changes and cancels the in-flight task first. Equivalent to `node.task { node.forEach(Observed { query }) { q in … } }` but more concise.
+- **`node.onChange(of:)`** — lightweight helper to react to a value change without a full `forEach` loop.
+- **Transitions exhaustivity** — new `Exhaustivity.transitions` category. When a `@Model` enum switches cases, the test framework tracks the transition and fails if it goes unasserted, just like state and event exhaustivity. Transitions within a transaction are grouped as a single update.
+- **Private property exclusion from exhaustivity** — `private var` and `fileprivate var` properties are automatically excluded from exhaustivity tracking. Tests no longer fail for internal state that the test cannot observe. `private(set) var` (public getter) is still tracked normally.
+- **`@ModelDependency(\.continuousClock) var clock: any Clock<Duration>`** — alternative property-wrapper form to `node.clock` for consistency with the general `@ModelDependency` pattern.
+- Additional compile-time diagnostics in the `@Model` macro for common misuse patterns.
+
+### Changed
+- **`DebugOptions` API** — improved syntax for `model.withDebug(…)` / `model.debug(…)` options. Options are now more composable and self-documenting.
+- **State not exhausted error messages** — failure messages now show a structured diff of the unexpected state changes instead of a raw description.
+- **Exhaustivity type** — simplified option-set API; redundant overloads removed.
+- **`swift-async-algorithms` removed from library target** — internal `eraseToStream()` and `removeDuplicates()` helpers replace the package dependency. `swift-async-algorithms` is kept as a test-only dependency (`AsyncChannel` is used in a small number of test files).
+- **Pre-Swift 6.1 guard on `@Test(.modelTesting)`** — using `.modelTesting` on Swift 6.0 now calls `reportIssue` with a clear migration hint to `withModelTesting { }` instead of failing silently.
+
+### Fixed
+- **Deadlock in test infrastructure** — `invokeDidModify` now returns a `(() -> Void)?` callback that callers invoke *after* releasing the lock. Combined with per-test `BackgroundCallQueue` isolation (via `_BackgroundCallLocals` task-local), this eliminates a class of deadlock that could occur when multiple tests ran concurrently.
+- **Exhaustivity tracking races** — each `@Test(.modelTesting)` test now receives an isolated `BackgroundCallQueue`, preventing exhaustivity assertions from leaking between concurrent tests.
+
+### Performance
+- `@inlinable` annotations added to hot paths in the observation and context subsystems.
+
+### Documentation
+- README restructured into a ~200-line landing page. Full reference content lives in `Docs/` subdocuments: `Models.md`, `Lifecycle.md`, `Events.md`, `Dependencies.md`, `Navigation.md`, `HierarchyAndPreferences.md`, `Testing.md`, `Undo.md`, `Debugging.md`, `TransitionsDesign.md`.
+
+---
+
 ## [0.13.0] — Context Storage API Split + Named Tasks + Settle API
 
 ### Added
@@ -220,6 +249,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - `_printChanges()` / `_withPrintChanges()` — debug-build state change printing.
 - Example apps: `CounterFact`, `Standups`, `TodoList`.
 
+[Unreleased]: https://github.com/bitofmind/swift-model/compare/0.13.0...HEAD
 [0.13.0]: https://github.com/bitofmind/swift-model/compare/0.12.0...0.13.0
 [0.12.0]: https://github.com/bitofmind/swift-model/compare/0.11.0...0.12.0
 [0.11.0]: https://github.com/bitofmind/swift-model/compare/0.10.1...0.11.0
