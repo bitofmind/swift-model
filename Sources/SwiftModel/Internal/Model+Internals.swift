@@ -183,7 +183,12 @@ private struct CallQueueState {
 // MARK: - Shared drain-loop
 
 /// The shared async drain loop body. Runs until the queue is empty, firing idle
-/// callbacks and executing each batch before yielding to the cooperative scheduler.
+/// callbacks and executing each batch before suspending via a DispatchQueue hop.
+///
+/// Uses `DispatchQueue.global().async` instead of `Task.yield()` to avoid cooperative
+/// pool backpressure. On a saturated cooperative pool (200+ parallel tests on 2-vCPU CI),
+/// `Task.yield()` can suspend for minutes. DispatchQueue.global() uses the kernel thread
+/// pool which is unaffected by Swift cooperative pool saturation.
 private func callQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
@@ -201,7 +206,11 @@ private func callQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
         for f in onIdle { f() }
         guard !batch.isEmpty else { break }
         for call in batch { call() }
-        await Task.yield()
+        // Kernel-level dispatch hop instead of Task.yield() — same rationale as
+        // waitUntil/waitForModification. Avoids starving on a saturated cooperative pool.
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { c.resume() }
+        }
     }
 }
 
@@ -347,7 +356,7 @@ struct MainCallQueue: @unchecked Sendable {
     /// True when no drain task is currently running.
     var isIdle: Bool { callQueueIsIdle(state) }
 
-    /// Suspends until the drain task goes idle (all calls flushed including `Task.yield()`).
+    /// Suspends until the drain task goes idle (all calls flushed including the DispatchQueue hop).
     /// Pass a `deadline` (absolute uptime nanoseconds) to bound the wait; defaults to `.max` (unbounded).
     func waitUntilIdle(deadline: UInt64 = .max) async {
         await callQueueWaitUntilIdle(state, deadline: deadline)
@@ -388,7 +397,7 @@ struct BackgroundCallQueue: @unchecked Sendable {
     /// True when no drain task is currently running.
     var isIdle: Bool { callQueueIsIdle(state) }
 
-    /// Suspends until the drain task goes idle (all calls flushed including `Task.yield()`).
+    /// Suspends until the drain task goes idle (all calls flushed including the DispatchQueue hop).
     /// Pass a `deadline` (absolute uptime nanoseconds) to bound the wait; defaults to `.max` (unbounded).
     func waitUntilIdle(deadline: UInt64 = .max) async {
         await callQueueWaitUntilIdle(state, deadline: deadline)

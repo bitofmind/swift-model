@@ -384,27 +384,6 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         }
     }
 
-    /// Measures current scheduler latency and returns an effective timeout that scales
-    /// with system load, using `floor` as the minimum.
-    ///
-    /// Under parallel test load the cooperative thread pool is saturated, so `Task.yield()`
-    /// takes much longer than usual — and model tasks waiting for a thread are delayed by
-    /// exactly the same factor. Scaling the timeout by yield latency keeps the effective
-    /// "number of scheduler rounds" constant regardless of how many tests run in parallel.
-    /// Under no load a yield takes ~microseconds, so the multiplier stays near 1× and
-    /// `floor` is returned as-is.
-    static func adaptiveTimeout(floor: UInt64) async -> UInt64 {
-        // Only scale when the caller passes the default (1 s) or larger timeout. Short explicit
-        // timeouts must be respected as-is so tests probing failure messages don't wait
-        // unexpectedly long under heavy parallel load.
-        guard floor >= nanosPerSecond else { return floor }
-        let calibrationStart = DispatchTime.now().uptimeNanoseconds
-        await Task.yield()
-        let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
-        // Give the condition ~100 scheduler rounds at the current pace.
-        return max(floor, yieldLatencyNs * 100)
-    }
-
     func expect(settleResetting: Exhaustivity? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
         await expect(timeoutNanoseconds: 1_000_000_000, settleResetting: settleResetting, at: fileAndLine, predicates: predicates, enableExhaustionTest: enableExhaustionTest)
     }
