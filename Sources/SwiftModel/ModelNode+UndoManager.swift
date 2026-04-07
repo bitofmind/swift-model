@@ -52,7 +52,7 @@ public final class UndoManagerBackend: UndoBackend, @unchecked Sendable {
                     }
                 }
             }
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 cont.yield(UndoAvailability(canUndo: um.canUndo, canRedo: um.canRedo))
             }
             cont.onTermination = { _ in
@@ -64,19 +64,19 @@ public final class UndoManagerBackend: UndoBackend, @unchecked Sendable {
     public func push(_ entry: ModelUndoEntry) {
         let um = undoManager
         let t = target
-        DispatchQueue.main.async {
+        Task { @MainActor in
             t.register(entry, undoManager: um)
         }
     }
 
     public func undo() {
         let um = undoManager
-        DispatchQueue.main.async { um.undo() }
+        Task { @MainActor in um.undo() }
     }
 
     public func redo() {
         let um = undoManager
-        DispatchQueue.main.async { um.redo() }
+        Task { @MainActor in um.redo() }
     }
 }
 

@@ -1,6 +1,30 @@
 import Foundation
 import Dependencies
 import Observation
+#if canImport(Dispatch)
+import Dispatch
+#endif
+
+/// Returns the current monotonic time in nanoseconds.
+/// Uses DispatchTime on platforms that have it (Darwin, Linux, Android);
+/// falls back to ProcessInfo.systemUptime on WASI.
+private func monotonicNanoseconds() -> UInt64 {
+    #if canImport(Dispatch)
+    return DispatchTime.now().uptimeNanoseconds
+    #else
+    return UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+    #endif
+}
+
+/// Returns whether the current execution context is on the main thread.
+/// WASI is single-threaded so this is always true there.
+private var isOnMainThread: Bool {
+    #if os(WASI)
+    return true
+    #else
+    return Thread.isMainThread
+    #endif
+}
 
 /// Internal bridge so all framework code can access the model context directly
 /// without going through the public `_context` access token.
@@ -111,7 +135,7 @@ extension Model where Self: Observable {
     func access<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
         let path = path as! KeyPath<Self, T>
         
-        if Thread.isMainThread {
+        if isOnMainThread {
             context.mainObservationRegistrar?.access(self, keyPath: path)
         } else {
             context.backgroundObservationRegistrar?.access(self, keyPath: path)
@@ -121,7 +145,7 @@ extension Model where Self: Observable {
     func willSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
         let path = path as! KeyPath<Self, T>
         
-        if Thread.isMainThread {
+        if isOnMainThread {
             // On main: call willSet on both registrars before mutation
             context.mainObservationRegistrar?.willSet(self, keyPath: path)
             context.backgroundObservationRegistrar?.willSet(self, keyPath: path)
@@ -135,7 +159,7 @@ extension Model where Self: Observable {
     func didSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
         let path = path as! KeyPath<Self, T>&Sendable
         
-        if Thread.isMainThread {
+        if isOnMainThread {
             // On main: call didSet on both registrars after mutation
             context.mainObservationRegistrar?.didSet(self, keyPath: path)
             context.backgroundObservationRegistrar?.didSet(self, keyPath: path)
@@ -239,8 +263,9 @@ private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, dead
             // continuation permanently suspended.  DispatchQueue.asyncAfter
             // registers a kernel-level timer immediately, independent of the
             // cooperative pool.
-            let now = DispatchTime.now().uptimeNanoseconds
+            let now = monotonicNanoseconds()
             let delay = deadline > now ? deadline - now : 0
+            #if canImport(Dispatch)
             DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
                 resumed.withValue { r in
                     guard !r else { return }
@@ -248,6 +273,16 @@ private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, dead
                     cont.resume()
                 }
             }
+            #else
+            Task.detached {
+                try? await Task.sleep(nanoseconds: delay)
+                resumed.withValue { r in
+                    guard !r else { return }
+                    r = true
+                    cont.resume()
+                }
+            }
+            #endif
         }
     }
 }
@@ -267,8 +302,9 @@ private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>
             if deadline < .max {
                 // Use DispatchQueue instead of Task — same rationale as
                 // callQueueWaitUntilIdle above.
-                let now = DispatchTime.now().uptimeNanoseconds
+                let now = monotonicNanoseconds()
                 let delay = deadline > now ? deadline - now : 0
+                #if canImport(Dispatch)
                 DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
                     resumed.withValue { r in
                         guard !r else { return }
@@ -276,6 +312,16 @@ private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>
                         cont.resume()
                     }
                 }
+                #else
+                Task.detached {
+                    try? await Task.sleep(nanoseconds: delay)
+                    resumed.withValue { r in
+                        guard !r else { return }
+                        r = true
+                        cont.resume()
+                    }
+                }
+                #endif
             }
             return false
         }
@@ -302,7 +348,7 @@ struct MainCallQueue: @unchecked Sendable {
     /// Otherwise it is enqueued and a `@MainActor` drain task is spawned if one is not
     /// already running.
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
-        guard !Thread.isMainThread else {
+        guard !isOnMainThread else {
             callback()
             return
         }
@@ -338,7 +384,7 @@ struct MainCallQueue: @unchecked Sendable {
 
     /// Drains pending callbacks if currently on the main thread; no-op otherwise.
     func drainIfOnMain() {
-        guard Thread.isMainThread else { return }
+        guard isOnMainThread else { return }
         drain()
     }
 

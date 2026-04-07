@@ -100,3 +100,32 @@ jobs:
           swift build \
             --swift-sdk aarch64-unknown-linux-android28 \
             --build-tests
+
+  wasm:
+    name: WASM (wasm32-unknown-wasip1)
+    # Run on Linux: same reasoning as Android — host-side canImport checks
+    # (ObjectiveC, AppKit, UIKit) evaluate against the container OS, which
+    # correctly reflects the WASM target's behaviour.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: swift:6.3
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Swift WASM SDK
+        run: |
+          swift sdk install \
+            "https://download.swift.org/swift-6.3-release/wasm-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_wasm.artifactbundle.tar.gz" \
+            --checksum 9fa4016ee632c7e9e906608ec3b55cf13dfc4dff44e47574c5af58064dc33fd9
+
+      - name: Build SwiftModel for WASM (compile check)
+        # Full test execution is blocked by third-party dependencies:
+        # IssueReportingTestSupport (xctest-dynamic-overlay) is type:.dynamic,
+        # and SnapshotTesting uses Apple-only types — both unsupported on WASM.
+        # We compile-check the main library target only, consistent with the
+        # Android job which also omits test execution.
+        run: |
+          swift build \
+            --swift-sdk swift-6.3-RELEASE_wasm \
+            --target SwiftModel

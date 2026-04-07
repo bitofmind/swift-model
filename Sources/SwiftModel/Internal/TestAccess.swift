@@ -1,8 +1,21 @@
 import Foundation
+#if canImport(Dispatch)
 import Dispatch
+#endif
 import CustomDump
 import IssueReporting
 import Dependencies
+
+/// Returns the current monotonic time in nanoseconds.
+/// Uses DispatchTime on platforms that have it (Darwin, Linux, Android);
+/// falls back to ProcessInfo.systemUptime on WASI.
+private func monotonicNanoseconds() -> UInt64 {
+    #if canImport(Dispatch)
+    return DispatchTime.now().uptimeNanoseconds
+    #else
+    return UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+    #endif
+}
 
 // MARK: - How expect works
 //
@@ -398,9 +411,9 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // timeouts must be respected as-is so tests probing failure messages don't wait
         // unexpectedly long under heavy parallel load.
         guard floor >= nanosPerSecond else { return floor }
-        let calibrationStart = DispatchTime.now().uptimeNanoseconds
+        let calibrationStart = monotonicNanoseconds()
         await Task.yield()
-        let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
+        let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
         // Give the condition ~100 scheduler rounds at the current pace.
         return max(floor, yieldLatencyNs * 100)
     }
@@ -410,9 +423,9 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     }
 
     func expect(timeoutNanoseconds timeout: UInt64, settleResetting: Exhaustivity? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
-        let calibrationStart = DispatchTime.now().uptimeNanoseconds
+        let calibrationStart = monotonicNanoseconds()
         await Task.yield()
-        let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
+        let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
         // Only apply adaptive scaling for the default (1 s) timeout or larger. Short explicit
         // timeouts (e.g. 1 ms passed by output-snapshot tests) must be respected as-is so
         // tests that intentionally probe failure messages don't wait unexpectedly long under
@@ -436,7 +449,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
 
         await TesterAssertContextBase.$assertContext.withValue(context) {
 
-            let start = DispatchTime.now().uptimeNanoseconds
+            let start = monotonicNanoseconds()
             var lastProgressTime = start  // reset whenever a state modification arrives
             var retryCount = 0
             var failures: [TesterAssertContext.Failure] = []
@@ -535,7 +548,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     // If the timeout has elapsed even here, fall through to the failure path so
                     // the assert doesn't spin forever when isEqualIncludingIds is permanently false.
                     if !isEqualIncludingIds {
-                        if start.distance(to: DispatchTime.now().uptimeNanoseconds) > hardCap {
+                        if start.distance(to: monotonicNanoseconds()) > hardCap {
                             // Hard cap hit: the model has been continuously producing changes
                             // and IDs never converged. Report as failure.
                             fail("State did not settle: model IDs kept diverging after the predicate passed. This may indicate a backgroundCallQueue loop or an unresolvable ID mismatch.", at: fileAndLine)
@@ -544,7 +557,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
                         await Task.yield()
                         // Count as progress — backgroundCall draining counts as activity.
-                        lastProgressTime = DispatchTime.now().uptimeNanoseconds
+                        lastProgressTime = monotonicNanoseconds()
                         continue
                     }
 
@@ -560,9 +573,9 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             // activationTaskEntered() fires at the start of the task body.
                             while self.activationTasksInFlight > 0 {
                                 let didProgress = await waitForModification(timeoutNanoseconds: scaledTimeout, yieldRoundNs: yieldRoundNs, retryCount: retryCount)
-                                if didProgress { lastProgressTime = DispatchTime.now().uptimeNanoseconds }
+                                if didProgress { lastProgressTime = monotonicNanoseconds() }
                                 retryCount += 1
-                                if start.distance(to: DispatchTime.now().uptimeNanoseconds) > hardCap {
+                                if start.distance(to: monotonicNanoseconds()) > hardCap {
                                     let taskInfo = self.settleTimeoutDiagnostics()
                                     fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
                                     return
@@ -595,8 +608,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                                 } else {
                                     lastChangeVersion = currentVersion
                                 }
-                                lastProgressTime = DispatchTime.now().uptimeNanoseconds
-                                if start.distance(to: DispatchTime.now().uptimeNanoseconds) > hardCap {
+                                lastProgressTime = monotonicNanoseconds()
+                                if start.distance(to: monotonicNanoseconds()) > hardCap {
                                     let taskInfo = self.settleTimeoutDiagnostics()
                                     fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
                                     return
@@ -681,7 +694,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 //
                 // Activity-relative timeout: fail only when the model has made no progress for
                 // `scaledTimeout` (no state changes), or when the absolute hard cap fires.
-                let now = DispatchTime.now().uptimeNanoseconds
+                let now = monotonicNanoseconds()
                 if lastProgressTime.distance(to: now) > scaledTimeout || start.distance(to: now) > hardCap {
                     // Build all failure messages outside the lock so that diffMessage/customDump
                     // cannot re-enter it via willAccess → rootPaths.
@@ -787,12 +800,12 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 // Step 6: Wait for the next modification event before re-checking.
                 // Pass the remaining no-progress budget as the wait timeout (how long to sleep
                 // if no modification arrives). The hard cap is checked at Step 5 next iteration.
-                let elapsed = lastProgressTime.distance(to: DispatchTime.now().uptimeNanoseconds)
+                let elapsed = lastProgressTime.distance(to: monotonicNanoseconds())
                 let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
                 retryCount += 1
 
                 let didProgress = await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: yieldRoundNs, retryCount: retryCount)
-                if didProgress { lastProgressTime = DispatchTime.now().uptimeNanoseconds }
+                if didProgress { lastProgressTime = monotonicNanoseconds() }
             }
 
             // Step 5 (timeout): Report failures.
@@ -905,14 +918,14 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     /// model state change, so a healthy model never hits it. The hard cap is the absolute
     /// safety net (default 5 s, overridable via `TestAccessOverrides.hardCapNanoseconds`).
     func require<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
-        let calibrationStart = DispatchTime.now().uptimeNanoseconds
+        let calibrationStart = monotonicNanoseconds()
         await Task.yield()
-        let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
+        let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
         let scaledTimeout = min(10 * nanosPerSecond, max(nanosPerSecond, yieldLatencyNs * 100))
         let yieldRoundNs = max(1_000_000, yieldLatencyNs)
         let hardCap = TestAccessOverrides.hardCapNanoseconds ?? min(30 * nanosPerSecond, max(5 * nanosPerSecond, scaledTimeout * 10))
 
-        let start = DispatchTime.now().uptimeNanoseconds
+        let start = monotonicNanoseconds()
         var lastProgressTime = start
         var retryCount = 0
 
@@ -924,7 +937,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 return value
             }
 
-            let now = DispatchTime.now().uptimeNanoseconds
+            let now = monotonicNanoseconds()
             if lastProgressTime.distance(to: now) > scaledTimeout || start.distance(to: now) > hardCap {
                 fail("Failed to unwrap value of type \(T.self)", at: fileAndLine)
                 throw UnwrapError()
@@ -937,7 +950,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 yieldRoundNs: yieldRoundNs,
                 retryCount: retryCount
             )
-            if didProgress { lastProgressTime = DispatchTime.now().uptimeNanoseconds }
+            if didProgress { lastProgressTime = monotonicNanoseconds() }
             retryCount += 1
         }
     }
@@ -977,7 +990,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             // (e.g. testCancelInFlight) have already passed on an earlier quick-yield
             // retry, so we know this is a genuinely async condition. Waiting up to
             // `remaining` ensures deep queues under heavy parallel load are covered.
-            let deadline = DispatchTime.now().uptimeNanoseconds + remaining
+            let deadline = monotonicNanoseconds() + remaining
             await bgQueue.waitForCurrentItems(deadline: deadline)
             // waitUntilIdle() ensures the drain loop's post-batch Task.yield() has run
             // so stream consumers have had a scheduler turn before we re-check.
