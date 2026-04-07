@@ -5,8 +5,12 @@ import Dependencies
 @testable import Search
 
 // MARK: - SearchModel tests
+//
+// State changes (query, isSearching, results) are input noise or transient loading flags —
+// the focus is on async behaviour, cancel-in-flight, and probe calls. Tasks and probes
+// remain exhaustive; only .state is removed.
 
-@Suite(.modelTesting(exhaustivity: .off))
+@Suite(.modelTesting(.removing(.state)))
 struct SearchTests {
 
     // MARK: Cancel-in-flight
@@ -137,8 +141,11 @@ struct SearchTests {
 }
 
 // MARK: - FilterModel tests
+//
+// FilterModel uses observeAnyModification() to autosave on any state change, creating
+// tasks that the test doesn't need to track. State changes (sortBy, language) are incidental.
 
-@Suite(.modelTesting(exhaustivity: .off))
+@Suite(.modelTesting(.removing(.state)))
 struct FilterModelTests {
 
     /// FilterModel uses observeAnyModification() to detect any state change.
@@ -159,7 +166,7 @@ struct FilterModelTests {
 
 // MARK: - SearchResultItem tests
 
-@Suite(.modelTesting(exhaustivity: .off))
+@Suite(.modelTesting)
 struct SearchResultItemTests {
 
     @Test func perItemDetailLoadsAfterActivation() async {
@@ -170,11 +177,11 @@ struct SearchResultItemTests {
 
     @Test func toggleExpanded() async {
         let item = SearchResultItem(repo: Repo.mocks[0]).withAnchor()
+        // settle() lets the detailLine task complete and resets the exhaustivity baseline
         await settle()
-        #expect(!item.isExpanded)
         item.toggleExpanded()
-        #expect(item.isExpanded)
+        await expect(item.isExpanded)
         item.toggleExpanded()
-        #expect(!item.isExpanded)
+        await expect(!item.isExpanded)
     }
 }

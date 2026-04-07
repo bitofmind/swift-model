@@ -108,6 +108,7 @@ By default the trait enforces exhaustivity across seven categories — any unass
 - **`.local`** — every `node.local` write must be consumed by an `expect` block
 - **`.environment`** — every `node.environment` write must be consumed by an `expect` block
 - **`.preference`** — every `node.preference` write must be consumed by an `expect` block
+- **`.transitions`** *(opt-in, not in `.full`)* — `expect` blocks evaluate against recorded writes in order rather than the live model value. Each `expect` consumes the next recorded write for each property, letting you assert intermediate transitions step by step. Enable with `.adding(.transitions)`.
 
 State exhaustion failures show the full change chain from the baseline, so you always know what the property was before and after the write:
 
@@ -311,4 +312,47 @@ Expected probe not called "onFact":
 
 SwiftModel tests assert **final state**, not the sequence of actions or effects that produced it. This means you can freely restructure model internals — split a method, rename a case, change how async work is dispatched — and existing tests continue to pass as long as the observable outcome is unchanged.
 
-TCA tests encode the full action sequence: renaming an action case or splitting an effect requires rewriting tests even when visible behaviour is identical. SwiftModel has no action enum, so there is nothing to encode and nothing to break.
+TCA tests encode the full action sequence. Here is the same feature expressed in both:
+
+```swift
+// TCA — every action, every intermediate state mutation must be named and asserted.
+// Rename .factButtonTapped to .requestFact and every test referencing it breaks.
+await store.send(.factButtonTapped) { $0.isLoading = true }
+await store.receive(\.factResponse) {
+    $0.isLoading = false
+    $0.fact = "42 is a great number"
+}
+
+// SwiftModel — call the method, assert the outcome.
+// Rename factButtonTapped(), split it into two, move work to a helper —
+// the test keeps passing as long as model.fact ends up correct.
+model.factButtonTapped()
+await expect { model.fact == "42 is a great number" }
+```
+
+SwiftModel has no action enum, so there is nothing to encode and nothing to break. The exhaustivity guarantee is the same — any state change you didn't assert is a failure — but the test is decoupled from *how* the model arrived at that state.
+
+Even intermediate state is caught. If `factButtonTapped()` sets `isLoading = true` and then `false` again, state exhaustivity detects the full round trip even though the final value is unchanged:
+
+```
+State not exhausted: …
+
+Modifications not asserted:
+
+    FactModel.isLoading: false → true → false
+```
+
+When that level of fidelity is exactly what you want — equivalent to TCA's `send`/`receive` model — add `.adding(.transitions)` and use sequential `expect` blocks, each evaluated against the next recorded write:
+
+```swift
+@Test(.modelTesting(.adding(.transitions))) func testFact() async {
+    model.factButtonTapped()
+    await expect { model.isLoading == true }    // loading starts
+    await expect {
+        model.isLoading == false                // loading completes
+        model.fact == "42 is a great number"
+    }
+}
+```
+
+The difference: no action enum to rename, no `receive` case to enumerate. Just the state, in order.

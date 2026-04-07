@@ -12,12 +12,26 @@ extension PreferenceKeys {
     }
 }
 
+// MARK: - Environment Keys
+
+extension EnvironmentKeys {
+    /// Whether completed items are shown in the list.
+    /// Written by TodoListModel and read by each TodoItem to determine its own visibility.
+    /// Demonstrates top-down environment propagation: parent sets it once,
+    /// all descendants read it without a direct reference.
+    var showCompleted: EnvironmentStorage<Bool> { .init(defaultValue: true) }
+}
+
 // MARK: - Model
 
 /// A single to-do item.
 @Model struct TodoItem: Sendable, Equatable {
     var title: String
     var isDone: Bool = false
+
+    /// Whether this item is currently visible given the parent list's filter.
+    /// Reads the `showCompleted` environment value propagated from TodoListModel.
+    var isVisible: Bool { !isDone || node.environment.showCompleted }
 
     func onActivate() {
         // Track title and isDone for undo so renaming and toggling are undoable.
@@ -42,26 +56,41 @@ extension PreferenceKeys {
 
 /// Root model for the to-do list.
 ///
-/// Demonstrates selective undo/redo: only the `items` array participates in the
-/// undo stack. Typing into the "new item" field does not create undo entries.
-/// A ``ModelUndoStack`` is injected as the ``ModelUndoSystem`` backend at anchor
-/// time, making ``ModelUndoSystem/canUndo`` and ``ModelUndoSystem/canRedo``
-/// observable model properties.
+/// Demonstrates three SwiftModel hierarchy communication patterns in one example:
 ///
-/// Also demonstrates preferences: each ``TodoItem`` reports its completion
-/// status upward via ``PreferenceKeys/completedCount``; the root reads the
-/// aggregate here without iterating `items` directly.
+/// - **Preferences (bottom-up):** Each ``TodoItem`` reports its `isDone` state
+///   upward via ``PreferenceKeys/completedCount``; the root aggregates without
+///   iterating `items` directly.
+///
+/// - **Environment (top-down):** ``showCompleted`` is set on this model and
+///   propagated into the environment; each ``TodoItem`` reads
+///   `node.environment.showCompleted` to determine its own visibility without a
+///   direct reference to the parent list.
+///
+/// - **Undo / redo:** Only the `items` array participates in the undo stack.
+///   Typing into the "new item" field does not create undo entries.
 @Model struct TodoListModel: Sendable {
     var items: [TodoItem] = []
     var newItemTitle: String = ""
+    /// Controls whether completed items are shown. Propagated to items via environment.
+    var showCompleted: Bool = true
 
     /// Aggregate completion count reported upward by each TodoItem via preference.
     var completedCount: Int { node.preference.completedCount }
+
+    /// Items currently visible given the `showCompleted` filter.
+    var visibleItems: [TodoItem] { showCompleted ? items : items.filter { !$0.isDone } }
 
     func onActivate() {
         // Only track `items` for undo — typing in the new-item field is ephemeral
         // and does not pollute the undo stack.
         node.trackUndo(\.items)
+
+        // Propagate showCompleted into the environment so TodoItem.isVisible
+        // can read it without a direct reference to the parent list.
+        node.forEach(Observed { showCompleted }) {
+            node.environment.showCompleted = $0
+        }
 
         // Targeted debug: print only when items.count or completedCount changes.
         // Contrast with .withDebug() which would also fire on every newItemTitle keystroke.
@@ -82,6 +111,10 @@ extension PreferenceKeys {
     func moveItems(from source: IndexSet, to destination: Int) {
         items.move(fromOffsets: source, toOffset: destination)
     }
+
+    func toggleShowCompleted() {
+        showCompleted.toggle()
+    }
 }
 
 // MARK: - Views
@@ -90,14 +123,22 @@ struct TodoListView: View {
     @ObservedModel var model: TodoListModel
 
     var body: some View {
+        let visibleItems = model.visibleItems
         List {
-            ForEach(model.items) { item in
+            ForEach(visibleItems) { item in
                 TodoItemRow(item: item) {
                     model.items.removeAll { $0.id == item.id }
                 }
             }
-            .onDelete { model.deleteItems(at: $0) }
-            .onMove { model.moveItems(from: $0, to: $1) }
+            .onDelete { offsets in
+                // Map filtered-array offsets back to IDs so deletion is correct
+                // regardless of whether a filter is active.
+                let ids = Set(offsets.map { visibleItems[$0].id })
+                model.items.removeAll { ids.contains($0.id) }
+            }
+            // Disable reordering while the filter is active — the filtered array
+            // indices don't correspond to the full items array.
+            .onMove(perform: model.showCompleted ? { model.moveItems(from: $0, to: $1) } : nil)
         }
         .navigationTitle("To-Do List")
 #if os(macOS)
@@ -105,6 +146,9 @@ struct TodoListView: View {
 #endif
         .toolbar {
 #if os(iOS)
+            ToolbarItem(placement: .topBarLeading) {
+                filterButton
+            }
             ToolbarItem(placement: .primaryAction) {
                 EditButton()
             }
@@ -113,6 +157,7 @@ struct TodoListView: View {
             }
 #else
             ToolbarItemGroup {
+                filterButton
                 undoRedoButtons
             }
 #endif
@@ -120,6 +165,18 @@ struct TodoListView: View {
         .safeAreaInset(edge: .bottom) {
             AddItemBar(model: model)
         }
+    }
+
+    @ViewBuilder
+    private var filterButton: some View {
+        Button {
+            model.toggleShowCompleted()
+        } label: {
+            Image(systemName: model.showCompleted
+                  ? "line.3.horizontal.decrease.circle"
+                  : "line.3.horizontal.decrease.circle.fill")
+        }
+        .help(model.showCompleted ? "Hide completed" : "Show completed")
     }
 
     @ViewBuilder

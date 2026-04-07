@@ -13,8 +13,13 @@ extension SignUpModel.Step {
 }
 
 // MARK: - SignUpModel tests
+//
+// These tests focus on navigation flow: state changes (email, path, isComplete) are inputs or
+// incidental to the navigation logic, not the focus. Events are consumed internally by SignUpModel's
+// own onActivate handlers (not by the test). Local state (hasAttemptedSubmit) is internal
+// validation bookkeeping, not the subject of these navigation tests.
 
-@Suite(.modelTesting(exhaustivity: .off))
+@Suite(.modelTesting(.removing([.state, .events, .local])) { $0.signUpClient = .previewValue })
 struct SignUpTests {
 
     func makeModel(
@@ -203,8 +208,16 @@ struct SignUpTests {
 }
 
 // MARK: - CredentialsStepModel tests
+//
+// Validation behaviour: state changes on email/password input fields are input noise —
+// the interesting assertions are the error properties and probe calls.
+// Events are sent by continueTapped() and consumed by probes in the tests below, so
+// removing .events avoids duplicating the assertion via didSend().
+// Tests install node.forEach(event(fromType:)) listeners — these tasks run for the full
+// test lifetime and are test infrastructure, not effects under test.
+// Local state (hasAttemptedSubmit) is internal to the model's validation bookkeeping.
 
-@Suite(.modelTesting(exhaustivity: .off))
+@Suite(.modelTesting(.removing([.state, .events, .local, .tasks])))
 struct CredentialsStepModelTests {
 
     func makeModel(
@@ -307,8 +320,14 @@ struct CredentialsStepModelTests {
 }
 
 // MARK: - ProfileStepModel tests
+//
+// Availability-check behaviour: username field changes drive async network calls;
+// state changes on username are input and isCheckingAvailability is a transient loading flag.
+// Events are consumed via probes, so .events is also removed to avoid duplication.
+// sendsEventOnValidUsername installs a node.forEach(event(fromType:)) listener — a
+// long-lived test-infrastructure task that runs for the full test duration.
 
-@Suite(.modelTesting(exhaustivity: .off))
+@Suite(.modelTesting(.removing([.state, .events, .local, .tasks])))
 struct ProfileStepModelTests {
 
     // MARK: Username availability check

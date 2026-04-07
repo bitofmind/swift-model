@@ -295,7 +295,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             }
         }
 
-        return { [weak self] in
+        return {
             // Consume the transition override from the thread-local. When called from the
             // Context subscript path, the Context already yielded this value to the predicate.
             // When called from willAccessStorage/willAccessPreference paths (which don't go

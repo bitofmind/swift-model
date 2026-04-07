@@ -100,6 +100,20 @@ import SwiftModel
 
 `expect { }` waits for all predicates to become true, settles async work, and fails if the model changed anything you didn't assert.
 
+Compare to TCA, where tests encode the full action sequence:
+
+```swift
+// TCA
+await store.send(.factButtonTapped) { $0.isLoading = true }
+await store.receive(\.factResponse) { $0.fact = "42 is a great number" }
+
+// SwiftModel
+model.factButtonTapped()
+await expect { model.fact == "42 is a great number" }
+```
+
+Rename a method or split an async effect — the test keeps passing as long as the outcome is the same. See [Testing](Docs/Testing.md) for the full comparison.
+
 ## Why @Model and not just @Observable?
 
 `@Observable` handles reactive state well. It leaves the rest to you. Here's the same model written with `@Observable`:
@@ -177,7 +191,7 @@ import SwiftModel
 | [CounterFact](Examples/CounterFact) | Nested models, async effects with error handling, dependency injection |
 | [Search](Examples/Search) | Cancel-in-flight search, per-item async loading, `TestProbe`, `withActivation` in previews and tests |
 | [Onboarding](Examples/Onboarding) | 3-step sign-up wizard: `@ModelContainer` enum navigation, `node.task(id:)` for async username availability check, `node.local`, `node.task` with `catch:` |
-| [TodoList](Examples/TodoList) | Undo/redo with selective tracking, preference aggregation, targeted debug with `Observed(debug:)` |
+| [TodoList](Examples/TodoList) | Undo/redo with selective tracking, preference aggregation (bottom-up), environment propagation (top-down), targeted debug with `Observed(debug:)` |
 | [Standups](Examples/Standups) | Complete app: navigation, timers, speech recognition, persistence, exhaustive tests |
 
 Clone the repo and open any example in Xcode to run it immediately.
