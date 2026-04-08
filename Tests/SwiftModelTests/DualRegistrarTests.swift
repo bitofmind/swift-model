@@ -241,18 +241,25 @@ struct DualRegistrarTests {
             }
         }
         
+        // Observations delivers values via the cooperative thread pool (its internal Task
+        // must be scheduled). On a saturated 2-vCPU CI runner with 100+ parallel tests,
+        // cooperative pool latency can far exceed the 5-second default. Use 30s to give
+        // the scheduler time under extreme load. Under normal conditions these complete
+        // in milliseconds.
+        let observationsTimeout: UInt64 = 30_000_000_000
+
         // Wait for observation to actually start
-        try await waitUntil(observationStarted.value)
-        
+        try await waitUntil(observationStarted.value, timeout: observationsTimeout)
+
         // Add small delays between changes to ensure they're observed separately
         model.value = 10
-        try await waitUntil(values.value.contains(10))
-        
+        try await waitUntil(values.value.contains(10), timeout: observationsTimeout)
+
         model.value = 20
-        try await waitUntil(values.value.contains(20))
-        
+        try await waitUntil(values.value.contains(20), timeout: observationsTimeout)
+
         model.value = 42
-        try await waitUntil(values.value.contains(42))
+        try await waitUntil(values.value.contains(42), timeout: observationsTimeout)
         observationTask.cancel()
 
         #expect(values.value.count >= 3, "Should have observed at least 3 values")
@@ -283,17 +290,21 @@ struct DualRegistrarTests {
             }
         }
         
+        // Same rationale as testAppleObservationsWithModel: Observations uses the cooperative
+        // pool for delivery; use 30s to survive heavy parallel-test load on CI.
+        let observationsTimeout: UInt64 = 30_000_000_000
+
         // Wait for observation to actually start
-        try await waitUntil(observationStarted.value)
-        
+        try await waitUntil(observationStarted.value, timeout: observationsTimeout)
+
         model.node.transaction {
             model.value = 10
             model.value = 20
             model.value = 30
         }
-        
+
         model.value = 40
-        try await waitUntil(transactionCount.value >= 2)
+        try await waitUntil(transactionCount.value >= 2, timeout: observationsTimeout)
         observationTask.cancel()
 
         #expect(transactionCount.value == 2, "Should batch transaction changes into one observation")
