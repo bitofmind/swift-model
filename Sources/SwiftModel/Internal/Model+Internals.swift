@@ -112,9 +112,9 @@ extension Model where Self: Observable {
         let path = path as! KeyPath<Self, T>
         
         if Thread.isMainThread {
-            context.mainObservationRegistrar?.access(self, keyPath: path)
+            context.mainObservationRegistrarMakingIfNeeded.access(self, keyPath: path)
         } else {
-            context.backgroundObservationRegistrar?.access(self, keyPath: path)
+            context.backgroundObservationRegistrarMakingIfNeeded.access(self, keyPath: path)
         }
     }
 

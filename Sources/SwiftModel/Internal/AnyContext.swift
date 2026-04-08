@@ -51,8 +51,13 @@ class AnyContext: @unchecked Sendable {
             }
         }
     }
-    private let _mainObservationRegistrar: Any?
-    private let _backgroundObservationRegistrar: Any?
+    let useObservationRegistrar: Bool
+    /// Lazily-allocated registrars. Written once (nil → non-nil) under `lock`.
+    /// `nonisolated(unsafe)`: `AnyContext` is `@unchecked Sendable` with manual locking.
+    /// The unsynchronised outer read in the double-checked locking pattern is benign:
+    /// a false nil causes one extra lock + re-check; a false non-nil cannot occur.
+    nonisolated(unsafe) var mainObservationRegistrarStore: Any?
+    nonisolated(unsafe) var backgroundObservationRegistrarStore: Any?
     let cancellations = Cancellations()
 
     let mainCallQueue: MainCallQueue
@@ -383,16 +388,8 @@ class AnyContext: @unchecked Sendable {
         self.isObservable = isObservable
         self.mainCallQueue = parent?.mainCallQueue ?? MainCallQueue()
         
-        // Use ObservationRegistrar unless disabled
-        let useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
-        
-        if useObservationRegistrar, #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            _mainObservationRegistrar = ObservationRegistrar()
-            _backgroundObservationRegistrar = ObservationRegistrar()
-        } else {
-            _mainObservationRegistrar = nil
-            _backgroundObservationRegistrar = nil
-        }
+        // Registrars are created lazily on first access(); isObservable encodes availability.
+        self.useObservationRegistrar = isObservable && !self.options.contains(.disableObservationRegistrar)
 
         if let parent {
             // During init, no observers exist yet, so callbacks can be discarded.
@@ -410,14 +407,17 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
+    /// Returns the main registrar if it has already been created; nil otherwise.
+    /// Used from `willSet`/`didSet` — skip notification if no observer has ever called `access()`.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var mainObservationRegistrar: ObservationRegistrar? {
-        _mainObservationRegistrar as? ObservationRegistrar
+        mainObservationRegistrarStore as? ObservationRegistrar
     }
 
+    /// Returns the background registrar if it has already been created; nil otherwise.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var backgroundObservationRegistrar: ObservationRegistrar? {
-        _backgroundObservationRegistrar as? ObservationRegistrar
+        backgroundObservationRegistrarStore as? ObservationRegistrar
     }
 
     // Backward compatibility: return main registrar
@@ -426,8 +426,37 @@ class AnyContext: @unchecked Sendable {
         mainObservationRegistrar
     }
 
+    /// True when observation registrars are enabled for this context (regardless of
+    /// whether they have been lazily created yet).
     var hasObservationRegistrar: Bool {
-        _mainObservationRegistrar != nil
+        useObservationRegistrar
+    }
+
+    /// Returns the main registrar, creating both registrars lazily if this is the first
+    /// `access()` call. Must only be called from the observation-tracking path.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    var mainObservationRegistrarMakingIfNeeded: ObservationRegistrar {
+        if let r = mainObservationRegistrarStore as? ObservationRegistrar { return r }
+        return lock {
+            if mainObservationRegistrarStore == nil {
+                mainObservationRegistrarStore = ObservationRegistrar()
+                backgroundObservationRegistrarStore = ObservationRegistrar()
+            }
+            return mainObservationRegistrarStore as! ObservationRegistrar
+        }
+    }
+
+    /// Returns the background registrar, creating both registrars lazily if needed.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    var backgroundObservationRegistrarMakingIfNeeded: ObservationRegistrar {
+        if let r = backgroundObservationRegistrarStore as? ObservationRegistrar { return r }
+        return lock {
+            if mainObservationRegistrarStore == nil {
+                mainObservationRegistrarStore = ObservationRegistrar()
+                backgroundObservationRegistrarStore = ObservationRegistrar()
+            }
+            return backgroundObservationRegistrarStore as! ObservationRegistrar
+        }
     }
 
     var lifetime: ModelLifetime {

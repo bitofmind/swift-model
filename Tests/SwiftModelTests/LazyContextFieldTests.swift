@@ -49,6 +49,25 @@ struct LazyContextFieldTests {
         model.node.preference.lazyTestCount = 5
         #expect(model.context?.preferenceStorageStore != nil)
     }
+
+    // MARK: - ObservationRegistrar lazy allocation
+
+    @Test func observationRegistrarNilBeforeFirstAccess() async {
+        let model = LeafForLazyTests().withAnchor()
+        #expect(model.context?.mainObservationRegistrarStore == nil)
+        #expect(model.context?.backgroundObservationRegistrarStore == nil)
+    }
+
+    @Test func observationRegistrarAllocatesOnFirstObservationAccess() async {
+        let model = LeafForLazyTests().withAnchor()
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            withObservationTracking {
+                _ = model.value
+            } onChange: {}
+            #expect(model.context?.mainObservationRegistrarStore != nil)
+            #expect(model.context?.backgroundObservationRegistrarStore != nil)
+        }
+    }
 }
 
 // MARK: - Helpers
