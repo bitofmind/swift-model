@@ -381,37 +381,37 @@ struct DualRegistrarTests {
     /// waitUntil uses kernel dispatch hops (DispatchQueue.global) rather than cooperative
     /// pool awaits, so it works correctly even when the cooperative thread pool is saturated.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-    @Test func testObservedStreamWithModelAccessingObservable() async throws {
+    @Test func testObservedStreamWithModelAccessingObservable() async {
         let observable = PureObservableModel()
         let model = ModelHoldingObservable(observable: observable).withAnchor()
 
-        let values = LockIsolated<[Int]>([])
+        // Consume Observed directly in the test body rather than a separate Task.
+        //
+        // A separate `Task { for await in Observed(...) }` must be *scheduled* on the
+        // cooperative pool before it can consume even the initial value. On a saturated
+        // 2-vCPU CI runner with 100+ parallel tests this scheduling can exceed the
+        // waitUntil timeout.
+        //
+        // Direct consumption is safe: the test task is already running. Suspending at
+        // iter.next() frees its pool thread so BackgroundCallQueue's drain Task
+        // (priority: .userInitiated, DispatchQueue hops) can run immediately.
+        // Each observable mutation is triggered only after iter.next() confirms the
+        // previous value was consumed, keeping hasPendingUpdate false and ensuring
+        // re-registration before the next change.
+        var iter = Observed({ model.doubledObservableValue }).makeAsyncIterator()
 
-        let task = Task {
-            for await value in Observed({ model.doubledObservableValue }) {
-                values.withValue { $0.append(value) }
-                if value >= 20 { break }
-            }
-        }
-        defer { task.cancel() }
+        let v0 = await iter.next()
+        #expect(v0 == 0, "Initial value should be 0")
 
-        // Wait for the initial value (0) to be delivered.
-        // Use waitUntil (kernel dispatch hops) instead of AsyncStream iter.next(), which
-        // requires the cooperative thread pool to be responsive — unreliable on saturated CI.
-        try await waitUntil(values.value.contains(0))
-        #expect(values.value.contains(0))
-
-        // Set value=5 → doubledObservableValue=10.
-        // We set the next value only after waitUntil confirms the consumer processed the
-        // previous one, so hasPendingUpdate is always false and tracking is re-registered.
+        // value=5 → doubledObservableValue=10
         observable.value = 5
-        try await waitUntil(values.value.contains(10))
-        #expect(values.value.contains(10), "Observed should track @Observable changes via @Model")
+        let v10 = await iter.next()
+        #expect(v10 == 10, "Observed should track @Observable changes via @Model")
 
-        // Set value=10 → doubledObservableValue=20.
+        // value=10 → doubledObservableValue=20
         observable.value = 10
-        try await waitUntil(values.value.contains(20))
-        #expect(values.value.contains(20), "Should continue tracking @Observable changes")
+        let v20 = await iter.next()
+        #expect(v20 == 20, "Should continue tracking @Observable changes")
     }
 
 }
