@@ -37,7 +37,20 @@ class AnyContext: @unchecked Sendable {
 
     private var modeLifeTime: ModelLifetime = .anchored
 
-    private var eventContinuations: [Int: AsyncStream<EventInfo>.Continuation] = [:]
+    private var eventContinuationsStore: [Int: AsyncStream<EventInfo>.Continuation]?
+    private var eventContinuations: [Int: AsyncStream<EventInfo>.Continuation] {
+        _read { yield eventContinuationsStore ?? [:] }
+        _modify {
+            if eventContinuationsStore != nil {
+                yield &eventContinuationsStore!
+                if eventContinuationsStore!.isEmpty { eventContinuationsStore = nil }
+            } else {
+                var temp: [Int: AsyncStream<EventInfo>.Continuation] = [:]
+                yield &temp
+                if !temp.isEmpty { eventContinuationsStore = temp }
+            }
+        }
+    }
     private let _mainObservationRegistrar: Any?
     private let _backgroundObservationRegistrar: Any?
     let cancellations = Cancellations()
@@ -49,7 +62,20 @@ class AnyContext: @unchecked Sendable {
     weak var taskLifecycleDelegate: (any TaskLifecycleDelegate)?
 
     private(set) var anyModificationActiveCount = 0
-    private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] = [:]
+    private var anyModificationCallbacksStore: [Int: (Bool) -> (() -> Void)?]?
+    private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] {
+        _read { yield anyModificationCallbacksStore ?? [:] }
+        _modify {
+            if anyModificationCallbacksStore != nil {
+                yield &anyModificationCallbacksStore!
+                if anyModificationCallbacksStore!.isEmpty { anyModificationCallbacksStore = nil }
+            } else {
+                var temp: [Int: (Bool) -> (() -> Void)?] = [:]
+                yield &temp
+                if !temp.isEmpty { anyModificationCallbacksStore = temp }
+            }
+        }
+    }
     private var _modificationCount = 0
 
     struct MemoizeCacheEntry: @unchecked Sendable {
@@ -74,7 +100,20 @@ class AnyContext: @unchecked Sendable {
         }
     }
     
-    var _memoizeCache: [AnyHashableSendable: MemoizeCacheEntry] = [:]
+    var memoizeCacheStore: [AnyHashableSendable: MemoizeCacheEntry]?
+    var _memoizeCache: [AnyHashableSendable: MemoizeCacheEntry] {
+        _read { yield memoizeCacheStore ?? [:] }
+        _modify {
+            if memoizeCacheStore != nil {
+                yield &memoizeCacheStore!
+                if memoizeCacheStore!.isEmpty { memoizeCacheStore = nil }
+            } else {
+                var temp: [AnyHashableSendable: MemoizeCacheEntry] = [:]
+                yield &temp
+                if !temp.isEmpty { memoizeCacheStore = temp }
+            }
+        }
+    }
 
     // Typed per-context storage for internal features (undo, environment, etc.).
     // Keyed by AnyHashableSendable (source location or explicit key from ContextStorage).
@@ -84,7 +123,20 @@ class AnyContext: @unchecked Sendable {
         // Type-erased onRemoval hook, set when the storage declares one.
         var cleanup: (() -> Void)?
     }
-    var contextStorage: [AnyHashableSendable: ContextStorageEntry] = [:]
+    var contextStorageStore: [AnyHashableSendable: ContextStorageEntry]?
+    var contextStorage: [AnyHashableSendable: ContextStorageEntry] {
+        _read { yield contextStorageStore ?? [:] }
+        _modify {
+            if contextStorageStore != nil {
+                yield &contextStorageStore!
+                if contextStorageStore!.isEmpty { contextStorageStore = nil }
+            } else {
+                var temp: [AnyHashableSendable: ContextStorageEntry] = [:]
+                yield &temp
+                if !temp.isEmpty { contextStorageStore = temp }
+            }
+        }
+    }
 
     /// The DependencyValues captured at this context's initialization time, after all dependency
     /// overrides from withDependencies closures have been applied.
@@ -114,7 +166,20 @@ class AnyContext: @unchecked Sendable {
         var value: any Sendable
         var cleanup: (() -> Void)?
     }
-    var preferenceStorage: [AnyHashableSendable: PreferenceStorageEntry] = [:]
+    var preferenceStorageStore: [AnyHashableSendable: PreferenceStorageEntry]?
+    var preferenceStorage: [AnyHashableSendable: PreferenceStorageEntry] {
+        _read { yield preferenceStorageStore ?? [:] }
+        _modify {
+            if preferenceStorageStore != nil {
+                yield &preferenceStorageStore!
+                if preferenceStorageStore!.isEmpty { preferenceStorageStore = nil }
+            } else {
+                var temp: [AnyHashableSendable: PreferenceStorageEntry] = [:]
+                yield &temp
+                if !temp.isEmpty { preferenceStorageStore = temp }
+            }
+        }
+    }
 
     func didModify() {
         _modificationCount &+= 1

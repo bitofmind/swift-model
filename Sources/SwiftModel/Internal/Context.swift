@@ -7,7 +7,20 @@ import Observation
 
 final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
-    private(set) var modifyCallbacks: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] = [:]
+    private var modifyCallbacksStore: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]]?
+    var modifyCallbacks: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] {
+        _read { yield modifyCallbacksStore ?? [:] }
+        _modify {
+            if modifyCallbacksStore != nil {
+                yield &modifyCallbacksStore!
+                if modifyCallbacksStore!.isEmpty { modifyCallbacksStore = nil }
+            } else {
+                var temp: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] = [:]
+                yield &temp
+                if !temp.isEmpty { modifyCallbacksStore = temp }
+            }
+        }
+    }
     let reference: Reference
     var readModel: M
     var modifyModel: M
