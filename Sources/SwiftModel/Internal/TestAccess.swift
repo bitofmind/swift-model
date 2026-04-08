@@ -141,6 +141,29 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         usingAccess(self) {
             context.model.activate()
         }
+        // Re-initialize snapshots from the activated model.
+        //
+        // Child models in containers (Array, Optional, Dictionary, @ModelContainer enums)
+        // receive fresh ModelIDs during activation — they are assigned by Context.childContext
+        // when the hierarchy is anchored. Cursor key paths that locate elements in these
+        // containers embed those fresh IDs (via ContainerCursor.id).
+        //
+        // If lastState/expectedState retain the pre-activation model's frozenCopy (which has
+        // the *initial* unanchored ModelIDs), then:
+        //   • didModify's cursor-based write to lastState silently fails (cursor.set can't
+        //     find the element because element.id != cursor.id) — lastState is never updated.
+        //   • isEqualIncludingIds reads last[keyPath: cursorPath] and gets the fallback value
+        //     (element captured at cursor-creation time, value == 0) instead of the current
+        //     value (e.g. 99) — diff is always non-nil → loop retries until the 30 s hard cap.
+        //
+        // Re-initializing from context.readModel.frozenCopy gives both snapshots the same
+        // ModelIDs that live cursors will use, so cursor lookups find and update elements
+        // correctly.
+        let activatedSnapshot = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+            context.readModel.frozenCopy
+        }
+        lastState = activatedSnapshot
+        expectedState = activatedSnapshot
     }
 
     // Propagate this TestAccess to all child/dependency contexts so their property
