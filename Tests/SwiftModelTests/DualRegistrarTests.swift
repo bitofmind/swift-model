@@ -79,8 +79,8 @@ struct DualRegistrarTests {
         let mainObserverFired = LockIsolated(false)
         let backgroundObserverFired = LockIsolated(false)
 
-        // Set up main thread observer
-        let mainTask = Task { @MainActor in
+        // Set up main thread observer via MainActor.run (avoids Task scheduling latency)
+        await MainActor.run {
             withObservationTracking {
                 _ = model.value
             } onChange: {
@@ -96,9 +96,6 @@ struct DualRegistrarTests {
                 backgroundObserverFired.setValue(true)
             }
         }
-
-        // Wait for both observation tasks to complete setup
-        await mainTask.value
         await bgTask.value
 
         // Modify on main thread
@@ -118,8 +115,8 @@ struct DualRegistrarTests {
         let mainObserverFired = LockIsolated(false)
         let backgroundObserverFired = LockIsolated(false)
 
-        // Set up main thread observer
-        let mainTask = Task { @MainActor in
+        // Set up main thread observer via MainActor.run (avoids Task scheduling latency)
+        await MainActor.run {
             withObservationTracking {
                 _ = model.value
             } onChange: {
@@ -135,9 +132,6 @@ struct DualRegistrarTests {
                 backgroundObserverFired.setValue(true)
             }
         }
-
-        // Wait for both observation tasks to complete setup
-        await mainTask.value
         await bgTask.value
 
         // Modify on main thread
@@ -319,14 +313,14 @@ struct DualRegistrarTests {
         #expect(model.doubledObservableValue == 0, "Initial doubled value should be 0")
 
         let changeDetected = LockIsolated(false)
-        let observationTask = Task {
-            withObservationTracking {
-                _ = model.doubledObservableValue
-            } onChange: {
-                changeDetected.setValue(true)
-            }
+
+        // withObservationTracking is synchronous — no Task wrapper needed.
+        // Calling it directly in the test body avoids cooperative-pool scheduling latency.
+        withObservationTracking {
+            _ = model.doubledObservableValue
+        } onChange: {
+            changeDetected.setValue(true)
         }
-        await observationTask.value
 
         // Mutating the @Observable directly fires withObservationTracking's onChange
         // because withObservationTracking captures dependencies on ALL ObservationRegistrar
@@ -350,14 +344,14 @@ struct DualRegistrarTests {
         #expect(model.dependencyValue == 0, "Initial dependency value should be 0")
 
         let changeDetected = LockIsolated(false)
-        let observationTask = Task {
-            withObservationTracking {
-                _ = model.dependencyValue
-            } onChange: {
-                changeDetected.setValue(true)
-            }
+
+        // withObservationTracking is synchronous — no Task wrapper needed.
+        // Calling it directly in the test body avoids cooperative-pool scheduling latency.
+        withObservationTracking {
+            _ = model.dependencyValue
+        } onChange: {
+            changeDetected.setValue(true)
         }
-        await observationTask.value
 
         observable.value = 42
         try await waitUntil(changeDetected.value)
