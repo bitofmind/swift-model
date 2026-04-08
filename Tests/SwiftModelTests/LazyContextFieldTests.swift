@@ -68,6 +68,20 @@ struct LazyContextFieldTests {
             #expect(model.context?.backgroundObservationRegistrarStore != nil)
         }
     }
+
+    // MARK: - Cancellations lazy allocation
+
+    @Test func cancellationsNilBeforeFirstUse() async {
+        let model = LeafForLazyTests().withAnchor()
+        #expect(model.context?.cancellationsStore == nil)
+    }
+
+    @Test func cancellationsAllocatesOnFirstUse() async {
+        let model = LeafForLazyTests().withAnchor()
+        // Accessing `.cancellations` (not `.cancellationsStore`) triggers lazy creation.
+        _ = model.context?.cancellations
+        #expect(model.context?.cancellationsStore != nil)
+    }
 }
 
 // MARK: - Helpers
@@ -77,6 +91,7 @@ struct LazyContextFieldTests {
     // Intentionally empty onActivate: no tasks, events, or storage writes.
     // All lazy backing stores must remain nil unless explicitly triggered below.
 }
+
 
 private extension LocalKeys {
     var lazyTestFlag: LocalStorage<Bool> { .init(defaultValue: false) }

@@ -58,7 +58,18 @@ class AnyContext: @unchecked Sendable {
     /// a false nil causes one extra lock + re-check; a false non-nil cannot occur.
     nonisolated(unsafe) var mainObservationRegistrarStore: Any?
     nonisolated(unsafe) var backgroundObservationRegistrarStore: Any?
-    let cancellations = Cancellations()
+    /// Lazily-allocated task registry. Written once (nil → non-nil) under `lock`.
+    /// `nonisolated(unsafe)`: manual locking discipline (same as other lazy stores).
+    nonisolated(unsafe) var cancellationsStore: Cancellations?
+    /// Returns the Cancellations registry, creating it lazily on first use.
+    /// All task-registration paths go through this; read-only paths use `cancellationsStore`.
+    var cancellations: Cancellations {
+        if let c = cancellationsStore { return c }
+        return lock {
+            if cancellationsStore == nil { cancellationsStore = Cancellations() }
+            return cancellationsStore!
+        }
+    }
 
     let mainCallQueue: MainCallQueue
 
@@ -402,7 +413,7 @@ class AnyContext: @unchecked Sendable {
     }
 
     var activeTasks: [(modelName: String, tasks: [(name: String, fileAndLine: FileAndLine)])] {
-        allChildren.reduce(into: cancellations.activeTasks) {
+        allChildren.reduce(into: cancellationsStore?.activeTasks ?? []) {
             $0.append(contentsOf: $1.activeTasks)
         }
     }
@@ -542,7 +553,7 @@ class AnyContext: @unchecked Sendable {
         preferenceStorage.removeAll()
 
         callbacks.append {
-            self.cancellations.cancelAll()
+            self.cancellationsStore?.cancelAll()
 
             for cont in events {
                 cont.finish()
@@ -654,7 +665,7 @@ class AnyContext: @unchecked Sendable {
     }
 
     func cancelAllRecursively(for id: some Hashable&Sendable) {
-        cancellations.cancelAll(for: id)
+        cancellationsStore?.cancelAll(for: id)
         forEachChild { $0.cancelAllRecursively(for: id) }
     }
 
