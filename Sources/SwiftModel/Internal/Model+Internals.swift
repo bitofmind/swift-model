@@ -189,15 +189,14 @@ private struct CallQueueState {
     var onIdleCallbacks: [@Sendable () -> Void] = []
 }
 
-// MARK: - Shared drain-loop (MainCallQueue only)
+// MARK: - Shared drain-loop (both queue types)
 
-/// Async drain loop for `MainCallQueue`. Runs on `@MainActor` until the queue is empty,
-/// then cancels the task and fires idle callbacks.
+/// Async drain loop shared by `MainCallQueue` and `BackgroundCallQueue`.
+/// Runs until the queue is empty, then cancels its own task and fires idle callbacks.
 ///
-/// Uses `Task.yield()` between batches. `MainCallQueue` runs on `@MainActor` where there
-/// is at most one active actor task at a time, so pool saturation is not a concern.
-/// `BackgroundCallQueue` uses a separate `AsyncStream`-based design that does not need
-/// this loop.
+/// Uses a `DispatchQueue.global()` kernel-level hop between batches (with a `Task.yield()`
+/// fallback on WASM) to avoid cooperative-pool starvation when hundreds of tests run in
+/// parallel on a 2-vCPU Linux CI runner.
 private func callQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
@@ -215,7 +214,19 @@ private func callQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
         for f in onIdle { f() }
         guard !batch.isEmpty else { break }
         for call in batch { call() }
+#if canImport(Dispatch)
+        // Kernel-level dispatch hop instead of Task.yield() — avoids starving on a
+        // saturated cooperative pool. DispatchQueue.global() uses kernel threads unaffected
+        // by Swift concurrency pool backpressure, keeping drain tasks responsive even
+        // when 600+ tests run in parallel on a 2-vCPU Linux CI runner.
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { c.resume() }
+        }
+#else
+        // WASM has no Dispatch; a cooperative yield is sufficient on the single-threaded
+        // WASI event loop.
         await Task.yield()
+#endif
     }
 }
 
