@@ -10,7 +10,7 @@ import Dependencies
 /// Uses DispatchTime on platforms that have it; falls back to ProcessInfo.systemUptime on WASI.
 private func monotonicNanoseconds() -> UInt64 {
     #if canImport(Dispatch)
-    return monotonicNanoseconds()
+    return DispatchTime.now().uptimeNanoseconds
     #else
     return UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
     #endif
