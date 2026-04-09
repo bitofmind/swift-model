@@ -371,7 +371,7 @@ struct MainCallQueue: @unchecked Sendable {
 
     /// Drains pending callbacks if currently on the main thread; no-op otherwise.
     func drainIfOnMain() {
-        guard Thread.isMainThread else { return }
+        guard isOnMainThread else { return }
         drain()
     }
 
