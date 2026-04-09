@@ -394,137 +394,49 @@ struct MainCallQueue: @unchecked Sendable {
 
 // MARK: - BackgroundCallQueue
 
-/// Delivers Observed pipeline updates on a background thread via `AsyncStream`.
+/// Delivers Observed pipeline updates on a background task.
 ///
-/// A single drain `Task` is created at `init` and lives for the queue's lifetime,
-/// suspended at `for await` when idle. When work arrives via `callAsFunction(_:)`,
-/// the `AsyncStream` continuation resumes the already-scheduled task — no new `Task`
-/// is ever spawned on the hot path. This avoids cooperative-pool saturation: on a
-/// 2-vCPU CI runner with 100+ parallel tests, spawning `Task.detached` for every
-/// observation callback queues behind hundreds of waiting tasks. Resuming a suspended
-/// continuation is handled by the Swift runtime with much lower latency.
-/// Multiple callbacks buffered while the drain task is between iterations are all
-/// delivered without yielding (AsyncStream returns buffered items without suspending).
+/// Spawns a drain task only when work arrives and the queue is idle (spawn-on-demand).
+/// The task processes all batched work via `callQueueDrainLoop`, then terminates.
+/// This keeps the number of live tasks proportional to the number of models currently
+/// processing observations — not the number of tests running in parallel — avoiding
+/// cooperative-pool saturation on CI.
 ///
-/// Works on WASM (no `libdispatch`): the single-threaded event loop has no pool
-/// saturation, and `AsyncStream` is part of the Swift standard library.
+/// Works on WASM: `Task.detached` is available on all Swift platforms. WASM-specific
+/// guarding for deadline timers is handled in `callQueueWaitUntilIdle` /
+/// `callQueueWaitForCurrentItems`.
 struct BackgroundCallQueue: @unchecked Sendable {
-    private struct WaitState {
-        var pendingCount = 0
-        var onIdleCallbacks: [@Sendable () -> Void] = []
-    }
-
-    private let streamCont: AsyncStream<@Sendable () -> Void>.Continuation
-    private let drainTask: Task<Void, Never>
-    private let waitState = LockIsolated(WaitState())
-
-    init() {
-        let (stream, cont) = AsyncStream.makeStream(
-            of: (@Sendable () -> Void).self,
-            bufferingPolicy: .unbounded
-        )
-        streamCont = cont
-        let ws = waitState
-        drainTask = Task.detached(priority: .userInitiated) {
-            for await callback in stream {
-                callback()
-                let idle: [@Sendable () -> Void] = ws.withValue { s in
-                    s.pendingCount -= 1
-                    guard s.pendingCount == 0 else { return [] }
-                    let cbs = s.onIdleCallbacks
-                    s.onIdleCallbacks = []
-                    return cbs
-                }
-                for f in idle { f() }
-            }
-        }
-    }
+    private let state = LockIsolated<CallQueueState?>(nil)
 
     // MARK: Enqueue
 
-    /// Resumes the drain task with `callback` (no new Task spawned).
+    /// Enqueues `callback`. Spawns a drain task if the queue was idle.
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
-        waitState.withValue { $0.pendingCount += 1 }
-        streamCont.yield(callback)
+        state.withValue {
+            if $0 == nil {
+                $0 = CallQueueState(task: Task.detached(priority: .userInitiated) {
+                    await callQueueDrainLoop(state: self.state)
+                }, calls: [callback])
+            } else {
+                $0!.calls.append(callback)
+            }
+        }
     }
 
     // MARK: Idle
 
-    /// True when all enqueued callbacks have been processed.
-    var isIdle: Bool { waitState.value.pendingCount == 0 }
+    /// True when no drain task is currently running.
+    var isIdle: Bool { callQueueIsIdle(state) }
 
-    /// Suspends until all enqueued callbacks have been processed.
-    /// Pass a `deadline` (absolute uptime nanoseconds) to bound the wait.
+    /// Suspends until the drain task goes idle (all calls flushed).
+    /// Pass a `deadline` (absolute uptime nanoseconds) to bound the wait; defaults to `.max` (unbounded).
     func waitUntilIdle(deadline: UInt64 = .max) async {
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            let resumed = LockIsolated(false)
-            let resume: @Sendable () -> Void = {
-                resumed.withValue { r in
-                    guard !r else { return }
-                    r = true
-                    cont.resume()
-                }
-            }
-            let shouldResume = waitState.withValue { s -> Bool in
-                guard s.pendingCount > 0 else { return true }
-                s.onIdleCallbacks.append(resume)
-                return false
-            }
-            if shouldResume { cont.resume(); return }
-            if deadline < .max {
-                Task.detached {
-                    let now = monotonicNanoseconds()
-                    let ns = deadline > now ? deadline - now : 0
-                    try? await Task.sleep(nanoseconds: ns)
-                    resume()
-                }
-            }
-        }
+        await callQueueWaitUntilIdle(state, deadline: deadline)
     }
 
-    /// Suspends until all items currently in the queue have been processed.
+    /// Suspends until all items currently in the queue have been processed, or the deadline passes.
     func waitForCurrentItems(deadline: UInt64 = .max) async {
-        if isIdle { return }
-        let ws = waitState
-        let sc = streamCont
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            let resumed = LockIsolated(false)
-            let resume: @Sendable () -> Void = {
-                resumed.withValue { r in
-                    guard !r else { return }
-                    r = true
-                    cont.resume()
-                }
-            }
-            // Re-check under lock; enqueue sentinel that counts as one pending item.
-            let skipSentinel = ws.withValue { s -> Bool in
-                guard s.pendingCount > 0 else { return true }
-                s.pendingCount += 1  // account for the sentinel callback below
-                return false
-            }
-            if skipSentinel { cont.resume(); return }
-            // Sentinel is enqueued after all current items. When it runs, those items
-            // have been processed. It then decrements pendingCount and may fire idle callbacks.
-            sc.yield {
-                resume()
-                let idle: [@Sendable () -> Void] = ws.withValue { s in
-                    s.pendingCount -= 1
-                    guard s.pendingCount == 0 else { return [] }
-                    let cbs = s.onIdleCallbacks
-                    s.onIdleCallbacks = []
-                    return cbs
-                }
-                for f in idle { f() }
-            }
-            if deadline < .max {
-                Task.detached {
-                    let now = monotonicNanoseconds()
-                    let ns = deadline > now ? deadline - now : 0
-                    try? await Task.sleep(nanoseconds: ns)
-                    resume()
-                }
-            }
-        }
+        await callQueueWaitForCurrentItems(state, deadline: deadline)
     }
 }
 
