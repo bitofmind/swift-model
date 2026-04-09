@@ -1,6 +1,19 @@
 import Foundation
 import Dependencies
 import Observation
+#if canImport(Dispatch)
+import Dispatch
+#endif
+
+/// Returns whether the current execution context is the main thread.
+/// On WASI (single-threaded), this is always true.
+private var isOnMainThread: Bool {
+    #if os(WASI)
+    return true
+    #else
+    return Thread.isMainThread
+    #endif
+}
 
 /// Internal bridge so all framework code can access the model context directly
 /// without going through the public `_context` access token.
@@ -111,7 +124,7 @@ extension Model where Self: Observable {
     func access<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
         let path = path as! KeyPath<Self, T>
         
-        if Thread.isMainThread {
+        if isOnMainThread {
             context.mainObservationRegistrar?.access(self, keyPath: path)
         } else {
             context.backgroundObservationRegistrar?.access(self, keyPath: path)
@@ -121,7 +134,7 @@ extension Model where Self: Observable {
     func willSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
         let path = path as! KeyPath<Self, T>
         
-        if Thread.isMainThread {
+        if isOnMainThread {
             // On main: call willSet on both registrars before mutation
             context.mainObservationRegistrar?.willSet(self, keyPath: path)
             context.backgroundObservationRegistrar?.willSet(self, keyPath: path)
@@ -135,7 +148,7 @@ extension Model where Self: Observable {
     func didSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
         let path = path as! KeyPath<Self, T>&Sendable
         
-        if Thread.isMainThread {
+        if isOnMainThread {
             // On main: call didSet on both registrars after mutation
             context.mainObservationRegistrar?.didSet(self, keyPath: path)
             context.backgroundObservationRegistrar?.didSet(self, keyPath: path)
@@ -154,21 +167,17 @@ extension Model where Self: Observable {
     }
 }
 
-// Batches multiple callbacks into a single Task, draining them all before yielding.
+// Two purpose-specific queue types route observation callbacks:
 //
-// This serves two purposes:
-// 1. Breaks synchronous call stacks via Task.yield() to prevent stack overflow.
-// 2. Amortizes Task creation overhead by batching multiple callbacks into one Task.
+// - `MainCallQueue` / `mainCall`: delivers SwiftUI ObservationRegistrar notifications on
+//   the main actor. Fast-paths when already on the main thread. Supports synchronous
+//   `drain()`/`drainIfOnMain()` for model writes that happen on the main thread.
 //
-// Note: This does NOT implement "coalescing" (deduplication). That logic lives in callers.
-//
-// Two purpose-specific types are used:
-// - `MainCallQueue` / `mainCall`: runs callbacks on the MainActor (SwiftUI observation
-//   registrar delivery). Fast-paths when already on the main thread. Supports
-//   `drain()`/`drainIfOnMain()` for synchronous flush from main-thread code paths.
-// - `BackgroundCallQueue` / `backgroundCall`: runs callbacks on a detached background task
-//   (Observed pipeline). Never touches the main thread. Supports `isIdle`/`waitUntilIdle()`
-//   for the test assert loop.
+// - `BackgroundCallQueue` / `backgroundCall`: delivers Observed pipeline updates on a
+//   pre-started background Task (via AsyncStream). Never touches the main thread.
+//   Supports `isIdle`/`waitUntilIdle()`/`waitForCurrentItems()` for the test assert loop.
+//   A single drain task is started at init and reused for the queue's lifetime — no new
+//   tasks are spawned when work arrives, avoiding cooperative-pool saturation on CI.
 
 // MARK: - Shared State
 
@@ -180,15 +189,15 @@ private struct CallQueueState {
     var onIdleCallbacks: [@Sendable () -> Void] = []
 }
 
-// MARK: - Shared drain-loop
+// MARK: - Shared drain-loop (MainCallQueue only)
 
-/// The shared async drain loop body. Runs until the queue is empty, firing idle
-/// callbacks and executing each batch before suspending via a DispatchQueue hop.
+/// Async drain loop for `MainCallQueue`. Runs on `@MainActor` until the queue is empty,
+/// then cancels the task and fires idle callbacks.
 ///
-/// Uses `DispatchQueue.global().async` instead of `Task.yield()` to avoid cooperative
-/// pool backpressure. On a saturated cooperative pool (200+ parallel tests on 2-vCPU CI),
-/// `Task.yield()` can suspend for minutes. DispatchQueue.global() uses the kernel thread
-/// pool which is unaffected by Swift cooperative pool saturation.
+/// Uses `Task.yield()` between batches. `MainCallQueue` runs on `@MainActor` where there
+/// is at most one active actor task at a time, so pool saturation is not a concern.
+/// `BackgroundCallQueue` uses a separate `AsyncStream`-based design that does not need
+/// this loop.
 private func callQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
@@ -206,11 +215,7 @@ private func callQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
         for f in onIdle { f() }
         guard !batch.isEmpty else { break }
         for call in batch { call() }
-        // Kernel-level dispatch hop instead of Task.yield() — same rationale as
-        // waitUntil/waitForModification. Avoids starving on a saturated cooperative pool.
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async { c.resume() }
-        }
+        await Task.yield()
     }
 }
 
@@ -241,13 +246,9 @@ private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, dead
             return
         }
         if deadline < .max {
-            // Use DispatchQueue instead of Task for deadline enforcement.
-            // A Task must be *scheduled* on the cooperative pool before it can
-            // register its sleep timer.  Under pool saturation (many parallel tests
-            // on a 2-vCPU CI runner) the Task may never start, leaving the
-            // continuation permanently suspended.  DispatchQueue.asyncAfter
-            // registers a kernel-level timer immediately, independent of the
-            // cooperative pool.
+#if canImport(Dispatch)
+            // DispatchQueue.asyncAfter registers a kernel-level timer immediately,
+            // independent of the cooperative pool — safe under CI pool saturation.
             let now = DispatchTime.now().uptimeNanoseconds
             let delay = deadline > now ? deadline - now : 0
             DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
@@ -257,6 +258,18 @@ private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, dead
                     cont.resume()
                 }
             }
+#else
+            Task.detached {
+                let now = UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+                let delay = deadline > now ? deadline - now : 0
+                try? await Task.sleep(nanoseconds: delay)
+                resumed.withValue { r in
+                    guard !r else { return }
+                    r = true
+                    cont.resume()
+                }
+            }
+#endif
         }
     }
 }
@@ -274,8 +287,7 @@ private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>
                 }
             }
             if deadline < .max {
-                // Use DispatchQueue instead of Task — same rationale as
-                // callQueueWaitUntilIdle above.
+#if canImport(Dispatch)
                 let now = DispatchTime.now().uptimeNanoseconds
                 let delay = deadline > now ? deadline - now : 0
                 DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
@@ -285,6 +297,18 @@ private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>
                         cont.resume()
                     }
                 }
+#else
+                Task.detached {
+                    let now = UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+                    let delay = deadline > now ? deadline - now : 0
+                    try? await Task.sleep(nanoseconds: delay)
+                    resumed.withValue { r in
+                        guard !r else { return }
+                        r = true
+                        cont.resume()
+                    }
+                }
+#endif
             }
             return false
         }
@@ -311,7 +335,7 @@ struct MainCallQueue: @unchecked Sendable {
     /// Otherwise it is enqueued and a `@MainActor` drain task is spawned if one is not
     /// already running.
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
-        guard !Thread.isMainThread else {
+        guard !isOnMainThread else {
             callback()
             return
         }
@@ -356,7 +380,7 @@ struct MainCallQueue: @unchecked Sendable {
     /// True when no drain task is currently running.
     var isIdle: Bool { callQueueIsIdle(state) }
 
-    /// Suspends until the drain task goes idle (all calls flushed including the DispatchQueue hop).
+    /// Suspends until the drain task goes idle (all calls flushed).
     /// Pass a `deadline` (absolute uptime nanoseconds) to bound the wait; defaults to `.max` (unbounded).
     func waitUntilIdle(deadline: UInt64 = .max) async {
         await callQueueWaitUntilIdle(state, deadline: deadline)
@@ -370,43 +394,149 @@ struct MainCallQueue: @unchecked Sendable {
 
 // MARK: - BackgroundCallQueue
 
-/// Delivers Observed pipeline updates on a detached background task.
+/// Delivers Observed pipeline updates on a background thread via `AsyncStream`.
 ///
-/// Never touches the main thread. Use `isIdle`/`waitUntilIdle()`/`waitForCurrentItems()`
-/// in tests to wait for the pipeline to settle.
+/// A single drain `Task` is created at `init` and lives for the queue's lifetime,
+/// suspended at `for await` when idle. When work arrives via `callAsFunction(_:)`,
+/// the `AsyncStream` continuation resumes the already-scheduled task — no new `Task`
+/// is ever spawned on the hot path. This avoids cooperative-pool saturation: on a
+/// 2-vCPU CI runner with 100+ parallel tests, spawning `Task.detached` for every
+/// observation callback queues behind hundreds of waiting tasks. Resuming a suspended
+/// continuation is handled by the Swift runtime with much lower latency.
+/// Multiple callbacks buffered while the drain task is between iterations are all
+/// delivered without yielding (AsyncStream returns buffered items without suspending).
+///
+/// Works on WASM (no `libdispatch`): the single-threaded event loop has no pool
+/// saturation, and `AsyncStream` is part of the Swift standard library.
 struct BackgroundCallQueue: @unchecked Sendable {
-    private let state = LockIsolated<CallQueueState?>(nil)
+    private struct WaitState {
+        var pendingCount = 0
+        var onIdleCallbacks: [@Sendable () -> Void] = []
+    }
 
-    // MARK: Enqueue
+    private let streamCont: AsyncStream<@Sendable () -> Void>.Continuation
+    private let drainTask: Task<Void, Never>
+    private let waitState = LockIsolated(WaitState())
 
-    /// Enqueues `callback` for delivery on a detached background task.
-    func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
-        state.withValue {
-            if $0 == nil {
-                $0 = CallQueueState(task: Task.detached(priority: .userInitiated) {
-                    await callQueueDrainLoop(state: self.state)
-                }, calls: [callback])
-            } else {
-                $0!.calls.append(callback)
+    init() {
+        let (stream, cont) = AsyncStream.makeStream(
+            of: (@Sendable () -> Void).self,
+            bufferingPolicy: .unbounded
+        )
+        streamCont = cont
+        let ws = waitState
+        drainTask = Task.detached(priority: .userInitiated) {
+            for await callback in stream {
+                callback()
+                let idle: [@Sendable () -> Void] = ws.withValue { s in
+                    s.pendingCount -= 1
+                    guard s.pendingCount == 0 else { return [] }
+                    let cbs = s.onIdleCallbacks
+                    s.onIdleCallbacks = []
+                    return cbs
+                }
+                for f in idle { f() }
             }
         }
     }
 
+    // MARK: Enqueue
+
+    /// Resumes the drain task with `callback` (no new Task spawned).
+    func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
+        waitState.withValue { $0.pendingCount += 1 }
+        streamCont.yield(callback)
+    }
+
     // MARK: Idle
 
-    /// True when no drain task is currently running.
-    var isIdle: Bool { callQueueIsIdle(state) }
+    /// True when all enqueued callbacks have been processed.
+    var isIdle: Bool { waitState.value.pendingCount == 0 }
 
-    /// Suspends until the drain task goes idle (all calls flushed including the DispatchQueue hop).
-    /// Pass a `deadline` (absolute uptime nanoseconds) to bound the wait; defaults to `.max` (unbounded).
+    /// Suspends until all enqueued callbacks have been processed.
+    /// Pass a `deadline` (absolute uptime nanoseconds) to bound the wait.
     func waitUntilIdle(deadline: UInt64 = .max) async {
-        await callQueueWaitUntilIdle(state, deadline: deadline)
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let resumed = LockIsolated(false)
+            let resume: @Sendable () -> Void = {
+                resumed.withValue { r in
+                    guard !r else { return }
+                    r = true
+                    cont.resume()
+                }
+            }
+            let shouldResume = waitState.withValue { s -> Bool in
+                guard s.pendingCount > 0 else { return true }
+                s.onIdleCallbacks.append(resume)
+                return false
+            }
+            if shouldResume { cont.resume(); return }
+            if deadline < .max {
+                Task.detached {
+                    let now = monotonicNanoseconds()
+                    let ns = deadline > now ? deadline - now : 0
+                    try? await Task.sleep(nanoseconds: ns)
+                    resume()
+                }
+            }
+        }
     }
 
-    /// Suspends until all items currently in the queue have been processed, or the deadline passes.
+    /// Suspends until all items currently in the queue have been processed.
     func waitForCurrentItems(deadline: UInt64 = .max) async {
-        await callQueueWaitForCurrentItems(state, deadline: deadline)
+        if isIdle { return }
+        let ws = waitState
+        let sc = streamCont
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let resumed = LockIsolated(false)
+            let resume: @Sendable () -> Void = {
+                resumed.withValue { r in
+                    guard !r else { return }
+                    r = true
+                    cont.resume()
+                }
+            }
+            // Re-check under lock; enqueue sentinel that counts as one pending item.
+            let skipSentinel = ws.withValue { s -> Bool in
+                guard s.pendingCount > 0 else { return true }
+                s.pendingCount += 1  // account for the sentinel callback below
+                return false
+            }
+            if skipSentinel { cont.resume(); return }
+            // Sentinel is enqueued after all current items. When it runs, those items
+            // have been processed. It then decrements pendingCount and may fire idle callbacks.
+            sc.yield {
+                resume()
+                let idle: [@Sendable () -> Void] = ws.withValue { s in
+                    s.pendingCount -= 1
+                    guard s.pendingCount == 0 else { return [] }
+                    let cbs = s.onIdleCallbacks
+                    s.onIdleCallbacks = []
+                    return cbs
+                }
+                for f in idle { f() }
+            }
+            if deadline < .max {
+                Task.detached {
+                    let now = monotonicNanoseconds()
+                    let ns = deadline > now ? deadline - now : 0
+                    try? await Task.sleep(nanoseconds: ns)
+                    resume()
+                }
+            }
+        }
     }
+}
+
+/// Returns the current monotonic time in nanoseconds, used for deadline arithmetic.
+/// On platforms with `libdispatch`, uses `DispatchTime`; on WASM falls back to
+/// `ProcessInfo.systemUptime`.
+private func monotonicNanoseconds() -> UInt64 {
+    #if canImport(Dispatch)
+    return DispatchTime.now().uptimeNanoseconds
+    #else
+    return UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+    #endif
 }
 
 // MARK: - Global instances
