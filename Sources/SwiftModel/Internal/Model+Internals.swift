@@ -189,15 +189,45 @@ private struct CallQueueState {
     var onIdleCallbacks: [@Sendable () -> Void] = []
 }
 
-// MARK: - Shared drain-loop (both queue types)
+// MARK: - Drain loops
 
-/// Async drain loop shared by `MainCallQueue` and `BackgroundCallQueue`.
-/// Runs until the queue is empty, then cancels its own task and fires idle callbacks.
+/// Drain loop for `MainCallQueue`. Runs on `@MainActor` until the queue is empty,
+/// then cancels the task and fires idle callbacks.
 ///
-/// Uses a `DispatchQueue.global()` kernel-level hop between batches (with a `Task.yield()`
-/// fallback on WASM) to avoid cooperative-pool starvation when hundreds of tests run in
-/// parallel on a 2-vCPU Linux CI runner.
-private func callQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
+/// Uses `Task.yield()` between batches. `MainCallQueue` has exactly one concurrent drain
+/// task at a time (serialised by the actor), so cooperative-pool saturation is not a
+/// concern here.
+private func mainCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
+    while !Task.isCancelled {
+        let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
+            guard $0 != nil else { return ([], []) }
+            if $0!.calls.isEmpty {
+                $0!.task.cancel()
+                let idle = $0!.onIdleCallbacks
+                $0 = nil
+                return ([], idle)
+            }
+            let batch = $0!.calls
+            $0!.calls.removeAll()
+            return (batch, [])
+        }
+        for f in onIdle { f() }
+        guard !batch.isEmpty else { break }
+        for call in batch { call() }
+        await Task.yield()
+    }
+}
+
+/// Drain loop for `BackgroundCallQueue`. Runs as a detached task until the queue is empty,
+/// then cancels the task and fires idle callbacks.
+///
+/// Uses a `DispatchQueue.global()` kernel-level hop between batches on platforms that have
+/// Dispatch (macOS, Linux), and `Task.yield()` on WASM. The kernel hop avoids starving on
+/// a saturated cooperative pool when hundreds of tests run in parallel on a 2-vCPU Linux
+/// CI runner — `Task.yield()` in that environment puts the task at the back of a queue
+/// behind hundreds of other tasks, whereas a GCD hop delivers via the kernel thread pool
+/// independently of cooperative-pool backpressure.
+private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
             guard $0 != nil else { return ([], []) }
@@ -215,16 +245,10 @@ private func callQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
         guard !batch.isEmpty else { break }
         for call in batch { call() }
 #if canImport(Dispatch)
-        // Kernel-level dispatch hop instead of Task.yield() — avoids starving on a
-        // saturated cooperative pool. DispatchQueue.global() uses kernel threads unaffected
-        // by Swift concurrency pool backpressure, keeping drain tasks responsive even
-        // when 600+ tests run in parallel on a 2-vCPU Linux CI runner.
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             DispatchQueue.global().async { c.resume() }
         }
 #else
-        // WASM has no Dispatch; a cooperative yield is sufficient on the single-threaded
-        // WASI event loop.
         await Task.yield()
 #endif
     }
@@ -353,7 +377,7 @@ struct MainCallQueue: @unchecked Sendable {
         state.withValue {
             if $0 == nil {
                 $0 = CallQueueState(task: Task(priority: .userInitiated) { @MainActor in
-                    await callQueueDrainLoop(state: self.state)
+                    await mainCallQueueDrainLoop(state: self.state)
                 }, calls: [callback])
             } else {
                 $0!.calls.append(callback)
@@ -426,7 +450,7 @@ struct BackgroundCallQueue: @unchecked Sendable {
         state.withValue {
             if $0 == nil {
                 $0 = CallQueueState(task: Task.detached(priority: .userInitiated) {
-                    await callQueueDrainLoop(state: self.state)
+                    await backgroundCallQueueDrainLoop(state: self.state)
                 }, calls: [callback])
             } else {
                 $0!.calls.append(callback)
