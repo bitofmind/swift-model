@@ -150,27 +150,22 @@ func waitUntil(
     file: StaticString = #file,
     line: UInt = #line
 ) async throws {
-    // Fast path: if the condition is already satisfied, skip the calibration yield entirely.
-    // On iOS simulator under heavy parallel-test load a single Task.yield() can take
-    // hundreds of milliseconds, so avoiding it when possible keeps tests fast.
+    // Fast path: avoid the GCD calibration hop when the condition is already satisfied.
     if condition() { return }
 
-    // Scale the timeout by current scheduler latency so that under heavy parallel
-    // test load (e.g. 100x repetitions or 600+ concurrent tests on 2-vCPU CI)
-    // we wait proportionally longer for cooperative consumer tasks to be scheduled.
-    // Use Task.yield() (not a GCD hop) so we measure cooperative-pool latency:
-    // on a saturated pool, Task.yield() takes 50 ms+ which scales the timeout up
-    // to 5s+ (giving consumer tasks time to be scheduled). A GCD hop fires in
-    // <1ms regardless of pool saturation and would give no useful scaling.
+    // Measure scheduling latency using a GCD hop (kernel timer, <1 ms regardless of
+    // cooperative-pool saturation) rather than Task.yield(). Under heavy parallel-test
+    // load on 2-vCPU CI, Task.yield() can take 10–15 s because it queues behind 600+
+    // pending tasks — blocking the test task itself for 15 s per waitUntil call, which
+    // pushes the 600-test suite past the 30-minute CI timeout.
+    // GCD fires immediately from the kernel thread pool and gives an accurate measure
+    // of system scheduling pressure without stalling the test task.
     let calibrationStart = DispatchTime.now().uptimeNanoseconds
-    await Task.yield()
+    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+        DispatchQueue.global().async { c.resume() }
+    }
     let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
-    // Cap yieldLatencyNs at 100ms to prevent scaledTimeout from becoming
-    // enormous (e.g., 500s) when Task.yield() takes seconds during mass-concurrent
-    // test startup (511 tests all starting simultaneously floods the cooperative pool).
-    // max scale: 100ms * 100 = 10s — enough for consumer tasks without risking infinite waits.
-    let cappedLatencyNs = min(yieldLatencyNs, 100_000_000)  // cap at 100ms
-    let scaledTimeout = max(timeout, cappedLatencyNs * 100)
+    let scaledTimeout = max(timeout, yieldLatencyNs * 100)
 
     let start = DispatchTime.now().uptimeNanoseconds
     while !condition() {
