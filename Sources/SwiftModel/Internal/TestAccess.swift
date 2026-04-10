@@ -563,7 +563,16 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             return
                         }
                         await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
+                        // Use a GCD hop instead of Task.yield() — on a saturated cooperative pool
+                        // (hundreds of parallel tests on 2-vCPU CI), Task.yield() can suspend for
+                        // 50ms+. GCD dispatch fires in <1ms regardless of cooperative-pool depth.
+#if canImport(Dispatch)
+                        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                            DispatchQueue.global().async { c.resume() }
+                        }
+#else
                         await Task.yield()
+#endif
                         // Count as progress — backgroundCall draining counts as activity.
                         lastProgressTime = monotonicNanoseconds()
                         continue
@@ -596,7 +605,16 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             var lastChangeVersion = self.context.modificationCount
                             while true {
                                 await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
+                                // GCD hop instead of Task.yield() — same rationale as the
+                                // ID-divergence path above: avoids cooperative-pool saturation
+                                // delays on 2-vCPU CI with hundreds of concurrent tests.
+#if canImport(Dispatch)
+                                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                                    DispatchQueue.global().async { c.resume() }
+                                }
+#else
                                 await Task.yield()
+#endif
                                 let currentVersion = self.context.modificationCount
                                 if currentVersion == lastChangeVersion {
                                     // No changes this round. If tasks are still running,

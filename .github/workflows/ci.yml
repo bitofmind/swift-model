@@ -25,7 +25,7 @@ jobs:
   linux:
     name: Linux (Swift ${{ matrix.swift }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -34,6 +34,13 @@ jobs:
       image: swift:${{ matrix.swift }}
     steps:
       - uses: actions/checkout@v6
+      - name: Cache Swift build artifacts
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-swift-${{ matrix.swift }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swift-${{ matrix.swift }}-
       - name: Build and test
         run: swift test --skip MemoizePerformanceTests --skip CoalescingBenchmarks
 
