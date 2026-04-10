@@ -70,7 +70,13 @@ extension Optional where Wrapped: AnyObject {
             // onRemoval may still be held in backgroundCall's drain task queue.
             // Wait for those to finish so transitively owned objects (e.g. child
             // context References) are also released before callers assert on them.
-            await backgroundCall.waitUntilIdle()
+            //
+            // Use a 10-second deadline to prevent an indefinite hang when the global
+            // queue is perpetually busy with other parallel tests' work on 2-vCPU CI.
+            // Teardown callbacks execute in microseconds; 10s is orders of magnitude
+            // more than enough for the GCD drain to process them.
+            let idleDeadline = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+            await backgroundCall.waitUntilIdle(deadline: idleDeadline)
         }
     }
 }
