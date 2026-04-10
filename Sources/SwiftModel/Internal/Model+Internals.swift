@@ -174,10 +174,9 @@ extension Model where Self: Observable {
 //   `drain()`/`drainIfOnMain()` for model writes that happen on the main thread.
 //
 // - `BackgroundCallQueue` / `backgroundCall`: delivers Observed pipeline updates on a
-//   pre-started background Task (via AsyncStream). Never touches the main thread.
-//   Supports `isIdle`/`waitUntilIdle()`/`waitForCurrentItems()` for the test assert loop.
-//   A single drain task is started at init and reused for the queue's lifetime — no new
-//   tasks are spawned when work arrives, avoiding cooperative-pool saturation on CI.
+//   kernel DispatchQueue thread (Apple/Linux) or Task.detached (WASM). Never touches the
+//   main thread. Supports `isIdle`/`waitUntilIdle()`/`waitForCurrentItems()` for the
+//   test assert loop. Uses GCD to avoid Swift cooperative-pool starvation on CI.
 
 // MARK: - Shared State
 

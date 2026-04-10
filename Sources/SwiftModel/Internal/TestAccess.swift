@@ -424,28 +424,29 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     }
 
     func expect(timeoutNanoseconds timeout: UInt64, settleResetting: Exhaustivity? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
+        // Calibrate via a kernel-level GCD hop instead of Task.yield().
+        // On a 2-vCPU Linux CI runner with 1000+ concurrent tests, Task.yield() can take
+        // 50 ms+ (all tasks queue behind each other on 2 cooperative threads), which inflates
+        // yieldRoundNs and scaledTimeout to multi-second values that make every test slow.
+        // DispatchQueue.global() uses the kernel thread pool and fires in <1 ms regardless of
+        // cooperative-pool depth, giving accurate scheduling latency for timeout scaling.
         let calibrationStart = monotonicNanoseconds()
-        // Task.yield() is safe here: BackgroundCallQueue uses AsyncStream so the
-        // cooperative pool is no longer saturated by parallel drain tasks.
+#if canImport(Dispatch)
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { c.resume() }
+        }
+#else
         await Task.yield()
+#endif
         let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
         // Only apply adaptive scaling for the default (1 s) timeout or larger. Short explicit
         // timeouts (e.g. 1 ms passed by output-snapshot tests) must be respected as-is so
         // tests that intentionally probe failure messages don't wait unexpectedly long under
         // heavy parallel load.
-        //
-        // Cap at 10 s: on a heavily loaded CI (500 ms yield latency), the uncapped formula
-        // (yieldLatency × 100 = 50 s) would make genuinely failing tests wait ~50 s before
-        // reporting. 10 s gives ~20 scheduler rounds at 500 ms — enough for any legitimate
-        // condition while keeping failure feedback fast.
         let scaledTimeout = timeout >= nanosPerSecond ? min(10 * nanosPerSecond, max(timeout, yieldLatencyNs * 100)) : timeout
         // One scheduler round at the current pace. Used as the minimum poll interval so
-        // for-await loop bodies always get at least one full cooperative-pool turn per
-        // waitForModification call, even under heavy parallel test load.
-        // Cap at 500ms to prevent multi-minute sleeps when the cooperative pool was saturated
-        // during calibration (e.g. 200+ tests starting simultaneously on a 2-vCPU CI runner).
-        // Without the cap, Task.sleep(nanoseconds: yieldRoundNs) inside waitForModification
-        // could sleep for 10+ minutes, bypassing the hardCap timeout mechanism.
+        // for-await loop bodies get at least one full scheduling round per waitForModification
+        // call. With GCD calibration this is ~1 ms on Apple/Linux platforms.
         let yieldRoundNs = max(1_000_000, min(500_000_000, yieldLatencyNs)) // floor 1ms, cap 500ms
         let context = TesterAssertContext(events: { self.lock { self.events } }, fileAndLine: fileAndLine)
         // Hard cap: absolute maximum even when the model IS making progress (e.g. infinite
@@ -925,10 +926,15 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     /// model state change, so a healthy model never hits it. The hard cap is the absolute
     /// safety net (default 5 s, overridable via `TestAccessOverrides.hardCapNanoseconds`).
     func require<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
+        // Same GCD-hop calibration as expect() — see comment there.
         let calibrationStart = monotonicNanoseconds()
-        // Task.yield() is safe here: BackgroundCallQueue uses AsyncStream so the
-        // cooperative pool is no longer saturated by parallel drain tasks.
+#if canImport(Dispatch)
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global().async { c.resume() }
+        }
+#else
         await Task.yield()
+#endif
         let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
         let scaledTimeout = min(10 * nanosPerSecond, max(nanosPerSecond, yieldLatencyNs * 100))
         let yieldRoundNs = max(1_000_000, yieldLatencyNs)
