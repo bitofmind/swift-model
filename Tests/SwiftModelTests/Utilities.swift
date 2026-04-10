@@ -156,17 +156,21 @@ func waitUntil(
     if condition() { return }
 
     // Scale the timeout by current scheduler latency so that under heavy parallel
-    // test load (e.g. 100x repetitions) we wait proportionally longer.
-    // Use a kernel-level dispatch hop for calibration instead of Task.yield() —
-    // on a saturated cooperative pool (200+ parallel tests on 2-vCPU CI),
-    // Task.yield() can suspend for minutes. DispatchQueue.global() uses the
-    // kernel thread pool which is unaffected by cooperative pool backpressure.
+    // test load (e.g. 100x repetitions or 600+ concurrent tests on 2-vCPU CI)
+    // we wait proportionally longer for cooperative consumer tasks to be scheduled.
+    // Use Task.yield() (not a GCD hop) so we measure cooperative-pool latency:
+    // on a saturated pool, Task.yield() takes 50 ms+ which scales the timeout up
+    // to 5s+ (giving consumer tasks time to be scheduled). A GCD hop fires in
+    // <1ms regardless of pool saturation and would give no useful scaling.
     let calibrationStart = DispatchTime.now().uptimeNanoseconds
-    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-        DispatchQueue.global().async { c.resume() }
-    }
+    await Task.yield()
     let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
-    let scaledTimeout = max(timeout, yieldLatencyNs * 100)
+    // Cap yieldLatencyNs at 100ms to prevent scaledTimeout from becoming
+    // enormous (e.g., 500s) when Task.yield() takes seconds during mass-concurrent
+    // test startup (511 tests all starting simultaneously floods the cooperative pool).
+    // max scale: 100ms * 100 = 10s — enough for consumer tasks without risking infinite waits.
+    let cappedLatencyNs = min(yieldLatencyNs, 100_000_000)  // cap at 100ms
+    let scaledTimeout = max(timeout, cappedLatencyNs * 100)
 
     let start = DispatchTime.now().uptimeNanoseconds
     while !condition() {
