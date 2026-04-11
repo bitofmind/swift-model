@@ -151,11 +151,12 @@ func waitUntil(
                 timeoutSeconds: Double(timeout) / 1_000_000_000.0
             )
         }
-        await Task.yield()
-        if condition() { return }
-        if backgroundCall.isIdle {
-            try await Task.sleep(nanoseconds: pollInterval)
-        }
+        // Always sleep with a kernel timer — never busy-loop with Task.yield().
+        // Under heavy parallel-test load (600+ concurrent tests), Task.yield() queues
+        // behind every other cooperative task and can stall for seconds. Task.sleep
+        // uses a kernel-level timer that fires after exactly `pollInterval` regardless
+        // of cooperative pool saturation.
+        try await Task.sleep(nanoseconds: pollInterval)
     }
 }
 
