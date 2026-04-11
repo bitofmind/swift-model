@@ -27,7 +27,7 @@ jobs:
   linux:
     name: Linux (Swift ${{ matrix.swift }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -44,13 +44,15 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-swift-${{ matrix.swift }}-
       - name: Build and test
-        # Run tests serially (--num-workers 1) to avoid cooperative thread-pool saturation.
+        # Run tests serially (--no-parallel) to avoid cooperative thread-pool saturation.
         # Linux CI runners have 2 vCPUs; Swift Testing defaults to processorCount workers,
         # which launches hundreds of concurrent async test tasks on only 2 threads. Each
         # Task suspension then waits behind 600+ queued tasks (10-15 s per hop), pushing
         # the full suite well past any reasonable timeout.
+        # --num-workers 1 was tried but appears to be silently ignored in Swift 6.2
+        # (all tests start simultaneously regardless). --no-parallel is the definitive flag.
         # Parallel execution for race-condition detection is covered by the macOS job.
-        run: swift test --parallel --num-workers 1 --skip MemoizePerformanceTests --skip CoalescingBenchmarks
+        run: swift test --no-parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks
 
   android:
     name: Android (aarch64)
