@@ -50,7 +50,7 @@ jobs:
         # Task suspension then waits behind 600+ queued tasks (10-15 s per hop), pushing
         # the full suite well past any reasonable timeout.
         # Parallel execution for race-condition detection is covered by the macOS job.
-        run: swift test --num-workers 1 --skip MemoizePerformanceTests --skip CoalescingBenchmarks
+        run: swift test --parallel --num-workers 1 --skip MemoizePerformanceTests --skip CoalescingBenchmarks
 
   android:
     name: Android (aarch64)
