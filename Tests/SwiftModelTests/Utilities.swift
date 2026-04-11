@@ -137,6 +137,22 @@ struct WaitTimeoutError: Error, CustomStringConvertible {
     }
 }
 
+/// Suspends the current task via a GCD dispatch hop instead of `Task.yield()`.
+///
+/// On Apple/Linux platforms (libdispatch available), this uses a kernel-level timer
+/// that fires regardless of Swift cooperative-pool saturation. Under heavy parallel-test
+/// load on 2-vCPU CI, `Task.yield()` can take 10–15 s per call; a GCD hop takes <1 ms.
+/// On WASM (no libdispatch), falls back to `Task.yield()` — single-threaded, no issue.
+func gcdYield() async {
+#if canImport(Dispatch)
+    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+        DispatchQueue.global().async { c.resume() }
+    }
+#else
+    await Task.yield()
+#endif
+}
+
 /// Poll until a condition becomes true
 /// - Parameters:
 ///   - condition: The condition to check (autoclosure)

@@ -20,7 +20,9 @@ jobs:
         with:
           xcode-version: latest
       - name: Build and test
-        run: swift test --skip MemoizePerformanceTests --skip CoalescingBenchmarks
+        # Run in parallel to exercise concurrent behaviour and catch races.
+        # macOS runners have 3+ CPUs so cooperative-pool saturation is not a concern.
+        run: swift test --parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks
 
   linux:
     name: Linux (Swift ${{ matrix.swift }})
@@ -42,7 +44,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-swift-${{ matrix.swift }}-
       - name: Build and test
-        run: swift test --skip MemoizePerformanceTests --skip CoalescingBenchmarks
+        # Run tests serially (--num-workers 1) to avoid cooperative thread-pool saturation.
+        # Linux CI runners have 2 vCPUs; Swift Testing defaults to processorCount workers,
+        # which launches hundreds of concurrent async test tasks on only 2 threads. Each
+        # Task suspension then waits behind 600+ queued tasks (10-15 s per hop), pushing
+        # the full suite well past any reasonable timeout.
+        # Parallel execution for race-condition detection is covered by the macOS job.
+        run: swift test --num-workers 1 --skip MemoizePerformanceTests --skip CoalescingBenchmarks
 
   android:
     name: Android (aarch64)

@@ -707,13 +707,15 @@ struct MemoizeTests {
         _ = model.computed
 
         await withTaskGroup(of: Void.self) { group in
-            // Reader task: continuously reads the memoized value
+            // Reader task: continuously reads the memoized value.
+            // Uses gcdYield() instead of Task.yield() to interleave with the other tasks:
+            // on saturated 2-vCPU CI each Task.yield() takes 10-15 s; a GCD hop takes <1 ms.
             group.addTask {
                 for _ in 0..<200 {
                     let value = model.computed
                     // Value must always be a valid result (value * 2 is non-negative for non-negative value)
                     #expect(value >= 0, "Memoized value must always be valid (non-negative)")
-                    await Task.yield()
+                    await gcdYield()
                 }
             }
 
@@ -721,7 +723,7 @@ struct MemoizeTests {
             group.addTask {
                 for _ in 0..<200 {
                     model.resetComputed()
-                    await Task.yield()
+                    await gcdYield()
                 }
             }
 
@@ -729,7 +731,7 @@ struct MemoizeTests {
             group.addTask {
                 for i in 0..<50 {
                     model.value = i
-                    await Task.yield()
+                    await gcdYield()
                 }
             }
 
