@@ -1,5 +1,4 @@
 import Testing
-import ConcurrencyExtras
 import Foundation
 @testable import SwiftModel
 
@@ -294,10 +293,7 @@ struct ConcurrencyTests {
             // Without the fix, a queued performUpdate fires after cancellation and crashes.
             group.addTask {
                 // Give the writer a small head start so some updates are already queued.
-                // Use a GCD hop instead of Task.yield(): on saturated 2-vCPU CI each
-                // Task.yield() can take 10-15 s; one GCD hop is enough to let the writer's
-                // synchronous 200-iteration loop start executing on the cooperative pool.
-                await gcdYield()
+                await Task.yield()
                 if !container.leaves.isEmpty {
                     container.leaves.removeFirst()
                 }
@@ -310,10 +306,6 @@ struct ConcurrencyTests {
 
         // After both tasks finish, let the drain loop flush any remaining callbacks.
         // Any pending performUpdate on the removed leaf must be a no-op (not a crash).
-        // Use waitUntilIdle with a deadline instead of Task.yield() loops — on saturated
-        // 2-vCPU CI each Task.yield() can take 10-15 s, making 10 yields cost 100-150 s.
-        // The GCD drain fires its idle callback directly from the kernel thread pool, so
-        // waitUntilIdle returns promptly regardless of cooperative-pool pressure.
         await backgroundCall.waitUntilIdle(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
 
         // Sanity: the remaining leaf must still be responsive.

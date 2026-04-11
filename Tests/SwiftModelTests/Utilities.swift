@@ -59,22 +59,12 @@ extension Optional where Wrapped: AnyObject {
                     reportIssue("waitUntilRemoved timed out after 5s — model was not released. Check for retain cycles.")
                     return
                 }
-                // Use Task.sleep (kernel timer) instead of Task.yield() to poll.
-                // Task.yield() on a saturated cooperative pool (200+ parallel tests
-                // on 2-vCPU CI) can suspend for minutes, making the deadline check
-                // above unreachable until long after the 5s deadline has elapsed.
-                // Task.sleep fires after exactly ~10ms regardless of pool saturation.
-                try? await Task.sleep(nanoseconds: 10_000_000)
+                try? await Task.sleep(nanoseconds: 10_000_000) // poll every 10ms
             }
             // After the object is released, teardown closures dispatched during
             // onRemoval may still be held in backgroundCall's drain task queue.
             // Wait for those to finish so transitively owned objects (e.g. child
             // context References) are also released before callers assert on them.
-            //
-            // Use a 10-second deadline to prevent an indefinite hang when the global
-            // queue is perpetually busy with other parallel tests' work on 2-vCPU CI.
-            // Teardown callbacks execute in microseconds; 10s is orders of magnitude
-            // more than enough for the GCD drain to process them.
             let idleDeadline = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
             await backgroundCall.waitUntilIdle(deadline: idleDeadline)
         }
@@ -137,23 +127,7 @@ struct WaitTimeoutError: Error, CustomStringConvertible {
     }
 }
 
-/// Suspends the current task via a GCD dispatch hop instead of `Task.yield()`.
-///
-/// On Apple/Linux platforms (libdispatch available), this uses a kernel-level timer
-/// that fires regardless of Swift cooperative-pool saturation. Under heavy parallel-test
-/// load on 2-vCPU CI, `Task.yield()` can take 10–15 s per call; a GCD hop takes <1 ms.
-/// On WASM (no libdispatch), falls back to `Task.yield()` — single-threaded, no issue.
-func gcdYield() async {
-#if canImport(Dispatch)
-    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-        DispatchQueue.global().async { c.resume() }
-    }
-#else
-    await Task.yield()
-#endif
-}
-
-/// Poll until a condition becomes true
+/// Poll until a condition becomes true.
 /// - Parameters:
 ///   - condition: The condition to check (autoclosure)
 ///   - pollInterval: How often to check the condition in nanoseconds (default: 1ms)
@@ -166,41 +140,18 @@ func waitUntil(
     file: StaticString = #file,
     line: UInt = #line
 ) async throws {
-    // Fast path: avoid the GCD calibration hop when the condition is already satisfied.
     if condition() { return }
-
-    // Measure scheduling latency using a GCD hop (kernel timer, <1 ms regardless of
-    // cooperative-pool saturation) rather than Task.yield(). Under heavy parallel-test
-    // load on 2-vCPU CI, Task.yield() can take 10–15 s because it queues behind 600+
-    // pending tasks — blocking the test task itself for 15 s per waitUntil call, which
-    // pushes the 600-test suite past the 30-minute CI timeout.
-    // GCD fires immediately from the kernel thread pool and gives an accurate measure
-    // of system scheduling pressure without stalling the test task.
-    let calibrationStart = DispatchTime.now().uptimeNanoseconds
-    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-        DispatchQueue.global().async { c.resume() }
-    }
-    let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
-    let scaledTimeout = max(timeout, yieldLatencyNs * 100)
 
     let start = DispatchTime.now().uptimeNanoseconds
     while !condition() {
-        let elapsed = DispatchTime.now().uptimeNanoseconds - start
-        if elapsed > scaledTimeout {
+        if DispatchTime.now().uptimeNanoseconds - start > timeout {
             throw WaitTimeoutError(
                 file: file,
                 line: line,
                 timeoutSeconds: Double(timeout) / 1_000_000_000.0
             )
         }
-
-        // Kernel-level dispatch hop instead of Task.yield() — same rationale as the
-        // calibration above. After the hop, re-check the condition and sleep one poll
-        // interval only when backgroundCall is idle (avoids busy-spinning while the
-        // drain task is actively delivering updates).
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async { c.resume() }
-        }
+        await Task.yield()
         if condition() { return }
         if backgroundCall.isIdle {
             try await Task.sleep(nanoseconds: pollInterval)

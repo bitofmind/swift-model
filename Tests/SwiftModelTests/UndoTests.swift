@@ -354,9 +354,8 @@ struct TrackUndoSelectiveTests {
 /// `canUndo`/`canRedo` are checked directly on `stack` (not via `model.node.undoSystem`)
 /// because they are synchronously updated by `_addSyncObserver` in `notifyAll()` before
 /// `stack.undo()`/`stack.redo()` returns. Checking them through the model dependency
-/// system on the `.withObservationTracking` path requires the dependency model's own
-/// `@MainActor` drain task to be scheduled, which can take minutes on a saturated
-/// 2-vCPU CI cooperative pool.
+/// system on the `.withObservationTracking` path would require the dependency model's own
+/// `@MainActor` drain task to be scheduled first.
 @Suite(.modelTesting(exhaustivity: .off), .serialized)
 struct UndoObservationTests {
 

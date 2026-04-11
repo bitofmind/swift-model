@@ -424,20 +424,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     }
 
     func expect(timeoutNanoseconds timeout: UInt64, settleResetting: Exhaustivity? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
-        // Calibrate via a kernel-level GCD hop instead of Task.yield().
-        // On a 2-vCPU Linux CI runner with 1000+ concurrent tests, Task.yield() can take
-        // 50 ms+ (all tasks queue behind each other on 2 cooperative threads), which inflates
-        // yieldRoundNs and scaledTimeout to multi-second values that make every test slow.
-        // DispatchQueue.global() uses the kernel thread pool and fires in <1 ms regardless of
-        // cooperative-pool depth, giving accurate scheduling latency for timeout scaling.
         let calibrationStart = monotonicNanoseconds()
-#if canImport(Dispatch)
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async { c.resume() }
-        }
-#else
         await Task.yield()
-#endif
         let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
         // Only apply adaptive scaling for the default (1 s) timeout or larger. Short explicit
         // timeouts (e.g. 1 ms passed by output-snapshot tests) must be respected as-is so
@@ -563,16 +551,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             return
                         }
                         await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
-                        // Use a GCD hop instead of Task.yield() — on a saturated cooperative pool
-                        // (hundreds of parallel tests on 2-vCPU CI), Task.yield() can suspend for
-                        // 50ms+. GCD dispatch fires in <1ms regardless of cooperative-pool depth.
-#if canImport(Dispatch)
-                        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                            DispatchQueue.global().async { c.resume() }
-                        }
-#else
                         await Task.yield()
-#endif
                         // Count as progress — backgroundCall draining counts as activity.
                         lastProgressTime = monotonicNanoseconds()
                         continue
@@ -605,16 +584,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             var lastChangeVersion = self.context.modificationCount
                             while true {
                                 await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
-                                // GCD hop instead of Task.yield() — same rationale as the
-                                // ID-divergence path above: avoids cooperative-pool saturation
-                                // delays on 2-vCPU CI with hundreds of concurrent tests.
-#if canImport(Dispatch)
-                                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                                    DispatchQueue.global().async { c.resume() }
-                                }
-#else
                                 await Task.yield()
-#endif
                                 let currentVersion = self.context.modificationCount
                                 if currentVersion == lastChangeVersion {
                                     // No changes this round. If tasks are still running,
@@ -1077,9 +1047,6 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     return
                 }
                 // Timer to wake the continuation after delayNs.
-                // On platforms with libdispatch: kernel-level asyncAfter fires immediately
-                // regardless of cooperative pool depth. On WASM: Task.sleep is fine since the
-                // event loop is single-threaded and pool saturation cannot occur.
 #if canImport(Dispatch)
                 DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delayNs))) {
                     contSlot.withValue { slot in

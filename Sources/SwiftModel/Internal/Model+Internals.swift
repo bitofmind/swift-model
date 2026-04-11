@@ -174,9 +174,8 @@ extension Model where Self: Observable {
 //   `drain()`/`drainIfOnMain()` for model writes that happen on the main thread.
 //
 // - `BackgroundCallQueue` / `backgroundCall`: delivers Observed pipeline updates on a
-//   kernel DispatchQueue thread (Apple/Linux) or Task.detached (WASM). Never touches the
-//   main thread. Supports `isIdle`/`waitUntilIdle()`/`waitForCurrentItems()` for the
-//   test assert loop. Uses GCD to avoid Swift cooperative-pool starvation on CI.
+//   background Task. Never touches the main thread. Supports
+//   `isIdle`/`waitUntilIdle()`/`waitForCurrentItems()` for the test assert loop.
 
 // MARK: - Shared State
 
@@ -192,10 +191,6 @@ private struct CallQueueState {
 
 /// Drain loop for `MainCallQueue`. Runs on `@MainActor` until the queue is empty,
 /// then cancels the task and fires idle callbacks.
-///
-/// Uses `Task.yield()` between batches. `MainCallQueue` has exactly one concurrent drain
-/// task at a time (serialised by the actor), so cooperative-pool saturation is not a
-/// concern here.
 private func mainCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
@@ -217,42 +212,8 @@ private func mainCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async 
     }
 }
 
-#if canImport(Dispatch)
-/// Synchronous GCD drain for `BackgroundCallQueue` on Apple and Linux platforms.
-///
-/// Runs entirely on kernel DispatchQueue threads — never holds a Swift cooperative pool
-/// thread. Avoids cooperative-pool starvation when hundreds of tests run in parallel on
-/// a 2-vCPU Linux CI runner: unlike `Task.detached`, a `DispatchQueue.global().async`
-/// invocation fires immediately via the kernel thread pool regardless of cooperative-pool
-/// backpressure.
-///
-/// Processes one batch of callbacks per invocation, then reschedules itself on GCD for
-/// the next batch. When the queue is empty it fires idle callbacks and sets state to nil.
-private func backgroundCallQueueGCDDrain(state: LockIsolated<CallQueueState?>) {
-    let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
-        guard $0 != nil else { return ([], []) }
-        if $0!.calls.isEmpty {
-            $0!.task.cancel()   // no-op on the dummy task; kept for symmetry
-            let idle = $0!.onIdleCallbacks
-            $0 = nil
-            return ([], idle)
-        }
-        let batch = $0!.calls
-        $0!.calls.removeAll()
-        return (batch, [])
-    }
-    for f in onIdle { f() }
-    guard !batch.isEmpty else { return }
-    for call in batch { call() }
-    DispatchQueue.global(qos: .userInitiated).async {
-        backgroundCallQueueGCDDrain(state: state)
-    }
-}
-#else
-/// Async drain loop for `BackgroundCallQueue` on WASM (no libdispatch).
-///
-/// WASM runs on a single-threaded event loop so cooperative-pool starvation is not a
-/// concern. Uses `Task.yield()` between batches.
+/// Drain loop for `BackgroundCallQueue`. Runs on a detached Task until the queue is empty,
+/// then fires idle callbacks.
 private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
@@ -273,7 +234,6 @@ private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) 
         await Task.yield()
     }
 }
-#endif
 
 // MARK: - Shared idle/wait helpers (used by both queue types)
 
@@ -302,22 +262,8 @@ private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, dead
             return
         }
         if deadline < .max {
-#if canImport(Dispatch)
-            // DispatchQueue.asyncAfter registers a kernel-level timer immediately,
-            // independent of the cooperative pool — safe under CI pool saturation.
-            let now = DispatchTime.now().uptimeNanoseconds
-            let delay = deadline > now ? deadline - now : 0
-            DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
-                resumed.withValue { r in
-                    guard !r else { return }
-                    r = true
-                    cont.resume()
-                }
-            }
-#else
             Task.detached {
-                let now = UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
-                let delay = deadline > now ? deadline - now : 0
+                let delay = deadline > monotonicNanoseconds() ? deadline - monotonicNanoseconds() : 0
                 try? await Task.sleep(nanoseconds: delay)
                 resumed.withValue { r in
                     guard !r else { return }
@@ -325,7 +271,6 @@ private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, dead
                     cont.resume()
                 }
             }
-#endif
         }
     }
 }
@@ -343,20 +288,8 @@ private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>
                 }
             }
             if deadline < .max {
-#if canImport(Dispatch)
-                let now = DispatchTime.now().uptimeNanoseconds
-                let delay = deadline > now ? deadline - now : 0
-                DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delay))) {
-                    resumed.withValue { r in
-                        guard !r else { return }
-                        r = true
-                        cont.resume()
-                    }
-                }
-#else
                 Task.detached {
-                    let now = UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
-                    let delay = deadline > now ? deadline - now : 0
+                    let delay = deadline > monotonicNanoseconds() ? deadline - monotonicNanoseconds() : 0
                     try? await Task.sleep(nanoseconds: delay)
                     resumed.withValue { r in
                         guard !r else { return }
@@ -364,7 +297,6 @@ private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>
                         cont.resume()
                     }
                 }
-#endif
             }
             return false
         }
@@ -450,35 +382,19 @@ struct MainCallQueue: @unchecked Sendable {
 
 // MARK: - BackgroundCallQueue
 
-/// Delivers Observed pipeline updates on a background thread.
-///
-/// On platforms with libdispatch (Apple, Linux): drains via `DispatchQueue.global()`,
-/// which uses the kernel thread pool and is unaffected by Swift cooperative-pool
-/// backpressure. On WASM (no libdispatch): uses `Task.detached` on the single-threaded
-/// event loop where pool saturation is not a concern.
+/// Delivers Observed pipeline updates on a background Task.
 struct BackgroundCallQueue: @unchecked Sendable {
     private let state = LockIsolated<CallQueueState?>(nil)
 
     // MARK: Enqueue
 
-    /// Enqueues `callback`. Starts a drain if the queue was idle.
+    /// Enqueues `callback`. Starts a drain task if the queue was idle.
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
         state.withValue {
             if $0 == nil {
-#if canImport(Dispatch)
-                // Use a dummy task for CallQueueState compatibility; the real drain runs
-                // on kernel DispatchQueue threads, bypassing the cooperative pool entirely.
-                let dummyTask = Task<(), Never>.detached { }
-                $0 = CallQueueState(task: dummyTask, calls: [callback])
-                DispatchQueue.global(qos: .userInitiated).async {
-                    backgroundCallQueueGCDDrain(state: self.state)
-                }
-#else
-                // WASM: single-threaded event loop, no cooperative-pool saturation.
                 $0 = CallQueueState(task: Task.detached(priority: .userInitiated) {
                     await backgroundCallQueueDrainLoop(state: self.state)
                 }, calls: [callback])
-#endif
             } else {
                 $0!.calls.append(callback)
             }

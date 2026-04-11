@@ -590,11 +590,11 @@ struct MemoizeDirtyObservationTests {
         }
 
         // Hop 1: wait for memoize performUpdate (per-test isolated queue).
-        // Hop 2 (Observed performUpdate) is dispatched from the GCD drain thread, which
+        // Hop 2 (Observed performUpdate) is dispatched from the drain task, which
         // has no task-local, so it goes to the GLOBAL BackgroundCallQueue — not the
         // per-test queue. We cannot waitForCurrentItems on the global queue here.
         // Use a generous waitUntil timeout instead so the consumer task has time to
-        // receive the value from the global queue and execute on the cooperative pool.
+        // receive the value.
         await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
 
         // The final value must be observed (20 * 2 = 40)

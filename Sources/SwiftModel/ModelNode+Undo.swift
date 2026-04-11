@@ -83,9 +83,8 @@ public protocol UndoBackend: Sendable {
 ///
 /// ``ModelUndoSystem/onActivate()`` checks for this conformance and, when present,
 /// registers a sync observer instead of using `node.forEach(backend.availability)`.
-/// This is critical for Linux CI stability: on a saturated cooperative pool (many
-/// parallel tests on 2-vCPU runners) the `forEach` task may not be scheduled for
-/// minutes, causing `canUndo`/`canRedo` to never update.
+/// This avoids async scheduling latency and ensures `canUndo`/`canRedo` are always
+/// current immediately after `undo()`/`redo()` returns.
 private protocol _SyncAvailabilityObservable: Sendable {
     /// Registers `callback` to be called synchronously (on the calling thread) whenever
     /// undo availability changes. `callback` is also called once immediately with the
@@ -244,10 +243,8 @@ extension ModelUndoStack: _SyncAvailabilityObservable {
     public func onActivate() {
         guard let backend else { return }
         if let syncBackend = backend as? any _SyncAvailabilityObservable {
-            // Fast path: update canUndo/canRedo synchronously on the calling thread.
-            // This bypasses the Swift cooperative thread pool entirely, which is critical
-            // on Linux CI where a saturated pool (many parallel tests on 2-vCPU runners)
-            // can delay Task scheduling by minutes.
+            // Fast path: update canUndo/canRedo synchronously on the calling thread,
+            // ensuring they are always current immediately after undo()/redo() returns.
             let cancel = syncBackend._addSyncObserver { [self] avail in
                 canUndo = avail.canUndo
                 canRedo = avail.canRedo

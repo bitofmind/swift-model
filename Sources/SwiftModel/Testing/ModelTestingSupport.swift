@@ -216,9 +216,7 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         // side-effects (onCancel callbacks, stream finalizations) that were dispatched
         // during onRemoval(). This ensures post-teardown assertions see final state.
         //
-        // Use a 30-second deadline to prevent an indefinite hang if the cooperative
-        // pool is saturated (e.g. many parallel tests on a 2-vCPU CI runner) and the
-        // drain loop task is never scheduled.
+        // Use a 30-second deadline to prevent an indefinite hang.
         let deadline = monotonicNanoseconds() + 30_000_000_000
         await backgroundCall.waitUntilIdle(deadline: deadline)
     }

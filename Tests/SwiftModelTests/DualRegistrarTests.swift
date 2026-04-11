@@ -315,7 +315,6 @@ struct DualRegistrarTests {
         let changeDetected = LockIsolated(false)
 
         // withObservationTracking is synchronous — no Task wrapper needed.
-        // Calling it directly in the test body avoids cooperative-pool scheduling latency.
         withObservationTracking {
             _ = model.doubledObservableValue
         } onChange: {
@@ -346,7 +345,6 @@ struct DualRegistrarTests {
         let changeDetected = LockIsolated(false)
 
         // withObservationTracking is synchronous — no Task wrapper needed.
-        // Calling it directly in the test body avoids cooperative-pool scheduling latency.
         withObservationTracking {
             _ = model.dependencyValue
         } onChange: {
@@ -379,19 +377,10 @@ struct DualRegistrarTests {
         let observable = PureObservableModel()
         let model = ModelHoldingObservable(observable: observable).withAnchor()
 
-        // Consume Observed directly in the test body rather than a separate Task.
-        //
-        // A separate `Task { for await in Observed(...) }` must be *scheduled* on the
-        // cooperative pool before it can consume even the initial value. On a saturated
-        // 2-vCPU CI runner with 100+ parallel tests this scheduling can exceed the
-        // waitUntil timeout.
-        //
-        // Direct consumption is safe: the test task is already running. Suspending at
-        // iter.next() frees its pool thread so BackgroundCallQueue's drain Task
-        // (priority: .userInitiated, DispatchQueue hops) can run immediately.
-        // Each observable mutation is triggered only after iter.next() confirms the
-        // previous value was consumed, keeping hasPendingUpdate false and ensuring
-        // re-registration before the next change.
+        // Consume Observed directly in the test body rather than a separate Task so that
+        // each mutation is triggered only after iter.next() confirms the previous value was
+        // consumed, keeping hasPendingUpdate false and ensuring re-registration before the
+        // next change.
         var iter = Observed({ model.doubledObservableValue }).makeAsyncIterator()
 
         let v0 = await iter.next()
