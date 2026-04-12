@@ -16,6 +16,23 @@ private func monotonicNanoseconds() -> UInt64 {
     #endif
 }
 
+/// Suspends briefly and resumes on the next scheduler round.
+///
+/// On platforms with Dispatch, uses a GCD hop (`DispatchQueue.global().async`) which fires
+/// a kernel-level callback in <1 ms regardless of Swift cooperative thread pool saturation.
+/// Under heavy parallel test load, `Task.yield()` re-queues behind all pending cooperative
+/// tasks and can stall for seconds — making it unsuitable for calibration. Falls back to
+/// `Task.yield()` on platforms without Dispatch (e.g. WASI).
+private func yieldToScheduler() async {
+    #if canImport(Dispatch)
+    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+        DispatchQueue.global().async { c.resume() }
+    }
+    #else
+    await Task.yield()
+    #endif
+}
+
 // MARK: - How expect works
 //
 // expect { predicate } is a polling loop that:
@@ -425,7 +442,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
 
     func expect(timeoutNanoseconds timeout: UInt64, settleResetting: Exhaustivity? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
         let calibrationStart = monotonicNanoseconds()
-        await Task.yield()
+        await yieldToScheduler()
         let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
         // Only apply adaptive scaling for the default (1 s) timeout or larger. Short explicit
         // timeouts (e.g. 1 ms passed by output-snapshot tests) must be respected as-is so
@@ -551,7 +568,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             return
                         }
                         await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
-                        await Task.yield()
+                        await yieldToScheduler()
                         // Count as progress — backgroundCall draining counts as activity.
                         lastProgressTime = monotonicNanoseconds()
                         continue
@@ -584,7 +601,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             var lastChangeVersion = self.context.modificationCount
                             while true {
                                 await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
-                                await Task.yield()
+                                await yieldToScheduler()
                                 let currentVersion = self.context.modificationCount
                                 if currentVersion == lastChangeVersion {
                                     // No changes this round. If tasks are still running,
@@ -914,15 +931,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     /// model state change, so a healthy model never hits it. The hard cap is the absolute
     /// safety net (default 5 s, overridable via `TestAccessOverrides.hardCapNanoseconds`).
     func require<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
-        // Same GCD-hop calibration as expect() — see comment there.
         let calibrationStart = monotonicNanoseconds()
-#if canImport(Dispatch)
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global().async { c.resume() }
-        }
-#else
-        await Task.yield()
-#endif
+        await yieldToScheduler()
         let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
         let scaledTimeout = min(10 * nanosPerSecond, max(nanosPerSecond, yieldLatencyNs * 100))
         let yieldRoundNs = max(1_000_000, yieldLatencyNs)
