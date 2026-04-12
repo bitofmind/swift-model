@@ -661,6 +661,14 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
 
                         // Step 3: Model has settled. Mark all asserted paths as handled,
                         // advance expectedState, and run the exhaustion check.
+                        //
+                        // Capture valueUpdates inside the same lock that clears it.
+                        // checkExhaustion would otherwise re-read valueUpdates under a
+                        // separate lock acquisition, creating a race window where a concurrent
+                        // thread running an activeAccessCallback can write a new entry between
+                        // the clearing block's unlock and checkExhaustion's lock — producing
+                        // a spurious "State not exhausted" failure.
+                        var capturedValueUpdates: [PartialKeyPath<Root>: ValueUpdate]? = nil
                         lock {
                             // Sync expectedState to lastState for the asserted changes.
                             // Applying access values (predicate-time frozen copies) would write
@@ -687,6 +695,10 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             for (probe, value) in context.probes {
                                 probe.consume(value)
                             }
+
+                            // Capture valueUpdates after clearing so checkExhaustion uses
+                            // this consistent snapshot rather than re-reading under a new lock.
+                            capturedValueUpdates = valueUpdates
                         }
 
                         if enableExhaustionTest {
@@ -698,7 +710,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                             // acquires context.rootPaths — also guarded by the same lock. If we
                             // are suspended via an async withValue and resume on a different thread,
                             // the NSRecursiveLock is not re-entrant across threads and deadlocks.
-                            checkExhaustion(at: fileAndLine, includeUpdates: true)
+                            checkExhaustion(at: fileAndLine, includeUpdates: true, capturedUpdates: capturedValueUpdates)
                         }
 
                         return
@@ -1119,7 +1131,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     //
     // At the end, resets expectedState = lastState so the next assert starts from a
     // clean baseline.
-    func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false) {
+    func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false, capturedUpdates: [PartialKeyPath<Root>: ValueUpdate]? = nil) {
         if checkTasks {
             for info in context.activeTasks {
                 let taskWord = info.tasks.count == 1 ? "task" : "tasks"
@@ -1149,7 +1161,15 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             }
         }
 
-        let (lastAsserted, actual, snapshotUpdates) = lock { (expectedState, lastState, valueUpdates) }
+        // Read expectedState and lastState under a fresh lock so layers 1/2 detect any
+        // concurrent writes to lastState that occurred after the clearing block. For layer 3
+        // (valueUpdates), use the pre-captured snapshot when provided: it was captured inside
+        // the same lock as the clearing block, eliminating the race window where a concurrent
+        // activeAccessCallback could write a new entry between clearing and this read.
+        let snap = lock { (expectedState, lastState, valueUpdates) }
+        let lastAsserted = snap.0
+        let actual = snap.1
+        let snapshotUpdates = capturedUpdates ?? snap.2
 
         let title = "State not exhausted"
 
