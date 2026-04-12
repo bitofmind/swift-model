@@ -269,6 +269,25 @@ private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) 
 
 // MARK: - Shared idle/wait helpers (used by both queue types)
 
+/// Schedules `body` to run after `nanoseconds` nanoseconds.
+///
+/// Uses `DispatchQueue.global().asyncAfter` (kernel-level timer) on platforms that have
+/// Dispatch, so it fires regardless of Swift cooperative thread-pool saturation.
+/// Falls back to `Task.detached { Task.sleep }` on platforms without Dispatch (e.g. WASI).
+func scheduleAfter(nanoseconds: UInt64, _ body: @escaping @Sendable () -> Void) {
+    #if canImport(Dispatch)
+    DispatchQueue.global().asyncAfter(
+        deadline: .now() + .nanoseconds(Int(min(nanoseconds, UInt64(Int.max)))),
+        execute: body
+    )
+    #else
+    Task.detached {
+        try? await Task.sleep(nanoseconds: nanoseconds)
+        body()
+    }
+    #endif
+}
+
 private func callQueueIsIdle(_ state: LockIsolated<CallQueueState?>) -> Bool {
     state.value == nil
 }
@@ -294,9 +313,8 @@ private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, dead
             return
         }
         if deadline < .max {
-            Task.detached {
-                let delay = deadline > monotonicNanoseconds() ? deadline - monotonicNanoseconds() : 0
-                try? await Task.sleep(nanoseconds: delay)
+            let delayNs = deadline > monotonicNanoseconds() ? deadline - monotonicNanoseconds() : 0
+            scheduleAfter(nanoseconds: delayNs) {
                 resumed.withValue { r in
                     guard !r else { return }
                     r = true
@@ -320,9 +338,8 @@ private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>
                 }
             }
             if deadline < .max {
-                Task.detached {
-                    let delay = deadline > monotonicNanoseconds() ? deadline - monotonicNanoseconds() : 0
-                    try? await Task.sleep(nanoseconds: delay)
+                let delayNs = deadline > monotonicNanoseconds() ? deadline - monotonicNanoseconds() : 0
+                scheduleAfter(nanoseconds: delayNs) {
                     resumed.withValue { r in
                         guard !r else { return }
                         r = true

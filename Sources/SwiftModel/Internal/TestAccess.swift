@@ -1063,22 +1063,12 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     return
                 }
                 // Timer to wake the continuation after delayNs.
-#if canImport(Dispatch)
-                DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(delayNs))) {
+                scheduleAfter(nanoseconds: delayNs) {
                     contSlot.withValue { slot in
                         slot?.resume()
                         slot = nil
                     }
                 }
-#else
-                Task.detached {
-                    try? await Task.sleep(nanoseconds: delayNs)
-                    contSlot.withValue { slot in
-                        slot?.resume()
-                        slot = nil
-                    }
-                }
-#endif
             }
         }
 
