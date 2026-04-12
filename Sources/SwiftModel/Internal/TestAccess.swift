@@ -18,18 +18,24 @@ private func monotonicNanoseconds() -> UInt64 {
 
 /// Suspends briefly and resumes on the next scheduler round.
 ///
-/// On platforms with Dispatch, uses a GCD hop (`DispatchQueue.global().async`) which fires
-/// a kernel-level callback in <1 ms regardless of Swift cooperative thread pool saturation.
-/// Under heavy parallel test load, `Task.yield()` re-queues behind all pending cooperative
-/// tasks and can stall for seconds — making it unsuitable for calibration. Falls back to
-/// `Task.yield()` on platforms without Dispatch (e.g. WASI).
+/// On Apple platforms, uses a GCD hop (`DispatchQueue.global().async`) which fires a
+/// kernel-level callback in <1 ms regardless of Swift cooperative thread pool saturation.
+/// macOS runs tests in parallel (`--parallel`), so `Task.yield()` can stall for seconds
+/// under heavy concurrent load — making it unsuitable for calibration.
+///
+/// On Linux, tests run serially (`--no-parallel`) so the cooperative pool is not saturated,
+/// and `Task.yield()` is fast. More importantly, on Linux the `@MainActor` executor is
+/// backed by the cooperative pool's main thread — `Task.yield()` allows pending `@MainActor`
+/// tasks (e.g. OT-path memoize recomputes queued by `MainCallQueue`) to run before we
+/// evaluate predicates. A GCD hop bypasses the cooperative pool and those tasks never get
+/// a scheduling opportunity within the `expect()` loop.
 private func yieldToScheduler() async {
-    #if canImport(Dispatch)
+    #if os(Linux) || (!canImport(Dispatch))
+    await Task.yield()
+    #else
     await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
         DispatchQueue.global().async { c.resume() }
     }
-    #else
-    await Task.yield()
     #endif
 }
 
