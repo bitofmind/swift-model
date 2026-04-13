@@ -584,11 +584,19 @@ private extension ModelNode {
                         typeErasedIsSame = nil
                     }
                     let typeID = ObjectIdentifier(T.self)
+                    let hasInitialized = LockIsolated(false)
 
                     context.lock {
                         let entry = context._memoizeCache[key]
                         let prevValue = entry?.value as? T
                         let prevCancellable = entry?.cancellable
+
+                        // After initial setup, if the entry was removed (by resetMemoization),
+                        // don't recreate a stale entry with no active subscription.
+                        if hasInitialized.value, entry == nil {
+                            return
+                        }
+                        hasInitialized.setValue(true)
 
                         // Bypass isSame when forceObservation is set (e.g. from node.touch()
                         // propagating through memoize). Without this bypass, a touch on a dependency
@@ -678,7 +686,7 @@ private extension ModelNode {
                         context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
                             value: value,
                             cancellable: prevCancellable ?? {},
-                            isDirty: false,
+                            isDirty: usesAsyncTracking && (entry?.isDirty ?? false),
                             onUpdate: wrappedOnUpdate,
                             usesAsyncTracking: usesAsyncTracking,
                             isSame: typeErasedIsSame,
