@@ -613,20 +613,26 @@ private extension ModelNode {
                             var postCallbacks: [() -> Void] = []
 
                             context.lock {
-                                let currentEntry = context._memoizeCache[key]
-                                let currentPrevValue = currentEntry?.value as? T
-                                let currentCancellable = currentEntry?.cancellable
-                                let currentOnUpdate = currentEntry?.onUpdate
+                                guard let currentEntry = context._memoizeCache[key] else {
+                                    // Entry was removed by resetMemoization; don't re-create
+                                    // a stale entry with no observation subscription.
+                                    return
+                                }
+                                let currentPrevValue = currentEntry.value as? T
+                                let currentCancellable = currentEntry.cancellable
+                                let currentOnUpdate = currentEntry.onUpdate
 
                                 if let isSame, let currentPrevValue, isSame(typedValue, currentPrevValue) {
                                     return
                                 }
 
+                                // Preserve isDirty if a concurrent mutation set it between
+                                // produce() and this lock acquisition.
                                 context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
                                     value: typedValue,
-                                    cancellable: currentCancellable ?? {},
-                                    isDirty: false,
-                                    onUpdate: currentOnUpdate,  // Preserve the same callback
+                                    cancellable: currentCancellable,
+                                    isDirty: currentEntry.isDirty,
+                                    onUpdate: currentOnUpdate,
                                     usesAsyncTracking: usesAsyncTracking,
                                     isSame: typeErasedIsSame,
                                     typeID: typeID
