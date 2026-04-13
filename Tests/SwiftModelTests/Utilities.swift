@@ -59,13 +59,14 @@ extension Optional where Wrapped: AnyObject {
                     reportIssue("waitUntilRemoved timed out after 5s — model was not released. Check for retain cycles.")
                     return
                 }
-                await Task.yield()
+                try? await Task.sleep(nanoseconds: 10_000_000) // poll every 10ms
             }
             // After the object is released, teardown closures dispatched during
             // onRemoval may still be held in backgroundCall's drain task queue.
             // Wait for those to finish so transitively owned objects (e.g. child
             // context References) are also released before callers assert on them.
-            await backgroundCall.waitUntilIdle()
+            let idleDeadline = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+            await backgroundCall.waitUntilIdle(deadline: idleDeadline)
         }
     }
 }
@@ -126,7 +127,7 @@ struct WaitTimeoutError: Error, CustomStringConvertible {
     }
 }
 
-/// Poll until a condition becomes true
+/// Poll until a condition becomes true.
 /// - Parameters:
 ///   - condition: The condition to check (autoclosure)
 ///   - pollInterval: How often to check the condition in nanoseconds (default: 1ms)
@@ -139,40 +140,23 @@ func waitUntil(
     file: StaticString = #file,
     line: UInt = #line
 ) async throws {
-    // Fast path: if the condition is already satisfied, skip the calibration yield entirely.
-    // On iOS simulator under heavy parallel-test load a single Task.yield() can take
-    // hundreds of milliseconds, so avoiding it when possible keeps tests fast.
     if condition() { return }
-
-    // Scale the timeout by current scheduler latency so that under heavy parallel
-    // test load (e.g. 100x repetitions) we wait proportionally longer.
-    let calibrationStart = DispatchTime.now().uptimeNanoseconds
-    await Task.yield()
-    let yieldLatencyNs = DispatchTime.now().uptimeNanoseconds - calibrationStart
-    let scaledTimeout = max(timeout, yieldLatencyNs * 100)
 
     let start = DispatchTime.now().uptimeNanoseconds
     while !condition() {
-        let elapsed = DispatchTime.now().uptimeNanoseconds - start
-        if elapsed > scaledTimeout {
+        if DispatchTime.now().uptimeNanoseconds - start > timeout {
             throw WaitTimeoutError(
                 file: file,
                 line: line,
                 timeoutSeconds: Double(timeout) / 1_000_000_000.0
             )
         }
-
-        // Yield cooperatively so the backgroundCall drain task (which drives Observed
-        // stream updates) gets scheduler turns. Under heavy parallel test load
-        // backgroundCall is almost always busy, so yielding interleaves with it
-        // naturally. We sleep the poll interval only when it's idle to avoid spinning.
-        if !backgroundCall.isIdle {
-            await Task.yield()
-        } else {
-            await Task.yield()
-            if condition() { return }
-            try await Task.sleep(nanoseconds: pollInterval)
-        }
+        // Always sleep with a kernel timer — never busy-loop with Task.yield().
+        // Under heavy parallel-test load (600+ concurrent tests), Task.yield() queues
+        // behind every other cooperative task and can stall for seconds. Task.sleep
+        // uses a kernel-level timer that fires after exactly `pollInterval` regardless
+        // of cooperative pool saturation.
+        try await Task.sleep(nanoseconds: pollInterval)
     }
 }
 

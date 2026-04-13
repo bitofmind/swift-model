@@ -538,6 +538,20 @@ class AnyContext: @unchecked Sendable {
             entry.cancellable?()
         }
 
+        // Move cache entries out of the dictionary before clearing. The entries'
+        // closures (onUpdate, cancellable) capture shared objects (LockIsolated
+        // boxes, context references) that may also be held by in-flight
+        // performUpdate closures on the GCD backgroundCallQueue. Releasing the
+        // entries here (inside the lock, on the teardown thread) would race with
+        // the GCD thread releasing the same objects when it finishes executing or
+        // dropping the performUpdate closure — a classic ARC race that causes
+        // swift_deallocClassInstance crashes on Linux.
+        //
+        // By deferring the release to the callbacks array (which runs outside the
+        // lock, after child teardown), we give the cancellation flag
+        // (hasBeenCancelled) time to propagate and ensure the entries' closures
+        // are released on a single thread.
+        let memoizeEntries = Array(_memoizeCache.values)
         _memoizeCache.removeAll()
 
         for entry in contextStorage.values {
@@ -562,6 +576,12 @@ class AnyContext: @unchecked Sendable {
             for cont in anyModifies {
                 cont(true)?()
             }
+
+            // Release memoize cache entries outside the lock. The entries'
+            // closures share reference-counted objects with GCD-dispatched
+            // performUpdate closures; releasing them here (single-threaded,
+            // after cancellation) avoids the ARC race.
+            withExtendedLifetime(memoizeEntries) {}
         }
 
         for child in children {

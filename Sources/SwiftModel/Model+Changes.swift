@@ -583,11 +583,19 @@ private extension ModelNode {
                         typeErasedIsSame = nil
                     }
                     let typeID = ObjectIdentifier(T.self)
+                    let hasInitialized = LockIsolated(false)
 
                     context.lock {
                         let entry = context._memoizeCache[key]
                         let prevValue = entry?.value as? T
                         let prevCancellable = entry?.cancellable
+
+                        // After initial setup, if the entry was removed (by resetMemoization),
+                        // don't recreate a stale entry with no active subscription.
+                        if hasInitialized.value, entry == nil {
+                            return
+                        }
+                        hasInitialized.setValue(true)
 
                         // Bypass isSame when forceObservation is set (e.g. from node.touch()
                         // propagating through memoize). Without this bypass, a touch on a dependency
@@ -612,20 +620,26 @@ private extension ModelNode {
                             var postCallbacks: [() -> Void] = []
 
                             context.lock {
-                                let currentEntry = context._memoizeCache[key]
-                                let currentPrevValue = currentEntry?.value as? T
-                                let currentCancellable = currentEntry?.cancellable
-                                let currentOnUpdate = currentEntry?.onUpdate
+                                guard let currentEntry = context._memoizeCache[key] else {
+                                    // Entry was removed by resetMemoization; don't re-create
+                                    // a stale entry with no observation subscription.
+                                    return
+                                }
+                                let currentPrevValue = currentEntry.value as? T
+                                let currentCancellable = currentEntry.cancellable
+                                let currentOnUpdate = currentEntry.onUpdate
 
                                 if let isSame, let currentPrevValue, isSame(typedValue, currentPrevValue) {
                                     return
                                 }
 
+                                // Preserve isDirty if a concurrent mutation set it between
+                                // produce() and this lock acquisition.
                                 context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
                                     value: typedValue,
-                                    cancellable: currentCancellable ?? {},
-                                    isDirty: false,
-                                    onUpdate: currentOnUpdate,  // Preserve the same callback
+                                    cancellable: currentCancellable,
+                                    isDirty: currentEntry.isDirty,
+                                    onUpdate: currentOnUpdate,
                                     usesAsyncTracking: usesAsyncTracking,
                                     isSame: typeErasedIsSame,
                                     typeID: typeID
@@ -671,7 +685,7 @@ private extension ModelNode {
                         context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
                             value: value,
                             cancellable: prevCancellable ?? {},
-                            isDirty: false,
+                            isDirty: usesAsyncTracking && (entry?.isDirty ?? false),
                             onUpdate: wrappedOnUpdate,
                             usesAsyncTracking: usesAsyncTracking,
                             isSame: typeErasedIsSame,
@@ -1115,6 +1129,13 @@ internal func update<T: Sendable>(
         return (
             cancel: {
                 hasBeenCancelled.withValue { $0 = true }
+                // Nil out the box so no new performUpdate can be scheduled by
+                // onObservedChange, and so the box no longer retains the
+                // performUpdate closure. Any already-queued performUpdate on the
+                // GCD backgroundCallQueue will early-return via hasBeenCancelled
+                // and release its captured references on the GCD thread alone —
+                // no concurrent release from _memoizeCache.removeAll().
+                performUpdateBox.setValue(nil)
                 forceObserver.cancel()
             },
             forceNextUpdate: {

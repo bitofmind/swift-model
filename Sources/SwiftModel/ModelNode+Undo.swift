@@ -74,6 +74,24 @@ public protocol UndoBackend: Sendable {
     func redo()
 }
 
+// MARK: - _SyncAvailabilityObservable
+
+/// Internal protocol adopted by ``ModelUndoStack`` to deliver availability updates
+/// synchronously — without going through the Swift cooperative thread pool.
+///
+/// ``ModelUndoSystem/onActivate()`` checks for this conformance and, when present,
+/// registers a sync observer instead of using `node.forEach(backend.availability)`.
+/// This avoids async scheduling latency and ensures `canUndo`/`canRedo` are always
+/// current immediately after `undo()`/`redo()` returns.
+private protocol _SyncAvailabilityObservable: Sendable {
+    /// Registers `callback` to be called synchronously (on the calling thread) whenever
+    /// undo availability changes. `callback` is also called once immediately with the
+    /// current state before `_addSyncObserver` returns.
+    ///
+    /// Returns a cancel closure. Call it to unregister the observer.
+    func _addSyncObserver(_ callback: @escaping @Sendable (UndoAvailability) -> Void) -> @Sendable () -> Void
+}
+
 // MARK: - ModelUndoStack
 
 /// An in-memory ``UndoBackend`` with a simple push/undo/redo stack.
@@ -93,6 +111,7 @@ public final class ModelUndoStack: UndoBackend, @unchecked Sendable {
     private var undoEntries: [ModelUndoEntry] = []
     private var redoEntries: [ModelUndoEntry] = []
     private var continuations: [Int: AsyncStream<UndoAvailability>.Continuation] = [:]
+    private var syncObservers: [Int: @Sendable (UndoAvailability) -> Void] = [:]
     private var nextKey = 0
 
     public init() {}
@@ -143,8 +162,30 @@ public final class ModelUndoStack: UndoBackend, @unchecked Sendable {
 
     private func notifyAll() {
         let avail = UndoAvailability(canUndo: canUndo, canRedo: canRedo)
+        // Call sync observers first — they update canUndo/canRedo on the model immediately,
+        // without any cooperative-pool scheduling. Copy the dict outside the lock so that
+        // observers are free to call undo()/redo()/push() without deadlocking.
+        let syncs = lock { syncObservers }
+        for observer in syncs.values { observer(avail) }
         let conts = lock { continuations }
         for cont in conts.values { cont.yield(avail) }
+    }
+}
+
+extension ModelUndoStack: _SyncAvailabilityObservable {
+    fileprivate func _addSyncObserver(_ callback: @escaping @Sendable (UndoAvailability) -> Void) -> @Sendable () -> Void {
+        // Register the observer and capture the current availability atomically under the lock,
+        // then deliver the initial state synchronously outside the lock.
+        let (key, initialAvail): (Int, UndoAvailability) = lock {
+            let k = nextKey
+            nextKey += 1
+            syncObservers[k] = callback
+            return (k, UndoAvailability(canUndo: !undoEntries.isEmpty, canRedo: !redoEntries.isEmpty))
+        }
+        callback(initialAvail)
+        return { [weak self] in
+            self?.lock { _ = self?.syncObservers.removeValue(forKey: key) }
+        }
     }
 }
 
@@ -199,9 +240,21 @@ public final class ModelUndoStack: UndoBackend, @unchecked Sendable {
 
     public func onActivate() {
         guard let backend else { return }
-        node.forEach(backend.availability) { [self] avail in
-            canUndo = avail.canUndo
-            canRedo = avail.canRedo
+        if let syncBackend = backend as? any _SyncAvailabilityObservable {
+            // Fast path: update canUndo/canRedo synchronously on the calling thread,
+            // ensuring they are always current immediately after undo()/redo() returns.
+            let cancel = syncBackend._addSyncObserver { [self] avail in
+                canUndo = avail.canUndo
+                canRedo = avail.canRedo
+            }
+            node.onCancel(perform: cancel)
+        } else {
+            // Fallback for custom UndoBackend implementations that don't conform to
+            // _SyncAvailabilityObservable: use the async stream path.
+            node.forEach(backend.availability) { [self] avail in
+                canUndo = avail.canUndo
+                canRedo = avail.canRedo
+            }
         }
     }
 }

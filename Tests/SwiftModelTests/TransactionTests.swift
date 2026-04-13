@@ -155,7 +155,9 @@ struct TransactionTests {
 
         let observedValues = LockIsolated<[Int]>([])
 
-        // Start a long transaction (synchronous, so actually blocks)
+        // Start a long transaction (synchronous, so actually blocks).
+        // The 50ms sleeps ensure concurrent readers (each sleeping 20ms) have a chance
+        // to attempt reads while the transaction is in progress, exercising isolation.
         Task.detached {
             model.transaction {
                 model.value = 200

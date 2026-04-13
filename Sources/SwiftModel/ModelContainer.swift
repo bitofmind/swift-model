@@ -217,13 +217,13 @@ public extension ModelContainer {
         return \Self.[cursor: cursor]
     }
 
-    func path<Value>(caseName: String, value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
-        let cursor = ContainerCursor(id: caseName, get: { get($0)! }, set: set)
+    func path<Value: Sendable>(caseName: String, value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
+        let cursor = ContainerCursor(id: caseName, get: { get($0) ?? value }, set: set)
         return \Self.[cursor: cursor]
     }
 
     func path<Value: Identifiable&Sendable>(caseName: String, value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
-        let cursor = ContainerCursor(id: CaseAndID(caseName: caseName, id: value.id), get: { get($0)! }, set: set)
+        let cursor = ContainerCursor(id: CaseAndID(caseName: caseName, id: value.id), get: { get($0) ?? value }, set: set)
         return \Self.[cursor: cursor]
     }
 
@@ -232,8 +232,8 @@ public extension ModelContainer {
     /// Use this overload inside a `@ModelContainer` `visit` implementation when there is no
     /// explicit `ID` to key on — for example, for an `Optional` whose element is not `Identifiable`.
     /// The cursor is created from the runtime identity of `value`.
-    func path<Value>(value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
-        let cursor = ContainerCursor(id: anyHashable(from: value), get: { get($0)! }, set: set)
+    func path<Value: Sendable>(value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
+        let cursor = ContainerCursor(id: anyHashable(from: value), get: { get($0) ?? value }, set: set)
         return \Self.[cursor: cursor]
     }
 }

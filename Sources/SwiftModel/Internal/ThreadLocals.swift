@@ -81,6 +81,11 @@ final class ThreadLocals: @unchecked Sendable {
     }
 }
 
+#if os(WASI)
+// WASI is single-threaded; a plain global suffices in place of pthread TLS.
+private let _wasiThreadLocals = ThreadLocals()
+var threadLocals: ThreadLocals { _wasiThreadLocals }
+#else
 var threadLocals: ThreadLocals {
     if let state = pthread_getspecific(threadLocalsKey) {
         return Unmanaged<ThreadLocals>.fromOpaque(state).takeUnretainedValue()
@@ -107,3 +112,4 @@ private let threadLocalsKey: pthread_key_t = {
     pthread_key_create(&key, cleanup)
     return key
 }()
+#endif
