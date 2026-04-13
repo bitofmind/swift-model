@@ -50,7 +50,11 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test(arguments: UpdatePath.allCases)
+    // ValuesModel uses Observed(coalesceUpdates: false) which always uses AccessCollector regardless
+    // of UpdatePath settings. The withObservationTracking variant adds no coverage — it only enables
+    // the OT registrar, which queues extra async mainCallQueue notifications on Linux and causes
+    // spurious exhaustivity failures. This test is only meaningful with .accessCollector.
+    @Test(arguments: [UpdatePath.accessCollector])
     func testChangeOfChild(updatePath: UpdatePath) async throws {
         let model = updatePath.withOptions { ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).withAnchor() }
 

@@ -1116,6 +1116,13 @@ internal func update<T: Sendable>(
         return (
             cancel: {
                 hasBeenCancelled.withValue { $0 = true }
+                // Nil out the box so no new performUpdate can be scheduled by
+                // onObservedChange, and so the box no longer retains the
+                // performUpdate closure. Any already-queued performUpdate on the
+                // GCD backgroundCallQueue will early-return via hasBeenCancelled
+                // and release its captured references on the GCD thread alone —
+                // no concurrent release from _memoizeCache.removeAll().
+                performUpdateBox.setValue(nil)
                 forceObserver.cancel()
             },
             forceNextUpdate: {
