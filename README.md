@@ -1,9 +1,11 @@
 # SwiftModel
 
 [![Swift 6.1+](https://img.shields.io/badge/Swift-6.1%2B-orange.svg)](https://swift.org)
-[![Platforms](https://img.shields.io/badge/Platforms-macOS%2011%20%7C%20iOS%2014%20%7C%20tvOS%2014%20%7C%20watchOS%206%20%7C%20Linux%20%7C%20Android-blue.svg)](https://swift.org)
 [![Swift Package Manager](https://img.shields.io/badge/SPM-compatible-brightgreen.svg)](https://swift.org/package-manager)
-[![CI](https://github.com/bitofmind/swift-model/actions/workflows/ci.yml/badge.svg)](https://github.com/bitofmind/swift-model/actions/workflows/ci.yml)
+[![macOS](https://img.shields.io/github/actions/workflow/status/bitofmind/swift-model/ci.yml?branch=main&label=macOS)](https://github.com/bitofmind/swift-model/actions/workflows/ci.yml)
+[![Linux](https://img.shields.io/github/actions/workflow/status/bitofmind/swift-model/ci.yml?branch=main&label=Linux)](https://github.com/bitofmind/swift-model/actions/workflows/ci.yml)
+[![Android build](https://img.shields.io/github/actions/workflow/status/bitofmind/swift-model/ci.yml?branch=main&label=Android%20build)](https://github.com/bitofmind/swift-model/actions/workflows/ci.yml)
+[![WASM build](https://img.shields.io/github/actions/workflow/status/bitofmind/swift-model/ci.yml?branch=main&label=WASM%20build)](https://github.com/bitofmind/swift-model/actions/workflows/ci.yml)
 
 Composable value-type models for SwiftUI. The structured architecture of TCA without reducers, action enums, or effect indirection.
 
