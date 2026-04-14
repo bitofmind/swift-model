@@ -665,47 +665,53 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     // isApplyingSnapshot suppresses willAccessPreference/willAccessStorage callbacks
                     // and re-entrant observation triggered by releasing live child models during
                     // the transform.
+                    // Read lastState under the lock (brief), then compute frozenCopy and
+                    // evaluate key paths OUTSIDE the lock. Evaluating container cursor key
+                    // paths (e.g. items[0].value) can call _swift_getKeyPath which acquires
+                    // the Swift runtime lock. Holding TestAccess lock while needing the
+                    // runtime lock deadlocks when another thread holds the runtime lock and
+                    // needs TestAccess lock (lock-ordering inversion). Since `last` is a
+                    // local frozen copy and `passedAccesses` is a local array, no lock is
+                    // needed for the comparison itself.
                     let isEqualIncludingIds = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-                        let last = lastState.frozenCopy
-                        return lock {
-                            threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
-                                return passedAccesses.reduce(true) { result, access in
-                                    // Context/preference storage values live in AnyContext.contextStorage,
-                                    // not in the @Model struct fields. Writing them back to a frozen copy
-                                    // (which has no live context) is a silent no-op, so the round-trip
-                                    // read would return defaultValue instead of the asserted value —
-                                    // making isEqualIncludingIds always false and causing a hang.
-                                    // The predicate already verified these values on the live model,
-                                    // so we skip the frozen-copy equality check for them.
-                                    if access.skipEqualityCheck { return result }
-                                    // Skip container-level model accesses. When a model property (e.g.
-                                    // TestHelper.summary of type SummaryFeature) is accessed, its full
-                                    // struct value is captured including the generation counter. But the
-                                    // generation counter advances on every child write, so comparing the
-                                    // whole struct causes a false "not settled yet" when the child property
-                                    // we actually asserted has already settled. Child-level accesses
-                                    // (e.g. SummaryFeature.destination) are always recorded alongside the
-                                    // parent, and they check the actual leaf value with IDs — sufficient
-                                    // to detect genuine backgroundCall in-flight conditions.
-                                    if access.isModelTypeValue { return result }
-                                    // Skip ModelContainer-typed values (Optional<M>, @ModelContainer enums).
-                                    // These use ContainerCursor key paths whose getter does `get($0)!`.
-                                    // ContainerCursor paths are safe to traverse only on the live model
-                                    // hierarchy — reading them on a frozenCopy snapshot crashes because
-                                    // frozenCopy transforms model identity and the cursor no longer matches.
-                                    // Leaf accesses recorded within the container are checked independently.
-                                    if access.isContainerTypeValue { return result }
-                                    // Transitions mode: skip settlement check for accesses that read
-                                    // from the FIFO queue. Their captured value is historical (the
-                                    // front-of-queue value) and will not match lastState (the live value).
-                                    if self.exhaustivity.contains(.transitions) && self.valueUpdates[access.path] != nil { return result }
-                                    // Compare the predicate-time captured value against lastState directly.
-                                    // Using only `last` (which reflects the current live state) and comparing
-                                    // against the captured value is safe and sufficient: if the IDs match,
-                                    // the model has settled.
-                                    let a = last[keyPath: access.path]
-                                    return result && (diff(access.capturedValue(), a) == nil)
-                                }
+                        let last = lock { lastState }.frozenCopy
+                        return threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
+                            return passedAccesses.reduce(true) { result, access in
+                                // Context/preference storage values live in AnyContext.contextStorage,
+                                // not in the @Model struct fields. Writing them back to a frozen copy
+                                // (which has no live context) is a silent no-op, so the round-trip
+                                // read would return defaultValue instead of the asserted value —
+                                // making isEqualIncludingIds always false and causing a hang.
+                                // The predicate already verified these values on the live model,
+                                // so we skip the frozen-copy equality check for them.
+                                if access.skipEqualityCheck { return result }
+                                // Skip container-level model accesses. When a model property (e.g.
+                                // TestHelper.summary of type SummaryFeature) is accessed, its full
+                                // struct value is captured including the generation counter. But the
+                                // generation counter advances on every child write, so comparing the
+                                // whole struct causes a false "not settled yet" when the child property
+                                // we actually asserted has already settled. Child-level accesses
+                                // (e.g. SummaryFeature.destination) are always recorded alongside the
+                                // parent, and they check the actual leaf value with IDs — sufficient
+                                // to detect genuine backgroundCall in-flight conditions.
+                                if access.isModelTypeValue { return result }
+                                // Skip ModelContainer-typed values (Optional<M>, @ModelContainer enums).
+                                // These use ContainerCursor key paths whose getter does `get($0)!`.
+                                // ContainerCursor paths are safe to traverse only on the live model
+                                // hierarchy — reading them on a frozenCopy snapshot crashes because
+                                // frozenCopy transforms model identity and the cursor no longer matches.
+                                // Leaf accesses recorded within the container are checked independently.
+                                if access.isContainerTypeValue { return result }
+                                // Transitions mode: skip settlement check for accesses that read
+                                // from the FIFO queue. Their captured value is historical (the
+                                // front-of-queue value) and will not match lastState (the live value).
+                                if self.exhaustivity.contains(.transitions) && self.valueUpdates[access.path] != nil { return result }
+                                // Compare the predicate-time captured value against lastState directly.
+                                // Using only `last` (which reflects the current live state) and comparing
+                                // against the captured value is safe and sufficient: if the IDs match,
+                                // the model has settled.
+                                let a = last[keyPath: access.path]
+                                return result && (diff(access.capturedValue(), a) == nil)
                             }
                         }
                     }

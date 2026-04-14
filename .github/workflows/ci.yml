@@ -13,7 +13,7 @@ jobs:
   macos:
     name: macOS
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v6
       - uses: maxim-lobanov/setup-xcode@v1
@@ -21,13 +21,12 @@ jobs:
           xcode-version: latest
       - name: Build and test
         # Run in parallel to exercise concurrent behaviour and catch races.
-        # macOS runners have 3+ CPUs so cooperative-pool saturation is not a concern.
         run: swift test --parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks
 
   linux:
     name: Linux
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 7
     container:
       image: swift:6.2
     steps:
@@ -51,7 +50,7 @@ jobs:
     # errors that occur when cross-compiling from macOS (where those checks
     # evaluate against the macOS host instead of the Android target).
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     container:
       image: swift:6.3
     steps:
@@ -114,7 +113,7 @@ jobs:
     # (ObjectiveC, AppKit, UIKit) evaluate against the container OS, which
     # correctly reflects the WASM target's behaviour.
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 7
     container:
       image: swift:6.3
     steps:

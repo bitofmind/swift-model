@@ -741,9 +741,10 @@ struct MemoizeTests {
             await group.waitForAll()
         }
 
-        // Final access must return a consistent value and not crash
-        let finalValue = model.computed
-        #expect(finalValue == model.value * 2, "Final value must be consistent with current state")
+        // Final access must return a consistent value and not crash.
+        // Use await expect to wait for any in-flight backgroundCallQueue
+        // performUpdate items to drain before checking consistency.
+        await expect(model.computed == model.value * 2)
     }
 }
 
