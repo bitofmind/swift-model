@@ -29,7 +29,7 @@ private func monotonicNanoseconds() -> UInt64 {
 /// tasks (e.g. OT-path memoize recomputes queued by `MainCallQueue`) to run before we
 /// evaluate predicates. A GCD hop bypasses the cooperative pool and those tasks never get
 /// a scheduling opportunity within the `expect()` loop.
-private func yieldToScheduler() async {
+func yieldToScheduler() async {
     #if os(Linux) || (!canImport(Dispatch))
     await Task.yield()
     #else
@@ -88,6 +88,16 @@ private func yieldToScheduler() async {
 // timeout paths quickly without waiting the normal 5-second minimum.
 enum TestAccessOverrides {
     @TaskLocal static var hardCapNanoseconds: UInt64? = nil
+}
+
+/// Calibration data computed once per wait operation by measuring scheduler latency.
+/// Shared by `expect`, `require`, `settle`, and end-of-test `checkExhaustion`.
+package struct WaitCalibration: Sendable {
+    let yieldLatencyNs: UInt64
+    let yieldRoundNs: UInt64
+    let scaledTimeout: UInt64
+    let hardCap: UInt64
+    let start: UInt64
 }
 
 // Key for tracking context storage writes on dependency models (which have no root-relative keypath).
@@ -154,6 +164,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
 
     // General task counter (Phase 5): tracks all currently-running tasks in the hierarchy.
     private var _activeTaskCount: Int = 0
+
 
     // Captures a single state transition: how to apply it to a Root snapshot, and how to
     // describe it for exhaustion-failure messages.
@@ -581,28 +592,15 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     }
 
     func expect(timeoutNanoseconds timeout: UInt64, settleResetting: _ExhaustivityBits? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
-        let calibrationStart = monotonicNanoseconds()
-        await yieldToScheduler()
-        let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
-        // Only apply adaptive scaling for the default (1 s) timeout or larger. Short explicit
-        // timeouts (e.g. 1 ms passed by output-snapshot tests) must be respected as-is so
-        // tests that intentionally probe failure messages don't wait unexpectedly long under
-        // heavy parallel load.
-        let scaledTimeout = timeout >= nanosPerSecond ? min(10 * nanosPerSecond, max(timeout, yieldLatencyNs * 100)) : timeout
-        // One scheduler round at the current pace. Used as the minimum poll interval so
-        // for-await loop bodies get at least one full scheduling round per waitForModification
-        // call. With GCD calibration this is ~1 ms on Apple/Linux platforms.
-        let yieldRoundNs = max(1_000_000, min(500_000_000, yieldLatencyNs)) // floor 1ms, cap 500ms
+        let cal = await calibrate(timeout: timeout)
+        let scaledTimeout = cal.scaledTimeout
+        let yieldRoundNs = cal.yieldRoundNs
+        let hardCap = cal.hardCap
         let context = TesterAssertContext(events: { self.lock { self.events } }, fileAndLine: fileAndLine)
-        // Hard cap: absolute maximum even when the model IS making progress (e.g. infinite
-        // mutation loop). Capped at 30 s — triple the scaledTimeout cap so legitimately busy
-        // models have headroom, while runaway loops get caught well within CI job timeouts.
-        // TestAccessOverrides.hardCapNanoseconds allows output snapshot tests to override.
-        let hardCap = TestAccessOverrides.hardCapNanoseconds ?? min(30 * nanosPerSecond, max(5 * nanosPerSecond, scaledTimeout * 10))
 
         await TesterAssertContextBase.$assertContext.withValue(context) {
 
-            let start = monotonicNanoseconds()
+            let start = cal.start
             var lastProgressTime = start  // reset whenever a state modification arrives
             var retryCount = 0
             var failures: [TesterAssertContext.Failure] = []
@@ -743,53 +741,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         // fires). Finally, reset selected exhaustivity categories so
                         // subsequent expect {} calls only see changes made after settling.
                         if let resetting = settleResetting {
-                            // Wait for all onActivate()-born tasks to begin executing.
-                            // In practice this completes almost immediately because
-                            // activationTaskEntered() fires at the start of the task body.
-                            while self.activationTasksInFlight > 0 {
-                                let didProgress = await waitForModification(timeoutNanoseconds: scaledTimeout, yieldRoundNs: yieldRoundNs, retryCount: retryCount)
-                                if didProgress { lastProgressTime = monotonicNanoseconds() }
-                                retryCount += 1
-                                if start.distance(to: monotonicNanoseconds()) > hardCap {
-                                    let taskInfo = self.settleTimeoutDiagnostics()
-                                    fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
-                                    return
-                                }
-                            }
-
-                            // Idle cycle: wait until one full scheduling round passes
-                            // with no state changes. Uses modificationCount on the root
-                            // context as a version number.
-                            var lastChangeVersion = self.context.modificationCount
-                            while true {
-                                await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
-                                await yieldToScheduler()
-                                let currentVersion = self.context.modificationCount
-                                if currentVersion == lastChangeVersion {
-                                    // No changes this round. If tasks are still running,
-                                    // wait one more round to handle scheduling jitter —
-                                    // the task might just be between yield suspension and
-                                    // its next mutation.
-                                    if !self.isCompletelyIdle {
-                                        await waitForModification(timeoutNanoseconds: yieldRoundNs, yieldRoundNs: yieldRoundNs, retryCount: 2)
-                                        let afterWait = self.context.modificationCount
-                                        if afterWait == currentVersion {
-                                            break // genuinely idle: no changes even after waiting
-                                        }
-                                        lastChangeVersion = afterWait
-                                    } else {
-                                        break // no active tasks → idle
-                                    }
-                                } else {
-                                    lastChangeVersion = currentVersion
-                                }
-                                lastProgressTime = monotonicNanoseconds()
-                                if start.distance(to: monotonicNanoseconds()) > hardCap {
-                                    let taskInfo = self.settleTimeoutDiagnostics()
-                                    fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
-                                    return
-                                }
-                            }
+                            let settled = await waitUntilSettled(calibration: cal, at: fileAndLine)
+                            if !settled { return }
 
                             // Reset selected exhaustivity categories.
                             lock {
@@ -1120,14 +1073,11 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     /// model state change, so a healthy model never hits it. The hard cap is the absolute
     /// safety net (default 5 s, overridable via `TestAccessOverrides.hardCapNanoseconds`).
     func require<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
-        let calibrationStart = monotonicNanoseconds()
-        await yieldToScheduler()
-        let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
-        let scaledTimeout = min(10 * nanosPerSecond, max(nanosPerSecond, yieldLatencyNs * 100))
-        let yieldRoundNs = max(1_000_000, yieldLatencyNs)
-        let hardCap = TestAccessOverrides.hardCapNanoseconds ?? min(30 * nanosPerSecond, max(5 * nanosPerSecond, scaledTimeout * 10))
-
-        let start = monotonicNanoseconds()
+        let cal = await calibrate()
+        let scaledTimeout = cal.scaledTimeout
+        let yieldRoundNs = cal.yieldRoundNs
+        let hardCap = cal.hardCap
+        let start = cal.start
         var lastProgressTime = start
         var retryCount = 0
 
@@ -1182,7 +1132,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     ///
     /// Returns `true` if a state modification was observed during the wait (progress was made).
     @discardableResult
-    private func waitForModification(timeoutNanoseconds remaining: UInt64, yieldRoundNs: UInt64, retryCount: Int = 0) async -> Bool {
+    package func waitForModification(timeoutNanoseconds remaining: UInt64, yieldRoundNs: UInt64, retryCount: Int = 0) async -> Bool {
         guard remaining > 0 else { return false }
 
         let bgQueue = backgroundCall
@@ -1298,6 +1248,142 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         return lines.joined(separator: "\n")
     }
 
+    // MARK: - Shared calibration and settling
+
+    /// Measures scheduler latency and computes adaptive timeouts.
+    ///
+    /// The calibration yield measures how long a `yieldToScheduler()` takes under current
+    /// system load, then scales all timeouts proportionally. This makes the wait loops
+    /// robust under both light (single test) and heavy (100× parallel) conditions.
+    ///
+    /// - Parameter timeout: Base timeout for predicate waiting (default 1 s). Short explicit
+    ///   timeouts (e.g. from output snapshot tests) are preserved as-is.
+    package func calibrate(timeout: UInt64 = nanosPerSecond) async -> WaitCalibration {
+        let calibrationStart = monotonicNanoseconds()
+        await yieldToScheduler()
+        let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
+        let scaledTimeout = timeout >= nanosPerSecond
+            ? min(10 * nanosPerSecond, max(timeout, yieldLatencyNs * 100))
+            : timeout
+        let yieldRoundNs = max(1_000_000, min(500_000_000, yieldLatencyNs))
+        let hardCap = TestAccessOverrides.hardCapNanoseconds
+            ?? min(30 * nanosPerSecond, max(5 * nanosPerSecond, scaledTimeout * 10))
+        return WaitCalibration(
+            yieldLatencyNs: yieldLatencyNs,
+            yieldRoundNs: yieldRoundNs,
+            scaledTimeout: scaledTimeout,
+            hardCap: hardCap,
+            start: monotonicNanoseconds()
+        )
+    }
+
+    /// Waits for the model hierarchy to become idle using adaptive calibration.
+    ///
+    /// Phase 1: Wait for all `onActivate()`-born tasks to begin executing their body.
+    /// Phase 2: Idle cycle — wait until `modificationCount` stabilizes across a full
+    /// scheduling round with no active tasks running.
+    ///
+    /// Used by `expect`'s settle path and by end-of-test `checkExhaustion`.
+    /// Returns `true` on success, `false` if the hard cap was hit.
+    /// - Parameter reportTimeout: When `true` (default), reports a test failure if the
+    ///   hard cap is hit. Pass `false` from `checkExhaustion` where the subsequent
+    ///   exhaustivity check handles failure reporting through proper exhaustivity bits.
+    @discardableResult
+    package func waitUntilSettled(calibration cal: WaitCalibration, reportTimeout: Bool = true, at fileAndLine: FileAndLine) async -> Bool {
+        // Phase 1: Wait for all activation tasks to enter their body.
+        // In practice this completes almost immediately because activationTaskEntered()
+        // fires at the start of the task body.
+        while activationTasksInFlight > 0 {
+            await waitForModification(timeoutNanoseconds: cal.scaledTimeout, yieldRoundNs: cal.yieldRoundNs, retryCount: 0)
+            if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
+                if reportTimeout {
+                    let taskInfo = settleTimeoutDiagnostics()
+                    fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
+                }
+                return false
+            }
+        }
+
+        // Phase 2: Idle cycle — wait until one full scheduling round passes
+        // with no state changes. Uses modificationCount on the root context as
+        // a version number.
+        var lastChangeVersion = context.modificationCount
+        while true {
+            await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
+            await yieldToScheduler()
+
+            // Re-check activation tasks: backgroundCall drain or yieldToScheduler
+            // may have triggered child model activations (e.g. SearchResultItem
+            // activated when results is set), creating new tasks that haven't entered
+            // their body yet. Wait for them before evaluating idle state.
+            while activationTasksInFlight > 0 {
+                await waitForModification(timeoutNanoseconds: cal.scaledTimeout, yieldRoundNs: cal.yieldRoundNs, retryCount: 0)
+                if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
+                    if reportTimeout {
+                        let taskInfo = settleTimeoutDiagnostics()
+                        fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
+                    }
+                    return false
+                }
+            }
+
+            let currentVersion = context.modificationCount
+            if currentVersion == lastChangeVersion {
+                if lock({ _activeTaskCount }) == 0 {
+                    break // no active tasks and no changes → settled
+                }
+                // Tasks are still running but no state changed yet. The task body
+                // may be waiting for a cooperative pool turn (e.g. ImmediateClock
+                // task entered but hasn't written detailLine yet).
+                //
+                // Yield to the cooperative pool repeatedly to give blocked tasks
+                // scheduling opportunities, then drain the backgroundCall queue
+                // (where model writes are batched). Under 100× parallel load the
+                // pool is saturated so a single yield is insufficient — the loop
+                // gives ~20 scheduling rounds. For observation loops (node.forEach
+                // suspended in `for await`) this loop completes quickly since
+                // Task.yield() is nearly free when no cooperative tasks are ready.
+                var progressed = false
+                for _ in 0..<20 {
+                    await Task.yield()
+                    await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
+                    if context.modificationCount != currentVersion || lock({ _activeTaskCount }) == 0 {
+                        progressed = true
+                        break
+                    }
+                }
+                if !progressed {
+                    // Still no modifications after cooperative yields + queue drains.
+                    // The task body may be suspended across multiple `try await`
+                    // points (nested withValue calls in TaskCancellable) waiting
+                    // for cooperative pool turns on a different thread — yields on
+                    // our thread don't help. Use onAnyModification callback (via
+                    // waitForModification) which fires immediately when the write
+                    // happens regardless of thread. The extended timeout (yieldRoundNs
+                    // × 30: ~30ms normal, ~300ms under 100× saturation) is only
+                    // consumed for observation loops; real modifications wake us early.
+                    let patience = cal.yieldRoundNs * 30
+                    await waitForModification(timeoutNanoseconds: patience, yieldRoundNs: patience, retryCount: 2)
+                    if context.modificationCount == currentVersion {
+                        break // No progress — remaining tasks are observation loops
+                    }
+                }
+                lastChangeVersion = context.modificationCount
+            } else {
+                lastChangeVersion = currentVersion
+            }
+            if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
+                if reportTimeout {
+                    let taskInfo = settleTimeoutDiagnostics()
+                    fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
+                }
+                return false
+            }
+        }
+
+        return true
+    }
+
     // Checks that no state changed without being asserted (exhaustion check).
     //
     // At the end, resets expectedState = lastState so the next assert starts from a
@@ -1309,7 +1395,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 fail("Models of type `\(info.modelName)` have \(info.tasks.count) active \(taskWord) still running", for: .tasks, at: fileAndLine)
 
                 for (taskName, taskFileAndLine) in info.tasks {
-                    fail("Active task '\(taskName)' of `\(info.modelName)` still running (registered here)", for: .tasks, at: taskFileAndLine)
+                    fail("Active task '\(taskName)' of `\(info.modelName)` still running", for: .tasks, at: taskFileAndLine)
                 }
             }
         }

@@ -54,9 +54,11 @@ enum SortOption: String, CaseIterable, Sendable {
     func onActivate() {
         // Load a short summary line asynchronously. This task is cancelled
         // automatically if the item is removed from the results list.
+        // Uses `node.continuousClock` so tests can inject `ImmediateClock` to
+        // skip the delay — otherwise the 200 ms real sleep outlives fast tests.
         node.task {
             // Simulate a lightweight fetch (e.g. fetching README first line).
-            try await Task.sleep(for: .milliseconds(200))
+            try await node.continuousClock.sleep(for: .milliseconds(200))
             detailLine = repo.language.map { "Written in \($0)" }
                 ?? "Language unknown"
         } catch: { _ in }

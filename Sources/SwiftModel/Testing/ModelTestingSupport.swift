@@ -38,7 +38,7 @@ package protocol _AnyModelTestScope: AnyObject, Sendable {
     ) async throws -> T
 
     func install(_ probes: [TestProbe])
-    func checkExhaustion(at fileAndLine: FileAndLine)
+    func checkExhaustion(at fileAndLine: FileAndLine) async
     func cancelAndCleanup()
     func waitForTeardown() async
     var exhaustivity: _ExhaustivityBits { get set }
@@ -130,8 +130,8 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
         }
     }
 
-    package func checkExhaustion(at fileAndLine: FileAndLine) {
-        concrete?.checkExhaustion(at: fileAndLine)
+    package func checkExhaustion(at fileAndLine: FileAndLine) async {
+        await concrete?.checkExhaustion(at: fileAndLine)
     }
 
     package func cancelAndCleanup() {
@@ -196,10 +196,35 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         }
     }
 
-    package func checkExhaustion(at fileAndLine: FileAndLine) {
+    package func checkExhaustion(at fileAndLine: FileAndLine) async {
         // Mark tester so its deinit skips cleanup — we are running it here instead.
         tester.cleanupHandledExternally = true
+
+        // Use the same adaptive calibration as expect/require/settle so the waiting
+        // scales with system pressure (single test vs 100× parallel).
+        let cal = await tester.access.calibrate()
+
+        // Phase 1: Let running tasks settle. Tasks using ImmediateClock or similar
+        // complete naturally during this phase.
+        await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
+
+        // Phase 2: Cancel onActivate tasks (observation loops, long-running tasks).
+        // cancelAll(for:) removes tasks from Cancellations.registered (so activeTasks
+        // won't see them) AND calls task.cancel() on the Swift Task.
         tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
+
+        // Phase 3: Brief settle — gives quickly-completable tasks (e.g. using
+        // ImmediateClock) a chance to finish. Also lets any cascading child
+        // activations (e.g. SearchResultItem.onActivate triggered by a results
+        // write during Phase 1) complete and register their tasks.
+        // reportTimeout: false — the subsequent exhaustivity check handles failures
+        // through proper exhaustivity-respecting paths.
+        await tester.access.waitUntilSettled(calibration: cal, reportTimeout: false, at: fileAndLine)
+
+        // Phase 4: Cancel any tasks that were registered during the settle phase
+        // (e.g. child model onActivate tasks from cascading activations).
+        tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
+
         tester.access.checkExhaustion(at: fileAndLine, includeUpdates: false, checkTasks: true)
         tester.access.context.onRemoval()
     }

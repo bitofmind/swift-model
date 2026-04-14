@@ -170,13 +170,17 @@ struct FilterModelTests {
 struct SearchResultItemTests {
 
     @Test func perItemDetailLoadsAfterActivation() async {
-        let item = SearchResultItem(repo: Repo.mocks[0]).withAnchor()
+        let item = SearchResultItem(repo: Repo.mocks[0]).withAnchor {
+            $0.continuousClock = ImmediateClock()
+        }
         // After activation, the async task should populate detailLine
         await expect(item.detailLine != nil)
     }
 
     @Test func toggleExpanded() async {
-        let item = SearchResultItem(repo: Repo.mocks[0]).withAnchor()
+        let item = SearchResultItem(repo: Repo.mocks[0]).withAnchor {
+            $0.continuousClock = ImmediateClock()
+        }
         // settle() lets the detailLine task complete and resets the exhaustivity baseline
         await settle()
         item.toggleExpanded()

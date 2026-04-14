@@ -427,8 +427,8 @@ struct ExhaustionFailureTests {
         } matches: {
             """
             Models of type `LongTaskRunner` have 2 active tasks still running
-            Active task 'longTask1' of `LongTaskRunner` still running (registered here)
-            Active task 'longTask2' of `LongTaskRunner` still running (registered here)
+            Active task 'longTask1' of `LongTaskRunner` still running
+            Active task 'longTask2' of `LongTaskRunner` still running
             """
         }
     }
@@ -443,7 +443,7 @@ struct ExhaustionFailureTests {
         } matches: {
             """
             Models of type `SingleTaskRunner` have 1 active task still running
-            Active task 'theTask' of `SingleTaskRunner` still running (registered here)
+            Active task 'theTask' of `SingleTaskRunner` still running
             """
         }
     }

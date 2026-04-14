@@ -513,7 +513,7 @@ private func _withModelTestingImpl(
         // post-scope assertions see the final state. Both run inside the task-local
         // scope so any backgroundCall work from onRemoval() uses the per-test queue.
         if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
-            concrete.checkExhaustion(at: fl)
+            await concrete.checkExhaustion(at: fl)
             await concrete.waitForTeardown()
         }
     }
@@ -570,7 +570,7 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
             // After the test body completes, run exhaustion check (still inside the
             // test-local queue scope so any teardown backgroundCall work uses testQueue).
             if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
-                concrete.checkExhaustion(at: fl)
+                await concrete.checkExhaustion(at: fl)
             }
         }
     }
