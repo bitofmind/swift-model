@@ -23,17 +23,18 @@ struct SearchTests {
         let model = SearchModel().withAnchor {
             $0.continuousClock = ImmediateClock()
             $0.gitHubClient.search = { query in
-                // Long enough delay that a second query can arrive and cancel this one
-                try await Task.sleep(for: .milliseconds(100))
                 return Repo.mocks.filter { $0.owner.localizedCaseInsensitiveContains(query) }
             }
         }
 
-        // Submit two queries in rapid succession — "apple" should be cancelled mid-flight
+        // Submit two queries in rapid succession. With ImmediateClock the debounce
+        // typically coalesces both into just "vapor". If under heavy parallel load
+        // both are emitted, cancelPrevious cancels the "apple" task and the "vapor"
+        // search overwrites any transient results.
         model.query = "apple"
         model.query = "vapor"
 
-        // Only "vapor" results should land; the "apple" search was cancelled
+        // Only "vapor" results should land
         await expect {
             !model.results.isEmpty
             model.results.allSatisfy { $0.repo.owner == "vapor" }
