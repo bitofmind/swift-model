@@ -4,7 +4,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
-## [Unreleased] — Exhaustivity Improvements + Convenience Helpers
+## [0.14.0] — Exhaustivity Improvements + Convenience Helpers
 
 ### Added
 - **`node.task(id:)`** — cancel-in-flight convenience. `node.task(id: query) { q in … }` restarts the async task whenever the expression changes and cancels the in-flight task first. Equivalent to `node.task { node.forEach(Observed { query }) { q in … } }` but more concise.
@@ -23,10 +23,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Fixed
 - **Deadlock in test infrastructure** — `invokeDidModify` now returns a `(() -> Void)?` callback that callers invoke *after* releasing the lock. Combined with per-test `BackgroundCallQueue` isolation (via `_BackgroundCallLocals` task-local), this eliminates a class of deadlock that could occur when multiple tests ran concurrently.
+- **Lock-ordering inversion in `Context.rootPaths`** — fixed a lock-ordering inversion that could deadlock when accessing root paths concurrently with context teardown.
 - **Exhaustivity tracking races** — each `@Test(.modelTesting)` test now receives an isolated `BackgroundCallQueue`, preventing exhaustivity assertions from leaking between concurrent tests.
 
 ### Performance
 - `@inlinable` annotations added to hot paths in the observation and context subsystems.
+- Lazy allocation of cancellations, observation registrars, and context dictionaries — reduces memory footprint for models that don't use every feature.
 
 ### Documentation
 - README restructured into a ~200-line landing page. Full reference content lives in `Docs/` subdocuments: `Models.md`, `Lifecycle.md`, `Events.md`, `Dependencies.md`, `Navigation.md`, `HierarchyAndPreferences.md`, `Testing.md`, `Undo.md`, `Debugging.md`, `TransitionsDesign.md`.
@@ -269,7 +271,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - `_printChanges()` / `_withPrintChanges()` — debug-build state change printing.
 - Example apps: `CounterFact`, `Standups`, `TodoList`.
 
-[Unreleased]: https://github.com/bitofmind/swift-model/compare/0.13.1...HEAD
+[Unreleased]: https://github.com/bitofmind/swift-model/compare/0.14.0...HEAD
+[0.14.0]: https://github.com/bitofmind/swift-model/compare/0.13.1...0.14.0
 [0.13.1]: https://github.com/bitofmind/swift-model/compare/0.13.0...0.13.1
 [0.13.0]: https://github.com/bitofmind/swift-model/compare/0.12.0...0.13.0
 [0.12.0]: https://github.com/bitofmind/swift-model/compare/0.11.0...0.12.0
