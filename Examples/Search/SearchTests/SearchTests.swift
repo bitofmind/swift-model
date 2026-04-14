@@ -69,9 +69,10 @@ struct SearchTests {
             $0.continuousClock = ImmediateClock()
             $0.gitHubClient.search = { _ in return [] }
         }
-        await settle()
-        #expect(model.results.isEmpty)
-        #expect(!model.isSearching)
+        await settle {
+            model.results.isEmpty
+            !model.isSearching
+        }
     }
 
     // MARK: Filter sorting
@@ -152,9 +153,10 @@ struct FilterModelTests {
     /// FilterModel uses observeAnyModification() to detect any state change.
     @Test func initialFilterState() async {
         let filter = FilterModel().withAnchor()
-        await settle()
-        #expect(filter.sortBy == .stars)
-        #expect(filter.language == "")
+        await settle {
+            filter.sortBy == .stars
+            filter.language == ""
+        }
     }
 
     @Test func clearLanguage() async {

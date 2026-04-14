@@ -40,9 +40,10 @@ struct SignUpTests {
 
     @Test func initialState() async {
         let model = makeModel()
-        await settle()
-        #expect(model.path.isEmpty)
-        #expect(!model.isComplete)
+        await settle {
+            model.path.isEmpty
+            !model.isComplete
+        }
     }
 
     // MARK: Credentials → Profile
@@ -58,8 +59,10 @@ struct SignUpTests {
         model.credentialsModel.confirmPassword = "password123"
         model.credentialsModel.continueTapped()
 
-        await expect(model.path.last?.isProfile == true)
-        #expect(model.email == "user@example.com")
+        await expect {
+            model.path.last?.isProfile == true
+            model.email == "user@example.com"
+        }
     }
 
     // MARK: Profile → Review
@@ -76,13 +79,15 @@ struct SignUpTests {
         model.profileModel.username = "swiftuser"
         model.profileModel.continueTapped()
 
-        await expect(model.path.last?.isReview == true)
-        #expect(model.username == "swiftuser")
+        await expect {
+            model.path.last?.isReview == true
+            model.username == "swiftuser"
+        }
     }
 
     // MARK: Full sign-up flow
 
-    @Test func fullSignUpFlow() async {
+    @Test func fullSignUpFlow() async throws {
         let model = makeModel()
 
         // Step 1: Credentials
@@ -99,11 +104,11 @@ struct SignUpTests {
         await expect(model.path.last?.isReview == true)
 
         // Step 3: Review + Submit
-        guard let reviewModel = model.path.last?.reviewModel else {
-            Issue.record("Expected .review on path"); return
+        let reviewModel = try await require(model.path.last?.reviewModel)
+        await expect {
+            reviewModel.email == "user@example.com"
+            reviewModel.username == "newuser"
         }
-        #expect(reviewModel.email == "user@example.com")
-        #expect(reviewModel.username == "newuser")
         reviewModel.submitTapped()
         await expect(model.isComplete)
     }
@@ -123,10 +128,11 @@ struct SignUpTests {
 
         // Simulate the NavigationStack back button popping the path
         model.path.removeLast()
-        await expect(model.path.isEmpty)
-
-        // Credentials are still intact — no re-entry needed
-        #expect(model.credentialsModel.email == "user@example.com")
+        await expect {
+            model.path.isEmpty
+            // Credentials are still intact — no re-entry needed
+            model.credentialsModel.email == "user@example.com"
+        }
     }
 
     /// The key regression test: going back from profile to credentials and then forward again
@@ -150,8 +156,11 @@ struct SignUpTests {
 
         // Go forward again — profileModel is still alive, username is intact
         model.credentialsModel.continueTapped()
-        await expect(model.path.last?.isProfile == true)
-        #expect(model.profileModel.username == "swiftuser")
+        await expect {
+            model.path.last?.isProfile == true
+            // profileModel is still alive, username is intact
+            model.profileModel.username == "swiftuser"
+        }
     }
 
     @Test func backFromReviewReturnsToProfile() async {
@@ -185,9 +194,11 @@ struct SignUpTests {
         model.email = "pre@example.com"
 
         model.handleURL(URL(string: "signup://step/profile")!)
-        await expect(model.path.last?.isProfile == true)
-        // Email set before the deep link is still there
-        #expect(model.email == "pre@example.com")
+        await expect {
+            model.path.last?.isProfile == true
+            // Email set before the deep link is still there
+            model.email == "pre@example.com"
+        }
     }
 
     // MARK: Start over
@@ -201,9 +212,11 @@ struct SignUpTests {
         await expect(model.path.last?.isProfile == true)
 
         model.startOver()
-        await expect(model.path.isEmpty)
-        #expect(model.credentialsModel.email == "")
-        #expect(model.email == "")
+        await expect {
+            model.path.isEmpty
+            model.credentialsModel.email == ""
+            model.email == ""
+        }
     }
 }
 
