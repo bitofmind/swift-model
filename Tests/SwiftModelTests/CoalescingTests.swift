@@ -704,7 +704,8 @@ struct CoalescingTests {
         // yield takes hundreds of milliseconds while thousands of other tasks fight for turns.
         // waitForCurrentItems() cooperates directly with backgroundCall's drain loop, appending
         // a sentinel that wakes us up exactly when the coalesced performUpdate has run.
-        await backgroundCall.waitForCurrentItems()
+        // Use a 10-second deadline to prevent an indefinite hang if the drain stalls.
+        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 10_000_000_000)
 
         // Wait for coalesced update, then let drain settle
         try await waitUntil(lastValue.value == 10)

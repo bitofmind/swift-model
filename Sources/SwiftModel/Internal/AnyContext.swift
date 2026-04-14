@@ -279,25 +279,48 @@ class AnyContext: @unchecked Sendable {
     var anyModelAccess: ModelAccess? { nil }
 
     var rootPaths: [AnyKeyPath] {
-        lock {
-            if parents.isEmpty {
-                return [selfPath]
+        // Collect raw path segments under the lock, then compose OUTSIDE the lock.
+        // appending(path:) calls _swift_getKeyPath which acquires the Swift runtime
+        // lock. Holding the context lock while needing the runtime lock deadlocks
+        // when a GCD thread holds the runtime lock (key path creation during
+        // observation/memoize) and needs the context lock (model write).
+        let tree = lock { rootPathTree() }
+        return composeRootPaths(from: tree)
+    }
+
+    /// Intermediate representation of the path hierarchy — raw segments with no
+    /// key path composition. Built entirely under the shared context lock.
+    private enum RootPathTree {
+        case leaf(AnyKeyPath)
+        case node([(childPath: AnyKeyPath, elementPath: AnyKeyPath, parentTree: RootPathTree)])
+    }
+
+    /// Collects the raw path segments for this context. Must be called under the lock.
+    private func rootPathTree() -> RootPathTree {
+        if parents.isEmpty {
+            return .leaf(selfPath)
+        }
+
+        return .node(parents.flatMap { parent in
+            parent.children.flatMap { childPath, modelRefs in
+                modelRefs.compactMap { modalRef, context -> (childPath: AnyKeyPath, elementPath: AnyKeyPath, parentTree: RootPathTree)? in
+                    guard context === self else { return nil }
+                    return (childPath: childPath, elementPath: modalRef.elementPath, parentTree: parent.rootPathTree())
+                }
             }
+        })
+    }
 
-            return parents.flatMap { parent in
-                let childPaths = parent.children.flatMap { childPath, modelRefs in
-                    modelRefs.compactMap { modalRef, context in
-                        if context === self {
-                            return childPath.appending(path: modalRef.elementPath)
-                        } else {
-                            return nil
-                        }
-                    }
-                }
-
-                return parent.rootPaths.flatMap { rootPath in
-                    childPaths.compactMap { rootPath.appending(path: $0) }
-                }
+    /// Composes the collected path segments into full root-relative key paths.
+    /// Called outside the lock so _swift_getKeyPath doesn't contend with it.
+    private func composeRootPaths(from tree: RootPathTree) -> [AnyKeyPath] {
+        switch tree {
+        case .leaf(let path):
+            return [path]
+        case .node(let entries):
+            return entries.flatMap { entry -> [AnyKeyPath] in
+                guard let childPath = entry.childPath.appending(path: entry.elementPath) else { return [] }
+                return composeRootPaths(from: entry.parentTree).compactMap { $0.appending(path: childPath) }
             }
         }
     }
@@ -433,6 +456,20 @@ class AnyContext: @unchecked Sendable {
             entry.cancellable?()
         }
 
+        // Move cache entries out of the dictionary before clearing. The entries'
+        // closures (onUpdate, cancellable) capture shared objects (LockIsolated
+        // boxes, context references) that may also be held by in-flight
+        // performUpdate closures on the GCD backgroundCallQueue. Releasing the
+        // entries here (inside the lock, on the teardown thread) would race with
+        // the GCD thread releasing the same objects when it finishes executing or
+        // dropping the performUpdate closure — a classic ARC race that causes
+        // swift_deallocClassInstance crashes on Linux.
+        //
+        // By deferring the release to the callbacks array (which runs outside the
+        // lock, after child teardown), we give the cancellation flag
+        // (hasBeenCancelled) time to propagate and ensure the entries' closures
+        // are released on a single thread.
+        let memoizeEntries = Array(_memoizeCache.values)
         _memoizeCache.removeAll()
 
         for entry in contextStorage.values {
@@ -457,6 +494,12 @@ class AnyContext: @unchecked Sendable {
             for cont in anyModifies {
                 cont(true)?()
             }
+
+            // Release memoize cache entries outside the lock. The entries'
+            // closures share reference-counted objects with GCD-dispatched
+            // performUpdate closures; releasing them here (single-threaded,
+            // after cancellation) avoids the ARC race.
+            withExtendedLifetime(memoizeEntries) {}
         }
 
         for child in children {

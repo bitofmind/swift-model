@@ -16,6 +16,8 @@ let package = Package(
         // Pin below 1.1.0: that version introduced a trait-based OpenCombine shim that breaks
         // Android cross-compilation (the trait is only auto-enabled based on the host OS, not
         // the target). 1.0.x properly guards all Combine code with #if canImport(Combine).
+        // Package.resolved is not tracked in git, so this pin is required to prevent CI from
+        // resolving a newer version via swift-clocks's transitive dependency.
         .package(url: "https://github.com/pointfreeco/combine-schedulers", "1.0.0"..<"1.1.0"),
         .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.3.3"),
         .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),

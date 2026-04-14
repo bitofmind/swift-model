@@ -1,5 +1,19 @@
 import Foundation
+#if canImport(Dispatch)
+import Dispatch
+#endif
 import IssueReporting
+
+/// Returns the current monotonic time in nanoseconds.
+/// Uses DispatchTime on platforms that have it (Darwin, Linux, Android);
+/// falls back to ProcessInfo.systemUptime on WASI.
+private func monotonicNanoseconds() -> UInt64 {
+    #if canImport(Dispatch)
+    return DispatchTime.now().uptimeNanoseconds
+    #else
+    return UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+    #endif
+}
 
 // MARK: - Type-erased model test scope
 
@@ -202,10 +216,8 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         // side-effects (onCancel callbacks, stream finalizations) that were dispatched
         // during onRemoval(). This ensures post-teardown assertions see final state.
         //
-        // Use a 30-second deadline to prevent an indefinite hang if the cooperative
-        // pool is saturated (e.g. many parallel tests on a 2-vCPU CI runner) and the
-        // drain loop task is never scheduled.
-        let deadline = DispatchTime.now().uptimeNanoseconds + 30_000_000_000
+        // Use a 30-second deadline to prevent an indefinite hang.
+        let deadline = monotonicNanoseconds() + 30_000_000_000
         await backgroundCall.waitUntilIdle(deadline: deadline)
     }
 

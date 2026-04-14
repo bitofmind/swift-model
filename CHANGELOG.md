@@ -4,6 +4,26 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [0.13.1] — Concurrency Fixes, Cross-Platform CI & README Badges
+
+### Fixed
+- **Memoize stale cache after concurrent reset** — fixed a race in the `withObservationTracking` (async) path where `performUpdate`'s `onUpdate` could recreate a cache entry removed by `resetMemoization`, leaving a stale value with no active subscription. Also preserved the `isDirty` flag when a concurrent mutation occurs between `observe()` and `onUpdate()`.
+- **Memoize dirty flag lost in sync path** — fixed `wrappedOnUpdate` unconditionally clearing `isDirty` to `false`, losing dirty flags set by concurrent mutations between `produce()` and the cache write. Also added a guard against re-creating entries removed by `resetMemoization`.
+- **ARC race in `onRemoval`** — deferred release of memoize cache entries to outside the context lock, preventing a crash when GCD-dispatched `performUpdate` closures raced with `_memoizeCache.removeAll()` during teardown.
+- **TestAccess race** — fixed a race condition in `TestAccess`.
+
+### Changed
+- **CI Linux tests run serially** (`--no-parallel`) to avoid cooperative thread pool saturation on 2-vCPU runners.
+- **BackgroundCallQueue** reverted to GCD-based drain on Apple/Linux for more predictable scheduling.
+- Several flaky tests restricted to `AccessCollector`-only path where `withObservationTracking` async timing caused spurious failures.
+
+### Added
+- **WASM support** — library compiles for `wasm32-unknown-wasip1` (compile-check in CI).
+- **Android support** — test target compiles for `aarch64-unknown-linux-android28` (build-check in CI).
+- **CI badges** — per-platform badges in README: macOS and Linux (tests), Android and WASM (build).
+
+---
+
 ## [0.13.0] — Context Storage API Split + Named Tasks + Settle API
 
 ### Added
@@ -220,6 +240,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - `_printChanges()` / `_withPrintChanges()` — debug-build state change printing.
 - Example apps: `CounterFact`, `Standups`, `TodoList`.
 
+[0.13.1]: https://github.com/bitofmind/swift-model/compare/0.13.0...0.13.1
 [0.13.0]: https://github.com/bitofmind/swift-model/compare/0.12.0...0.13.0
 [0.12.0]: https://github.com/bitofmind/swift-model/compare/0.11.0...0.12.0
 [0.11.0]: https://github.com/bitofmind/swift-model/compare/0.10.1...0.11.0

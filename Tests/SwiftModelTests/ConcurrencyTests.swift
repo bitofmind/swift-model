@@ -1,5 +1,4 @@
 import Testing
-import ConcurrencyExtras
 import Foundation
 @testable import SwiftModel
 
@@ -294,7 +293,7 @@ struct ConcurrencyTests {
             // Without the fix, a queued performUpdate fires after cancellation and crashes.
             group.addTask {
                 // Give the writer a small head start so some updates are already queued.
-                for _ in 0..<5 { await Task.yield() }
+                await Task.yield()
                 if !container.leaves.isEmpty {
                     container.leaves.removeFirst()
                 }
@@ -307,7 +306,7 @@ struct ConcurrencyTests {
 
         // After both tasks finish, let the drain loop flush any remaining callbacks.
         // Any pending performUpdate on the removed leaf must be a no-op (not a crash).
-        for _ in 0..<10 { await Task.yield() }
+        await backgroundCall.waitUntilIdle(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
 
         // Sanity: the remaining leaf must still be responsive.
         if !container.leaves.isEmpty {

@@ -13,29 +13,35 @@ jobs:
   macos:
     name: macOS
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v6
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest
       - name: Build and test
-        run: swift test --skip MemoizePerformanceTests --skip CoalescingBenchmarks
+        # Run in parallel to exercise concurrent behaviour and catch races.
+        run: swift test --parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks
 
   linux:
-    name: Linux (Swift ${{ matrix.swift }})
+    name: Linux
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        swift: ["6.2"]
+    timeout-minutes: 7
     container:
-      image: swift:${{ matrix.swift }}
+      image: swift:6.2
     steps:
       - uses: actions/checkout@v6
+      - name: Cache Swift build artifacts
+        uses: actions/cache@v5
+        with:
+          path: .build
+          key: ${{ runner.os }}-swift-6.2-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swift-6.2-
       - name: Build and test
-        run: swift test --skip MemoizePerformanceTests --skip CoalescingBenchmarks
+        # Run tests serially (--no-parallel) to avoid cooperative thread-pool saturation
+        # on the 2-vCPU Linux runner. Parallel race-condition coverage is provided by macOS.
+        run: swift test --no-parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks
 
   android:
     name: Android (aarch64)
@@ -44,7 +50,7 @@ jobs:
     # errors that occur when cross-compiling from macOS (where those checks
     # evaluate against the macOS host instead of the Android target).
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     container:
       image: swift:6.3
     steps:
@@ -100,3 +106,32 @@ jobs:
           swift build \
             --swift-sdk aarch64-unknown-linux-android28 \
             --build-tests
+
+  wasm:
+    name: WASM (wasm32-unknown-wasip1)
+    # Run on Linux: same reasoning as Android — host-side canImport checks
+    # (ObjectiveC, AppKit, UIKit) evaluate against the container OS, which
+    # correctly reflects the WASM target's behaviour.
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    container:
+      image: swift:6.3
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Swift WASM SDK
+        run: |
+          swift sdk install \
+            "https://download.swift.org/swift-6.3-release/wasm-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_wasm.artifactbundle.tar.gz" \
+            --checksum 9fa4016ee632c7e9e906608ec3b55cf13dfc4dff44e47574c5af58064dc33fd9
+
+      - name: Build SwiftModel for WASM (compile check)
+        # Full test execution is blocked by third-party dependencies:
+        # IssueReportingTestSupport (xctest-dynamic-overlay) is type:.dynamic,
+        # and SnapshotTesting uses Apple-only types — both unsupported on WASM.
+        # We compile-check the main library target only, consistent with the
+        # Android job which also omits test execution.
+        run: |
+          swift build \
+            --swift-sdk swift-6.3-RELEASE_wasm \
+            --target SwiftModel
