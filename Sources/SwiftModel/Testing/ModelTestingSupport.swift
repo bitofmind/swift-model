@@ -200,30 +200,38 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         // Mark tester so its deinit skips cleanup — we are running it here instead.
         tester.cleanupHandledExternally = true
 
-        // Use the same adaptive calibration as expect/require/settle so the waiting
-        // scales with system pressure (single test vs 100× parallel).
-        let cal = await tester.access.calibrate()
+        // Reuse the latency measured during the test body (expect/settle/require all
+        // update the cache). This avoids a fresh GCD hop here — which, under 500+
+        // parallel tests, would flood the global queue and add ~2 s to every test.
+        let cal = tester.access.calibrateWithCachedLatency()
+        let deadline = cal.start + cal.hardCap
 
-        // Phase 1: Let running tasks settle. Tasks using ImmediateClock or similar
-        // complete naturally during this phase.
-        await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
+        // Phase 1: Drain all pending background writes (GCD queue becomes idle).
+        // Fast-path: if state == nil already, resumes immediately (no GCD hop).
+        await backgroundCall.waitUntilIdle(deadline: deadline)
 
-        // Phase 2: Cancel onActivate tasks (observation loops, long-running tasks).
-        // cancelAll(for:) removes tasks from Cancellations.registered (so activeTasks
-        // won't see them) AND calls task.cancel() on the Swift Task.
+        // Phase 2: Seal — prevent any new task registrations across the entire context
+        // hierarchy. After sealing, Cancellations.register() immediately calls
+        // onCancel() on incoming registrations and does NOT add them to `registered`.
+        //
+        // This closes the race where a cooperatively-cancelled forEach task writes to
+        // the model AFTER waitUntilIdle returns, causing new child-model activations
+        // that call register() concurrently with or after cancelAllRecursively.
+        tester.access.context.sealRecursively()
+
+        // Phase 3: Cancel all currently-registered onActivate tasks.
         tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
 
-        // Phase 3: Brief settle — gives quickly-completable tasks (e.g. using
-        // ImmediateClock) a chance to finish. Also lets any cascading child
-        // activations (e.g. SearchResultItem.onActivate triggered by a results
-        // write during Phase 1) complete and register their tasks.
-        // reportTimeout: false — the subsequent exhaustivity check handles failures
-        // through proper exhaustivity-respecting paths.
+        // Phase 4: Wait for naturally-completing tasks to finish.
+        //
+        // Tasks created during GCD-drain activation run in a non-async context
+        // (no Swift Task active), so AnyCancellable.contexts is empty and these
+        // tasks are NOT keyed with .onActivate. cancelAllRecursively(for: .onActivate)
+        // does not cancel them; they must complete on their own cooperative-pool turns.
+        //
+        // waitUntilSettled uses GCD-backed waitForModification (not Task.yield loops)
+        // so it is safe under 500+ parallel test load.
         await tester.access.waitUntilSettled(calibration: cal, reportTimeout: false, at: fileAndLine)
-
-        // Phase 4: Cancel any tasks that were registered during the settle phase
-        // (e.g. child model onActivate tasks from cascading activations).
-        tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
 
         tester.access.checkExhaustion(at: fileAndLine, includeUpdates: false, checkTasks: true)
         tester.access.context.onRemoval()

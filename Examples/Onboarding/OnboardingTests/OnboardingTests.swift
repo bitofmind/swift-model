@@ -77,6 +77,9 @@ struct SignUpTests {
 
         // profileModel lives on SignUpModel, not in the path — data is preserved on back navigation.
         model.profileModel.username = "swiftuser"
+        // continueTapped() guards on !isCheckingAvailability — wait for the async
+        // availability check to complete before advancing (mirrors disabled-button UX).
+        await settle()
         model.profileModel.continueTapped()
 
         await expect {
@@ -100,6 +103,7 @@ struct SignUpTests {
         // Step 2: Profile — model lives on SignUpModel, not in the path
         model.profileModel.username = "newuser"
         model.profileModel.bio = "Hello, SwiftModel!"
+        await settle()  // Wait for async availability check before advancing
         model.profileModel.continueTapped()
         await expect(model.path.last?.isReview == true)
 
@@ -172,6 +176,7 @@ struct SignUpTests {
         await expect(model.path.last?.isProfile == true)
 
         model.profileModel.username = "user123"
+        await settle()  // Wait for async availability check before advancing
         model.profileModel.continueTapped()
         await expect(model.path.last?.isReview == true)
 

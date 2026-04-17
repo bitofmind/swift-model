@@ -1258,10 +1258,30 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     ///
     /// - Parameter timeout: Base timeout for predicate waiting (default 1 s). Short explicit
     ///   timeouts (e.g. from output snapshot tests) are preserved as-is.
+    // Last scheduler-latency measurement (nanoseconds). Updated by calibrate().
+    // Shared safely: calibrate() is only called from the test task (never from model
+    // tasks), so writes are sequential within one TestAccess instance.
+    // Default: 1ms — a reasonable assumption before the first measurement.
+    private var _lastYieldLatencyNs: UInt64 = 1_000_000
+
     package func calibrate(timeout: UInt64 = nanosPerSecond) async -> WaitCalibration {
         let calibrationStart = monotonicNanoseconds()
         await yieldToScheduler()
         let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
+        lock { _lastYieldLatencyNs = yieldLatencyNs }
+        return makeCalibration(yieldLatencyNs: yieldLatencyNs, timeout: timeout)
+    }
+
+    /// Builds a `WaitCalibration` from the most recently measured scheduler latency,
+    /// without performing a new GCD hop. Intended for end-of-test cleanup paths that
+    /// are called by hundreds of parallel tests simultaneously — a fresh GCD hop from
+    /// each would saturate the global queue and add seconds of overhead to every test.
+    package func calibrateWithCachedLatency(timeout: UInt64 = nanosPerSecond) -> WaitCalibration {
+        let yieldLatencyNs = lock { _lastYieldLatencyNs }
+        return makeCalibration(yieldLatencyNs: yieldLatencyNs, timeout: timeout)
+    }
+
+    private func makeCalibration(yieldLatencyNs: UInt64, timeout: UInt64) -> WaitCalibration {
         let scaledTimeout = timeout >= nanosPerSecond
             ? min(10 * nanosPerSecond, max(timeout, yieldLatencyNs * 100))
             : timeout
@@ -1293,14 +1313,21 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // Phase 1: Wait for all activation tasks to enter their body.
         // In practice this completes almost immediately because activationTaskEntered()
         // fires at the start of the task body.
-        while activationTasksInFlight > 0 {
-            await waitForModification(timeoutNanoseconds: cal.scaledTimeout, yieldRoundNs: cal.yieldRoundNs, retryCount: 0)
-            if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
-                if reportTimeout {
+        //
+        // Skip when called from checkExhaustion (reportTimeout: false): activation tasks
+        // that haven't started yet have already been cancelled by cancelAllRecursively()
+        // and removed from Cancellations.registered / activeTasks. Waiting for them to
+        // start under 500+ parallel test load can take 30 s (cooperative pool saturation
+        // causes 30,000 × 1ms iterations). The subsequent checkExhaustion(checkTasks:)
+        // call won't see them — safe to skip.
+        if reportTimeout {
+            while activationTasksInFlight > 0 {
+                await waitForModification(timeoutNanoseconds: cal.scaledTimeout, yieldRoundNs: cal.yieldRoundNs, retryCount: 0)
+                if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
                     let taskInfo = settleTimeoutDiagnostics()
                     fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
+                    return false
                 }
-                return false
             }
         }
 
@@ -1308,6 +1335,23 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // with no state changes. Uses modificationCount on the root context as
         // a version number.
         var lastChangeVersion = context.modificationCount
+        // Tracks whether we already confirmed _activeTaskCount == 0 with a stable
+        // modificationCount in the previous outer-loop iteration.
+        //
+        // The race we guard against: a just-completed task dispatches its final model
+        // mutation to backgroundCall AND decrements _activeTaskCount in the same
+        // cooperative-pool turn. The next check sees _activeTaskCount == 0 and a stable
+        // modificationCount (backgroundCall hasn't committed the mutation yet), and
+        // would break prematurely — baseline captures the pre-mutation value.
+        //
+        // Fix: require two consecutive outer-loop iterations that both see
+        // _activeTaskCount == 0 with no modificationCount change. The
+        // waitForCurrentItems at the START of the NEXT iteration (line 1332) naturally
+        // drains the pending mutation, so modificationCount changes and we loop once
+        // more to re-confirm. No extra drain is added; the existing loop structure
+        // handles it. For observation-heavy models this adds at most two cheap
+        // no-op iterations rather than triggering cascading observation re-fires.
+        var sawZeroActiveTasks = false
         while true {
             await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
             await yieldToScheduler()
@@ -1316,61 +1360,49 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             // may have triggered child model activations (e.g. SearchResultItem
             // activated when results is set), creating new tasks that haven't entered
             // their body yet. Wait for them before evaluating idle state.
-            while activationTasksInFlight > 0 {
-                await waitForModification(timeoutNanoseconds: cal.scaledTimeout, yieldRoundNs: cal.yieldRoundNs, retryCount: 0)
-                if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
-                    if reportTimeout {
+            // Skipped when called from checkExhaustion (reportTimeout: false) for the
+            // same reason as Phase 1: cancelled tasks that haven't started yet are safe
+            // to ignore (removed from activeTasks by cancelAllRecursively).
+            if reportTimeout {
+                while activationTasksInFlight > 0 {
+                    await waitForModification(timeoutNanoseconds: cal.scaledTimeout, yieldRoundNs: cal.yieldRoundNs, retryCount: 0)
+                    if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
                         let taskInfo = settleTimeoutDiagnostics()
                         fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
+                        return false
                     }
-                    return false
                 }
             }
 
             let currentVersion = context.modificationCount
             if currentVersion == lastChangeVersion {
                 if lock({ _activeTaskCount }) == 0 {
-                    break // no active tasks and no changes → settled
-                }
-                // Tasks are still running but no state changed yet. The task body
-                // may be waiting for a cooperative pool turn (e.g. ImmediateClock
-                // task entered but hasn't written detailLine yet).
-                //
-                // Yield to the cooperative pool repeatedly to give blocked tasks
-                // scheduling opportunities, then drain the backgroundCall queue
-                // (where model writes are batched). Under 100× parallel load the
-                // pool is saturated so a single yield is insufficient — the loop
-                // gives ~20 scheduling rounds. For observation loops (node.forEach
-                // suspended in `for await`) this loop completes quickly since
-                // Task.yield() is nearly free when no cooperative tasks are ready.
-                var progressed = false
-                for _ in 0..<20 {
-                    await Task.yield()
-                    await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
-                    if context.modificationCount != currentVersion || lock({ _activeTaskCount }) == 0 {
-                        progressed = true
-                        break
+                    if sawZeroActiveTasks {
+                        break // confirmed: two consecutive checks with no active tasks and no changes
                     }
+                    sawZeroActiveTasks = true
+                    continue // loop once more; waitForCurrentItems at top drains any pending mutations
                 }
-                if !progressed {
-                    // Still no modifications after cooperative yields + queue drains.
-                    // The task body may be suspended across multiple `try await`
-                    // points (nested withValue calls in TaskCancellable) waiting
-                    // for cooperative pool turns on a different thread — yields on
-                    // our thread don't help. Use onAnyModification callback (via
-                    // waitForModification) which fires immediately when the write
-                    // happens regardless of thread. The extended timeout (yieldRoundNs
-                    // × 30: ~30ms normal, ~300ms under 100× saturation) is only
-                    // consumed for observation loops; real modifications wake us early.
-                    let patience = cal.yieldRoundNs * 30
-                    await waitForModification(timeoutNanoseconds: patience, yieldRoundNs: patience, retryCount: 2)
-                    if context.modificationCount == currentVersion {
-                        break // No progress — remaining tasks are observation loops
-                    }
+                sawZeroActiveTasks = false
+                // Tasks are still running but no state changed yet. Use a GCD-backed
+                // timer (waitForModification) rather than Task.yield() loops. Under
+                // 500+ parallel tests the cooperative pool is saturated — each
+                // Task.yield() can take 1-2s, so 20 yields × 1.5s = 30s = hardCap.
+                // waitForModification uses a DispatchQueue timer and an
+                // onAnyModification callback, so it wakes immediately on any write
+                // regardless of cooperative pool pressure. The patience cap of 300ms
+                // handles observation loops (node.forEach suspended in `for await`
+                // that will never write again after cancellation).
+                let patience = min(cal.yieldRoundNs * 30, 300_000_000)
+                await waitForModification(timeoutNanoseconds: patience, yieldRoundNs: patience, retryCount: 2)
+                if context.modificationCount == currentVersion {
+                    break // No progress — remaining tasks are observation loops or cancelled tasks
                 }
                 lastChangeVersion = context.modificationCount
+                sawZeroActiveTasks = false
             } else {
                 lastChangeVersion = currentVersion
+                sawZeroActiveTasks = false
             }
             if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
                 if reportTimeout {

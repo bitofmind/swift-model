@@ -712,6 +712,18 @@ class AnyContext: @unchecked Sendable {
         forEachChild { $0.cancelAllRecursively(for: id) }
     }
 
+    func sealRecursively() {
+        // Force-create the store if nil, then seal it atomically.
+        // If we only do `cancellationsStore?.seal()`, a nil store is a no-op and any
+        // subsequent lazy creation produces an unsealed store — allowing tasks to register
+        // after cancelAllRecursively() has already run.
+        lock {
+            if cancellationsStore == nil { cancellationsStore = Cancellations() }
+            cancellationsStore!.seal()
+        }
+        forEachChild { $0.sealRecursively() }
+    }
+
     var typeDescription: String { fatalError() }
 
     func generateKey() -> Int {
