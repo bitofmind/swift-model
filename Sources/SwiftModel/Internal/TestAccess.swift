@@ -1390,10 +1390,16 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 // Task.yield() can take 1-2s, so 20 yields × 1.5s = 30s = hardCap.
                 // waitForModification uses a DispatchQueue timer and an
                 // onAnyModification callback, so it wakes immediately on any write
-                // regardless of cooperative pool pressure. The patience cap of 300ms
-                // handles observation loops (node.forEach suspended in `for await`
-                // that will never write again after cancellation).
-                let patience = min(cal.yieldRoundNs * 30, 300_000_000)
+                // regardless of cooperative pool pressure.
+                //
+                // Patience scales with scheduler latency: max(yieldRoundNs × 3, 300ms).
+                // Under normal load (yieldRoundNs ~1ms) this is 300ms — fast enough to
+                // detect observation loops. Under saturation (yieldRoundNs ~500ms) a
+                // completing task may need 1-2 cooperative pool turns (~500ms–1s) before
+                // it can write; the 1.5s patience ensures it fires before we break out.
+                // Using max() rather than min() means patience grows with scheduler
+                // pressure instead of being capped at 300ms regardless of load.
+                let patience = max(cal.yieldRoundNs * 3, 300_000_000)
                 await waitForModification(timeoutNanoseconds: patience, yieldRoundNs: patience, retryCount: 2)
                 if context.modificationCount == currentVersion {
                     break // No progress — remaining tasks are observation loops or cancelled tasks
