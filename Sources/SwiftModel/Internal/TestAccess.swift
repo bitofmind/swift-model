@@ -1392,14 +1392,23 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 // onAnyModification callback, so it wakes immediately on any write
                 // regardless of cooperative pool pressure.
                 //
-                // Patience scales with scheduler latency: max(yieldRoundNs × 3, 300ms).
-                // Under normal load (yieldRoundNs ~1ms) this is 300ms — fast enough to
-                // detect observation loops. Under saturation (yieldRoundNs ~500ms) a
-                // completing task may need 1-2 cooperative pool turns (~500ms–1s) before
-                // it can write; the 1.5s patience ensures it fires before we break out.
-                // Using max() rather than min() means patience grows with scheduler
-                // pressure instead of being capped at 300ms regardless of load.
-                let patience = max(cal.yieldRoundNs * 3, 300_000_000)
+                // Patience is context-dependent:
+                //
+                // reportTimeout: true  (active test — tasks are still running and may write)
+                //   max(yieldRoundNs × 3, 300ms): scales with load. Under saturation
+                //   (yieldRoundNs ~500ms) a completing task may need 1–2 cooperative pool
+                //   turns (~500ms–1s) before it can write; 1.5s ensures we don't break
+                //   out before the write arrives.
+                //
+                // reportTimeout: false (checkExhaustion cleanup — tasks are cancelled)
+                //   min(yieldRoundNs × 30, 300ms): always ≤ 300ms. Cancelled tasks won't
+                //   write again; we only need to detect observation loops. The outer
+                //   yieldToScheduler() loop then gives cancelled tasks cooperative-pool
+                //   turns to exit and decrement _activeTaskCount without the 1.5s
+                //   per-test overhead that accumulates across 500+ parallel tests.
+                let patience = reportTimeout
+                    ? max(cal.yieldRoundNs * 3, 300_000_000)
+                    : min(cal.yieldRoundNs * 30, 300_000_000)
                 await waitForModification(timeoutNanoseconds: patience, yieldRoundNs: patience, retryCount: 2)
                 if context.modificationCount == currentVersion {
                     break // No progress — remaining tasks are observation loops or cancelled tasks
