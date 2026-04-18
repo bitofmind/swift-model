@@ -204,25 +204,28 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         // update the cache). This avoids a fresh GCD hop here — which, under 500+
         // parallel tests, would flood the global queue and add ~2 s to every test.
         let cal = tester.access.calibrateWithCachedLatency()
-        let deadline = cal.start + cal.hardCap
 
-        // Phase 1: Drain all pending background writes (GCD queue becomes idle).
-        // Fast-path: if state == nil already, resumes immediately (no GCD hop).
-        await backgroundCall.waitUntilIdle(deadline: deadline)
-
-        // Phase 2: Seal — prevent any new task registrations across the entire context
+        // Phase 1: Seal — prevent any new task registrations across the entire context
         // hierarchy. After sealing, Cancellations.register() immediately calls
         // onCancel() on incoming registrations and does NOT add them to `registered`.
         //
-        // This closes the race where a cooperatively-cancelled forEach task writes to
-        // the model AFTER waitUntilIdle returns, causing new child-model activations
-        // that call register() concurrently with or after cancelAllRecursively.
+        // Sealing first (before any drain or cancel) closes the race where a
+        // cooperatively-cancelled forEach task writes to the model AFTER cancellation,
+        // causing new child-model activations: those activations call register() on the
+        // already-sealed store and are immediately cancelled, so they never appear as
+        // "still running" in the exhaustion check.
+        //
+        // Previously a waitUntilIdle() drain preceded sealing, but that required the
+        // GCD backgroundCall queue to become completely empty — which under 500+
+        // parallel tests can take up to hardCap seconds per test and causes CI timeouts.
+        // The seal makes that drain unnecessary.
         tester.access.context.sealRecursively()
 
-        // Phase 3: Cancel all currently-registered onActivate tasks.
+        // Phase 2: Cancel all currently-registered onActivate tasks.
         tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
 
-        // Phase 4: Wait for naturally-completing tasks to finish.
+        // Phase 3: Wait for naturally-completing tasks to finish and drain any remaining
+        // backgroundCall writes.
         //
         // Tasks created during GCD-drain activation run in a non-async context
         // (no Swift Task active), so AnyCancellable.contexts is empty and these
