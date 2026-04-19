@@ -4,6 +4,26 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [0.15.0] — `@Model` Layout Redesign: Fixed 16-byte Struct + Separate State Storage
+
+### Changed
+
+- **`@Model` generated code restructured** — tracked `var` properties are now stored in a nested `_State` struct inside the macro expansion rather than as individual backing fields directly on the value type. The model struct itself stores only `_$modelAccess` (8 bytes) and `_$modelSource` (8 bytes).
+
+- **`@Model` no longer synthesises an `Observable` conformance** — the generated `extension MyModel: Observation.Observable { … }` block is removed. Observation tracking for SwiftUI and `TestAccess` is handled internally through typed key paths without requiring `Observable` conformance. Explicit `Observable` conformance on `@Model` types is now redundant.
+
+- **`ContainerVisitor<State>` → `ContainerVisitor<V: ModelVisitor>`** — the generic parameter is now the concrete visitor type rather than the raw state type. `@ModelContainer`-generated `visit(with:)` bodies are updated automatically. Any hand-written `visit(with:)` that spells out `ContainerVisitor<…>` by type-parameter name must be updated; call sites of `visitStatically` / `visitDynamically` are otherwise unchanged.
+
+### Performance
+
+- **`@Model` struct size is now 16 bytes + `let` fields** — tracked `var` properties live in a `_State` struct stored inside the reference-counted context, so they no longer contribute to the value-type size. Only `let` properties, which cannot participate in context-routed storage, remain as direct stored fields. Previously, each tracked `var` property added its own backing stored field to the struct.
+
+### Tests
+- **Memory layout regression tests** — `MemoryTests` verifies that `_ModelSourceBox` is 8 bytes, `_ModelAccessBox` is 8 bytes, and a zero-field `@Model` struct is 16 bytes total.
+- **Init accessor sequencing tests** — new `ModelInitAccessorTests` suite covers init-accessor ordering, zero-init fallbacks, nested models, and property-default capture sequencing.
+
+---
+
 ## [0.14.0] — Exhaustivity Improvements + Convenience Helpers
 
 ### Added

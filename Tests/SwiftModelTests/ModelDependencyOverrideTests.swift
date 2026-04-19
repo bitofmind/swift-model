@@ -107,7 +107,7 @@ extension EnvDep: DependencyKey {
     var isolated: Container
 
     init() {
-        _isolated = Container(items: [Item(id: 2)]).withDependencies { deps in
+        self.isolated = Container(items: [Item(id: 2)]).withDependencies { deps in
             deps[EnvDep.self] = EnvDep(state: "override")
         }
     }
@@ -345,14 +345,14 @@ extension AuxDepWithChild: DependencyKey {
 }
 
 /// Root model that sets up a dep override on its child *inside init()* using the
-/// `_child = Model().withDependencies { ... }` pattern (the EditorModel pattern).
+/// `self.child = Model().withDependencies { ... }` pattern (the EditorModel pattern).
 /// The root itself has a different dep injected via withAnchor.
 /// The grandchild must see the *child-level* dep, not the root-level one.
 @Model private struct RootWithInitOverriddenChild {
     var child: ChildWithGrandchild
 
     init() {
-        _child = ChildWithGrandchild().withDependencies { deps in
+        self.child = ChildWithGrandchild().withDependencies { deps in
             deps[EnvDep.self] = EnvDep(state: "childDep")
         }
     }

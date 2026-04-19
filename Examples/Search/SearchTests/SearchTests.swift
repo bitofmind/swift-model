@@ -130,7 +130,7 @@ struct SearchTests {
     /// withActivation lets callers inject extra setup after onActivate() without
     /// modifying SearchModel itself. Here we pre-set the query so the search fires
     /// automatically during activation — useful for testing pre-populated states.
-    @Test func withActivationPrePopulatesResults() async {
+    @Test(.modelTesting(.removing(.tasks))) func withActivationPrePopulatesResults() async {
         let model = SearchModel()
             .withActivation { $0.query = "swift" }
             .withAnchor {

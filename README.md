@@ -32,7 +32,7 @@ Composable models for SwiftUI — struct-based, automatic async lifetime, exhaus
 ## Install
 
 ```swift
-.package(url: "https://github.com/bitofmind/swift-model", from: "0.13.0")
+.package(url: "https://github.com/bitofmind/swift-model", from: "0.15.0")
 ```
 
 ## The core loop

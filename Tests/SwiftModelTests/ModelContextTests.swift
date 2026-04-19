@@ -184,7 +184,7 @@ struct ModelContextTests {
             var activateCount: Int// = 0
 
             init(activateCount: Int = 0) {
-                _activateCount = activateCount
+                self.activateCount = activateCount
             }
 
             func onActivate() {

@@ -302,7 +302,7 @@ public extension ModelNode {
 
         context[_isTrackingUndoStorage] = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, only: nil)
-        context.model.visit(with: &visitor, includeSelf: false)
+        context._modelSeed.visit(with: &visitor, includeSelf: false)
     }
 
     /// Registers one or more writable key paths for undo/redo tracking.
@@ -351,7 +351,7 @@ public extension ModelNode {
 
         context[_isTrackingUndoStorage] = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, only: trackedBackingPaths)
-        context.model.visit(with: &visitor, includeSelf: false)
+        context._modelSeed.visit(with: &visitor, includeSelf: false)
     }
 
     /// Registers all tracked properties **except** the listed ones for undo/redo tracking.
@@ -385,7 +385,7 @@ public extension ModelNode {
 
         context[_isTrackingUndoStorage] = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, excluding: excludedBackingPaths)
-        context.model.visit(with: &visitor, includeSelf: false)
+        context._modelSeed.visit(with: &visitor, includeSelf: false)
     }
 }
 
@@ -397,19 +397,19 @@ public extension ModelNode {
 /// - `only == nil, excluding == nil`:  install for all fields (zero-arg `trackUndo()`)
 /// - `only != nil`:                    install only for fields whose backing path is in `only`
 /// - `excluding != nil`:               install for all fields except those in `excluding`
-private struct InstallUndoVisitor<M: Model>: ModelVisitor {
+private struct InstallUndoVisitor<M: Model>: ModelVisitor, _ModelStateVisitor {
     typealias State = M
 
     let context: Context<M>
     let backend: any UndoBackend
     let modelContext: ModelContext<M>
-    // When non-nil, only these backing paths are installed.
-    nonisolated(unsafe) let only: Set<PartialKeyPath<M>>?
-    // When non-nil, skip these backing paths (all-except variant).
-    nonisolated(unsafe) let excluding: Set<PartialKeyPath<M>>?
+    // When non-nil, only these backing state paths are installed.
+    nonisolated(unsafe) let only: Set<PartialKeyPath<M._ModelState>>?
+    // When non-nil, skip these backing state paths (all-except variant).
+    nonisolated(unsafe) let excluding: Set<PartialKeyPath<M._ModelState>>?
 
     init(context: Context<M>, backend: any UndoBackend, modelContext: ModelContext<M>,
-         only: Set<PartialKeyPath<M>>?) {
+         only: Set<PartialKeyPath<M._ModelState>>?) {
         self.context = context
         self.backend = backend
         self.modelContext = modelContext
@@ -418,7 +418,7 @@ private struct InstallUndoVisitor<M: Model>: ModelVisitor {
     }
 
     init(context: Context<M>, backend: any UndoBackend, modelContext: ModelContext<M>,
-         excluding: Set<PartialKeyPath<M>>) {
+         excluding: Set<PartialKeyPath<M._ModelState>>) {
         self.context = context
         self.backend = backend
         self.modelContext = modelContext
@@ -426,32 +426,22 @@ private struct InstallUndoVisitor<M: Model>: ModelVisitor {
         self.excluding = excluding
     }
 
-    private func shouldInstall(path: PartialKeyPath<M>) -> Bool {
-        if let only { return only.contains(path) }
-        if let excluding { return !excluding.contains(path) }
+    private func shouldInstall(statePath: PartialKeyPath<M._ModelState>) -> Bool {
+        if let only { return only.contains(statePath) }
+        if let excluding { return !excluding.contains(statePath) }
         return true
     }
 
-    mutating func visit<T>(path: WritableKeyPath<M, T>) {
-        guard shouldInstall(path: path) else { return }
-        // T is not constrained to Sendable by the ModelVisitor protocol, but @Model properties
-        // are always Sendable in practice. We use unsafeBitCast (same pattern as RestoreVisitor)
-        // to satisfy the Swift concurrency checker.
-        installPropertyUndoUnchecked(for: path, context: context, backend: backend, modelContext: modelContext)
-    }
-
-    // Model and ModelContainer fields are stored as a whole value (snapshot of the full
-    // field). Writing them back goes through the normal context assignment path which
-    // handles child-context re-creation automatically. We use initialCopy (not frozenCopy)
-    // so that restored values can be re-anchored by the context assignment path.
-    mutating func visit<T: Model & Sendable>(path: WritableKeyPath<M, T>) {
-        guard shouldInstall(path: path) else { return }
-        installPropertyUndoUnchecked(for: path, context: context, backend: backend, modelContext: modelContext, useInitialCopy: true)
-    }
-
-    mutating func visit<T: ModelContainer & Sendable>(path: WritableKeyPath<M, T>) {
-        guard shouldInstall(path: path) else { return }
-        installPropertyUndoUnchecked(for: path, context: context, backend: backend, modelContext: modelContext, useInitialCopy: true)
+    mutating func _visitStatePath<N: Model, T>(_ statePath: WritableKeyPath<N._ModelState, T>, forState _: N.Type) {
+        // ContainerVisitor always calls with N == M (V.State == the model this visitor was
+        // created for), so the unsafeBitCast from WritableKeyPath<N._ModelState, T> to
+        // WritableKeyPath<M._ModelState, T> is safe.
+        let typedPath = unsafeBitCast(statePath, to: WritableKeyPath<M._ModelState, T>.self)
+        guard shouldInstall(statePath: typedPath) else { return }
+        // Model/ModelContainer-typed properties need initialCopy so restored values can be
+        // re-anchored by the context assignment path (frozenCopy would be rejected by the setter).
+        let useInitialCopy = T.self is any Model.Type || T.self is any ModelContainer.Type
+        installPropertyUndoUnchecked(statePath: typedPath, context: context, backend: backend, modelContext: modelContext, useInitialCopy: useInitialCopy)
     }
 }
 
@@ -468,7 +458,7 @@ private struct InstallUndoVisitor<M: Model>: ModelVisitor {
 /// 2. The coalescer merges all property changes that occur within one transaction
 ///    into a single ``ModelUndoEntry`` pushed to the backend.
 private func installPropertyUndoUnchecked<M: Model, T>(
-    for path: WritableKeyPath<M, T>,
+    statePath: WritableKeyPath<M._ModelState, T>,
     context: Context<M>,
     backend: any UndoBackend,
     modelContext: ModelContext<M>,
@@ -477,7 +467,7 @@ private func installPropertyUndoUnchecked<M: Model, T>(
     // All @Model stored properties are Sendable in practice (the macro enforces this).
     // We use nonisolated(unsafe) / unsafeBitCast to satisfy the Swift concurrency checker
     // without adding a T: Sendable constraint that the ModelVisitor protocol cannot provide.
-    let sendablePath = unsafeBitCast(path, to: (WritableKeyPath<M, T> & Sendable).self)
+    let sendableStatePath = unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self)
 
     // One coalescer is shared across all properties registered for the same context/backend.
     let coalescer = UndoCoalescer.forContext(context, backend: backend)
@@ -487,20 +477,25 @@ private func installPropertyUndoUnchecked<M: Model, T>(
     // For Model/ModelContainer typed properties we use initialCopy (not frozenCopy) so that
     // restored values can be re-anchored by the context assignment path. Frozen copies are
     // rejected by the setter ("It is not allowed to add a destructed nor frozen model.").
-    let baseline = UnsafeSendableBox(snapshotValue(context.model[keyPath: path], useInitialCopy: useInitialCopy))
+    let baseline = UnsafeSendableBox(snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: statePath], useInitialCopy: useInitialCopy))
+    // Compose M-level path for Model/ModelContainer restore (triggers updateContext for re-anchoring).
+    let mPath = M._modelStateKeyPath.appending(path: statePath) as WritableKeyPath<M, T>
+    let sendableMPath = unsafeBitCast(mPath, to: (WritableKeyPath<M, T> & Sendable).self)
 
-    let cancel = context.onModify(for: sendablePath) { hasEnded, _ in
+    let cancel = context.onModify(for: sendableStatePath) { hasEnded, _ in
         guard !hasEnded else { return nil }
         guard !threadLocals.isRestoringState else { return nil }
 
         let oldValue = baseline.value
-        let newValue = snapshotValue(context.model[keyPath: sendablePath], useInitialCopy: useInitialCopy)
+        let newValue = snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: sendableStatePath], useInitialCopy: useInitialCopy)
 
         guard !areEqual(oldValue, newValue) else { return nil }
 
         // Builds a closure that writes `value` back into the live model.
-        // Uses modelContext.transaction(with:at:) which ends the inout access before
-        // postLockCallbacks run — safe to call from within another callback chain.
+        // For scalar properties: uses context.stateTransaction directly (fires notifications with
+        // the correct M._ModelState path so modifyCallbacksStore lookups succeed).
+        // For Model/ModelContainer properties: uses modelContext.transaction(with:at:statePath:)
+        // to trigger the full write path including updateContext for child re-anchoring.
         //
         // We run the transaction under `usingAccess(rootAccess)` where `rootAccess` is the
         // ModelAccess registered on the root model (e.g. TestAccess in tests). Without this,
@@ -511,14 +506,22 @@ private func installPropertyUndoUnchecked<M: Model, T>(
             return {
                 // Skip if the model has been destructed (e.g. item removed from parent array).
                 guard context.lifetime == .active else { return }
-                // Propagate the root access (e.g. TestAccess) so that didModify notifications
-                // fire correctly during restore. The root context's readModel._$modelContext
-                // holds the registered ModelAccess; child contexts have _access = nil.
-                let rootAccess = context.rootParent.anyModelAccess
+                // Propagate the root TestAccess (if any) so that didModify notifications
+                // fire correctly during restore. TestAccess is registered as the root
+                // context's taskLifecycleDelegate; child contexts have no TestAccess.
+                let rootAccess = context.rootParent.taskLifecycleDelegate as? ModelAccess
                 usingAccess(rootAccess) {
                     threadLocals.withValue(true, at: \.isRestoringState) {
-                        if let ctx = ModelNode(_$modelContext: modelContext)._context {
-                            modelContext.transaction(with: ctx.model, at: sendablePath, modify: { $0 = v }, isSame: nil)
+                        if useInitialCopy {
+                            // Model/ModelContainer: go through the full write path so that
+                            // updateContext fires and child contexts are properly re-anchored.
+                            if let ctx = ModelNode(_$modelContext: modelContext)._context {
+                                modelContext.transaction(with: ctx.model, at: sendableMPath, statePath: sendableStatePath, modify: { $0 = v }, isSame: nil)
+                            }
+                        } else {
+                            // Scalar: write directly via stateTransaction to avoid the _isLive
+                            // bypass and ensure modifyCallbacksStore callbacks fire.
+                            context.stateTransaction(at: sendableStatePath, isSame: nil, accessBox: .init(), modify: { $0 = v })
                         }
                     }
                 }
@@ -534,7 +537,7 @@ private func installPropertyUndoUnchecked<M: Model, T>(
                 // Context is gone — return a no-op restore.
                 return {}
             }
-            let currentValue = snapshotValue(context.model[keyPath: sendablePath], useInitialCopy: useInitialCopy)
+            let currentValue = snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: sendableStatePath], useInitialCopy: useInitialCopy)
             return makeRestore(value: currentValue)
         }
 
@@ -710,14 +713,14 @@ private func areEqual<T>(_ lhs: T, _ rhs: T) -> Bool {
 /// generated by the `@Model` macro. Must be installed via `usingActiveAccess` while
 /// reading from the LIVE model — frozen copies bypass `Context` and never fire `willAccess`.
 private final class BackingPathCollector<M: Model>: ModelAccess, @unchecked Sendable {
-    private(set) var paths: Set<PartialKeyPath<M>> = []
+    private(set) var paths: Set<PartialKeyPath<M._ModelState>> = []
 
     init() {
         super.init(useWeakReference: false)
     }
 
-    override func willAccess<N: Model, T>(_ model: N, at path: KeyPath<N, T> & Sendable) -> (() -> Void)? {
-        if let typedPath = path as? PartialKeyPath<M> {
+    override func willAccess<N: Model, T>(from context: Context<N>, at path: KeyPath<N._ModelState, T> & Sendable) -> (() -> Void)? {
+        if let typedPath = path as? PartialKeyPath<M._ModelState> {
             paths.insert(typedPath)
         }
         return nil

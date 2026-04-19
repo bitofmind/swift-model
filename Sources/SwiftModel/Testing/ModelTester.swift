@@ -38,7 +38,20 @@ public final class ModelTester<M: Model> {
 
     /// The live model being tested. Use this to read state and invoke actions.
     public var model: M {
-        access.context.model
+        usingActiveAccess(access) {
+            // Seed from lastState so that `let` properties (e.g. LockIsolated counters)
+            // carry their correct reference values rather than zero-bytes from _zeroInit().
+            // lastState is a frozen copy: tracked `var` properties are stale in the struct,
+            // but after _updateContext they're always read from _stateHolder.state via the
+            // .reference-source subscript, so staleness doesn't matter.
+            // Using .reference source (not context.model's .live source) ensures reading
+            // tracked properties triggers willAccessDirect → TestAccess.willAccess, which is
+            // required for exhaustivity tracking (consuming recorded valueUpdates).
+            var m = access.lock { access.lastState }
+            m._updateContext(ModelContextUpdate(ModelContext(context: access.context)))
+            m.modelContext.access = access
+            return m
+        }
     }
 
     deinit {

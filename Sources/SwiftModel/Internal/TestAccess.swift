@@ -201,13 +201,14 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
 
         super.init(useWeakReference: true)
 
-        context.readModel.modelContext.access = self
-        context.modifyModel.modelContext.access = self
         // Register as lifecycle delegate before activation so tasks created in
         // onActivate() are counted from the first task creation.
         context.taskLifecycleDelegate = self
         usingAccess(self) {
-            context.model.activate()
+            // Call onActivate() directly on the context rather than traversing via activate()
+            // on context.model. Context.onActivate() uses allChildren directly and invokes
+            // pendingActivation for the model's own onActivate() with correct let values.
+            _ = context.onActivate()
         }
         // Re-initialize snapshots from the activated model.
         //
@@ -224,11 +225,12 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         //     (element captured at cursor-creation time, value == 0) instead of the current
         //     value (e.g. 99) — diff is always non-nil → loop retries until the 30 s hard cap.
         //
-        // Re-initializing from context.readModel.frozenCopy gives both snapshots the same
+        // Re-initializing from model.frozenCopy gives both snapshots the same
         // ModelIDs that live cursors will use, so cursor lookups find and update elements
-        // correctly.
+        // correctly. `model` has .pending source with _linkedReference = context.reference,
+        // so shallowCopy reads the live state (with activated ModelIDs) from the reference.
         let activatedSnapshot = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-            context.readModel.frozenCopy
+            model.frozenCopy
         }
         lastState = activatedSnapshot
         expectedState = activatedSnapshot
@@ -250,8 +252,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     //
     // For dependency model context storage (no root-relative path exists), a dummy Access is
     // returned that carries a cleanup closure to clear dependencyMetadataUpdates.
-    override func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
-        guard let path = path as? WritableKeyPath<M, Value> else { return nil }
+    override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
+        guard let path = path as? WritableKeyPath<M._ModelState, Value> else { return nil }
 
         // Capture the modification area and storage name at the point of access (thread-locals
         // are set here but may be cleared by the time the returned closure is invoked).
@@ -261,21 +263,30 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // propertyName(from:path:) returns nil for synthetic subscript paths, so we prefer this.
         let capturedStorageName = threadLocals.storageName
 
-        // rootPaths resolves the chain of WritableKeyPaths from Root down to this model.
-        // It is nil only if the model has been detached from the hierarchy.
-        let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
-        guard let rootPaths else {
-            if let assertContext {
-                assertContext.modelsNoLongerPartOfTester.append(model.typeDescription)
-            } else {
-                fail("Model \(model.typeDescription) is no longer part of this tester", at: fileAndLine)
-            }
-            return nil
-        }
+        // rootPaths resolves the chain of WritableKeyPaths from Root down to this context.
+        // Returns nil (empty after compactMap) only for dependency contexts not in the
+        // main hierarchy — handled separately by the dependency storage branch below.
+        let rootPaths = context.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
+        let modelName = context.typeDescription
 
         guard let assertContext else { return nil }
 
-        let fullPaths = rootPaths.map { $0.appending(path: path) }
+        // Compose Root→M path with M._modelState→Value path to get Root→Value path.
+        // Guard: _EmptyModelState models (no tracked vars) have _modelStateKeyPath defaulting to
+        // fatalError() — the macro only generates it when tracked vars exist. Calling it on an
+        // empty-state model (e.g. one that uses context storage but has no var properties) would
+        // crash. Treat those models as if rootPaths is empty so storage/preference accesses fall
+        // through to the dependency-storage early-return below.
+        let mStatePath: WritableKeyPath<M, Value>?
+        let fullPaths: [WritableKeyPath<Root, Value>]
+        if M._ModelState.self == _EmptyModelState.self {
+            mStatePath = nil
+            fullPaths = []
+        } else {
+            let ms = M._modelStateKeyPath.appending(path: path)
+            mStatePath = ms
+            fullPaths = rootPaths.map { $0.appending(path: ms) }
+        }
 
         // Build the display name for failure messages: "context.isDarkMode" / "preference.totalCount"
         // or plain "propertyName" for regular @Model state properties.
@@ -287,11 +298,11 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             resolvedStorageName = nil  // falls back to propertyName(from:path:) below
         }
 
-        // Dependency model context/preference storage: no root-relative path exists (the model
+        // Dependency model context/preference storage: no root-relative path exists (the context
         // lives in dependencyContexts, not children). Return a dummy Access whose additionalCleanup
         // clears the corresponding dependency updates entry when asserted.
-        if fullPaths.isEmpty, (capturedArea == .local || capturedArea == .environment || capturedArea == .preference), let modelContext = model.context {
-            let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
+        if fullPaths.isEmpty, (capturedArea == .local || capturedArea == .environment || capturedArea == .preference) {
+            let key = DependencyMetadataKey(contextID: ObjectIdentifier(context), path: path)
             let area = capturedArea
             return { [weak self] in
                 guard let self else { return }
@@ -304,11 +315,23 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         }
                     }
                 }
-                let capturedValue = frozenCopy(modelContext[path])
+                // Use _modelSeed directly (.live source) to read the current value and property name.
+                // .live source reads from _stateHolder without triggering willAccessDirect, so
+                // there is no infinite recursion risk. Storage paths have fatalError() getters;
+                // use thread-local pre-computed values set by willAccessStorage/willAccessPreferenceValue.
+                let capturedValue: Value
+                if area == .preference, let pre = threadLocals.precomputedPreferenceValue, let typed = pre as? Value {
+                    capturedValue = frozenCopy(typed)
+                } else if let pre = threadLocals.precomputedStorageValue, let typed = pre as? Value {
+                    capturedValue = frozenCopy(typed)
+                } else {
+                    capturedValue = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+                }
+                let capturedPropertyName = resolvedStorageName ?? mStatePath.flatMap { propertyName(from: context._modelSeed, path: $0) }
                 assertContext.accesses.append(.init(
                     path: \Root.self,
-                    modelName: model.typeDescription,
-                    propertyName: resolvedStorageName ?? propertyName(from: model, path: path),
+                    modelName: modelName,
+                    propertyName: capturedPropertyName,
                     value: { String(customDumping: capturedValue) },
                     capturedValue: { capturedValue },
                     apply: { _ in },
@@ -375,9 +398,13 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             let value: Value
             // For preference paths, use the pre-computed aggregated value if available.
             // willAccessPreferenceValue sets threadLocals.precomputedPreferenceValue before
-            // invoking this closure so we don't re-read via model.context![path] — which
+            // invoking this closure so we don't re-read via context[path] — which
             // re-enters preferenceValue under a lock and causes lock-ordering deadlocks.
+            // For context/preference storage paths, use precomputedStorageValue since
+            // the _metadata/_preference stub subscripts have fatalError() getters.
             if isPreference, let precomputed = threadLocals.precomputedPreferenceValue, let typed = precomputed as? Value {
+                value = frozenCopy(typed)
+            } else if isContextOrPreferenceStorage, let precomputed = threadLocals.precomputedStorageValue, let typed = precomputed as? Value {
                 value = frozenCopy(typed)
             } else if overrideConsumed != nil, let typed = overrideConsumed as? Value {
                 // Transitions mode: use the same override value that was yielded to the predicate.
@@ -385,13 +412,16 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 // succeeds when T is an Optional type (producing .some(nil)).
                 value = typed
             } else {
-                value = frozenCopy(model.context![path])
+                // Use _modelSeed directly (.live source): reads from _stateHolder without
+                // triggering willAccessDirect, so there is no infinite recursion risk.
+                value = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
             }
+            let resolvedPropertyName = resolvedStorageName ?? mStatePath.flatMap { propertyName(from: context._modelSeed, path: $0) }
             for fullPath in fullPaths {
                 assertContext.accesses.append(.init(
                     path: fullPath,
-                    modelName: model.typeDescription,
-                    propertyName: resolvedStorageName ?? propertyName(from: model, path: path),
+                    modelName: modelName,
+                    propertyName: resolvedPropertyName,
                     value: { String(customDumping: value) },
                     capturedValue: { value },
                     apply: { $0[keyPath: fullPath] = value },
@@ -424,8 +454,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     //   – onAnyModification's withModificationActiveCount holds parent.lock and then iterates
     //     children, acquiring child.lock (parent → child order).
     // Running the closure after lock.unlock() in Context._modify/transaction breaks the cycle.
-    override func didModify<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
-        guard let path = path as? WritableKeyPath<M, Value> else { return nil }
+    override func didModify<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
+        guard let path = path as? WritableKeyPath<M._ModelState, Value> else { return nil }
 
         // Capture thread-locals here (at call time, while still inside the model lock scope).
         // They may change on other threads by the time the returned closure is invoked.
@@ -438,27 +468,48 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // to the same path within a single transaction into one valueUpdates entry.
         // Zero means outside any transaction — never coalesce.
         let capturedTxID: UInt = threadLocals.postTransactions != nil ? threadLocals.currentTransactionID : 0
+        // Capture thread-locals for storage value reading (set by willAccessStorage/didModifyStorage
+        // before invoking this callback). The _metadata/_preference stub subscripts have fatalError()
+        // getters; this pre-computed value is used instead.
+        let precomputedStorage: Any? = threadLocals.precomputedStorageValue
+        let precomputedPreference: Any? = threadLocals.precomputedPreferenceValue
 
         return { [weak self] in
             guard let self else { return }
 
             // rootPaths is computed here, OUTSIDE the model lock, to avoid the deadlock
             // described above. The model hierarchy is stable at this point (no lock needed
-            // to safely read the parent-child structure for an active model).
-            let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
-            guard let rootPaths else {
-                fatalError()
-            }
+            // to safely read the parent-child structure for an active context).
+            let rootPaths = context.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
 
-            let fullPaths = rootPaths.map { $0.appending(path: path) }
+            // Compose Root→M path with M._modelState→Value path to get Root→Value path.
+            // Guard: _EmptyModelState models have _modelStateKeyPath defaulting to fatalError();
+            // treat them as if rootPaths is empty (same storage early-return path as below).
+            let mStatePath: WritableKeyPath<M, Value>?
+            let fullPaths: [WritableKeyPath<Root, Value>]
+            if M._ModelState.self == _EmptyModelState.self {
+                mStatePath = nil
+                fullPaths = []
+            } else {
+                let ms = M._modelStateKeyPath.appending(path: path)
+                mStatePath = ms
+                fullPaths = rootPaths.map { $0.appending(path: ms) }
+            }
 
             // Dependency model context/preference storage: no root-relative path exists. Track the
             // update separately so checkExhaustion can report it if not asserted.
-            if fullPaths.isEmpty, (area == .local || area == .environment || area == .preference), let modelContext = model.context {
-                let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
-                let name = storageName ?? propertyName(from: model, path: path)
+            if fullPaths.isEmpty, (area == .local || area == .environment || area == .preference) {
+                let key = DependencyMetadataKey(contextID: ObjectIdentifier(context), path: path)
+                let name = storageName ?? mStatePath.flatMap { propertyName(from: context._modelSeed, path: $0) }
                 let prefix = area == .preference ? "preference" : area == .environment ? "environment" : "local"
-                let value = frozenCopy(modelContext[path])
+                let value: Value
+                if area == .preference, let pre = precomputedPreference, let typed = pre as? Value {
+                    value = frozenCopy(typed)
+                } else if let pre = precomputedStorage, let typed = pre as? Value {
+                    value = frozenCopy(typed)
+                } else {
+                    value = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+                }
                 self.lock {
                     let update = ValueUpdate(
                         apply: { _ in },  // dependency storage not in Root snapshot
@@ -480,11 +531,22 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             // would produce false failures. We still update `lastState` so the settlement
             // check (isEqualIncludingIds) works correctly when the test reads a private
             // property via @testable import.
-            let isPrivate = self.isPrivatePath(path, in: model)
+            //
+            // fullPaths is non-empty here, which means mStatePath is non-nil (empty-state
+            // models always produce empty fullPaths and are handled by the early return above).
+            guard let mStatePath else { return }
+            let isPrivate = self.isPrivatePath(mStatePath, in: context._modelSeed)
 
-            let name = storageName ?? propertyName(from: model, path: path)
+            let name = storageName ?? propertyName(from: context._modelSeed, path: mStatePath)
             let prefix: String? = area == .preference ? "preference" : area == .local ? "local" : area == .environment ? "environment" : nil
-            let value = frozenCopy(model.context![path])
+            let value: Value
+            if area == .preference, let pre = precomputedPreference, let typed = pre as? Value {
+                value = frozenCopy(typed)
+            } else if area == .local || area == .environment, let pre = precomputedStorage, let typed = pre as? Value {
+                value = frozenCopy(typed)
+            } else {
+                value = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+            }
             self.lock {
                 for fullPath in fullPaths {
                     // Private properties are not tracked for exhaustivity: tests cannot observe
@@ -493,7 +555,14 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     // (isEqualIncludingIds) works correctly when a test reads a private
                     // property via @testable import.
                     if isPrivate {
-                        self.lastState[keyPath: fullPath] = value
+                        // Storage/preference keypaths have fatalError() getters; Swift's WritableKeyPath
+                        // write ABI calls the getter first (synthesized _modify). Skip the write —
+                        // the value lives in contextStorage, not in the _ModelState snapshot.
+                        if area != .local && area != .environment && area != .preference {
+                            threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+                                self.lastState[keyPath: fullPath] = value
+                            }
+                        }
                         continue
                     }
 
@@ -516,6 +585,12 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                               let lastTo = lastEntry.toDescription {
                         // Subsequent write: "from" is the previous entry's "to"
                         capturedFrom = lastTo
+                    } else if area == .local || area == .environment || area == .preference {
+                        // Storage/preference paths: values live in AnyContext.contextStorage, not in
+                        // the _ModelState struct. The _metadata/_preference getter stubs call fatalError(),
+                        // so reading lastState[keyPath: fullPath] would crash. Skip the "from" capture —
+                        // the message will show "== newValue" instead of "oldValue → newValue".
+                        capturedFrom = nil
                     } else {
                         // First write to this path since last assert: capture lastState.
                         // We use lastState rather than expectedState because deep paths through
@@ -538,8 +613,12 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         }
                     }
 
+                    // Storage/preference keypaths have fatalError() getters; Swift's WritableKeyPath
+                    // write ABI calls the getter first. Use a no-op apply — the value lives in
+                    // contextStorage, not in the _ModelState snapshot used by isEqualIncludingIds.
+                    let isStoragePath = area == .local || area == .environment || area == .preference
                     let entry = ValueUpdate(
-                        apply: { $0[keyPath: fullPath] = value },
+                        apply: isStoragePath ? { _ in } : { $0[keyPath: fullPath] = value },
                         debugInfo: {
                             let prop = prefix.map { "\($0).\(name ?? "UNKNOWN")" } ?? (name ?? "UNKNOWN")
                             let label = "\(String(describing: M.self)).\(prop)"
@@ -561,7 +640,14 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         self.valueUpdates[fullPath, default: []].append(entry)
                     }
 
-                    self.lastState[keyPath: fullPath] = value
+                    // Storage/preference keypaths have fatalError() getters; Swift's WritableKeyPath
+                    // write ABI calls the getter first (synthesized _modify). Skip the write —
+                    // the value lives in contextStorage, not in the _ModelState snapshot.
+                    if !isStoragePath {
+                        threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+                            self.lastState[keyPath: fullPath] = value
+                        }
+                    }
                 }
             }
         }
@@ -619,6 +705,19 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 context.eventsSent.removeAll()
                 context.probes.removeAll()
 
+                // Snapshot valueUpdates entry counts before predicate evaluation.
+                // Paths that gain new entries during evaluation had side-effect writes
+                // (e.g. `accessCount += 1` inside a computed getter). These must be
+                // skipped in isEqualIncludingIds because capturedValue is pre-write
+                // but lastState is post-write.
+                let prePredicateUpdateCounts: [AnyKeyPath: Int] = lock {
+                    var counts: [AnyKeyPath: Int] = [:]
+                    for (path, entries) in self.valueUpdates {
+                        counts[path] = entries.count
+                    }
+                    return counts
+                }
+
                 // Step 1: Evaluate all predicates. Reading properties inside a predicate
                 // fires willAccess → appends Access entries to context.accesses.
                 for predicate in predicates {
@@ -628,7 +727,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     context.eventsNotSent.removeAll(keepingCapacity: true)
                     context.modelsNoLongerPartOfTester.removeAll(keepingCapacity: true)
 
-                    let passed = predicate.predicate()
+                    let passed = usingActiveAccess(self) { predicate.predicate() }
                     let accesses = context.accesses
                     if passed {
                         passedAccesses += accesses
@@ -672,7 +771,15 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     // local frozen copy and `passedAccesses` is a local array, no lock is
                     // needed for the comparison itself.
                     let isEqualIncludingIds = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-                        let last = lock { lastState }.frozenCopy
+                        // Snapshot all shared state under a single brief lock, then call
+                        // frozenCopy and run the reduce entirely OUTSIDE the lock.
+                        // frozenCopy walks Optional<M> children via _swift_getKeyPath which
+                        // acquires the Swift runtime lock — holding the TestAccess lock at the
+                        // same time deadlocks (lock-ordering inversion). The new conditions
+                        // below also read exhaustivity/valueUpdates (shared state), so we
+                        // capture those under the same brief lock.
+                        let (snap, capturedExhaustivity, capturedValueUpdates) = lock { (lastState, exhaustivity, valueUpdates) }
+                        let last = snap.frozenCopy
                         return threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
                             return passedAccesses.reduce(true) { result, access in
                                 // Context/preference storage values live in AnyContext.contextStorage,
@@ -703,7 +810,15 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                                 // Transitions mode: skip settlement check for accesses that read
                                 // from the FIFO queue. Their captured value is historical (the
                                 // front-of-queue value) and will not match lastState (the live value).
-                                if self.exhaustivity.contains(.transitions) && self.valueUpdates[access.path] != nil { return result }
+                                if capturedExhaustivity.contains(.transitions) && capturedValueUpdates[access.path] != nil { return result }
+                                // Skip accesses whose path was WRITTEN during predicate
+                                // evaluation (e.g. `accessCount += 1` inside a computed getter).
+                                // capturedValue captures the pre-write value, but lastState
+                                // reflects the post-write value, so they'd always diverge.
+                                // Only skip paths that gained NEW entries during this predicate
+                                // cycle — paths written before the predicate still need checking.
+                                if let currentCount = capturedValueUpdates[access.path]?.count,
+                                   currentCount > (prePredicateUpdateCounts[access.path] ?? 0) { return result }
                                 // Compare the predicate-time captured value against lastState directly.
                                 // Using only `last` (which reflects the current live state) and comparing
                                 // against the captured value is safe and sufficient: if the IDs match,

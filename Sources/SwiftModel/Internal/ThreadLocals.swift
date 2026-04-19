@@ -36,6 +36,11 @@ final class ThreadLocals: @unchecked Sendable {
     /// Set by `Context.willAccessPreferenceValue` before invoking the TestAccess closure,
     /// avoiding re-entry into `preferenceValue` (which would acquire child locks and deadlock).
     var precomputedPreferenceValue: Any? = nil
+    /// When non-nil, the TestAccess `willAccess`/`didModify` closures for a context/preference
+    /// storage path (_metadata / _preference stub subscripts) should use this pre-computed value
+    /// instead of calling the `fatalError()` stub getter on `M._ModelState`.
+    /// Set by `Context.willAccessStorage`/`didModifyStorage` before invoking the TestAccess closure.
+    var precomputedStorageValue: Any? = nil
     /// The human-readable property name of the context or preference storage key currently
     /// being accessed/modified. Set by `Context<M>` around typed storage path calls so
     /// `TestAccess` can use it in `debugInfo` messages (e.g. `"context.isDarkMode"`)

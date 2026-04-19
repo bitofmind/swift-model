@@ -421,9 +421,11 @@ public struct LocalKeys: Sendable {
 @dynamicMemberLookup
 public struct LocalValues: Sendable {
     let context: AnyContext?
+    let access: ModelAccess?
 
-    init(context: AnyContext?) {
+    init(context: AnyContext?, access: ModelAccess?) {
         self.context = context
+        self.access = access
     }
 
     /// Reads or writes a local value using a storage descriptor directly.
@@ -434,7 +436,7 @@ public struct LocalValues: Sendable {
         }
         nonmutating set {
             guard let context else { return }
-            context[storage.storage] = newValue
+            usingActiveAccess(access) { context[storage.storage] = newValue }
         }
     }
 
@@ -484,9 +486,11 @@ public struct EnvironmentKeys: Sendable {
 @dynamicMemberLookup
 public struct EnvironmentContext: Sendable {
     let context: AnyContext?
+    let access: ModelAccess?
 
-    init(context: AnyContext?) {
+    init(context: AnyContext?, access: ModelAccess?) {
         self.context = context
+        self.access = access
     }
 
     /// Reads or writes an environment value using a storage descriptor directly.
@@ -497,7 +501,7 @@ public struct EnvironmentContext: Sendable {
         }
         nonmutating set {
             guard let context else { return }
-            context[storage.storage] = newValue
+            usingActiveAccess(access) { context[storage.storage] = newValue }
         }
     }
 
@@ -530,9 +534,11 @@ public struct ContextKeys: Sendable {
 public struct ContextValues: Sendable {
     // Optional: nil when the node is unanchored. Reads return defaultValue, writes are no-ops.
     let context: AnyContext?
+    let access: ModelAccess?
 
-    init(context: AnyContext?) {
+    init(context: AnyContext?, access: ModelAccess?) {
         self.context = context
+        self.access = access
     }
 
     /// Reads or writes a context value using a storage descriptor directly.
@@ -553,7 +559,7 @@ public struct ContextValues: Sendable {
             // Both local and environment writes just store on this context.
             // For environment keys the observation system fires naturally because
             // readers registered willAccess on this context during their walk.
-            context[storage] = newValue
+            usingActiveAccess(access) { context[storage] = newValue }
         }
     }
 

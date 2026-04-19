@@ -7,7 +7,7 @@ import Dispatch
 
 /// Returns whether the current execution context is the main thread.
 /// On WASI (single-threaded), this is always true.
-private var isOnMainThread: Bool {
+var isOnMainThread: Bool {
     #if os(WASI)
     return true
     #else
@@ -26,7 +26,12 @@ extension Model {
 
 extension Model {
     func assertInitialState(function: String = #function) {
-        if lifetime != .initial {
+        // Pre-anchor models (not live, no context, no snapshot) may be .destructed after a
+        // previous test run (re-anchorable static dep models). Accept both .initial and .destructed.
+        let src = modelContext._source
+        let isPreAnchor = !src._isLive && src.reference.context == nil && !src.reference.isSnapshot
+        let ok = isPreAnchor ? (lifetime == .initial || lifetime == .destructed) : (lifetime == .initial)
+        if !ok {
             reportIssue("Calling \(function) on an anchored model is not allowed and has no effect")
         }
     }
@@ -80,27 +85,24 @@ extension Model {
     }
 
     var shallowCopy: Self {
-        switch modelContext.source {
-        case .frozenCopy:
-            return self
-
-        case let .reference(reference):
-            if let context = reference.context {
-                var copy = context[\.self]
-                copy.modelContext.source = .frozenCopy(id: copy.modelID)
-                copy.modelContext.access = nil
-                return copy
-            } else if let last = reference.model {
-                return last
-            } else {
-                return self
-            }
-
-        case let .lastSeen(id: id):
+        let src = modelContext._source
+        if src._isLive { return self }  // internal direct-access copy — return as-is
+        let ref = src.reference
+        if ref.lifetime == .frozenCopy { return self }  // already a frozen snapshot
+        if ref.context != nil {
+            // Anchored: freeze the live state.
+            // `makeFrozen` reads from `_stateHolder` without the lock (same as original behavior).
             var copy = self
-            copy.modelContext.source = .frozenCopy(id: id)
+            copy.modelContext.makeFrozen(id: ref.modelID)
+            copy.modelContext.access = nil
+            return copy
+        } else if ref.isSnapshot {
+            // lastSeen snapshot (destructed) — freeze without clearing access.
+            var copy = self
+            copy.modelContext.makeFrozen(id: ref.modelID)
             return copy
         }
+        return self  // pre-anchor unlinked copy
     }
 }
 
@@ -119,53 +121,6 @@ extension Model {
     }
 }
 
-@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-extension Model where Self: Observable {
-    func access<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
-        let path = path as! KeyPath<Self, T>
-        
-        if isOnMainThread {
-            context.mainObservationRegistrarMakingIfNeeded.access(self, keyPath: path)
-        } else {
-            context.backgroundObservationRegistrarMakingIfNeeded.access(self, keyPath: path)
-        }
-    }
-
-    func willSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
-        let path = path as! KeyPath<Self, T>
-        
-        if isOnMainThread {
-            // On main: call willSet on both registrars before mutation
-            context.mainObservationRegistrar?.willSet(self, keyPath: path)
-            context.backgroundObservationRegistrar?.willSet(self, keyPath: path)
-        } else {
-            // On background: only call willSet on background registrar
-            // Main registrar will get willSet+didSet together via mainCall (after mutation)
-            context.backgroundObservationRegistrar?.willSet(self, keyPath: path)
-        }
-    }
-
-    func didSet<M: Model, T>(path: KeyPath<M, T>&Sendable, from context: Context<M>) {
-        let path = path as! KeyPath<Self, T>&Sendable
-        
-        if isOnMainThread {
-            // On main: call didSet on both registrars after mutation
-            context.mainObservationRegistrar?.didSet(self, keyPath: path)
-            context.backgroundObservationRegistrar?.didSet(self, keyPath: path)
-        } else {
-            // On background: call didSet on background registrar immediately
-            context.backgroundObservationRegistrar?.didSet(self, keyPath: path)
-            
-            // Dispatch willSet+didSet together to main registrar (for SwiftUI safety)
-            if let mainReg = context.mainObservationRegistrar {
-                context.mainCallQueue {
-                    mainReg.willSet(self, keyPath: path)
-                    mainReg.didSet(self, keyPath: path)
-                }
-            }
-        }
-    }
-}
 
 // Two purpose-specific queue types route observation callbacks:
 //

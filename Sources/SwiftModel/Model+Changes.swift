@@ -391,8 +391,8 @@ private final class RegistrarDetector: ModelAccess, @unchecked Sendable {
         super.init(useWeakReference: false)
     }
 
-    override func willAccess<M: Model, T>(_ model: M, at path: KeyPath<M, T> & Sendable) -> (() -> Void)? {
-        if let context = model.context, !context.hasObservationRegistrar {
+    override func willAccess<M: Model, T>(from context: Context<M>, at path: KeyPath<M._ModelState, T> & Sendable) -> (() -> Void)? {
+        if !context.hasObservationRegistrar {
             allHaveRegistrar = false
         }
         return nil
@@ -420,7 +420,7 @@ private extension ModelNode {
         guard let context = enforcedContext() else { return produce() }
 
         let key = AnyHashableSendable(key)
-        let path: KeyPath<M, T>&Sendable = \M[memoizeKey: key]
+        let path: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[memoizeKey: key]
 
 #if DEBUG
         // Set up debug observation once (only on first access, when cache entry doesn't yet exist).
@@ -434,9 +434,13 @@ private extension ModelNode {
         ) as ((@Sendable (T, T?) -> Void)?, LockIsolated<T?>?, LockIsolated<DebugAccessCollector?>?)
 #endif
 
-        // External tracking: notify observers that this property is being accessed
-        // This allows SwiftUI's ViewAccess to register callbacks for view invalidation
-        _$modelContext.willAccess(context.model, at: path)?()
+        // External tracking: notify observers that this property is being accessed.
+        // Registrar call uses _StateObserver (no Model Observable conformance needed).
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            context.willAccessSyntheticPath(\_StateObserver<M._ModelState>[memoizeKey: key])
+        }
+        // ViewAccess/AccessCollector/TestAccess tracking via active access:
+        _$modelContext.willAccess(at: path)?()
 
         // Box that will hold the `forceNextUpdate` closure returned by `update()`.
         // Used so that `didModifyCallback` can call it when a forced (touch) change arrives,
@@ -655,11 +659,9 @@ private extension ModelNode {
                                             }
                                         }
 
-                                        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *),
-                                           let model = context.model as? any Model&Observable {
+                                        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
                                             callbacks.append {
-                                                model.willSet(path: path, from: context)
-                                                model.didSet(path: path, from: context)
+                                                context.invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[memoizeKey: key])
                                             }
                                         }
                                     }
@@ -702,10 +704,9 @@ private extension ModelNode {
                                     }
                                 }
 
-                                if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), let model = context.model as? any Model&Observable {
+                                if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
                                     postCallbacks.append {
-                                        model.willSet(path: path, from: context)
-                                        model.didSet(path: path, from: context)
+                                        context.invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[memoizeKey: key])
                                     }
                                 }
                             }
@@ -784,7 +785,7 @@ extension Model {
     // typed KeyPath<M, [ModelID]> that can be passed to willAccess / willSet / didSet.
     subscript(_parentsObservationKey _: _ParentsObservationKey) -> [ModelID] {
         context!.lock {
-            context!.parents.map { $0.anyModel.modelID }
+            context!.parents.map { $0.anyModelID }
         }
     }
 }
@@ -1280,25 +1281,23 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
 
     override var shouldPropagateToChildren: Bool { false }
 
-    override func willAccess<M: Model, T>(_ model: M, at path: KeyPath<M, T>&Sendable) -> (() -> Void)? {
-        if let context = model.context {
-            let key = Key(id: model.modelID, path: path)
+    override func willAccess<M: Model, T>(from context: Context<M>, at path: KeyPath<M._ModelState, T>&Sendable) -> (() -> Void)? {
+        let key = Key(id: context.anyModelID, path: path)
 
-            let isActive = active.withValue {
-                $0.added.insert(key)
-                return $0.active[key] != nil
+        let isActive = active.withValue {
+            $0.added.insert(key)
+            return $0.active[key] != nil
+        }
+
+        if !isActive {
+            // Make sure to call this outside active lock to avoid dead-locks with context lock.
+            let cancellation = context.onModify(for: path) { finished, force in
+                if finished { return {} }
+                return self.onModify(self, force)
             }
 
-            if !isActive {
-                // Make sure to call this outside active lock to avoid dead-locks with context lock.
-                let cancellation = context.onModify(for: path) { finished, force in
-                    if finished { return {} }
-                    return self.onModify(self, force)
-                }
-
-                active.withValue {
-                    $0.active[key] = cancellation
-                }
+            active.withValue {
+                $0.active[key] = cancellation
             }
         }
 
@@ -1331,8 +1330,7 @@ private final class ForceObserver: ModelAccess, @unchecked Sendable {
 
     override var shouldPropagateToChildren: Bool { false }
 
-    override func willAccess<M: Model, T>(_ model: M, at path: KeyPath<M, T> & Sendable) -> (() -> Void)? {
-        guard let context = model.context else { return nil }
+    override func willAccess<M: Model, T>(from context: Context<M>, at path: KeyPath<M._ModelState, T> & Sendable) -> (() -> Void)? {
         let cancellation = context.onModify(for: path) { [weak self] finished, force in
             if finished { return {} }
             guard force, let self else { return nil }

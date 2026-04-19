@@ -389,16 +389,15 @@ struct ExhaustionFailureTests {
             """
             State not exhausted: …
 
-                \u{2007} ItemHolder(
-                \u{2007}   id: ModelID(N),
-                \u{2007}   item: SimpleCounter(
-                −     id: ModelID(N),
-                +     id: ModelID(N),
-                \u{2007}     count: 0
-                \u{2007}   )
-                \u{2007} )
+            Modifications not asserted:
 
-            (Expected: −, Actual: +)
+                ItemHolder.item: SimpleCounter(
+                  id: ModelID(N),
+                  count: 0
+                ) → SimpleCounter(
+                  id: ModelID(N),
+                  count: 0
+                )
             """
         }
     }

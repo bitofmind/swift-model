@@ -61,9 +61,18 @@ import Dependencies
 @dynamicMemberLookup
 public struct ModelNode<M: Model> {
     @usableFromInline internal let _$modelContext: ModelContext<M>
+    /// The model that created this node, if captured at construction time (e.g. via `self.node`).
+    /// Used to provide the correct sender model for `send()` without going through `context.model`.
+    @usableFromInline internal let _model: M?
 
     @inlinable public init(_$modelContext: ModelContext<M>) {
         self._$modelContext = _$modelContext
+        self._model = nil
+    }
+
+    internal init(_$modelContext: ModelContext<M>, model: M) {
+        self._$modelContext = _$modelContext
+        self._model = model
     }
 }
 
@@ -86,7 +95,7 @@ public extension ModelNode {
     /// let editing = node.local.isEditing  // true
     /// ```
     var local: LocalValues {
-        LocalValues(context: _context)
+        LocalValues(context: _context, access: _$modelContext.activeAccess)
     }
 
     /// Removes a previously stored local value from this node, resetting it to `defaultValue`.
@@ -126,7 +135,7 @@ public extension ModelNode {
     /// // Now childNode and its descendants see .light; others still see .dark
     /// ```
     var environment: EnvironmentContext {
-        EnvironmentContext(context: _context)
+        EnvironmentContext(context: _context, access: _$modelContext.activeAccess)
     }
 
     /// Removes a previously stored environment value from this node.
@@ -148,7 +157,7 @@ public extension ModelNode {
     ///   top-down propagating storage.
     @available(*, deprecated, message: "Use node.local for node-private storage or node.environment for top-down propagating storage.")
     var context: ContextValues {
-        ContextValues(context: _context)
+        ContextValues(context: _context, access: _$modelContext.activeAccess)
     }
 
     /// Removes a previously stored context value from this node.
@@ -179,7 +188,7 @@ public extension ModelNode {
     /// let total = parentNode.preference.totalCount  // 3 + contributions from other descendants
     /// ```
     var preference: PreferenceValues {
-        PreferenceValues(context: _context)
+        PreferenceValues(context: _context, access: _$modelContext.activeAccess)
     }
 
     /// Removes this node's contribution for a preference key.
@@ -404,13 +413,8 @@ public extension ModelNode {
     }
 
     private var isDestructed: Bool {
-        if case let .reference(reference) = _$modelContext.source, reference.isDestructed, reference.context == nil {
-            true
-        } else if case .lastSeen = _$modelContext.source {
-            true
-        } else {
-            false
-        }
+        let src = _$modelContext._source
+        return !src._isLive && src.reference.isDestructed && src.reference.context == nil
     }
 
     subscript<Value>(dynamicMember keyPath: KeyPath<DependencyValues, Value>&Sendable) -> Value {
@@ -565,7 +569,7 @@ public extension ModelNode {
     /// - Returns: The final accumulated result.
     func reduceHierarchy<Result, Element>(for relation: ModelRelation, transform: (any Model) throws -> Element?, into initialResult: Result, _ updateAccumulatingResult: (inout Result, Element) throws -> ()) rethrows -> Result {
         try _context?.reduceHierarchy(for: relation, transform: {
-            try transform($0.anyModel.withAccessIfPropagateToChildren(access))
+            try $0.mapModel(access: access, transform)
         }, into: initialResult, updateAccumulatingResult) ?? initialResult
     }
 

@@ -35,8 +35,7 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
 
     public nonisolated mutating func update() {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *),
-            wrappedValue.context?.hasObservationRegistrar == true,
-            wrappedValue is Observable {
+            wrappedValue.context?.hasObservationRegistrar == true {
             return
         }
 
@@ -110,7 +109,7 @@ private final class Observer<M: Model>: @unchecked Sendable {
     // Protected by ViewAccess's lock
     weak var context: Context<M>?
     weak var viewAccess: ViewAccess?
-    var accesses: [PartialKeyPath<M>: () -> Void] = [:]
+    var accesses: [PartialKeyPath<M._ModelState>: () -> Void] = [:]
 
     init(context: Context<M>, viewAccess: ViewAccess) {
         self.context = context
@@ -142,12 +141,12 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
         }
     }
 
-    override func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
-        guard let context = model.context, !ModelAccess.isInModelTaskContext else {
+    override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
+        guard !ModelAccess.isInModelTaskContext else {
             return nil
         }
 
-        let id = model.modelID
+        let id = context.anyModelID
 
         if context.isDestructed {
             lock {

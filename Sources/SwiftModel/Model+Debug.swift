@@ -228,12 +228,12 @@ public extension Model where Self: Sendable {
         let previous = LockIsolated<String?>(nil)
 
         // Initialize previous snapshot with the current model value.
-        previous.setValue(snapshot(context.lock { context.readModel }))
+        previous.setValue(snapshot(context._modelSeed))
 
         let cancel = context.onAnyModification { [weak context] didFinish in
             guard !didFinish, let context else { return nil }
             if let fmt = changeFormat {
-                let value = context.lock { context.readModel }
+                let value = context._modelSeed
                 switch fmt {
                 case .diff(let style):
                     let prevSnap = previous.value
@@ -622,28 +622,42 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
 
     override var shouldPropagateToChildren: Bool { !isShallow }
 
-    override func willAccess<M: Model, T>(_ model: M, at path: KeyPath<M, T> & Sendable) -> (() -> Void)? {
+    override func willAccess<M: Model, T>(from context: Context<M>, at path: KeyPath<M._ModelState, T> & Sendable) -> (() -> Void)? {
         // In shallow mode, only track properties on the root model — skip child models.
         // `usingActiveAccess` installs this collector globally so `willAccess` fires for
         // every model; we filter here rather than relying on `shouldPropagateToChildren`.
-        if isShallow, let rootModelID, model.modelID != rootModelID { return nil }
+        if isShallow, let rootModelID, context.anyModelID != rootModelID { return nil }
 
-        guard let context = model.context else { return nil }
-
-        let key = Key(id: model.modelID, path: path)
+        let key = Key(id: context.anyModelID, path: path)
 
         // Only subscribe once per (model, path) pair.
         let alreadySubscribed = subscriptions.withValue { $0[key] != nil }
         guard !alreadySubscribed else { return nil }
 
-        // Skip non-writable synthetic paths (untyped \M[environmentKey:] / \M[preferenceKey:]).
+        // Skip non-writable synthetic paths (untyped \M._ModelState[environmentKey:] etc.).
         // These fire alongside typed WritableKeyPath companions but have no working post-lock
         // callbacks — only the typed path's buildPostLockCallbacks fires. Registering them
         // produces dead subscriptions that waste memory without ever triggering output.
-        guard path is WritableKeyPath<M, T> else { return nil }
+        guard path is WritableKeyPath<M._ModelState, T> else { return nil }
+
+        // Detect context-storage and preference paths. Their _metadata/_preference getter stubs
+        // call fatalError() — reading through the keypath is not safe. Instead we use the
+        // precomputed values that Context passes via thread-locals:
+        //   • willAccessStorage sets precomputedStorageValue for the returned closure.
+        //   • didModifyStorage sets precomputedStorageValue for runPostLockCallbacks.
+        //   • willAccessPreferenceValue sets precomputedPreferenceValue for the returned closure.
+        //   • didModifyPreference sets precomputedPreferenceValue for runPostLockCallbacks.
+        // modificationArea is set by those call sites while this willAccess invocation is running.
+        // Use .contains() rather than == to avoid the custom == operator in ModelTester.swift
+        // that overloads == for any Equatable&Sendable type to return TestPredicate.
+        let isPreferencePath: Bool = threadLocals.modificationArea?.contains(.preference) ?? false
+        let isStoragePath: Bool = !isPreferencePath &&
+            (threadLocals.modificationArea?.contains(.local) ?? false ||
+             threadLocals.modificationArea?.contains(.environment) ?? false)
+        let needsPrecomputedValue: Bool = isStoragePath || isPreferencePath
 
         let modelType = String(describing: M.self)
-        let propName = debugPropertyName(from: model, path: path)
+        let propName = debugPropertyName(from: context._modelSeed, path: M._modelStateKeyPath.appending(path: path))
         let baseLabel = propName.map { "\(modelType).\($0)" } ?? modelType
 
         // Capture the current value string now so that on first trigger we have "old → new".
@@ -659,24 +673,61 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
             }
         }
 
+        // For storage/preference paths the initial value is unavailable at willAccess call time —
+        // precomputedStorageValue/precomputedPreferenceValue are only set for the returned closure.
+        // We return a non-nil closure that reads the precomputed value and updates the subscription.
+        // For regular paths we read directly via keypath and return nil.
         let initialValueStr: String?
+        let returnClosure: (() -> Void)?
+
         switch fmt {
         case .withValue:
-            // usingActiveAccess(nil) suppresses the DebugAccessCollector during the keypath read.
-            // Context/preference paths (_metadata, _preference) re-enter willAccessStorage/Preference
-            // via their getters; with no active access, mc.willAccess returns nil and the cycle is broken.
-            initialValueStr = usingActiveAccess(nil) {
-                context.lock { String(customDumping: context.readModel[keyPath: path]) }
+            if needsPrecomputedValue {
+                initialValueStr = nil
+                returnClosure = { [weak self] in
+                    guard let self else { return }
+                    let precomputed: Any? = isPreferencePath
+                        ? threadLocals.precomputedPreferenceValue
+                        : threadLocals.precomputedStorageValue
+                    if let val = precomputed as? T {
+                        let str = usingActiveAccess(nil) { String(customDumping: val) }
+                        self.subscriptions.withValue { $0[key]?.1 = str }
+                    }
+                }
+            } else {
+                // usingActiveAccess(nil) suppresses the DebugAccessCollector during the keypath read.
+                // _modelSeed uses .live source; state property reads go directly to _stateHolder.
+                initialValueStr = usingActiveAccess(nil) {
+                    String(customDumping: context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+                }
+                returnClosure = nil
             }
         case .withDiff(_):
-            // Same re-entry guard as .withValue: suppress active access while reading the keypath.
-            // frozenCopy prevents child/metadata lock deadlocks during the subsequent dumpWithChildren.
-            let initialFrozen: T = usingActiveAccess(nil) {
-                context.lock { frozenCopy(context.readModel[keyPath: path]) }
+            if needsPrecomputedValue {
+                initialValueStr = nil
+                returnClosure = { [weak self] in
+                    guard let self else { return }
+                    let precomputed: Any? = isPreferencePath
+                        ? threadLocals.precomputedPreferenceValue
+                        : threadLocals.precomputedStorageValue
+                    if let val = precomputed as? T {
+                        let frozen: T = usingActiveAccess(nil) { frozenCopy(val) }
+                        let str = dumpWithChildren(frozen)
+                        self.subscriptions.withValue { $0[key]?.1 = str }
+                    }
+                }
+            } else {
+                // Same re-entry guard as .withValue: suppress active access while reading the keypath.
+                // frozenCopy prevents child/metadata lock deadlocks during the subsequent dumpWithChildren.
+                let initialFrozen: T = usingActiveAccess(nil) {
+                    frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+                }
+                initialValueStr = dumpWithChildren(initialFrozen)
+                returnClosure = nil
             }
-            initialValueStr = dumpWithChildren(initialFrozen)
         case .name:
             initialValueStr = nil
+            returnClosure = nil
         }
 
         let cancellation = context.onModify(for: path) { [weak self] finished, _ in
@@ -688,8 +739,21 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                 self.onTrigger { baseLabel }
                 return nil
             case .withValue:
-                let newValueStr = usingActiveAccess(nil) {
-                    context.lock { String(customDumping: context.readModel[keyPath: path]) }
+                // For storage/preference paths, read new value from precomputed thread-locals
+                // (set by Context.didModifyStorage/didModifyPreference for post-lock callbacks).
+                // For regular paths, read directly via keypath.
+                let newValueStr: String
+                if needsPrecomputedValue {
+                    let precomputed: Any? = isPreferencePath
+                        ? threadLocals.precomputedPreferenceValue
+                        : threadLocals.precomputedStorageValue
+                    newValueStr = (precomputed as? T).map { val in
+                        usingActiveAccess(nil) { String(customDumping: val) }
+                    } ?? "?"
+                } else {
+                    newValueStr = usingActiveAccess(nil) {
+                        String(customDumping: context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+                    }
                 }
                 // Atomically swap the stored value for old→new reporting.
                 let oldValueStr = self.subscriptions.withValue { subs -> String in
@@ -707,8 +771,17 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                 // This prevents the potential deadlock where `dumpWithChildren` on a live model
                 // tries to acquire a metadata context lock that another thread already holds while
                 // waiting for this same context lock.
-                let newFrozen: T = usingActiveAccess(nil) {
-                    context.lock { frozenCopy(context.readModel[keyPath: path]) }
+                let newFrozen: T
+                if needsPrecomputedValue {
+                    let precomputed: Any? = isPreferencePath
+                        ? threadLocals.precomputedPreferenceValue
+                        : threadLocals.precomputedStorageValue
+                    guard let val = precomputed as? T else { return nil }
+                    newFrozen = usingActiveAccess(nil) { frozenCopy(val) }
+                } else {
+                    newFrozen = usingActiveAccess(nil) {
+                        frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+                    }
                 }
                 // `dumpWithChildren` on a frozen copy reads struct fields only — safe to call
                 // while still nominally inside the onModify callback window.
@@ -738,7 +811,7 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         }
 
         subscriptions.withValue { $0[key] = (cancellation, initialValueStr) }
-        return nil
+        return returnClosure
     }
 
 }

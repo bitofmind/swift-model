@@ -37,8 +37,8 @@ import Dependencies
 /// ```
 ///
 /// See ``Model`` for full details on model identity.
-@attached(extension, conformances: Model, Sendable, Identifiable, CustomReflectable, Observable, CustomStringConvertible, CustomDebugStringConvertible, names: named(customMirror), named(description), named(debugDescription))
-@attached(member, names: named(_$modelContext), named(_$contextInit), named(_context), named(_updateContext), named(node), named(isEqual), named(visit), named(==))
+@attached(extension, conformances: Model, Sendable, Identifiable, CustomReflectable, CustomStringConvertible, CustomDebugStringConvertible, names: named(customMirror), named(description), named(debugDescription))
+@attached(member, names: named(_$modelContext), named(_$modelAccess), named(_$modelSource), named(_makeState), named(_context), named(_updateContext), named(node), named(isEqual), named(visit), named(==), named(_State), named(_ModelState), arbitrary)
 @attached(memberAttribute)
 public macro Model() = #externalMacro(module: "SwiftModelMacros", type: "ModelMacro")
 
@@ -57,10 +57,19 @@ public macro ModelContainer() = #externalMacro(module: "SwiftModelMacros", type:
 
 /// Internal macro applied by `@Model` to tracked (observable) properties.
 ///
+/// Position-aware: the `index` and `count` parameters determine which stored property
+/// the init accessor `initializes:` — enabling the compiler-synthesized memberwise init
+/// (visible to `#Preview`) instead of a macro-generated explicit init.
+///
+/// - **Only** (`count == 1`): `initializes: _$modelAccess, _$modelSource`
+/// - **First** (`index == 0`): `initializes: _$modelAccess`
+/// - **Middle** (`0 < index < count-1`): `initializes: _$privateN` + Void peer
+/// - **Last** (`index == count-1`): `initializes: _$modelSource`
+///
 /// > Warning: Do not apply this macro directly. It is an implementation detail of `@Model`.
-@attached(accessor, names: named(init), named(_read), named(_modify))
-@attached(peer, names: prefixed(_))
-public macro _ModelTracked() = #externalMacro(module: "SwiftModelMacros", type: "ModelTrackedMacro")
+@attached(accessor, names: named(init), named(get), named(set))
+@attached(peer, names: arbitrary)
+public macro _ModelTracked(_ index: Int, count: Int) = #externalMacro(module: "SwiftModelMacros", type: "ModelTrackedMacro")
 
 /// Internal macro applied by `@Model` to ignored (non-observable) properties.
 ///

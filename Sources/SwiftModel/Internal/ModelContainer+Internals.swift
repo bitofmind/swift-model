@@ -2,19 +2,13 @@ import Foundation
 
 extension ModelContainer {
     func visit<V: ModelVisitor>(with visitor: inout V, includeSelf: Bool) where V.State == Self {
-        var containerVisitor = ContainerVisitor(modelVisitor: visitor)
+        var containerVisitor = ContainerVisitor<V>(modelVisitor: visitor)
         if includeSelf {
             containerVisitor.visitDynamically(with: self, at: \.self)
         } else {
             visit(with: &containerVisitor)
         }
-
-        //visitor = containerVisitor.modelVisitor as! V
-        iOS15Workaround(&visitor, containerVisitor.modelVisitor)
-    }
-
-    func iOS15Workaround<V: ModelVisitor>(_ visitor: inout V, _ cont: some ModelVisitor<Self>) where V.State == Self {
-        visitor = cont as! V
+        visitor = containerVisitor.modelVisitor
     }
 
     var frozenCopy: Self {
@@ -56,13 +50,28 @@ extension ModelContainer {
 
 private struct MakeInitialTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
-        if model.context != nil { return }
-        let initial = model.modelContext.initial
-        model = model.shallowCopy
-        if let initial {
-            model.modelContext.source = .reference(initial)
+        let src = model.modelContext._source
+        if src._isLive {
+            // Already a live/internal direct-access copy — no change needed.
+            return
+        }
+        let ref = src.reference
+        if ref.isSnapshot || ref.context != nil {
+            // Snapshot or anchored model: copy state into a fresh Reference so the copy is
+            // independent of the original — the original's state is zeroed after TTL,
+            // which would otherwise corrupt any undo baseline that shares the same Reference.
+            guard !ref._stateCleared else { return }
+            let newRef = Context<M>.Reference(modelID: ref.modelID, state: ref.state)
+            var mc = model.modelContext
+            mc._source = _ModelSourceBox(reference: newRef)
+            model.modelContext = mc
         } else {
-            model.modelContext.source = .reference(.init(modelID: model.modelID))
+            // Pre-anchor model: transition to live so internal reads bypass context routing.
+            // All pre-anchor copies share the same Reference. After Context.init calls setContext,
+            // those copies automatically route to the context via ref._context.
+            var mc = model.modelContext
+            mc._source._transitionToLive()
+            model.modelContext = mc
         }
     }
 }
@@ -70,14 +79,19 @@ private struct MakeInitialTransformer: ModelTransformer {
 private struct MakeInitialDependencyCopyTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
         model = model.shallowCopy
-        model.modelContext.source = .reference(.init(modelID: .generate()))
+        // Create a fresh Reference with a new identity and copy state from the frozen copy.
+        // Without state, Context.init's `hasState` assertion would fire when anchoring this copy.
+        let srcRef = model.modelContext._source.reference
+        guard !srcRef._stateCleared else { return }
+        let newRef = Context<M>.Reference(modelID: .generate(), state: srcRef.state)
+        model.modelContext.setReference(newRef)
     }
 }
 
 private struct FrozenCopyTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
         model = model.shallowCopy.noAccess
-        model.modelContext.source = .frozenCopy(id: model.modelID)
+        model.modelContext.makeFrozen(id: model.modelID)
     }
 }
 
@@ -86,7 +100,7 @@ private struct LastSeenTransformer: ModelTransformer {
 
     func transform<M: Model>(_ model: inout M) -> Void {
         model = model.shallowCopy.withAccess(lastSeenAccess)
-        model.modelContext.source = .lastSeen(id: model.modelID)
+        model.modelContext.makeLastSeen(id: model.modelID)
     }
 }
 

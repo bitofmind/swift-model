@@ -7,45 +7,57 @@ import Observation
 
 final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
-    private var modifyCallbacksStore: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]]?
-    var modifyCallbacks: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] {
+    private var modifyCallbacksStore: [PartialKeyPath<M._ModelState>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]]?
+    var modifyCallbacks: [PartialKeyPath<M._ModelState>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] {
         _read { yield modifyCallbacksStore ?? [:] }
         _modify {
             if modifyCallbacksStore != nil {
                 yield &modifyCallbacksStore!
                 if modifyCallbacksStore!.isEmpty { modifyCallbacksStore = nil }
             } else {
-                var temp: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] = [:]
+                var temp: [PartialKeyPath<M._ModelState>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] = [:]
                 yield &temp
                 if !temp.isEmpty { modifyCallbacksStore = temp }
             }
         }
     }
     let reference: Reference
-    var readModel: M
-    var modifyModel: M
-    private var isMutating = false
+    /// The generation of `reference` at the time this context called `setContext`.
+    /// Used by `deinit` to avoid niling `_stateHolder` when a newer context has
+    /// re-anchored the same Reference (e.g. a `static let testValue` model reused
+    /// across tests).
+    private var referenceGeneration: Int = 0
+
+    // Seed model with correct `let` property values (e.g. LockIsolated counters).
+    // Set to localModel after withContextAdded so that var properties are backed by
+    // _stateHolder (live source). context.model switches this to .reference source
+    // so that reading tracked properties triggers willAccessDirect → observation.
+    // Only written once during init; thereafter read-only (under lock for thread safety).
+    var _modelSeed: M
 
     @Dependency(\.uuid) private var dependencies
 
     init(model: M, lock: NSRecursiveLock, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
-        if model.lifetime != .initial {
+        // Allow `.initial` (normal first-time anchoring) and `.destructed` (re-anchoring a static
+        // dependency model across test runs, or re-anchoring via undo). Block `.active` (already has
+        // a live context) and `.frozenCopy` snapshots which must not be anchored.
+        if model.context != nil || model.lifetime == .frozenCopy {
             reportIssue("It is not allowed to add an already anchored or frozen model, instead create a new instance.")
         }
-
-        readModel = model.initialCopy
-        modifyModel = readModel
+        // initialCopy transitions the source to .live without creating a new Reference.
+        // All pre-anchor copies of this model share the same Reference (class). After
+        // setContext is called below, those copies automatically route to this context
+        // via ref._context — no _linkedReference forwarding needed.
+        var localModel = model.initialCopy
 
         let modelSetup = model.modelSetup
         self.activations = modelSetup?.activations ?? []
-        reference = readModel.reference ?? Reference(modelID: model.modelID)
-        let isObservable: Bool
-        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            isObservable = M.self is any Observable.Type
-        } else {
-            isObservable = false
-        }
-        super.init(lock: lock, parent: parent, isObservable: isObservable)
+        // The Reference is the one already in the model (shared by all pre-anchor copies).
+        // `initialCopy` may transform `.reference` → `.pending` (for undo restore captures), so
+        // use `_anyReference` to cover all source kinds rather than `_liveReference` alone.
+        reference = localModel.modelContext._source._anyReference
+        _modelSeed = localModel  // Phase-1 placeholder; updated in phase 2 after withContextAdded.
+        super.init(lock: lock, parent: parent)
 
         var dependencyModels: [AnyHashable: any Model] = [:]
         // For child contexts, install parent.capturedDependencies (which includes all parent
@@ -70,10 +82,38 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             }
         }
 
-        readModel.withContextAdded(context: self)
-        readModel.modelContext.access = nil
-        modifyModel = readModel
-        reference.setContext(self)
+        // If this Reference was previously destroyed (re-anchoring a static let testValue),
+        // restore state from _genesisState so withContextAdded can traverse children.
+        // The full re-anchoring reset (_isDestructed, generation) happens in setContext below.
+        reference.prepareForReanchoring()
+        localModel.withContextAdded(context: self)
+        // Nil out access on localModel: the incoming model may carry ModelSetupAccess
+        // (or another access) in _access. Storing it would create a retain cycle:
+        //   Context → localModel → _access → ModelSetupAccess → anchor → Context
+        localModel.modelContext.access = nil
+        // Store the final seed: correct `let` values + live source (.live → .reference on read).
+        _modelSeed = localModel
+        assert(reference.hasState || M._ModelState.self == _EmptyModelState.self,
+               "Context<\(M.self)>.init: Reference has no state after withContextAdded")
+        referenceGeneration = reference.setContext(self)
+
+        // Capture localModel (has correct `let` values) for use during onActivate().
+        // Transition to .reference source so node._context is non-nil inside onActivate().
+        // Access is set at call time (mirrors the original `model` computed property).
+        // Cleared after first call so the model doesn't outlive activation.
+        let capturedActivations = activations
+        let capturedReference = reference
+        pendingActivation = { [localModel, capturedActivations, capturedReference] in
+            var m = localModel
+            m.modelContext.setReference(capturedReference)
+            m.modelContext.access = ModelAccess.active ?? ModelAccess.current
+            AnyCancellable.$contexts.withValue(AnyCancellable.contexts + [CancellableKey(key: ContextCancellationKey.onActivate)]) {
+                m.onActivate()
+            }
+            for activation in capturedActivations {
+                activation(m)
+            }
+        }
 
         // Use withOwnDependencies so that setupModelDependency's Context<D>.init sees
         // self.capturedDependencies as _current, not the caller's task-local. Without this,
@@ -91,20 +131,20 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     deinit {
+        // Nil _stateHolder to break potential retain cycles: closures in _State
+        // can capture .reference models that hold this Reference, which holds
+        // _stateHolder strongly. The generation guard prevents niling state that
+        // a newer Context already claimed (re-anchored static dependency models).
+        reference.clearStateForGeneration(referenceGeneration)
     }
 
     override func onActivate() -> Bool {
         let shouldActivate = super.onActivate()
 
         if shouldActivate {
-            AnyCancellable.$contexts.withValue(AnyCancellable.contexts + [CancellableKey(key: ContextCancellationKey.onActivate)]) {
-                model.onActivate()
-            }
-
-            for activation in activations {
-                activation(model)
-            }
+            pendingActivation?()
         }
+        pendingActivation = nil
 
         for child in lock(allChildren) {
             _ = child.onActivate()
@@ -124,13 +164,16 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             }
         }
 
-        guard !isTesting || AnyContext.keepLastSeenAround else {
-            reference.destruct(nil)
+        let keepLastSeen = !isTesting || AnyContext.keepLastSeenAround
+        reference.destruct()
+
+        guard keepLastSeen else {
+            // No last-seen needed: zero state to break retain cycles, but defer until after the
+            // callbacks array has run so that onCancel closures can still read model state.
+            let ref = reference
+            callbacks.append { ref.clear() }
             return
         }
-
-        let lastSeenValue = readModel.lastSeen(at: Date(), dependencyCache: dependencyCache)
-        reference.destruct(lastSeenValue)
 
         Task {
             try? await Task.sleep(nanoseconds: 1_000_000*UInt64(lastSeenTimeToLive*1000))
@@ -138,23 +181,26 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    func sendEvent(_ event: Any, to relation: ModelRelation, context: AnyContext) {
-        let eventInfo = EventInfo(event: event, context: context)
+    func sendEvent(_ event: Any, model: any Model, to relation: ModelRelation, context: AnyContext) {
+        let eventInfo = EventInfo(event: event, model: model, context: context)
         sendEvent(eventInfo, to: relation)
     }
 
     // MARK: - Parents observation
 
     // The key path used to represent the parents relationship in the observation system.
-    // Using a subscript guarantees no collision with any user-defined property on M.
-    private var parentsObservationPath: KeyPath<M, [ModelID]>&Sendable { \M[_parentsObservationKey: _ParentsObservationKey()] }
+    // Using a subscript on _ModelState guarantees no collision with user-defined properties on M.
+    private var parentsObservationPath: KeyPath<M._ModelState, [ModelID]>&Sendable { \M._ModelState[_parentsObservationKey: _ParentsObservationKey()] }
 
     // A ModelContext wrapping this context, used to delegate to the shared
     // willAccess/didModify helpers which handle all observation paths uniformly.
     private var modelContext: ModelContext<M> { ModelContext(context: self) }
 
     override func willAccessParents() {
-        modelContext.willAccess(readModel, at: parentsObservationPath)?()
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            willAccessSyntheticPath(\_StateObserver<M._ModelState>[_parentsObservationKey: _ParentsObservationKey()])
+        }
+        modelContext.willAccess(at: parentsObservationPath)?()
     }
 
     override func willModifyParents() {
@@ -166,10 +212,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let path = parentsObservationPath
         didModify()
         let mc = modelContext
-        let snap = readModel
         let modifyCallbacksForPath = modifyCallbacks[path]?.values.compactMap { $0(false, false) } ?? []
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[_parentsObservationKey: _ParentsObservationKey()])
+        }
         callbacks.append {
-            mc.invokeDidModify(snap, at: path)?()
+            mc.invokeDidModify(at: path)?()
             for c in modifyCallbacksForPath { c() }
         }
         var didModifyCallbacks: [() -> Void] = []
@@ -183,36 +231,40 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // when the Swift runtime lock is held on another thread.
         guard !threadLocals.isApplyingSnapshot else { return }
 
-        // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
-        let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: storage.key]
-        modelContext.willAccess(readModel, at: untypedPath)?()
+        // Untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
+        // Registrar call uses _StateObserver (no Model Observable conformance needed).
+        let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[environmentKey: storage.key]
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            willAccessSyntheticPath(\_StateObserver<M._ModelState>[environmentKey: storage.key])
+        }
+        modelContext.willAccess(at: untypedPath)?()
 
-        // Typed writable path — drives TestAccess snapshot tracking so that
+        // Typed writable path on M._ModelState — drives TestAccess snapshot tracking so that
         // `model.node.local.myKey`/`model.node.environment.myKey` inside tester.assert {} is fully assertable.
-        // \M[_metadata: storage] is a WritableKeyPath<M, V> because ContextStorage<V>
+        // \M._ModelState[_metadata: storage] is a WritableKeyPath because ContextStorage<V>
         // is Hashable (via its key), giving Swift what it needs to form and distinguish paths.
         // Tag the access as `.metadata` so TestAccess records it under the correct exhaustivity area.
         //
-        // Use a ModelContext with a known access rather than the computed `modelContext` property
-        // (which creates a fresh ModelContext with _access = nil and never reaches TestAccess).
-        // For dependency model contexts, readModel.modelContext.access is nil; fall back to the
-        // access registered on the nearest ancestor (e.g. ConsumerModel's TestAccess).
-        // Guard against re-entry: the TestAccess.willAccess closure reads
-        // model.context![path] which invokes the context getter, which calls willAccessStorage
-        // again → infinite recursion. The flag is set for the closure call only, not the
-        // willAccess call itself, so legitimate outer calls (predicate evaluation) still work.
+        // The getter on _ModelStateType._metadata stubs have fatalError — TestAccess reads the value
+        // via the precomputedStorageValue thread-local instead of calling the getter.
+        // The re-entry guard (isAccessingMetadataStorage) is no longer needed since calling the getter
+        // is no longer possible from TestAccess, but we keep it for clarity of intent.
         guard !threadLocals.isAccessingMetadataStorage else { return }
-        let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
+        let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_metadata: storage]
         let mc = metadataModelContext()
         let storageArea: _ExhaustivityBits = storage.propagation == .environment ? .environment : .local
+        // Pre-compute storage value for TestAccess (the _ModelState getter stubs have fatalError).
+        let storageValue: V = lock { (contextStorage[storage.key]?.value as? V) ?? storage.defaultValue }
         let closureOpt = threadLocals.withValue(storageArea, at: \.modificationArea) {
             threadLocals.withValue(storage.name, at: \.storageName) {
-                mc.willAccess(readModel, at: typedPath)
+                mc.activeAccess?.willAccess(from: self, at: typedPath)
             }
         }
         if let closure = closureOpt {
             threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
-                closure()
+                threadLocals.withValue(storageValue as Any, at: \.precomputedStorageValue) {
+                    closure()
+                }
             }
         }
     }
@@ -222,33 +274,42 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // invokeDidModify calls below (untyped + typed paths) fire only one drain at the end
         // instead of one per call.
         _withBatchedUpdates {
-            // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
-            let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[environmentKey: storage.key]
-            // Typed writable path — drives TestAccess didModify so writes are tracked for exhaustion.
+            // Untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
+            // Registrar call uses _StateObserver (no Model Observable conformance needed).
+            let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[environmentKey: storage.key]
+            // Typed writable path on M._ModelState — drives TestAccess didModify so writes are tracked.
             // Tag the modification as `.metadata` so TestAccess records it under the correct area.
-            //
-            // Use a ModelContext with a known access: own readModel's access if set, or the nearest
-            // ancestor's access (handles dependency model contexts where own access is nil).
-            // Guard against re-entry via the same isAccessingMetadataStorage flag used in willAccessStorage.
-            let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
+            let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_metadata: storage]
             let mc = metadataModelContext()
 
             lock { self.didModify() }
-            modelContext.invokeDidModify(readModel, at: untypedPath)?()
-            // Same re-entry guard as willAccessStorage: the TestAccess.didModify closure reads
-            // model.context![path] which goes through the context getter → willAccessStorage → loop.
+            if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+                invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[environmentKey: storage.key])
+            }
+            modelContext.invokeDidModify(at: untypedPath)?()
+            // Pre-compute new value for both TestAccess.didModify and DebugAccessCollector
+            // post-lock callbacks (the _metadata stub getter calls fatalError()).
+            let newValue: V = lock { (contextStorage[storage.key]?.value as? V) ?? storage.defaultValue }
             if !threadLocals.isAccessingMetadataStorage {
                 let storageArea: _ExhaustivityBits = storage.propagation == .environment ? .environment : .local
                 threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
                     threadLocals.withValue(storageArea, at: \.modificationArea) {
                         threadLocals.withValue(storage.name, at: \.storageName) {
-                            mc.invokeDidModify(readModel, at: typedPath)?()
+                            threadLocals.withValue(newValue as Any, at: \.precomputedStorageValue) {
+                                mc.activeAccess?.didModify(from: self, at: typedPath)?()
+                            }
                         }
                     }
                 }
             }
             // Use the typed path for post-lock callbacks so modifyCallbacks keyed on it fire correctly.
-            let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
+            // Set precomputedStorageValue while building (not just running) post-lock callbacks:
+            // DebugAccessCollector's onModify callback runs during buildPostLockCallbacks
+            // (inside the context lock) and reads precomputedStorageValue to get the new value
+            // without calling the fatalError() getter stub.
+            let postLockCallbacks = threadLocals.withValue(newValue as Any, at: \.precomputedStorageValue) {
+                lock { buildPostLockCallbacks(for: typedPath) }
+            }
             runPostLockCallbacks(postLockCallbacks)
         }
     }
@@ -259,9 +320,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // when the Swift runtime lock is held on another thread.
         guard !threadLocals.isApplyingSnapshot else { return }
 
-        // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
-        let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[preferenceKey: storage.key]
-        modelContext.willAccess(readModel, at: untypedPath)?()
+        // Untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
+        // Registrar call uses _StateObserver (no Model Observable conformance needed).
+        let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[preferenceKey: storage.key]
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            willAccessSyntheticPath(\_StateObserver<M._ModelState>[preferenceKey: storage.key])
+        }
+        modelContext.willAccess(at: untypedPath)?()
 
         // The typed writable path for TestAccess is now handled by willAccessPreferenceValue,
         // called after preferenceValue finishes aggregating with the computed value in hand.
@@ -275,21 +340,21 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // isEqualIncludingIds lock (same guard as willAccessPreference).
         guard !threadLocals.isApplyingSnapshot else { return }
 
-        // Typed writable path — drives TestAccess snapshot tracking.
+        // Typed writable path on M._ModelState — drives TestAccess snapshot tracking.
         // Called after preferenceValue has finished aggregating, with the computed value
         // already in hand. This avoids re-entering preferenceValue (which acquires child
         // locks) while the caller's context lock may still be held.
         guard !threadLocals.isAccessingMetadataStorage else { return }
-        let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
+        let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_preference: storage]
         let mc = metadataModelContext()
         let closureOpt = threadLocals.withValue(.preference, at: \.modificationArea) {
             threadLocals.withValue(storage.name, at: \.storageName) {
-                mc.willAccess(readModel, at: typedPath)
+                mc.activeAccess?.willAccess(from: self, at: typedPath)
             }
         }
         if let closure = closureOpt {
             // Store the pre-computed aggregated value so the TestAccess willAccess closure
-            // can use it instead of re-reading via model.context![path] (which would
+            // can use it instead of re-reading via context[path] (which would
             // re-enter preferenceValue under a lock and deadlock).
             threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
                 threadLocals.withValue(value as Any, at: \.precomputedPreferenceValue) {
@@ -304,25 +369,40 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // AND the entire parent-chain walk (notifyPreferenceChange), so there is one drain
         // at the end rather than one per context level.
         _withBatchedUpdates {
-            // Synthetic untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
-            let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[preferenceKey: storage.key]
-            // Typed writable path — drives TestAccess didModify so writes are tracked for exhaustion.
-            let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
+            // Untyped path — drives Observed {} / SwiftUI / AccessCollector observation.
+            // Registrar call uses _StateObserver (no Model Observable conformance needed).
+            let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[preferenceKey: storage.key]
+            // Typed writable path on M._ModelState — drives TestAccess didModify so writes are tracked.
+            let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_preference: storage]
             let mc = metadataModelContext()
 
             lock { self.didModify() }
-            modelContext.invokeDidModify(readModel, at: untypedPath)?()
+            if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+                invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[preferenceKey: storage.key])
+            }
+            modelContext.invokeDidModify(at: untypedPath)?()
+            // Pre-compute new value for both TestAccess.didModify and DebugAccessCollector
+            // post-lock callbacks (the _preference stub getter calls fatalError()).
+            let newValue: V = lock { preferenceStorage[storage.key]?.value as? V ?? storage.defaultValue }
             if !threadLocals.isAccessingMetadataStorage {
                 threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
                     threadLocals.withValue(.preference, at: \.modificationArea) {
                         threadLocals.withValue(storage.name, at: \.storageName) {
-                            mc.invokeDidModify(readModel, at: typedPath)?()
+                            threadLocals.withValue(newValue as Any, at: \.precomputedPreferenceValue) {
+                                mc.activeAccess?.didModify(from: self, at: typedPath)?()
+                            }
                         }
                     }
                 }
             }
             // Post-lock callbacks for this context.
-            let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
+            // Set precomputedPreferenceValue while building (not just running) post-lock callbacks:
+            // DebugAccessCollector's onModify callback runs during buildPostLockCallbacks
+            // (inside the context lock) and reads precomputedPreferenceValue to get the new value
+            // without calling the fatalError() getter stub.
+            let postLockCallbacks = threadLocals.withValue(newValue as Any, at: \.precomputedPreferenceValue) {
+                lock { buildPostLockCallbacks(for: typedPath) }
+            }
             runPostLockCallbacks(postLockCallbacks)
 
             // Preferences are bottom-up: a child contribution change must invalidate ancestor observers.
@@ -342,10 +422,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// without creating TestAccess ValueUpdate entries. The typed `_preference` path is intentionally
     /// omitted — ancestors that never wrote a contribution should not appear in exhaustion reports.
     override func notifyPreferenceChange<V>(_ storage: PreferenceStorage<V>) {
-        let untypedPath: KeyPath<M, AnyHashableSendable>&Sendable = \M[preferenceKey: storage.key]
+        let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[preferenceKey: storage.key]
         lock { self.didModify() }
-        modelContext.invokeDidModify(readModel, at: untypedPath)?()
-        let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[preferenceKey: storage.key])
+        }
+        modelContext.invokeDidModify(at: untypedPath)?()
+        let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_preference: storage]
         let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath) }
         runPostLockCallbacks(postLockCallbacks)
 
@@ -357,28 +440,17 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     /// Returns a ModelContext for use in context storage willAccess/didModify notifications.
     ///
-    /// Uses `readModel.modelContext` when it has a non-nil access (normal child models with
-    /// TestAccess wired in). For dependency model contexts (where readModel.modelContext.access
-    /// is nil), falls back to a copy with the nearest ancestor's access, so TestAccess on the
-    /// root model correctly receives context read/write notifications from dependency models.
+    /// Access is derived from task-locals (`ModelAccess.active` or `ModelAccess.current`),
+    /// which are set by callers that need TestAccess tracking (predicate evaluation,
+    /// task execution, and direct model method calls via LocalValues/EnvironmentContext/
+    /// PreferenceValues wrapping their subscripts in `usingActiveAccess`).
     private func metadataModelContext() -> ModelContext<M> {
-        if readModel.modelContext.access != nil {
-            return readModel.modelContext
-        }
-        // Dependency model context: readModel.modelContext.access is nil.
-        // Walk parents to find a context that has a propagating access (e.g. TestAccess).
-        let ancestorAccess = lock {
-            parents.lazy.compactMap { $0.anyModelAccess }.first
-        }
-        guard let ancestorAccess, ancestorAccess.shouldPropagateToChildren else {
-            return readModel.modelContext
-        }
-        var mc = readModel.modelContext
-        mc.access = ancestorAccess
+        var mc = ModelContext(context: self)
+        mc.access = ModelAccess.active ?? ModelAccess.current
         return mc
     }
 
-    func onModify<T>(for path: KeyPath<M, T>&Sendable, _ callback: @Sendable @escaping (_ finished: Bool, _ force: Bool) -> (() -> Void)?) -> @Sendable () -> Void {
+    func onModify<T>(for path: KeyPath<M._ModelState, T>&Sendable, _ callback: @Sendable @escaping (_ finished: Bool, _ force: Bool) -> (() -> Void)?) -> @Sendable () -> Void {
         guard !isDestructed else {
             return {}
         }
@@ -403,15 +475,23 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     override var selfPath: AnyKeyPath { \M.self }
 
     var model: M {
-        lock(readModel)
+        // Start from _modelSeed (has correct `let` values, e.g. LockIsolated counters),
+        // then switch to .reference source so that reading tracked properties triggers
+        // willAccessDirect → observation registration (required for Observed/mapHierarchy).
+        // No lock needed: _modelSeed is written once during init (before the object is
+        // reachable from other threads) and never modified afterward.
+        var m = _modelSeed
+        m.modelContext.setReference(reference)
+        m.modelContext.access = ModelAccess.active ?? ModelAccess.current
+        return m
     }
 
-    override var anyModel: any Model {
-        model
+    override var anyModelID: ModelID {
+        reference.modelID
     }
 
-    override var anyModelAccess: ModelAccess? {
-        lock { readModel.modelContext.access }
+    override func mapModel<T>(access: ModelAccess?, _ body: (any Model) throws -> T?) rethrows -> T? {
+        try body(model.withAccessIfPropagateToChildren(access))
     }
 
     func updateContext<T: Model>(for model: inout T, at path: WritableKeyPath<M, T>){
@@ -437,76 +517,267 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    subscript<T>(path: KeyPath<M, T>, callback: (() -> Void)? = nil) -> T {
+    /// Model-keypath transaction for undo restore of Model/ModelContainer-typed properties.
+    /// The M-level `path` is used for value read/write (via `_modelSeed` live source, which
+    /// routes Model/Container writes through `stateTransaction`). The `statePath` is used for
+    /// explicit notifications for scalar writes that bypass `stateTransaction`.
+    func transaction<Value, T>(at path: WritableKeyPath<M, Value>&Sendable, statePath: WritableKeyPath<M._ModelState, Value>&Sendable, isSame: ((Value, Value) -> Bool)?, modelContext: ModelContext<M>, modify: (inout Value) throws -> T) rethrows -> T {
+        lock.lock()
+        let result: T
+        do {
+            // Use _modelSeed directly (.live source) instead of model (.reference source).
+            // .live source routes reads/writes directly to the state storage without going
+            // through willAccessDirect/invokeDidModify — avoiding double-processing since
+            // this function manually issues all post-write notifications below.
+            var localModel = _modelSeed
+            let oldValue = localModel[keyPath: path]
+            result = try modify(&localModel[keyPath: path])
+
+            if let isSame, isSame(localModel[keyPath: path], oldValue) {
+                lock.unlock()
+                return result
+            }
+
+            didModify()
+
+            let activeAccessCallback = modelContext.invokeDidModify(at: statePath)
+
+            let postLockCallbacks = buildPostLockCallbacks(for: statePath)
+            lock.unlock()
+
+            activeAccessCallback?()
+            runPostLockCallbacks(postLockCallbacks)
+        }
+        return result
+    }
+
+    // MARK: - State-path subscripts (direct _State access)
+
+    /// Reads a property directly from Reference._state, bypassing readModel indirection.
+    /// The `observeCallback` is the result of `activeAccess.willAccess(from:at:)`.
+    subscript<T>(statePath statePath: WritableKeyPath<M._ModelState, T>, observeCallback callback: (() -> Void)?) -> T {
         _read {
             lock.lock()
             if unprotectedIsDestructed {
-                // Clear any pending transition override. The destructed branch does not
-                // call callback?(), so without this the override would linger on the
-                // pthread thread and could corrupt unrelated reads on the same thread.
                 threadLocals.transitionOverrideValue = nil
-                if let last = reference.model {
-                    yield last[keyPath: path]
+                if reference._stateCleared {
+                    // Use genesis state (valid non-zeroed values) to prevent crashes on
+                    // reference-containing types like Array<T> whose _zeroInit() produces
+                    // a null backing pointer that crashes on access (e.g. .count, .reduce).
+                    // This path is hit when a background performUpdate runs after destruction.
+                    // Only report an issue when there's no genesis — with genesis we have a
+                    // valid fallback (e.g. memoize performUpdate running after model teardown).
+                    if !reference._hasGenesis {
+                        reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
+                    }
+                    yield reference._hasGenesis ? reference._genesisState[keyPath: statePath] : _zeroInit()
                 } else {
-                    yield readModel[keyPath: path]
+                    yield reference.state[keyPath: statePath]
                 }
+            } else if threadLocals.transitionOverrideValue != nil, let override = threadLocals.transitionOverrideValue as? T {
+                yield override
             } else {
-                // isMutating must be checked FIRST: a willSet/didSet re-entrant read
-                // must always see modifyModel. A stale transition override left on the
-                // thread by a prior test must never intercept an in-progress mutation.
-                if isMutating { // Handle will and did set recursion
-                    yield modifyModel[keyPath: path]
-                } else if threadLocals.transitionOverrideValue != nil, let override = threadLocals.transitionOverrideValue as? T {
-                    // Transitions mode: yield the historical front-of-queue value placed
-                    // by TestAccess.willAccess. Leave it set for the willAccess callback
-                    // to consume after the yield.
-                    // Guard != nil first to avoid the Swift gotcha: `nil as? T` succeeds
-                    // for Optional<T>, producing .some(nil).
-                    yield override
-                } else {
-                    yield readModel[keyPath: path]
-                }
-                callback?()
+                yield reference.state[keyPath: statePath]
             }
+            callback?()
             lock.unlock()
         }
     }
 
-    subscript<T>(path: WritableKeyPath<M, T>&Sendable, isSame: ((T, T) -> Bool)?, modelContext: ModelContext<M>) -> T {
-        _read {
-            fatalError()
+    // MARK: - Synthetic path observation helpers (for storage/preference/parents)
+
+    /// Registers access with the ObservationRegistrar for a synthetic `_StateObserver` keypath.
+    /// Used by `willAccessStorage`, `willAccessPreference`, and `willAccessParents` to drive
+    /// SwiftUI / Observed {} observation without needing Model to conform to Observable.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    func willAccessSyntheticPath<T>(_ kp: KeyPath<_StateObserver<M._ModelState>, T>) {
+        guard useObservationRegistrar,
+              !(threadLocals.isInsideAsyncPerformUpdate && ModelAccess.active != nil) else { return }
+        let observer = _StateObserver<M._ModelState>()
+        if isOnMainThread {
+            mainObservationRegistrarMakingIfNeeded.access(observer, keyPath: kp)
+        } else {
+            backgroundObservationRegistrarMakingIfNeeded.access(observer, keyPath: kp)
         }
+    }
+
+    /// Fires ObservationRegistrar willSet/didSet for a synthetic `_StateObserver` keypath.
+    /// Supports batching via `pendingObservationNotifications`. Does NOT handle activeAccess
+    /// callbacks — callers handle those separately via `modelContext.invokeDidModify(at:)`.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    func invokeDidModifySyntheticPath<T>(_ kp: KeyPath<_StateObserver<M._ModelState>, T> & Sendable) {
+        guard useObservationRegistrar else { return }
+        let observer = _StateObserver<M._ModelState>()
+        let observerKP = kp
+        if threadLocals.pendingObservationNotifications != nil {
+            threadLocals.pendingObservationNotifications!.append {
+                if isOnMainThread {
+                    self.mainObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                    self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                    self.mainObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                    self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                } else {
+                    self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                    self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                    if let mainReg = self.mainObservationRegistrar {
+                        self.mainCallQueue {
+                            mainReg.willSet(observer, keyPath: observerKP)
+                            mainReg.didSet(observer, keyPath: observerKP)
+                        }
+                    }
+                }
+            }
+        } else {
+            if isOnMainThread {
+                mainObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                mainObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+            } else {
+                backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                if let mainReg = self.mainObservationRegistrar {
+                    self.mainCallQueue {
+                        mainReg.willSet(observer, keyPath: observerKP)
+                        mainReg.didSet(observer, keyPath: observerKP)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Direct access helpers (for _ModelSourceBox subscripts)
+
+    /// Computes the willAccess observation callback without constructing a ModelContext.
+    /// Called from `_ModelSourceBox` read subscripts.
+    ///
+    /// Uses `_StateObserver` for registrar calls (no Model instance needed).
+    /// Uses `_StateObserver` for registrar calls; delegates to `activeAccess.willAccess/didModify(from:at:)` for TestAccess.
+    func willAccessDirect<T>(statePath: WritableKeyPath<M._ModelState, T>, accessBox: _ModelAccessBox) -> (() -> Void)? {
+        let access = accessBox._reference?.access ?? ModelAccess.current
+        let activeAccess = ModelAccess.active ?? access
+
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar,
+           !(threadLocals.isInsideAsyncPerformUpdate && ModelAccess.active != nil) {
+            let observer = _StateObserver<M._ModelState>()
+            let observerKP = (\_StateObserver<M._ModelState>._state).appending(path: statePath)
+            if isOnMainThread {
+                mainObservationRegistrarMakingIfNeeded.access(observer, keyPath: observerKP)
+            } else {
+                backgroundObservationRegistrarMakingIfNeeded.access(observer, keyPath: observerKP)
+            }
+        }
+
+        guard let activeAccess else { return nil }
+        let sendableStatePath = unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self)
+        return activeAccess.willAccess(from: self, at: sendableStatePath)
+    }
+
+    /// Invokes post-modify observation notifications without constructing a ModelContext.
+    /// Returns the active-access callback for the caller to execute after releasing the lock.
+    ///
+    /// Uses `_StateObserver` for registrar calls (no Model instance needed).
+    /// Uses `_StateObserver` for registrar calls; delegates to `activeAccess.willAccess/didModify(from:at:)` for TestAccess.
+    @discardableResult
+    func invokeDidModifyDirect<T>(statePath: WritableKeyPath<M._ModelState, T>, accessBox: _ModelAccessBox) -> (() -> Void)? {
+        let access = accessBox._reference?.access ?? ModelAccess.current
+        let activeAccess = ModelAccess.active ?? access
+
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar {
+            let observer = _StateObserver<M._ModelState>()
+            nonisolated(unsafe) let observerKP = (\_StateObserver<M._ModelState>._state).appending(path: statePath)
+            let sendableStatePath: (WritableKeyPath<M._ModelState, T> & Sendable)? = activeAccess != nil ? unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self) : nil
+            if threadLocals.pendingObservationNotifications != nil {
+                // Batched: defer registrar notifications, collect activeAccess callback immediately.
+                let callback = sendableStatePath.flatMap { [self] path in activeAccess?.didModify(from: self, at: path) }
+                threadLocals.pendingObservationNotifications!.append {
+                    // willSet
+                    if isOnMainThread {
+                        self.mainObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                        self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                    } else {
+                        self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                    }
+                    // didSet
+                    if isOnMainThread {
+                        self.mainObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                        self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                    } else {
+                        self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                        if let mainReg = self.mainObservationRegistrar {
+                            self.mainCallQueue {
+                                mainReg.willSet(observer, keyPath: observerKP)
+                                mainReg.didSet(observer, keyPath: observerKP)
+                            }
+                        }
+                    }
+                }
+                return callback
+            } else {
+                // Not batched: willSet → activeAccess callback → didSet (via defer).
+                // willSet
+                if isOnMainThread {
+                    mainObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                    backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                } else {
+                    backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                }
+                defer {
+                    // didSet
+                    if isOnMainThread {
+                        self.mainObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                        self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                    } else {
+                        self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                        if let mainReg = self.mainObservationRegistrar {
+                            self.mainCallQueue {
+                                mainReg.willSet(observer, keyPath: observerKP)
+                                mainReg.didSet(observer, keyPath: observerKP)
+                            }
+                        }
+                    }
+                }
+                let callback = sendableStatePath.flatMap { [self] path in activeAccess?.didModify(from: self, at: path) }
+                mainCallQueue.drainIfOnMain()
+                return callback
+            }
+        } else {
+            let sendableStatePath2: (WritableKeyPath<M._ModelState, T> & Sendable)? = activeAccess != nil ? unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self) : nil
+            let callback = sendableStatePath2.flatMap { [self] path in activeAccess?.didModify(from: self, at: path) }
+            if threadLocals.pendingObservationNotifications == nil {
+                mainCallQueue.drainIfOnMain()
+            }
+            return callback
+        }
+    }
+
+    /// Modifies a property directly on Reference._state using access box for observation.
+    subscript<T>(statePath statePath: WritableKeyPath<M._ModelState, T>, isSame isSame: ((T, T) -> Bool)?, accessBox accessBox: _ModelAccessBox) -> T {
+        _read { fatalError() }
         _modify {
             lock.lock()
             if unprotectedIsDestructed {
-                if var last = reference.model {
-                    yield &last[keyPath: path]
-                    reference.destruct(last)
-                } else {
-                    var value = readModel[keyPath: path]
+                if reference._stateCleared {
+                    if !reference._hasGenesis {
+                        reportIssue("Modifying a fully destructed model with no last-seen snapshot.")
+                    }
+                    var value: T = reference._hasGenesis ? reference._genesisState[keyPath: statePath] : _zeroInit()
                     yield &value
+                } else {
+                    yield &reference.state[keyPath: statePath]
                 }
                 lock.unlock()
             } else {
-                yield &modifyModel[keyPath: path]
+                let oldValue = reference.state[keyPath: statePath]
+                yield &reference.state[keyPath: statePath]
 
-                if let isSame, isSame(modifyModel[keyPath: path], readModel[keyPath: path]) {
+                if let isSame, isSame(reference.state[keyPath: statePath], oldValue) {
                     return lock.unlock()
                 }
 
                 self.didModify()
-                isMutating = true
-                readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
-                isMutating = false
-
-                // Invoke observation notifications via shared helper — no closure allocation.
-                // The returned activeAccess callback (TestAccess/AccessCollector) is run AFTER
-                // lock.unlock() to avoid a lock-ordering deadlock: the callback's rootPaths call
-                // acquires the parent context lock (child→parent), which inverts the order used
-                // by onAnyModification's withModificationActiveCount (parent→child).
-                let activeAccessCallback = modelContext.invokeDidModify(readModel, at: path)
-
-                let postLockCallbacks = buildPostLockCallbacks(for: path)
+                let activeAccessCallback = invokeDidModifyDirect(statePath: statePath, accessBox: accessBox)
+                let postLockCallbacks = buildPostLockCallbacks(for: statePath)
                 lock.unlock()
 
                 activeAccessCallback?()
@@ -515,34 +786,37 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    func transaction<Value, T>(at path: WritableKeyPath<M, Value>&Sendable, isSame: ((Value, Value) -> Bool)?, modelContext: ModelContext<M>, modify: (inout Value) throws -> T) rethrows -> T {
+    /// Transaction-based modification using state paths and access box.
+    func stateTransaction<Value, T>(at statePath: WritableKeyPath<M._ModelState, Value>, isSame: ((Value, Value) -> Bool)?, accessBox: _ModelAccessBox, modify: (inout Value) throws -> T) rethrows -> T {
         lock.lock()
         let result: T
-        if var last = reference.model {
-            result = try modify(&last[keyPath: path])
-            reference.destruct(last)
+        if unprotectedIsDestructed {
+            var value: Value
+            if reference._stateCleared {
+                if !reference._hasGenesis {
+                    reportIssue("Modifying a fully destructed model with no last-seen snapshot.")
+                }
+                value = reference._hasGenesis ? reference._genesisState[keyPath: statePath] : _zeroInit()
+            } else {
+                value = reference.state[keyPath: statePath]
+            }
+            result = try modify(&value)
             lock.unlock()
         } else {
-            result = try modify(&modifyModel[keyPath: path])
+            let oldValue = reference.state[keyPath: statePath]
+            var value = oldValue
+            result = try modify(&value)
+            reference.state[keyPath: statePath] = value
 
-            if let isSame, isSame(modifyModel[keyPath: path], readModel[keyPath: path]) {
+            if let isSame, isSame(value, oldValue) {
                 lock.unlock()
                 return result
             }
 
             didModify()
-            isMutating = true
-            readModel[keyPath: path] = modifyModel[keyPath: path] // handle exclusivity access with recursive calls
-            isMutating = false
-
-            // Invoke observation notifications via shared helper — no closure allocation.
-            // Run the returned activeAccess callback after lock.unlock() (same deadlock
-            // avoidance as in the _modify subscript above).
-            let activeAccessCallback = modelContext.invokeDidModify(readModel, at: path)
-
-            let postLockCallbacks = buildPostLockCallbacks(for: path)
+            let activeAccessCallback = invokeDidModifyDirect(statePath: statePath, accessBox: accessBox)
+            let postLockCallbacks = buildPostLockCallbacks(for: statePath)
             lock.unlock()
-
             activeAccessCallback?()
             runPostLockCallbacks(postLockCallbacks)
         }
@@ -552,7 +826,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// Builds the post-lock callbacks array for a property modification.
     /// Returns nil when there is nothing to do, avoiding the array allocation entirely.
     /// Must be called while the context lock is held.
-    private func buildPostLockCallbacks(for path: PartialKeyPath<M>) -> [() -> Void]? {
+    private func buildPostLockCallbacks(for path: PartialKeyPath<M._ModelState>) -> [() -> Void]? {
         // Fast path: skip allocation when no observers exist and we're not in a batched transaction.
         guard modifyCallbacks[path] != nil || anyModificationActiveCount > 0 || threadLocals.postTransactions != nil else {
             return nil
@@ -590,8 +864,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // triggers willAccess with the @_ModelTracked backing storage path(s).
         // This avoids any frozen-copy issues that arise when writing through a computed setter.
         let collector = PathCollector<M>()
+        // model has .reference source, so reading via keyPath triggers willAccessDirect → PathCollector.willAccess.
+        let touchTarget = model
         usingActiveAccess(collector) {
-            _ = readModel[keyPath: path]
+            _ = touchTarget[keyPath: path]
         }
         let backingPaths = collector.paths
 
@@ -601,9 +877,8 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
         // Notify @Observable / TestAccess for each discovered backing path using the
         // type-erased invokers collected by PathCollector.
-        let model = lock(readModel)
         for invoker in collector.invokers {
-            invoker(modelContext, model)
+            invoker(modelContext)
         }
         // Fire AccessCollector onModify callbacks keyed on the backing paths.
         let postLockCallbacks: [() -> Void]? = lock {
@@ -628,7 +903,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     func transaction<T>(_ callback: () throws -> T) rethrows -> T {
-        if reference.model != nil {
+        if reference.isDestructed {
             return try callback()
         }
 
@@ -673,7 +948,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
             assert(children[containerPath]?[modelRef] == nil)
 
-            if let child = childModel.context {
+            if let child = childModel.modelContext.context {
                 child.addParent(self, callbacks: &postLockCallbacks)
                 children[containerPath, default: [:]][modelRef] = child
                 return child
@@ -698,22 +973,94 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 }
 
 extension Context {
+    /// Backing storage for one live model or one snapshot copy.
+    ///
+    /// ## Lifecycle (live reference)
+    /// 1. **Pre-anchor**: created by `@_ModelTracked` init accessor. `state` is set; `_context`
+    ///    is nil; `_isDestructed` is false.
+    /// 2. **Anchored**: `_context` is set by `Context.init`. All pre-anchor copies holding this
+    ///    Reference automatically see the context. `state` is the live mutable state, mutated
+    ///    under the context lock.
+    /// 3. **Destructed**: `destruct()` sets `_isDestructed = true`. `state` is NOT cleared —
+    ///    it retains the last-seen values so SwiftUI can still read them during the TTL window.
+    ///    `clearStateForGeneration` (from Context.deinit) nils `_context` once the last context
+    ///    deinits, but does NOT clear `state`.
+    /// 4. **Cleared**: `clear()` zeroes `state` after the last-seen TTL expires to break any
+    ///    retain cycles (closures in `_State` may capture models holding this Reference).
+    ///    Sets `_stateCleared = true`.
+    ///
+    /// ## Snapshot reference (`_snapshotLifetime != nil`)
+    /// Created independently via `init(modelID:state:lifetime:)`. `_context` is always nil;
+    /// `state` is immutable (writes are guarded at the source level); `_isDestructed` is false.
+    ///
+    /// ## Single Reference per model lifetime
+    /// All copies of a model (pending and live) share the same Reference from creation.
+    /// When `Context.init` calls `setContext`, all those copies immediately see the context
+    /// via `ref._context` — no forwarding indirection needed.
+    /// Immutable heap box for the genesis state snapshot. Class reference (8 bytes) avoids
+    /// storing `M._ModelState` twice inline in every Reference — the Optional null pointer is
+    /// never a spare-bit collision risk because `_GenesisBox` is a class (pointer type).
+    private final class _GenesisBox: @unchecked Sendable {
+        let state: M._ModelState
+        init(_ state: M._ModelState) { self.state = state }
+    }
+
     final class Reference: @unchecked Sendable {
         let modelID: ModelID
         private let lock = NSRecursiveLock()
         private weak var _context: Context<M>?
-        private(set) var _model: M?
         private var _isDestructed = false
+        /// Monotonically-increasing generation counter. Incremented each time `setContext` runs
+        /// (including re-anchoring). `Context` stores its own generation so `deinit` can call
+        /// `clearStateForGeneration` without affecting state claimed by a newer Context.
+        private var _generation: Int = 0
+        /// Number of live Context instances that have claimed this Reference (called `setContext`
+        /// but not yet called `clearStateForGeneration`). `_context` is only nilled when this
+        /// count drops to zero — prevents concurrent tests sharing a static `let testValue`
+        /// Reference from clearing each other's live state.
+        private var _liveContextCount: Int = 0
+        /// Set by `reserveOrFork()` before Context.init to pre-increment `_liveContextCount`.
+        /// Consumed (cleared) by the next `setContext(_:)` call.
+        private var _isReserved: Bool = false
+        /// Live/lastSeen/snapshot state. Non-optional — always holds a valid value while
+        /// `!_stateCleared`. After `clear()`, zeroed via `_zeroInit()` to break retain cycles.
+        var state: M._ModelState
+        /// True after `clear()` when state has been zeroed to break retain cycles. Reads from
+        /// a cleared reference will reportIssue and return _zeroInit().
+        var _stateCleared: Bool = false
+        /// Boxed genesis state captured at the first `setContext` call (post-`withContextAdded`).
+        /// Nil until first anchor. Heap-boxed so `M._ModelState` is not stored twice inline.
+        /// Immutable after creation; forked References share the same box without copying.
+        private var _genesis: _GenesisBox?
+        /// True once genesis has been captured (set in `setContext` on first anchor).
+        var _hasGenesis: Bool { _genesis != nil }
+        /// The genesis state (valid only when `_hasGenesis` is true).
+        var _genesisState: M._ModelState { _genesis!.state }
+        /// Non-nil only for snapshot references (frozen/lastSeen). Immutable after init.
+        private let _snapshotLifetime: ModelLifetime?
+        /// True when this Reference backs a snapshot (frozen copy or lastSeen) rather than a live model.
+        var isSnapshot: Bool { _snapshotLifetime != nil }
 
-        init(modelID: ModelID) {
+        /// Creates a live Reference with initial state.
+        init(modelID: ModelID, state: M._ModelState) {
             self.modelID = modelID
+            self.state = state
+            self._snapshotLifetime = nil
+        }
+
+        /// Creates a snapshot Reference (frozen or lastSeen) with independent state.
+        init(modelID: ModelID, state: M._ModelState, lifetime: ModelLifetime) {
+            self.modelID = modelID
+            self.state = state
+            self._snapshotLifetime = lifetime
         }
 
         deinit {
         }
 
         var lifetime: ModelLifetime {
-            context?.lifetime ?? lock {
+            if let _snapshotLifetime { return _snapshotLifetime }
+            return context?.lifetime ?? lock {
                 _isDestructed ? .destructed : .initial
             }
         }
@@ -722,56 +1069,114 @@ extension Context {
             lock { _context }
         }
 
-        var model: M? {
-            lock { _model }
-        }
-
-        func updateAccess(_ access: ModelAccess?) {
-            lock {
-                if _model != nil {
-                    _model!.modelContext._access = access?.reference
-                }
-            }
-        }
-
         var isDestructed: Bool {
             lock { _isDestructed }
         }
 
-        func destruct(_ model: M?) {
+        /// True when state is available for reads. Used to verify anchoring preconditions.
+        var hasState: Bool {
+            lock { !_stateCleared || _hasGenesis }
+        }
+
+        /// Restores `state` from `_genesisState` if the Reference was previously destroyed.
+        /// Must be called before `withContextAdded` so child-model traversal can read state.
+        /// The full re-anchoring reset (`_isDestructed`, generation) happens in `setContext`.
+        func prepareForReanchoring() {
+            lock {
+                guard _isDestructed, _stateCleared, let genesis = _genesis else { return }
+                state = genesis.state
+                _stateCleared = false
+            }
+        }
+
+        /// Marks the model as destructed. `state` retains its last-seen values for the TTL window.
+        func destruct() {
             lock {
                 _isDestructed = true
-                _model = model
             }
         }
 
+        /// Zeroes `state` to break retain cycles after the last-seen TTL expires.
+        /// `_context` is intentionally NOT cleared here — that happens in `clearStateForGeneration`
+        /// (called from Context.deinit). Clearing `_context` here would make `ModelNode.isDestructed`
+        /// return `true` before `onCancel` callbacks fire, causing dependency lookups to fall
+        /// through to the live default instead of the test override.
         func clear() {
             lock {
-                _context = nil
-                _model = nil
+                _stateCleared = true
+                state = _zeroInit()
             }
         }
 
-        func setContext(_ context: Context) {
+        /// Atomically claims this Reference for a new Context, or creates a fresh
+        /// independent Reference from genesis state if this Reference is already in use
+        /// by another Context (e.g. a concurrent test sharing a static `let testValue`).
+        ///
+        /// Returns `self` if unclaimed (`_liveContextCount == 0`), or a new forked Reference
+        /// if already claimed. Either way, the returned Reference has `_liveContextCount`
+        /// pre-incremented and `_isReserved` set, so the subsequent `setContext(_:)` call
+        /// skips its own increment to avoid double-counting.
+        func reserveOrFork() -> Context<M>.Reference {
             lock {
-                assert(!_isDestructed)
-                _context = context
-                _model = nil
+                if _liveContextCount == 0 {
+                    _liveContextCount = 1
+                    _isReserved = true
+                    return self
+                }
+                let initialState = _genesis?.state ?? state
+                let newRef = Context<M>.Reference(modelID: .generate(), state: initialState)
+                newRef._genesis = _genesis  // share immutable box; no copy needed
+                newRef._liveContextCount = 1
+                newRef._isReserved = true
+                return newRef
             }
         }
 
-        subscript (fallback fallback: M) -> M {
-            _read {
-                lock.lock()
-                yield _model?.withAccess(fallback.access) ?? fallback
-                lock.unlock()
+        /// Sets the context, returns the new generation. The caller (Context.init) stores the
+        /// generation so Context.deinit can call `clearStateForGeneration` correctly.
+        @discardableResult
+        func setContext(_ context: Context) -> Int {
+            lock {
+                if _isDestructed {
+                    // Re-anchoring a static dependency model: restore initial state from genesis.
+                    // `_genesisState` holds the state at first-anchor time (correct values,
+                    // no self-referencing closures). `prepareForReanchoring()` may have already
+                    // restored `state`, but ensure it is set here too in case the old
+                    // Context.deinit ran between prepareForReanchoring and setContext.
+                    if _stateCleared, let genesis = _genesis {
+                        state = genesis.state
+                        _stateCleared = false
+                    }
+                    _isDestructed = false
+                } else if _genesis == nil {
+                    // First anchor: capture genesis state. At this point `withContextAdded` has
+                    // run so all property values (including MIDDLE properties from user-written
+                    // inits) are correct. No self-referencing closures exist yet (those are set
+                    // up in onActivate, which runs after setContext returns).
+                    _genesis = _GenesisBox(state)
+                }
+                _generation += 1
+                if _isReserved {
+                    // Count was pre-incremented by reserveOrFork(); just consume the reservation.
+                    _isReserved = false
+                } else {
+                    _liveContextCount += 1
+                }
+                _context = context
+                return _generation
             }
-            _modify {
-                lock.lock()
-                var model = _model?.withAccess(fallback.access) ?? fallback
-                yield &model
-                _model = model
-                lock.unlock()
+        }
+
+        /// Decrements `_liveContextCount` and nils `_context` when the last Context deinits.
+        /// Does NOT clear `state` — it retains last-seen values for the TTL window.
+        /// `clear()` is called after TTL to zero `state` and break retain cycles.
+        func clearStateForGeneration(_ gen: Int) {
+            lock {
+                _liveContextCount -= 1
+                if _liveContextCount <= 0 {
+                    _liveContextCount = 0
+                    _context = nil  // Eliminate race: _context must be nil whenever _liveContextCount == 0
+                }
             }
         }
     }
@@ -795,28 +1200,28 @@ let lastSeenTimeToLive: TimeInterval = 2
 /// path(s) that correspond to a user-visible property path.
 ///
 /// When `readModel[keyPath: publicPath]` is called inside `usingActiveAccess(collector)`, the
-/// `@_ModelTracked`-generated `_read` accessor invokes `willAccess(model, at: backingPath)` with
+/// `@_ModelTracked`-generated `_read` accessor invokes `willAccess(from:at:)` with
 /// the *backing* key path (e.g. `\._count`).  `PathCollector` records both the backing path and a
 /// type-erased closure that can later call `ModelContext.invokeDidModify` with the correct generic
 /// type, bypassing the need to open an existential.
 private final class PathCollector<M: Model>: ModelAccess, @unchecked Sendable {
-    /// Backing storage paths discovered via `willAccess`.
-    var paths: [PartialKeyPath<M>] = []
-    /// Type-erased closures; each calls `ModelContext.invokeDidModify(_:at:)` for one path.
-    var invokers: [(ModelContext<M>, M) -> Void] = []
+    /// Backing storage paths (M._ModelState-level) discovered via `willAccess`.
+    var paths: [PartialKeyPath<M._ModelState>] = []
+    /// Type-erased closures; each calls `ModelContext.invokeDidModify(at:)` for one path.
+    var invokers: [(ModelContext<M>) -> Void] = []
 
     init() { super.init(useWeakReference: false) }
 
-    override func willAccess<N: Model, T>(_ model: N, at path: KeyPath<N, T> & Sendable) -> (() -> Void)? {
-        // We only care about accesses on M itself.
-        guard let typedPath = path as? KeyPath<M, T> else { return nil }
+    override func willAccess<N: Model, T>(from context: Context<N>, at path: KeyPath<N._ModelState, T> & Sendable) -> (() -> Void)? {
+        // We only care about accesses on M._ModelState itself.
+        guard let typedPath = path as? KeyPath<M._ModelState, T> else { return nil }
         paths.append(typedPath)
         // Capture a type-erased invoker. The cast to `& Sendable` is safe here: the call-site
-        // guarantees `path` is Sendable (it arrives as `KeyPath<N, T> & Sendable`), and after
-        // the `as? KeyPath<M, T>` downcast we still have the same Sendable key path object.
+        // guarantees `path` is Sendable (it arrives as `KeyPath<N._ModelState, T> & Sendable`), and after
+        // the `as? KeyPath<M._ModelState, T>` downcast we still have the same Sendable key path object.
         // We use `unsafeBitCast` to reattach the Sendable marker without a dynamic check.
-        let sendablePath = unsafeBitCast(typedPath, to: (KeyPath<M, T> & Sendable).self)
-        invokers.append { mc, m in mc.invokeDidModify(m, at: sendablePath)?() }
+        let sendablePath = unsafeBitCast(typedPath, to: (KeyPath<M._ModelState, T> & Sendable).self)
+        invokers.append { mc in mc.invokeDidModify(at: sendablePath)?() }
         return nil
     }
 }
@@ -831,6 +1236,24 @@ private final class PathCollector<M: Model>: ModelAccess, @unchecked Sendable {
 /// Re-entrant: if `postLockFlushes` is already non-nil (we're nested inside another
 /// `runPostLockCallbacks` call), we simply run `callbacks` without wrapping, allowing the outer
 /// invocation to drain the accumulated flushes.
+/// Returns a zero-initialized value of type T. Defensive fallback for destructed contexts
+/// and as a placeholder for unassigned properties during `_makeState` construction.
+///
+/// String is special-cased because its zero bit pattern is indistinguishable from
+/// `Optional<T>.none` when T contains a String at the offset used for Optional's
+/// spare-bit discriminator. This causes `Optional<_State>` to read as nil even
+/// though a value was stored. Using `String()` produces a valid empty string with
+/// proper internal representation that doesn't collide with Optional's nil pattern.
+public func _zeroInit<T>() -> T {
+    if T.self == String.self {
+        return unsafeBitCast(String(), to: T.self)
+    }
+    return withUnsafeTemporaryAllocation(of: T.self, capacity: 1) { buf in
+        _ = memset(buf.baseAddress!, 0, MemoryLayout<T>.size)
+        return buf[0]
+    }
+}
+
 func runPostLockCallbacks(_ callbacks: [() -> Void]?) {
     guard let callbacks else { return }
     guard threadLocals.postLockFlushes == nil else {
@@ -844,4 +1267,3 @@ func runPostLockCallbacks(_ callbacks: [() -> Void]?) {
     threadLocals.postLockFlushes = nil
     for f in flushes { f() }
 }
-

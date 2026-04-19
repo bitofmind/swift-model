@@ -215,22 +215,21 @@ struct TodoListTests {
     /// by the parent list — the core demonstration of top-down environment propagation.
     @Test func itemVisibilityReflectsEnvironment() async {
         let model = TodoListModel().withAnchor()
-        let done = TodoItem(title: "Done", isDone: true)
-        model.items = [done]
+        model.items = [TodoItem(title: "Done", isDone: true)]
         await settle()
 
-        await expect { done.isVisible == true }  // showCompleted defaults to true
+        await expect { model.items[0].isVisible == true }  // showCompleted defaults to true
 
         model.showCompleted = false
         await expect {
             model.showCompleted == false
-            done.isVisible == false  // environment propagated to item
+            model.items[0].isVisible == false  // environment propagated to item
         }
 
         model.showCompleted = true
         await expect {
             model.showCompleted == true
-            done.isVisible == true
+            model.items[0].isVisible == true
         }
     }
 

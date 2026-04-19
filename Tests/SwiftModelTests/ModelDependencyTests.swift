@@ -254,7 +254,9 @@ struct ModelDependencyTests {
             #expect(testResult.value == "D(1:3711)(->8)(3:8)(->7)(->7)(4:7)(->5)(->5)(->5)(6:5)(->2)(->2)")
         }
         #expect(testResult.value == "D(1:3711)(->8)(3:8)(->7)(->7)(4:7)(->5)(->5)(->5)(6:5)(->2)(->2)d")
-        #expect(Dependency.testValue.lifetime == .initial)
+        // After the test, the static testValue dep has been destructed. It can still be
+        // re-anchored in subsequent tests (setContext resets _isDestructed from genesis).
+        #expect(Dependency.testValue.lifetime == .destructed)
     }
 }
 

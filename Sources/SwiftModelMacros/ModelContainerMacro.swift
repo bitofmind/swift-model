@@ -28,7 +28,7 @@ public struct ModelContainerMacro: ExtensionMacro {
 
             let visit: DeclSyntax =
             """
-            public func visit(with visitor: inout ContainerVisitor<Self>) {
+            public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                 \(raw: visits.joined(separator: "\n"))
             }
             """
@@ -137,7 +137,7 @@ public struct ModelContainerMacro: ExtensionMacro {
             let containerDecl: DeclSyntax =
             """
             extension \(raw: type.trimmedDescription): \(raw: protocolName) {
-                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     switch self {
                     \(raw: visits.joined(separator: ""))
                     }

@@ -77,6 +77,10 @@ class AnyContext: @unchecked Sendable {
     /// Always `nil` in production — the delegate check is a single `Optional` load.
     weak var taskLifecycleDelegate: (any TaskLifecycleDelegate)?
 
+    /// Captured during `Context<M>.init` to call `model.onActivate()` with correct `let` values.
+    /// Called once by `Context<M>.onActivate()` and then cleared.
+    var pendingActivation: (() -> Void)?
+
     private(set) var anyModificationActiveCount = 0
     private var anyModificationCallbacksStore: [Int: (Bool) -> (() -> Void)?]?
     private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] {
@@ -227,6 +231,7 @@ class AnyContext: @unchecked Sendable {
 
     struct EventInfo: @unchecked Sendable {
         var event: Any
+        var model: any Model
         var context: AnyContext
     }
 
@@ -343,21 +348,13 @@ class AnyContext: @unchecked Sendable {
         return weakParents.compactMap(\.parent)
     }
 
-    func parents<Value>(ofType type: Value.Type = Value.self) -> [Value] {
-        parents.compactMap { $0.anyModel as? Value }
-    }
-
-    func ancestors<Value>(ofType type: Value.Type = Value.self) -> [Value] {
-        parents() + parents.flatMap { $0.ancestors() }
-    }
-
     var selfPath: AnyKeyPath { fatalError() }
 
-    var anyModel: any Model { fatalError() }
+    var anyModelID: ModelID { fatalError() }
 
-    /// The ModelAccess registered on this context's live model, if any.
-    /// Overridden by Context<M> to return readModel.modelContext.access.
-    var anyModelAccess: ModelAccess? { nil }
+    /// Calls `body` with the model this context backs, with `access` applied if it propagates to children.
+    /// Used by `reduceHierarchy` to hand a correctly-configured model value to the user's transform closure.
+    func mapModel<T>(access: ModelAccess?, _ body: (any Model) throws -> T?) rethrows -> T? { fatalError() }
 
     var rootPaths: [AnyKeyPath] {
         // Collect raw path segments under the lock, then compose OUTSIDE the lock.
@@ -414,16 +411,12 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    let isObservable: Bool
-
-    init(lock: NSRecursiveLock, parent: AnyContext?, isObservable: Bool) {
+    init(lock: NSRecursiveLock, parent: AnyContext?) {
         self.lock = lock
         self.options = parent?.options ?? ModelOption.current
-        self.isObservable = isObservable
         self.mainCallQueue = parent?.mainCallQueue ?? MainCallQueue()
-        
-        // Registrars are created lazily on first access(); isObservable encodes availability.
-        self.useObservationRegistrar = isObservable && !self.options.contains(.disableObservationRegistrar)
+
+        self.useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
 
         if let parent {
             // During init, no observers exist yet, so callbacks can be discarded.
@@ -556,6 +549,7 @@ class AnyContext: @unchecked Sendable {
         modeLifeTime = .destructed
         self.children.removeAll()
         dependencyContexts.removeAll()
+        dependencyCache.removeAll()
 
         for entry in _memoizeCache.values {
             entry.cancellable?()
@@ -795,9 +789,33 @@ class AnyContext: @unchecked Sendable {
 
     @TaskLocal static var keepLastSeenAround = false
 
+    /// Walks up the context hierarchy from self to rootParent, returning the first
+    /// dependency context found for the given type ID. This ensures child-level
+    /// withDependencies overrides take precedence over root-level ones.
+    func nearestDependencyContext(for typeID: ObjectIdentifier) -> AnyContext? {
+        var current: AnyContext? = self
+        while let ctx = current {
+            if let dep = ctx.dependencyContexts[typeID] {
+                return dep
+            }
+            if ctx === rootParent { break }
+            current = ctx.weakParents.first?.parent
+        }
+        return nil
+    }
+
     func setupModelDependency<D: Model>(_ model: inout D, cacheKey: AnyHashable?, postSetups: inout [() -> Void]) {
-        switch model.modelContext.source {
-        case let .reference(reference):
+        let modelSrc = model.modelContext._source
+        let modelRef = modelSrc.reference
+
+        guard !modelRef.isSnapshot else {
+            // Snapshot reference (frozen/lastSeen) — no dependency setup needed.
+            return
+        }
+
+        if !modelSrc._isLive && modelRef.context != nil {
+            // Model has a live context (was `.reference` SourceKind with context).
+            let reference = modelRef
             if let child = reference.context, child.rootParent === rootParent {
                 if dependencyContexts[ObjectIdentifier(D.self)] == nil {
                     dependencyContexts[ObjectIdentifier(D.self)] = child
@@ -808,6 +826,7 @@ class AnyContext: @unchecked Sendable {
                 if let cacheKey {
                     if let context = rootParent.dependencyContexts[ObjectIdentifier(D.self)] as? Context<D> {
                         model.withContextAdded(context: context)
+                        model.modelContext = ModelContext(context: context)
                     } else {
                         model = model.initialDependencyCopy // make sure to do unique copy of default value (liveValue etc).
                         rootParent.setupModelDependency(&model, cacheKey: nil, postSetups: &postSetups)
@@ -840,13 +859,97 @@ class AnyContext: @unchecked Sendable {
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
                     dependencyContexts[ObjectIdentifier(D.self)] = child
                     model.withContextAdded(context: child)
+                    model.modelContext = ModelContext(context: child)
                     postSetups.append {
                         _ = child.onActivate()
                     }
                 }
             }
-        case .frozenCopy, .lastSeen:
-            return // warn?
+        } else {
+            // Fresh pre-anchor model from DependencyValues (was `.pending`/`.live` SourceKind).
+            // All pre-anchor copies of the model share the same Reference (class). After
+            // Context.init calls setContext, those copies (e.g. test code's `sharedDep`)
+            // automatically route writes to the context via ref._context.
+
+            if let cacheKey {
+                // Look for an existing dependency context: walk from self up through
+                // parents to find the nearest ancestor that has one. This ensures that
+                // a child-level withDependencies override takes precedence over the
+                // root-level override (e.g. grandchild sees childDep, not rootDep).
+                let depTypeID = ObjectIdentifier(D.self)
+                if let context = nearestDependencyContext(for: depTypeID) as? Context<D> {
+                    model.withContextAdded(context: context)
+                    model.modelContext = ModelContext(context: context)
+                } else {
+                    // Atomically claim this Reference or fork a genesis-state copy if another
+                    // Context is already using it (concurrent test sharing a static `let testValue`).
+                    // `reserveOrFork` pre-increments _liveContextCount under the Reference lock,
+                    // eliminating the TOCTOU race between checking model.context and setContext.
+                    let ref = model.modelContext._source.reference
+                    let reservedRef = ref.reserveOrFork()
+                    if reservedRef !== ref {
+                        var mc = model.modelContext
+                        mc._source = _ModelSourceBox(reference: reservedRef)
+                        model.modelContext = mc
+                    }
+                    // If this is a live/internal copy (unlikely but defensive), fall back
+                    if model.context != nil {
+                        model = model.initialDependencyCopy
+                    }
+                    assert(model.context == nil)
+                    let child = Context<D>(model: model, lock: lock, dependencies: { _ in }, parent: self)
+                    child.withModificationActiveCount { $0 = anyModificationActiveCount }
+                    rootParent.dependencyContexts[depTypeID] = child
+                    model.withContextAdded(context: child)
+                    model.modelContext = ModelContext(context: child)
+                    rootParent.dependencyCache[cacheKey] = model
+                    postSetups.append {
+                        _ = child.onActivate()
+                    }
+                }
+                if let child = model.modelContext.reference?.context {
+                    if dependencyContexts[depTypeID] == nil {
+                        dependencyContexts[depTypeID] = child
+                        // Only add self as parent if this is a reused context (found via
+                        // nearestDependencyContext). When we just created the context above
+                        // with `parent: self`, self is already a parent — don't duplicate.
+                        if child.parents.allSatisfy({ $0 !== self }) {
+                            child.addParent(self, callbacks: &postSetups)
+                        }
+                    }
+                    // Ensure the root parent is also a parent of the dependency context so
+                    // that metadataModelContext() can walk up to the root's TestAccess.
+                    if self !== rootParent, child.parents.allSatisfy({ $0 !== rootParent }) {
+                        child.addParent(rootParent, callbacks: &postSetups)
+                    }
+                }
+            } else {
+                // Check if a dependency context for the same original model already exists
+                // (e.g. shared dependency anchored by a sibling child via withDependencies).
+                // All copies share the same Reference, so modelID is the same across copies.
+                let pendingKey = _PendingDepKey(typeID: ObjectIdentifier(D.self), modelID: model.modelID)
+                if let existing = rootParent.dependencyCache[pendingKey] as? Context<D> {
+                    model.withContextAdded(context: existing)
+                    model.modelContext = ModelContext(context: existing)
+                    if dependencyContexts[ObjectIdentifier(D.self)] == nil {
+                        dependencyContexts[ObjectIdentifier(D.self)] = existing
+                        existing.addParent(self, callbacks: &postSetups)
+                    }
+                } else {
+                    assert(model.context == nil)
+                    let child = Context<D>(model: model, lock: lock, dependencies: { _ in }, parent: self)
+                    child.withModificationActiveCount { $0 = anyModificationActiveCount }
+                    dependencyContexts[ObjectIdentifier(D.self)] = child
+                    model.withContextAdded(context: child)
+                    model.modelContext = ModelContext(context: child)
+                    // No _linkedReference needed: all pre-anchor copies already hold child.reference
+                    // (the single shared Reference). After setContext, ref._context = child.
+                    rootParent.dependencyCache[pendingKey] = child
+                    postSetups.append {
+                        _ = child.onActivate()
+                    }
+                }
+            }
         }
     }
 
@@ -863,7 +966,11 @@ class AnyContext: @unchecked Sendable {
             // captured deps, the lookup always uses the correct, override-respecting values.
             return DependencyValues.$_current.withValue(capturedDependencies) {
                 let value = Dependency(keyPath).wrappedValue
-                if var model = value as? any Model {
+                // Skip Model dependency setup when the context is destructed (e.g. onCancel
+                // callbacks): the context's children/parents are already torn down, so calling
+                // setupModelDependency would operate on an invalid context graph and crash.
+                // Non-model dependencies are returned directly from capturedDependencies.
+                if !unprotectedIsDestructed, var model = value as? any Model {
                     if model.anyContext === self {
                         reportIssue("Recursive dependency detected")
                     }
@@ -874,7 +981,9 @@ class AnyContext: @unchecked Sendable {
                     }
                     return model as! Value
                 } else {
-                    dependencyCache[keyPath] = value
+                    if !unprotectedIsDestructed {
+                        dependencyCache[keyPath] = value
+                    }
                     return value
                 }
             }
@@ -892,7 +1001,7 @@ class AnyContext: @unchecked Sendable {
             // so that ancestor task-locals don't overwrite this context's dep overrides.
             return DependencyValues.$_current.withValue(capturedDependencies) {
                 let value = Dependency(type).wrappedValue
-                if var model = value as? any Model {
+                if !unprotectedIsDestructed, var model = value as? any Model {
                     if model.anyContext === self {
                         reportIssue("Recursive dependency detected")
                     }
@@ -903,12 +1012,22 @@ class AnyContext: @unchecked Sendable {
                     }
                     return model as! Value
                 } else {
-                    dependencyCache[key] = value
+                    if !unprotectedIsDestructed {
+                        dependencyCache[key] = value
+                    }
                     return value
                 }
             }
         }
     }
+}
+
+/// Composite key for looking up dependency contexts created from `.pending` models.
+/// Two struct copies of the same `@Model` share Reference (class) and thus the same
+/// modelID, enabling sibling contexts to find and share the dependency context.
+private struct _PendingDepKey: Hashable {
+    let typeID: ObjectIdentifier
+    let modelID: ModelID
 }
 
 func withPostActions<T>(perform: (inout [() -> Void]) throws -> T) rethrows -> T {
