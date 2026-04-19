@@ -38,8 +38,10 @@ struct ClockTests {
 
     /// ImmediateClock fires all timer intervals synchronously, so the model
     /// reaches its final state without explicit clock advancement.
+    /// .removing(.state) because the timer fires indefinitely, producing a continuous
+    /// stream of secondsElapsed changes that can't all be enumerated.
     @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
-    @Test(.modelTesting(exhaustivity: .off)) func testImmediateClock() async {
+    @Test(.modelTesting(.removing(.state))) func testImmediateClock() async {
         let model = TimerModel().withAnchor {
             $0.continuousClock = ImmediateClock()
         }

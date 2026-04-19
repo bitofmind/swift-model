@@ -262,6 +262,10 @@ public extension ModelContext {
     func dependency<D: DependencyKey>() -> D where D.Value == D {
         _dependency()
     }
+
+    func dependency<D>(for keyPath: KeyPath<DependencyValues, D> & Sendable) -> D {
+        ModelNode(_$modelContext: self)[dynamicMember: keyPath]
+    }
 }
 
 func containerIsSame<T: ModelContainer>(_ lhs: T, _ rhs: T) -> Bool {

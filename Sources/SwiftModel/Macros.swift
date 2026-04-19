@@ -70,7 +70,7 @@ public macro _ModelIgnored() = #externalMacro(module: "SwiftModelMacros", type: 
 
 /// Exposes a `swift-dependencies` dependency as a computed property on a model.
 ///
-/// Apply `@ModelDependency` to a computed property to automatically resolve its value from the
+/// Apply `@ModelDependency` to a variable declaration to automatically resolve its value from the
 /// model's dependency container rather than from a global `@Dependency`. This ensures the
 /// dependency respects any overrides injected via `andTester { }` or `withDependencies { }`:
 ///
@@ -87,5 +87,25 @@ public macro _ModelIgnored() = #externalMacro(module: "SwiftModelMacros", type: 
 ///     }
 /// }
 /// ```
+///
+/// You can also look up a dependency by key path, mirroring SwiftUI's `@Environment(\.keyPath)` syntax.
+/// Use this form when the type alone does not uniquely identify the dependency, or simply as a more
+/// explicit alternative:
+///
+/// ```swift
+/// @Model
+/// struct TimerModel {
+///     @ModelDependency(\.continuousClock) var clock: any Clock<Duration>
+/// }
+/// ```
 @attached(accessor, names: named(get))
 public macro ModelDependency() = #externalMacro(module: "SwiftModelMacros", type: "ModelDependencyMacro")
+
+/// Key-path variant of ``ModelDependency()``.
+///
+/// Resolves the dependency identified by `keyPath` from the model's dependency container.
+/// Equivalent to `@ModelDependency` when the property type alone identifies the dependency,
+/// but necessary when the property type is a protocol or abstract type (e.g. `any Clock<Duration>`)
+/// that has no `DependencyKey` conformance of its own.
+@attached(accessor, names: named(get))
+public macro ModelDependency<V>(_ keyPath: KeyPath<DependencyValues, V>) = #externalMacro(module: "SwiftModelMacros", type: "ModelDependencyMacro")

@@ -134,7 +134,7 @@ struct TodoListTests {
 
     // MARK: - Completion count preference
 
-    @Test(.modelTesting(exhaustivity: .off)) func completedCountReflectsItemsDoneState() async {
+    @Test func completedCountReflectsItemsDoneState() async {
         let model = TodoListModel().withAnchor()
         model.items = [
             TodoItem(title: "A"),
@@ -147,25 +147,91 @@ struct TodoListTests {
         }
 
         model.items[0].toggleTapped()
-        await expect { model.completedCount == 1 }
+        await expect {
+            model.items[0].isDone == true
+            model.completedCount == 1
+        }
 
         model.items[2].toggleTapped()
-        await expect { model.completedCount == 2 }
+        await expect {
+            model.items[2].isDone == true
+            model.completedCount == 2
+        }
 
         model.items[0].toggleTapped()
-        await expect { model.completedCount == 1 }
+        await expect {
+            model.items[0].isDone == false
+            model.completedCount == 1
+        }
     }
 
-    @Test(.modelTesting(exhaustivity: .off)) func completedCountUpdatesWhenItemsRemoved() async {
+    @Test func completedCountUpdatesWhenItemsRemoved() async {
         let model = TodoListModel().withAnchor()
         model.items = [
             TodoItem(title: "A", isDone: true),
             TodoItem(title: "B", isDone: true),
         ]
-        await expect { model.completedCount == 2 }
+        await expect {
+            model.items.count == 2
+            model.completedCount == 2
+        }
 
         model.items.removeFirst()
-        await expect { model.completedCount == 1 }
+        await expect {
+            model.items.count == 1
+            model.completedCount == 1
+        }
+    }
+
+    // MARK: - Show/hide completed (environment propagation)
+
+    @Test func showingCompletedIncludesAllItems() async {
+        let model = TodoListModel().withAnchor()
+        model.items = [TodoItem(title: "Active"), TodoItem(title: "Done", isDone: true)]
+        model.showCompleted = false  // start hidden so this test verifies the toggle to shown
+        await settle()
+
+        model.showCompleted = true
+        await expect {
+            model.showCompleted == true
+            model.visibleItems.count == 2
+        }
+    }
+
+    @Test func hidingCompletedFiltersItems() async {
+        let model = TodoListModel().withAnchor()
+        model.items = [TodoItem(title: "Active"), TodoItem(title: "Done", isDone: true)]
+        await settle()
+
+        model.showCompleted = false
+        await expect {
+            model.showCompleted == false
+            model.visibleItems.count == 1
+            model.visibleItems[0].title == "Active"
+        }
+    }
+
+    /// Verifies that each item reads its visibility from the environment propagated
+    /// by the parent list — the core demonstration of top-down environment propagation.
+    @Test func itemVisibilityReflectsEnvironment() async {
+        let model = TodoListModel().withAnchor()
+        let done = TodoItem(title: "Done", isDone: true)
+        model.items = [done]
+        await settle()
+
+        await expect { done.isVisible == true }  // showCompleted defaults to true
+
+        model.showCompleted = false
+        await expect {
+            model.showCompleted == false
+            done.isVisible == false  // environment propagated to item
+        }
+
+        model.showCompleted = true
+        await expect {
+            model.showCompleted == true
+            done.isVisible == true
+        }
     }
 
     // MARK: - Item property changes (title, isDone)

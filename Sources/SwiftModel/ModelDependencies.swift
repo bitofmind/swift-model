@@ -1,5 +1,4 @@
 import Dependencies
-import ConcurrencyExtras
 
 /// A mutable container of dependency overrides passed to `andTester`, `withDependencies`, or `withAnchor`.
 ///

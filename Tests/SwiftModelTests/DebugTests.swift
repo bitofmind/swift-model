@@ -84,7 +84,7 @@ final class CaptureStream: TextOutputStream, @unchecked Sendable {
 /// @Test func myDebugTest() async throws {
 ///     try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
 ///         let model = DebugCounter().withAnchor()
-///         model.debug([.changes(), .name("Counter"), .printer(output)])
+///         model.debug(.init(triggers: nil, name: "Counter", printer: output))
 ///         model.value = 42
 ///     } result: {
 ///         """
@@ -128,7 +128,7 @@ struct DebugTests {
     @Test func debugWholeSubtree_diff() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.changes(), .name("Counter"), .printer(output)])
+            model.debug(.init(triggers: nil, name: "Counter", printer: output))
             model.count = 1
         } result: {
             """
@@ -145,7 +145,7 @@ struct DebugTests {
     @Test func debugWholeSubtree_diff_collapsed() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.changes(.diff(.collapsed)), .name("Counter"), .printer(output)])
+            model.debug(.init(triggers: nil, changes: .diff(.collapsed), name: "Counter", printer: output))
             model.count = 1
         } result: {
             """
@@ -163,7 +163,7 @@ struct DebugTests {
     @Test func debugWholeSubtree_diff_full() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.changes(.diff(.full)), .name("Counter"), .printer(output)])
+            model.debug(.init(triggers: nil, changes: .diff(.full), name: "Counter", printer: output))
             model.count = 1
         } result: {
             """
@@ -185,7 +185,7 @@ struct DebugTests {
     @Test func debugWholeSubtree_childModel() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Parent") }) { output in
             let parent = DebugParent().withAnchor()
-            parent.debug([.changes(), .name("Parent"), .printer(output)])
+            parent.debug(.init(triggers: nil, name: "Parent", printer: output))
             parent.child.count = 5
         } result: {
             """
@@ -206,7 +206,7 @@ struct DebugTests {
     @Test func debugWholeSubtree_value() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.changes(.value), .name("Counter"), .printer(output)])
+            model.debug(.init(triggers: nil, changes: .value, name: "Counter", printer: output))
             model.count = 42
         } result: {
             """
@@ -224,7 +224,7 @@ struct DebugTests {
     @Test func debugTargeted_triggers_name() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.triggers(), .name("Counter"), .printer(output)]) { model.count }
+            model.debug(.init(changes: nil, name: "Counter", printer: output)) { model.count }
             model.count = 5
         } result: {
             """
@@ -238,7 +238,7 @@ struct DebugTests {
     @Test func debugTargeted_triggers_withValue() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.triggers(.withValue), .name("Counter"), .printer(output)]) { model.count }
+            model.debug(.init(triggers: .withValue, changes: nil, name: "Counter", printer: output)) { model.count }
             model.count = 7
         } result: {
             """
@@ -254,7 +254,7 @@ struct DebugTests {
     @Test func debugTargeted_triggers_withValue_consecutive() async throws {
         let output = CaptureStream()
         let model = DebugCounter().withAnchor()
-        model.debug([.triggers(.withValue), .name("Counter"), .printer(output)]) { model.count }
+        model.debug(.init(triggers: .withValue, changes: nil, name: "Counter", printer: output)) { model.count }
 
         model.count = 7
         try await waitUntil(output.captured.contains("Counter"))
@@ -277,7 +277,7 @@ struct DebugTests {
     @Test func debugTargeted_triggers_withValue_string() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.triggers(.withValue), .name("Counter"), .printer(output)]) { model.name }
+            model.debug(.init(triggers: .withValue, changes: nil, name: "Counter", printer: output)) { model.name }
             model.name = "Alice"
         } result: {
             """
@@ -291,7 +291,7 @@ struct DebugTests {
     @Test func debugTargeted_triggersAndChanges() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.triggers(), .changes(), .name("Counter"), .printer(output)]) { model.count }
+            model.debug(.init(name: "Counter", printer: output)) { model.count }
             model.count = 3
         } result: {
             """
@@ -312,7 +312,7 @@ struct DebugTests {
     @Test func debugTargeted_triggers_defaultName() async throws {
         try await assertOutputSnapshot(until: { $0.contains("DebugCounter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.triggers(), .printer(output)]) { model.count }  // no .name()
+            model.debug(.init(changes: nil, printer: output)) { model.count }  // no name
             model.count = 1
         } result: {
             """
@@ -327,7 +327,7 @@ struct DebugTests {
 
     @Test func memoizeDebug_triggersAndChanges() async throws {
         try await assertOutputSnapshot(until: { $0.contains("debugDoubled") }) { output in
-            let debugOpts: DebugOptions = [.triggers(.name), .changes(.value), .printer(output)]
+            let debugOpts = DebugOptions(triggers: .name, changes: .value, printer: output)
             let model = DebugCounter().withAnchor()
             _ = model.node.memoize(for: "debugDoubled", debug: debugOpts, produce: { model.count * 2 })
             model.count = 5
@@ -354,7 +354,7 @@ struct DebugTests {
         try await waitUntilRemoved {
             let model = DebugCounter()
                 .withActivation { model in
-                    model.node.forEach(Observed(debug: [.triggers(.name), .name("ObsCounter"), .printer(output)]) { model.count }) { value in
+                    model.node.forEach(Observed(debug: .init(changes: nil, name: "ObsCounter", printer: output)) { model.count }) { value in
                         received.withValue { $0.append(value) }
                     }
                 }
@@ -381,7 +381,7 @@ struct DebugTests {
     @Test func debugTargeted_changes_selfReturn() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.changes(), .name("Counter"), .printer(output)])
+            model.debug(.init(triggers: nil, name: "Counter", printer: output))
             model.count = 4
         } result: {
             """
@@ -399,7 +399,7 @@ struct DebugTests {
     @Test func debugTargeted_changes_childReturn() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Child") }) { output in
             let parent = DebugParent().withAnchor()
-            parent.debug([.changes(), .name("Child"), .printer(output)]) { parent.child }
+            parent.debug(.init(triggers: nil, name: "Child", printer: output)) { parent.child }
             let counter = DebugCounter()
             counter.count = 7
             parent.child = counter
@@ -420,7 +420,7 @@ struct DebugTests {
     @Test func withDebug_modifier() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter()
-                .withDebug([.changes(), .name("Counter"), .printer(output)])
+                .withDebug(.init(triggers: nil, name: "Counter", printer: output))
                 .withAnchor()
             model.count = 11
         } result: {
@@ -442,7 +442,7 @@ struct DebugTests {
     @Test func debugTargeted_changes_tupleReturn() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Dual") }) { output in
             let parent = DebugDualParent().withAnchor()
-            parent.debug([.changes(), .name("Dual"), .printer(output)]) { (parent.a, parent.b) }
+            parent.debug(.init(triggers: nil, name: "Dual", printer: output)) { (parent.a, parent.b) }
             let counter = DebugCounter()
             counter.count = 3
             parent.a = counter
@@ -465,7 +465,7 @@ struct DebugTests {
     @Test func debugTargeted_changes_optionalReturn() async throws {
         let output = CaptureStream()
         let parent = DebugOptionalParent().withAnchor()
-        parent.debug([.changes(), .name("Opt"), .printer(output)]) { parent.child }
+        parent.debug(.init(triggers: nil, name: "Opt", printer: output)) { parent.child }
 
         // nil → some: assigning a new model should show the full model appearing
         parent.child = DebugCounter()
@@ -508,7 +508,7 @@ struct DebugTests {
     @Test func debugTargeted_changes_arrayReturn() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Arr") }) { output in
             let parent = DebugDualParent().withAnchor()
-            parent.debug([.changes(), .name("Arr"), .printer(output)]) { [parent.a, parent.b] }
+            parent.debug(.init(triggers: nil, name: "Arr", printer: output)) { [parent.a, parent.b] }
             let counter = DebugCounter()
             counter.count = 7
             parent.b = counter
@@ -529,7 +529,7 @@ struct DebugTests {
     @Test func debugTargeted_changes_arrayReturn_collapsed() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Arr") }) { output in
             let parent = DebugDualParent().withAnchor()
-            parent.debug([.changes(.diff(.collapsed)), .name("Arr"), .printer(output)]) { [parent.a, parent.b] }
+            parent.debug(.init(triggers: nil, changes: .diff(.collapsed), name: "Arr", printer: output)) { [parent.a, parent.b] }
             let counter = DebugCounter()
             counter.count = 7
             parent.b = counter
@@ -554,7 +554,7 @@ struct DebugTests {
     @Test func debugTargeted_changes_swapReturn() async throws {
         let output = CaptureStream()
         let parent = DebugSwapParent().withAnchor()
-        parent.debug([.changes(), .name("Swap"), .printer(output)]) { parent.active }
+        parent.debug(.init(triggers: nil, name: "Swap", printer: output)) { parent.active }
 
         // Phase 1: Replace first child with a model that has count=5
         let first = DebugCounter()
@@ -613,7 +613,7 @@ struct DebugTests {
     @Test func debugTargeted_tracksOnlyAccessedProperties() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Observer") }) { output in
             let parent = DebugParent().withAnchor()
-            parent.debug([.triggers(), .changes(), .name("Observer"), .printer(output)]) { parent.tag }
+            parent.debug(.init(name: "Observer", printer: output)) { parent.tag }
             parent.child.count = 99   // not in the closure — should not trigger
             parent.tag = "updated"
         } result: {
@@ -639,7 +639,7 @@ struct DebugTests {
     @Test func debugShallow_noClosureForm_childChangesIgnored() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Parent") }) { output in
             let parent = DebugParent().withAnchor()
-            parent.debug([.changes(), .shallow, .name("Parent"), .printer(output)])
+            parent.debug(.init(triggers: nil, isShallow: true, name: "Parent", printer: output))
             parent.child.count = 99  // child change — shallow snapshot hides internals → no diff
             parent.tag = "updated"   // root property change — should appear in the diff
         } result: {
@@ -666,7 +666,7 @@ struct DebugTests {
         try await assertOutputSnapshot(until: { $0.contains("Parent") }) { output in
             let parent = DebugParent().withAnchor()
             // Closure reads both a root property and a child property.
-            parent.debug([.triggers(), .shallow, .name("Parent"), .printer(output)]) {
+            parent.debug(.init(changes: nil, isShallow: true, name: "Parent", printer: output)) {
                 "\(parent.tag) \(parent.child.count)"
             }
             parent.child.count = 5  // child property — NOT tracked by shallow debug collector
@@ -684,7 +684,7 @@ struct DebugTests {
     @Test func debugTargeted_tracksChildProperties() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Parent") }) { output in
             let parent = DebugParent().withAnchor()
-            parent.debug([.triggers(), .name("Parent"), .printer(output)]) { parent.child.count }
+            parent.debug(.init(changes: nil, name: "Parent", printer: output)) { parent.child.count }
             parent.child.count = 5
         } result: {
             """
@@ -701,7 +701,7 @@ struct DebugTests {
     @Test func debugWholeSubtree_diff_defaultName() async throws {
         try await assertOutputSnapshot(until: { $0.contains("DebugCounter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.changes(), .printer(output)])  // no .name()
+            model.debug(.init(triggers: nil, printer: output))  // no name
             model.count = 1
         } result: {
             """
@@ -722,7 +722,7 @@ struct DebugTests {
     @Test func debugTargeted_changes_value_closureForm() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.changes(.value), .name("Counter"), .printer(output)]) { model.count }
+            model.debug(.init(triggers: nil, changes: .value, name: "Counter", printer: output)) { model.count }
             model.count = 42
         } result: {
             """
@@ -741,7 +741,7 @@ struct DebugTests {
         try await waitUntilRemoved {
             let model = DebugCounter()
                 .withActivation { model in
-                    model.node.forEach(Observed(debug: [.triggers(.name), .changes(), .name("ObsCounter"), .printer(output)]) { model.count }) { value in
+                    model.node.forEach(Observed(debug: .init(name: "ObsCounter", printer: output)) { model.count }) { value in
                         received.withValue { $0.append(value) }
                     }
                 }
@@ -773,7 +773,7 @@ struct DebugTests {
     /// valid `StaticString` initialisers) so the snapshot stays stable even as lines shift.
     @Test func memoizeDebug_implicitKey_fileAndLine() async throws {
         try await assertOutputSnapshot(until: { $0.contains("DebugCounter") }) { output in
-            let debugOpts: DebugOptions = [.triggers(.name), .changes(.value), .printer(output)]
+            let debugOpts = DebugOptions(triggers: .name, changes: .value, printer: output)
             let model = DebugCounter().withAnchor()
             let key = FileAndLine(fileID: "DebugCounter.swift", filePath: "DebugCounter.swift", line: 42, column: 1)
             _ = model.node.memoize(for: key, debug: debugOpts, produce: { model.count * 2 })
@@ -791,7 +791,7 @@ struct DebugTests {
     /// `.name()` overrides the auto-generated `ModelType[memoize: "key"]` label.
     @Test func memoizeDebug_customName() async throws {
         try await assertOutputSnapshot(until: { $0.contains("myComputed") }) { output in
-            let debugOpts: DebugOptions = [.triggers, .name("myComputed"), .printer(output)]
+            let debugOpts = DebugOptions(changes: nil, name: "myComputed", printer: output)
             let model = DebugCounter().withAnchor()
             _ = model.node.memoize(for: "debugDoubled", debug: debugOpts, produce: { model.count * 2 })
             model.count = 3
@@ -810,7 +810,7 @@ struct DebugTests {
     @Test func debugTargeted_triggers_withDiff() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.triggers(.withDiff), .name("Counter"), .printer(output)]) { model.count }
+            model.debug(.init(triggers: .withDiff, changes: nil, name: "Counter", printer: output)) { model.count }
             model.count = 5
         } result: {
             """
@@ -829,7 +829,7 @@ struct DebugTests {
     @Test func debugTargeted_triggers_withDiff_modelValue() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Parent") }) { output in
             let parent = DebugParent().withAnchor()
-            parent.debug([.triggers(.withDiff), .name("Parent"), .printer(output)]) { parent.child }
+            parent.debug(.init(triggers: .withDiff, changes: nil, name: "Parent", printer: output)) { parent.child }
             // Replace the whole child model so onModify(for: \DebugParent.child) fires.
             parent.child = DebugCounter(count: 5)
         } result: {
@@ -848,7 +848,7 @@ struct DebugTests {
     /// `.triggers(.withValue)` reports the old → new value of each changed dependency.
     @Test func memoizeDebug_triggersWithValue() async throws {
         try await assertOutputSnapshot(until: { $0.contains("debugDoubled") }) { output in
-            let debugOpts: DebugOptions = [.triggers(.withValue), .printer(output)]
+            let debugOpts = DebugOptions(triggers: .withValue, changes: nil, printer: output)
             let model = DebugCounter().withAnchor()
             _ = model.node.memoize(for: "debugDoubled", debug: debugOpts, produce: { model.count * 2 })
             model.count = 5
@@ -864,7 +864,7 @@ struct DebugTests {
     /// `.changes(.diff)` shows a `−`/`+` diff of the memoized value across updates.
     @Test func memoizeDebug_changesOnly_diff() async throws {
         try await assertOutputSnapshot(until: { $0.contains("debugDoubled") }) { output in
-            let debugOpts: DebugOptions = [.changes(.diff), .printer(output)]
+            let debugOpts = DebugOptions(triggers: nil, printer: output)
             let model = DebugCounter().withAnchor()
             _ = model.node.memoize(for: "debugDoubled", debug: debugOpts, produce: { model.count * 2 })
             model.count = 5
@@ -885,7 +885,7 @@ struct DebugTests {
     @Test func debugNoOutput_whenValueUnchanged() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Counter") }) { output in
             let model = DebugCounter().withAnchor()
-            model.debug([.changes(), .name("Counter"), .printer(output)])
+            model.debug(.init(triggers: nil, name: "Counter", printer: output))
             model.count = 0  // same value — must not produce a diff
             model.count = 1  // real change — must produce output
         } result: {
@@ -906,7 +906,7 @@ struct DebugTests {
     @Test func debugTargeted_triggers_contextStorage_name() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Model") }) { output in
             let model = DebugContextModel().withAnchor()
-            model.debug([.triggers(.name), .name("Model"), .printer(output)]) {
+            model.debug(.init(changes: nil, name: "Model", printer: output)) {
                 model.node.local.debugContextCount
             }
             model.node.local.debugContextCount = 5
@@ -923,7 +923,7 @@ struct DebugTests {
     @Test func debugTargeted_triggers_contextStorage_withValue() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Model") }) { output in
             let model = DebugContextModel().withAnchor()
-            model.debug([.triggers(.withValue), .name("Model"), .printer(output)]) {
+            model.debug(.init(triggers: .withValue, changes: nil, name: "Model", printer: output)) {
                 model.node.local.debugContextCount
             }
             model.node.local.debugContextCount = 7
@@ -942,7 +942,7 @@ struct DebugTests {
     @Test func debugTargeted_triggers_preference_name() async throws {
         try await assertOutputSnapshot(until: { $0.contains("Model") }) { output in
             let model = DebugContextModel().withAnchor()
-            model.debug([.triggers(.name), .name("Model"), .printer(output)]) {
+            model.debug(.init(changes: nil, name: "Model", printer: output)) {
                 model.node.preference.debugPreferenceScore
             }
             model.node.preference.debugPreferenceScore = 3

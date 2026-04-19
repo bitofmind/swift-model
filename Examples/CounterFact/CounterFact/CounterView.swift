@@ -7,20 +7,20 @@ import Dependencies
     fileprivate(set) var alert: Alert?
     private(set) var count: Int
     let onFact: @Sendable (Int, String) -> Void
-
+    
     @Model struct Alert: Sendable {
         var message: String
         var title: String
     }
-
+    
     func decrementTapped() {
         count -= 1
     }
-
+    
     func incrementTapped() {
         count += 1
     }
-
+    
     func factButtonTapped() {
         node.task {
             onFact(count, try await node.factClient.fetch(count))
@@ -32,22 +32,22 @@ import Dependencies
 
 struct CounterView: View {
     @ObservedModel var model: CounterModel
-
+    
     var body: some View {
         VStack {
             HStack {
                 Button("-") { model.decrementTapped() }
                 Text("\(model.count)")
                 Button("+") { model.incrementTapped() }
-
+                
                 Button("Fact") { model.factButtonTapped() }
             }
         }
         .alert(item: $model.alert) { alert in
-          Alert(
-            title: Text(alert.title),
-            message: Text(alert.message)
-          )
+            Alert(
+                title: Text(alert.title),
+                message: Text(alert.message)
+            )
         }
     }
 }
@@ -55,7 +55,7 @@ struct CounterView: View {
 @Model struct CounterRowModel {
     private(set) var counter: CounterModel
     let onRemove: @Sendable (Self) -> Void
-
+    
     func removeButtonTapped() {
         onRemove(self)
     }
@@ -63,13 +63,13 @@ struct CounterView: View {
 
 struct CounterRowView: View {
     @ObservedModel var model: CounterRowModel
-
+    
     var body: some View {
         HStack {
             CounterView(model: model.counter)
-
+            
             Spacer()
-
+            
             Button("Remove") {
                 model.removeButtonTapped()
             }
@@ -81,11 +81,11 @@ struct CounterRowView: View {
 @Model struct AppModel {
     private(set) var counters: [CounterRowModel] = []
     private(set) var factPrompt: FactPromptModel?
-
+    
     var sum: Int {
         counters.reduce(0) { $0 + $1.counter.count }
     }
-
+    
     func addButtonTapped() {
         let counter = CounterModel(count: 0) { count, fact in
             factPrompt = FactPromptModel(count: count, fact: fact) {
@@ -98,10 +98,10 @@ struct CounterRowView: View {
                 $0.id == id
             }
         }
-            
+        
         counters.append(row)
     }
-
+    
     func factDismissTapped() {
         factPrompt = nil
     }
@@ -109,12 +109,12 @@ struct CounterRowView: View {
 
 struct AppView: View {
     @ObservedModel var model: AppModel
-
+    
     var body: some View {
         ZStack(alignment: .bottom) {
             List {
                 Text("Sum: \(model.sum)")
-
+                
                 ForEach(model.counters) { row in
                     CounterRowView(model: row)
                 }
@@ -126,7 +126,7 @@ struct AppView: View {
                     model.addButtonTapped()
                 }
             }
-
+            
             if let factPrompt = model.factPrompt {
                 FactPromptView(model: factPrompt)
             }
@@ -139,7 +139,7 @@ struct AppView: View {
     private(set) var fact: String
     private(set) var isLoading = false
     let onDismiss: @Sendable () -> Void
-
+    
     func getAnotherFactButtonTapped() {
         node.task {
             isLoading = true
@@ -147,7 +147,7 @@ struct AppView: View {
             fact = try await node.factClient.fetch(count)
         } catch: { _ in }
     }
-
+    
     func dismissTapped() {
         onDismiss()
     }
@@ -155,7 +155,7 @@ struct AppView: View {
 
 struct FactPromptView: View {
     @ObservedModel var model: FactPromptModel
-
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 12) {
@@ -164,19 +164,19 @@ struct FactPromptView: View {
                     Text("Fact")
                 }
                 .font(.title3.bold())
-
+                
                 if model.isLoading {
                     ProgressView()
                 } else {
                     Text(model.fact)
                 }
             }
-
+            
             HStack(spacing: 12) {
                 Button("Get another fact") {
                     model.getAnotherFactButtonTapped()
                 }
-
+                
                 Button("Dismiss") {
                     model.dismissTapped()
                 }

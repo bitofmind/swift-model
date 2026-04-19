@@ -414,6 +414,187 @@ struct ModelMacroTests {
         }
     }
 
+    @Test func testModelPrivateProperty() {
+        assertMacro {
+            """
+            @Model struct MyModel {
+                private var animating = false
+            }
+            """
+        } expansion: {
+            #"""
+            struct MyModel {
+                private var animating = false {
+                    @storageRestrictions(initializes: _animating)
+                    init {
+                        _animating = newValue
+                    }
+                    _read {
+                        yield _$modelContext[model: self, path: \._animating]
+                    }
+                    nonmutating _modify {
+                        yield &_$modelContext[model: self, path: \._animating]
+                    }
+                }
+
+                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                    visitor.visitStatically(at: \._animating, visibility: .private)
+                }
+
+                var _$contextInit: ModelContext<Self> = ModelContext<Self>()
+                {
+                    @storageRestrictions(initializes: _$modelContext)
+                    init(initialValue) {
+                        _$modelContext = initialValue
+                    }
+                    get {
+                        fatalError("_$contextInit is an initializer-only property and must never be read")
+                    }
+                    set {
+                        fatalError("_$contextInit is an initializer-only property and must never be written after initialization")
+                    }
+                }
+
+                public var _context: ModelContextAccess<Self> {
+                    ModelContextAccess(_$modelContext)
+                }
+
+                private var _$modelContext: ModelContext<Self>
+
+                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                    _$modelContext = update._$modelContext
+                }
+            }
+
+            extension MyModel: SwiftModel.Model {
+            }
+
+            extension MyModel: @unchecked Sendable {
+            }
+
+            extension MyModel: Identifiable {
+            }
+
+            extension MyModel: CustomReflectable {
+                public var customMirror: Mirror {
+                    node.mirror(of: self, children: [("animating", animating as Any)])
+                }
+            }
+
+            @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+            extension MyModel: Observation.Observable {
+            }
+
+            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+                public var description: String {
+                    node.description(of: self)
+                }
+                public var debugDescription: String {
+                    description
+                }
+            }
+            """#
+        }
+    }
+
+    @Test func testModelDependencyOnLetProperty() {
+        assertMacro(record: .never) {
+            """
+            @ModelDependency let foo: SomeModel
+            """
+        } diagnostics: {
+            """
+            @ModelDependency let foo: SomeModel
+            ┬───────────────
+            ╰─ 🛑 @ModelDependency requires a 'var' declaration
+            """
+        }
+    }
+
+    @Test func testModelDependencyOnStaticProperty() {
+        assertMacro(record: .never) {
+            """
+            @ModelDependency static var foo: SomeModel
+            """
+        } diagnostics: {
+            """
+            @ModelDependency static var foo: SomeModel
+            ┬───────────────
+            ╰─ 🛑 @ModelDependency cannot be applied to static properties
+            """
+        }
+    }
+
+    @Test func testModelDependencyOnComputedProperty() {
+        assertMacro(record: .never) {
+            """
+            @ModelDependency var computed: Int { 4711 }
+            """
+        } diagnostics: {
+            """
+            @ModelDependency var computed: Int { 4711 }
+            ┬───────────────
+            ╰─ 🛑 @ModelDependency cannot be applied to computed properties
+            """
+        }
+    }
+
+    @Test func testModelDependencyWithInitializer() {
+        assertMacro(record: .never) {
+            """
+            @ModelDependency var foo: SomeModel = SomeModel()
+            """
+        } diagnostics: {
+            """
+            @ModelDependency var foo: SomeModel = SomeModel()
+            ┬───────────────
+            ╰─ ⚠️ Initial value of a @ModelDependency property is ignored; the value is resolved from the dependency container
+            """
+        } expansion: {
+            """
+            var foo: SomeModel {
+                get {
+                    _$modelContext.dependency()
+                }
+            }
+            """
+        }
+    }
+
+    @Test func testModelIgnoredOnComputedProperty() {
+        assertMacro(record: .never) {
+            """
+            @_ModelIgnored var computed: Int { 4711 }
+            """
+        } diagnostics: {
+            """
+            @_ModelIgnored var computed: Int { 4711 }
+            ┬─────────────
+            ╰─ ⚠️ @ModelIgnored has no effect on computed properties
+            """
+        } expansion: {
+            """
+            var computed: Int { 4711 }
+            """
+        }
+    }
+
+    @Test func testModelDependencyWithKeyPath() {
+        assertMacro(record: .never) {
+            """
+            @ModelDependency(\\.clock) var clock: ContinuousClock
+            """
+        } expansion: {
+            """
+            var clock: ContinuousClock {
+                get {
+                    _$modelContext.dependency(for: \\.clock)
+                }
+            }
+            """
+        }
+    }
+
     @Test func testModelDependency() {
         assertMacro(record: .never) {
             """

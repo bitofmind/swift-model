@@ -2,7 +2,6 @@
 
 A multi-counter app where each counter can fetch a fun fact about its current number from a remote API. Demonstrates nested models, async effects, and dependency injection.
 
-This is a refactoring of a [sample app](https://github.com/pointfreeco/episode-code-samples/tree/1dcb756f63536461af71f8ca8b2682dcd12e3cb4/0150-derived-behavior-pt5) that [Point-Free](https://www.pointfree.co) wrote in both plain vanilla SwiftUI and in [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture).
 
 ## What it demonstrates
 

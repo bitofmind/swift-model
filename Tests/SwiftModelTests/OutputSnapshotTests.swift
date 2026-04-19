@@ -179,8 +179,8 @@ struct DiffMessageOutputTests {
         }
     }
 
-    // Exhaustion output when a data field changes: only one message, no ModelID in the diff.
-    @Test("unasserted data field change: single message, no ModelID")
+    // Exhaustion output when a data field changes: only one message, showing from → to.
+    @Test("unasserted data field change: single message, shows change chain")
     func unassertedDataFieldChange() async {
         await assertIssueSnapshot {
             await withModelTesting {
@@ -194,13 +194,13 @@ struct DiffMessageOutputTests {
 
             Modifications not asserted:
 
-                Counter.count == 7
+                Counter.count: 0 → 7
             """
         }
     }
 
     // Exhaustion output when a child model is replaced with a different explicit id.
-    @Test("unasserted child model replacement with explicit id: single message with id")
+    @Test("unasserted child model replacement with explicit id: single message with change chain")
     func unassertedChildModelReplacementExplicitId() async {
         await assertIssueSnapshot {
             await withModelTesting {
@@ -214,7 +214,10 @@ struct DiffMessageOutputTests {
 
             Modifications not asserted:
 
-                CounterHolder.item == Counter(
+                CounterHolder.item: Counter(
+                  id: 1,
+                  count: 0
+                ) → Counter(
                   id: 99,
                   count: 7
                 )
@@ -350,7 +353,7 @@ struct CustomDumpOutputTests {
 @Suite("exhaustion failure messages")
 struct ExhaustionFailureTests {
 
-    @Test("unasserted scalar state change reports State not exhausted with value")
+    @Test("unasserted scalar state change reports State not exhausted with change chain")
     func unassertedStateChange() async {
         await assertIssueSnapshot {
             await withModelTesting(exhaustivity: .state) {
@@ -364,7 +367,7 @@ struct ExhaustionFailureTests {
 
             Modifications not asserted:
 
-                SimpleCounter.count == 42
+                SimpleCounter.count: 0 → 42
             """
         }
     }
@@ -424,8 +427,8 @@ struct ExhaustionFailureTests {
         } matches: {
             """
             Models of type `LongTaskRunner` have 2 active tasks still running
-            Active task 'longTask1' of `LongTaskRunner` still running (registered here)
-            Active task 'longTask2' of `LongTaskRunner` still running (registered here)
+            Active task 'longTask1' of `LongTaskRunner` still running
+            Active task 'longTask2' of `LongTaskRunner` still running
             """
         }
     }
@@ -440,7 +443,7 @@ struct ExhaustionFailureTests {
         } matches: {
             """
             Models of type `SingleTaskRunner` have 1 active task still running
-            Active task 'theTask' of `SingleTaskRunner` still running (registered here)
+            Active task 'theTask' of `SingleTaskRunner` still running
             """
         }
     }

@@ -673,162 +673,104 @@ struct CoalescingTests {
     }
     
     // MARK: - Observed API Tests
-    
+    //
+    // These tests consume the Observed stream directly from the test task via
+    // makeAsyncIterator(), rather than spawning a separate Task { for await ... }.
+    // A separate consumer task depends on the cooperative pool being scheduled,
+    // which stalls under 550+ parallel tests. Direct iteration from the test task
+    // means the stream continuation resumes us immediately when the GCD drain
+    // delivers the value — no polling, no cooperative-pool contention.
+
     /// Test Observed with coalesceUpdates enabled (opt-in)
     @Test func testObservedWithCoalescing() async throws {
         let model = TestModel().withAnchor()
-        let updateCount = LockIsolated(0)
-        let lastValue = LockIsolated(0)
-        
-        // Create Observed stream with coalescing enabled
-        let observed = Observed(coalesceUpdates: true) { model.value }
-        
-        let task = Task {
-            for await value in observed {
-                updateCount.withValue { $0 += 1 }
-                lastValue.setValue(value)
-            }
-        }
-        
-        // Wait for initial value
-        try await waitUntil(updateCount.value == 1)
-        #expect(updateCount.value == 1, "Should have initial update")
-        
+        var iter = Observed(coalesceUpdates: true) { model.value }.makeAsyncIterator()
+
+        // Consume initial value (delivered synchronously on first next())
+        let v0 = await iter.next()
+        #expect(v0 == 0, "Should have initial value 0")
+
         // Make 10 rapid mutations
-        for i in 1...10 {
-            model.value = i
+        for i in 1...10 { model.value = i }
+
+        // Drain until we see the final value 10. The GCD drain may fire mid-loop,
+        // buffering an intermediate value before all mutations complete. With
+        // coalescing, the final value 10 is guaranteed to arrive eventually.
+        // At most 10 iterations (one per mutation) — no infinite loop risk.
+        var lastSeen = 0
+        for _ in 0..<10 {
+            guard let v = await iter.next() else { break }
+            lastSeen = v
+            if lastSeen == 10 { break }
         }
-        
-        // Under heavy parallel-test load (iOS simulator), backgroundCall's queue is congested
-        // with work from other tests. waitUntil's Task.yield() polling can't compete — each
-        // yield takes hundreds of milliseconds while thousands of other tasks fight for turns.
-        // waitForCurrentItems() cooperates directly with backgroundCall's drain loop, appending
-        // a sentinel that wakes us up exactly when the coalesced performUpdate has run.
-        // Use a 10-second deadline to prevent an indefinite hang if the drain stalls.
-        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 10_000_000_000)
-
-        // Wait for coalesced update, then let drain settle
-        try await waitUntil(lastValue.value == 10)
-        await backgroundCall.waitUntilIdle()
-
-        // Should have 1 initial + at least 1 coalesced update.
-        // The drain loop runs concurrently and may produce one extra re-tracking call,
-        // so the count can be 2 or 3 rather than exactly 2.
-        #expect(updateCount.value >= 2, "Should have at least 1 initial + 1 coalesced update")
-        #expect(updateCount.value <= 11, "Coalescing should reduce 10 mutations, got \(updateCount.value)")
-        #expect(lastValue.value == 10, "Should have final value 10")
-        
-        task.cancel()
+        #expect(lastSeen == 10, "Should eventually coalesce to final value 10")
     }
-    
+
     /// Test Observed with coalesceUpdates explicitly disabled
     @Test func testObservedWithoutCoalescing() async throws {
         let model = TestModel().withAnchor()
-        let updateCount = LockIsolated(0)
-        
-        // Create Observed stream WITHOUT coalescing (explicitly disabled)
-        let observed = Observed(coalesceUpdates: false) { model.value }
-        
-        let task = Task {
-            for await _ in observed {
-                updateCount.withValue { $0 += 1 }
-            }
+        var iter = Observed(coalesceUpdates: false) { model.value }.makeAsyncIterator()
+
+        // Consume initial value
+        _ = await iter.next()
+        var updateCount = 1
+
+        // Make 5 mutations, each producing a separate update
+        for i in 1...5 { model.value = i }
+
+        // Consume all 5 updates directly from the test task
+        for _ in 1...5 {
+            _ = await iter.next()
+            updateCount += 1
         }
-        
-        // Wait for initial value
-        try await waitUntil(updateCount.value == 1)
-        #expect(updateCount.value == 1, "Should have initial update")
-        
-        // Make 5 mutations
-        for i in 1...5 {
-            model.value = i
-        }
-        
-        // Wait for all updates
-        try await waitUntil(updateCount.value == 6)
-        
-        // Should have 1 initial + 5 updates = 6 total
-        #expect(updateCount.value == 6, "Should have 1 initial + 5 updates = 6 total")
-        
-        task.cancel()
+
+        #expect(updateCount == 6, "Should have 1 initial + 5 updates = 6 total")
     }
-    
+
     /// Test Observed with both removeDuplicates and coalesceUpdates
     @Test func testObservedWithRemoveDuplicatesAndCoalescing() async throws {
         let model = TestModel().withAnchor()
-        let updateCount = LockIsolated(0)
-        let observedValues = LockIsolated<[Int]>([])
-        
-        // Create Observed stream with both features enabled
-        let observed = Observed(removeDuplicates: true, coalesceUpdates: true) { model.value }
-        
-        let task = Task {
-            for await value in observed {
-                updateCount.withValue { $0 += 1 }
-                observedValues.withValue { $0.append(value) }
-            }
-        }
-        
-        // Wait for initial value
-        try await waitUntil(updateCount.value == 1)
-        #expect(updateCount.value == 1, "Should have initial update")
-        #expect(observedValues.value == [0], "Should have initial value 0")
-        
-        // Make rapid mutations: 1, 2, 2, 2, 3
-        // With coalescing, these will be batched into 1-2 updates
+        var iter = Observed(removeDuplicates: true, coalesceUpdates: true) { model.value }.makeAsyncIterator()
+
+        // Consume initial value
+        let v0 = await iter.next()
+        #expect(v0 == 0, "Should have initial value 0")
+
+        // Rapid mutations: 1, 2, 2, 2, 3 — with coalescing batched to final value 3
         model.value = 1
         model.value = 2
         model.value = 2  // Duplicate
         model.value = 2  // Duplicate
         model.value = 3
-        
-        // Wait for coalesced updates
-        try await waitUntil(observedValues.value.last == 3)
-        
-        // With coalescing: rapid mutations get batched, final value is 3
-        // With removeDuplicates: if we somehow see intermediate values, duplicates are filtered
-        // Most likely outcome: [0, 3] (coalescing batches all mutations into one with final value 3)
-        #expect(observedValues.value.last == 3, "Should have final value 3")
-        #expect(observedValues.value.count >= 2, "Should have at least initial and final")
-        
-        task.cancel()
+
+        // Drain until we see final value 3. GCD drain may fire mid-sequence,
+        // buffering an intermediate value (e.g. 1 or 2) before all mutations complete.
+        var lastSeen = 0
+        for _ in 0..<5 {
+            guard let v = await iter.next() else { break }
+            lastSeen = v
+            if lastSeen == 3 { break }
+        }
+        #expect(lastSeen == 3, "Should eventually coalesce to final value 3")
     }
-    
+
     /// Test Observed without removeDuplicates but with coalescing
     @Test func testObservedWithoutRemoveDuplicates() async throws {
         let model = TestModel().withAnchor()
-        let updateCount = LockIsolated(0)
-        let observedValues = LockIsolated<[Int]>([])
-        
-        // Create Observed stream without removeDuplicates but with coalescing
-        let observed = Observed(removeDuplicates: false, coalesceUpdates: true) { model.value }
-        
-        let task = Task {
-            for await value in observed {
-                updateCount.withValue { $0 += 1 }
-                observedValues.withValue { $0.append(value) }
-            }
-        }
-        
-        // Wait for initial value
-        try await waitUntil(updateCount.value == 1)
-        #expect(updateCount.value == 1)
-        
-        // Set to same value multiple times
+        var iter = Observed(removeDuplicates: false, coalesceUpdates: true) { model.value }.makeAsyncIterator()
+
+        // Consume initial value
+        let v0 = await iter.next()
+        #expect(v0 == 0)
+
+        // Set to same value multiple times — coalescing batches into one update
         model.value = 5
         model.value = 5  // Same value
         model.value = 5  // Same value
-        
-        // Wait for updates
-        try await waitUntil(observedValues.value.last == 5)
-        
-        // Without removeDuplicates, coalescing will batch but won't filter duplicates
-        // However, with coalescing, rapid identical mutations still result in just 1 coalesced update
-        // because the final value is 5, and coalescing batches them into one callback with value 5
-        #expect(updateCount.value >= 1, "Should have at least initial update")
-        #expect(observedValues.value.last == 5, "Should have final value 5")
-        
-        task.cancel()
+
+        // Await the coalesced update
+        let v1 = await iter.next()
+        #expect(v1 == 5, "Should have coalesced value 5")
     }
     
 

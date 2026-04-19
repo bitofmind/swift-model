@@ -1,5 +1,4 @@
 import Foundation
-import AsyncAlgorithms
 
 public extension ModelNode {
     /// Sends an event to this model and its ancestors.

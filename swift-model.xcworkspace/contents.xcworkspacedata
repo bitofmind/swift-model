@@ -11,13 +11,10 @@
          location = "container:Examples/CounterFact/CounterFact.xcodeproj">
       </FileRef>
       <FileRef
-         location = "container:Examples/SharedState/SharedState.xcodeproj">
+         location = "container:Examples/Onboarding/Onboarding.xcodeproj">
       </FileRef>
       <FileRef
-         location = "container:Examples/SignUpFlow/SignUpFlow.xcodeproj">
-      </FileRef>
-      <FileRef
-         location = "container:Examples/SignUpFlowUsingDependency/SignUpFlowUsingDependency.xcodeproj">
+         location = "container:Examples/Search/Search.xcodeproj">
       </FileRef>
       <FileRef
          location = "container:Examples/Standups/Standups.xcodeproj">

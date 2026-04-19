@@ -76,7 +76,7 @@ struct ModelTestingTraitTests {
     }
 
     // State-only exhaustivity via trait: events are not checked at test end.
-    @Test(.modelTesting(exhaustivity: [.state]))
+    @Test(.modelTesting(exhaustivity: .state))
     func stateOnlyExhaustivity() async {
         let model = TraitCounter().withAnchor()
         model.increment()

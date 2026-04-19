@@ -6,11 +6,18 @@ protocol ModelVisitor<State> {
     mutating func visit<T>(path: WritableKeyPath<State, T>)
     mutating func visit<T: Model>(path: WritableKeyPath<State, T>)
     mutating func visit<T: ModelContainer>(path: WritableKeyPath<State, T>)
+    /// Called for plain-value properties that carry a `PropertyVisibility` annotation.
+    /// The default implementation delegates to `visit(path:)`, preserving backward compatibility
+    /// for all existing `ModelVisitor` conformers that have no need for visibility information.
+    mutating func visit<T>(path: WritableKeyPath<State, T>, visibility: PropertyVisibility)
 }
 
 extension ModelVisitor {
     mutating func visit<T>(path: KeyPath<State, T>) { }
     mutating func visit<T>(path: WritableKeyPath<State, T>) { }
+    mutating func visit<T>(path: WritableKeyPath<State, T>, visibility: PropertyVisibility) {
+        visit(path: path)
+    }
 }
 
 protocol ModelTransformer {

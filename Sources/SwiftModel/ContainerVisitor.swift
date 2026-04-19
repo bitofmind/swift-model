@@ -1,5 +1,18 @@
 import IssueReporting
 
+/// Whether a `@Model` property's getter is accessible from outside its declaring type.
+///
+/// The `@Model` macro emits `visitor.visitStatically(at: \._property, visibility: .private)`
+/// for properties declared `private` or `fileprivate`. Visitors can use this information
+/// to apply different behaviour for inaccessible state — for example, `TestAccess` excludes
+/// private properties from exhaustivity tracking because tests cannot observe them.
+public enum PropertyVisibility: Sendable {
+    /// The getter is accessible outside the declaring type (no access restriction, or `private(set)`).
+    case accessible
+    /// The getter is `private` or `fileprivate` — inaccessible outside the declaring type/file.
+    case `private`
+}
+
 /// Drives `ModelContainer.visit(with:)` implementations, routing each child to the framework's
 /// internal model visitor.
 ///
@@ -78,6 +91,39 @@ public extension ContainerVisitor {
     }
 
     mutating func visitStatically<T>(at path: KeyPath<State, T>) {
+        modelVisitor.visit(path: path)
+    }
+
+    // MARK: Visibility-tagged overloads
+    //
+    // These mirror every `visitStatically(at:)` overload but accept a `PropertyVisibility`
+    // parameter. The `@Model` macro emits these for `private`/`fileprivate` properties so
+    // visitors can opt-in to handling them differently (e.g. `TestAccess` excludes private
+    // paths from exhaustivity). Model- and container-typed properties ignore visibility for
+    // now (child hierarchies are always traversed).
+
+    mutating func visitStatically<T>(at path: WritableKeyPath<State, T>, visibility: PropertyVisibility) {
+        #if DEBUG
+        if let collectionType = T.self as? any _DebugCollectionCheck.Type,
+           collectionType._hasModelOrContainerElement() {
+            reportIssue("A collection property of \(State.self) contains Model/ModelContainer elements but the collection is not itself a ModelContainer. Make the element type Identifiable so the collection becomes a ModelContainer.")
+        }
+        #endif
+        modelVisitor.visit(path: path, visibility: visibility)
+    }
+
+    mutating func visitStatically<T: Model>(at path: WritableKeyPath<State, T>, visibility: PropertyVisibility) {
+        // Model-typed properties: ignore visibility and recurse normally.
+        modelVisitor.visit(path: path)
+    }
+
+    mutating func visitStatically<T: ModelContainer>(at path: WritableKeyPath<State, T>, visibility: PropertyVisibility) {
+        // Container-typed properties: ignore visibility and recurse normally.
+        modelVisitor.visit(path: path)
+    }
+
+    mutating func visitStatically<T: ModelContainer & Sequence>(at path: WritableKeyPath<State, T>, visibility: PropertyVisibility) {
+        // Container-sequence properties: ignore visibility and recurse normally.
         modelVisitor.visit(path: path)
     }
 }

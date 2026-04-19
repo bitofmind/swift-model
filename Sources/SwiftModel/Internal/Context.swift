@@ -7,7 +7,20 @@ import Observation
 
 final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
-    private(set) var modifyCallbacks: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] = [:]
+    private var modifyCallbacksStore: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]]?
+    var modifyCallbacks: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] {
+        _read { yield modifyCallbacksStore ?? [:] }
+        _modify {
+            if modifyCallbacksStore != nil {
+                yield &modifyCallbacksStore!
+                if modifyCallbacksStore!.isEmpty { modifyCallbacksStore = nil }
+            } else {
+                var temp: [PartialKeyPath<M>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] = [:]
+                yield &temp
+                if !temp.isEmpty { modifyCallbacksStore = temp }
+            }
+        }
+    }
     let reference: Reference
     var readModel: M
     var modifyModel: M
@@ -191,7 +204,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         guard !threadLocals.isAccessingMetadataStorage else { return }
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_metadata: storage]
         let mc = metadataModelContext()
-        let storageArea: Exhaustivity = storage.propagation == .environment ? .environment : .local
+        let storageArea: _ExhaustivityBits = storage.propagation == .environment ? .environment : .local
         let closureOpt = threadLocals.withValue(storageArea, at: \.modificationArea) {
             threadLocals.withValue(storage.name, at: \.storageName) {
                 mc.willAccess(readModel, at: typedPath)
@@ -225,7 +238,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // Same re-entry guard as willAccessStorage: the TestAccess.didModify closure reads
             // model.context![path] which goes through the context getter → willAccessStorage → loop.
             if !threadLocals.isAccessingMetadataStorage {
-                let storageArea: Exhaustivity = storage.propagation == .environment ? .environment : .local
+                let storageArea: _ExhaustivityBits = storage.propagation == .environment ? .environment : .local
                 threadLocals.withValue(true, at: \.isAccessingMetadataStorage) {
                     threadLocals.withValue(storageArea, at: \.modificationArea) {
                         threadLocals.withValue(storage.name, at: \.storageName) {
@@ -428,14 +441,28 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         _read {
             lock.lock()
             if unprotectedIsDestructed {
+                // Clear any pending transition override. The destructed branch does not
+                // call callback?(), so without this the override would linger on the
+                // pthread thread and could corrupt unrelated reads on the same thread.
+                threadLocals.transitionOverrideValue = nil
                 if let last = reference.model {
                     yield last[keyPath: path]
                 } else {
                     yield readModel[keyPath: path]
                 }
             } else {
+                // isMutating must be checked FIRST: a willSet/didSet re-entrant read
+                // must always see modifyModel. A stale transition override left on the
+                // thread by a prior test must never intercept an in-progress mutation.
                 if isMutating { // Handle will and did set recursion
                     yield modifyModel[keyPath: path]
+                } else if threadLocals.transitionOverrideValue != nil, let override = threadLocals.transitionOverrideValue as? T {
+                    // Transitions mode: yield the historical front-of-queue value placed
+                    // by TestAccess.willAccess. Leave it set for the willAccess callback
+                    // to consume after the yield.
+                    // Guard != nil first to avoid the Swift gotcha: `nil as? T` succeeds
+                    // for Optional<T>, producing .some(nil).
+                    yield override
                 } else {
                     yield readModel[keyPath: path]
                 }
@@ -615,6 +642,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 return try callback()
             }
 
+            // Assign a new unique ID to this transaction so TestAccess can coalesce
+            // multiple writes to the same path into a single valueUpdates entry.
+            threadLocals.currentTransactionID &+= 1
             threadLocals.postTransactions = []
             defer {
                 let posts = threadLocals.postTransactions!

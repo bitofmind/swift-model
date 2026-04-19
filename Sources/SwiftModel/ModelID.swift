@@ -1,5 +1,5 @@
 import Foundation
-import ConcurrencyExtras
+import Dependencies
 
 /// A stable, unique identity value assigned to each live model instance.
 ///
@@ -24,7 +24,7 @@ public struct ModelID: Hashable, Sendable, CustomReflectable, CustomStringConver
         "ModelID(\(UInt64(high) << 32 | UInt64(low)))"
     }
 
-    public var debugDescription: String { description }
+    @inlinable public var debugDescription: String { description }
 }
 
 extension ModelID {

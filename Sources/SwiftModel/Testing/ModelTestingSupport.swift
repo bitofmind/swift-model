@@ -21,7 +21,7 @@ private func monotonicNanoseconds() -> UInt64 {
 /// functions can hold a reference without knowing the concrete root model type.
 package protocol _AnyModelTestScope: AnyObject, Sendable {
     func assert(
-        settleResetting: Exhaustivity?,
+        settleResetting: _ExhaustivityBits?,
         fileID: StaticString,
         filePath: StaticString,
         line: UInt,
@@ -38,10 +38,10 @@ package protocol _AnyModelTestScope: AnyObject, Sendable {
     ) async throws -> T
 
     func install(_ probes: [TestProbe])
-    func checkExhaustion(at fileAndLine: FileAndLine)
+    func checkExhaustion(at fileAndLine: FileAndLine) async
     func cancelAndCleanup()
     func waitForTeardown() async
-    var exhaustivity: Exhaustivity { get set }
+    var exhaustivity: _ExhaustivityBits { get set }
 }
 
 // MARK: - Task-local test scope
@@ -67,10 +67,10 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
     /// Initial exhaustivity from the trait that created this scope.
     /// Passed to `withAnchor()` so the tester is configured correctly,
     /// and used as the starting value for the mutable `exhaustivity` property.
-    package let initialExhaustivity: Exhaustivity
+    package let initialExhaustivity: _ExhaustivityBits
     package let dependencies: @Sendable (inout ModelDependencies) -> Void
 
-    package init(exhaustivity: Exhaustivity, dependencies: @escaping @Sendable (inout ModelDependencies) -> Void) {
+    package init(exhaustivity: _ExhaustivityBits, dependencies: @escaping @Sendable (inout ModelDependencies) -> Void) {
         self.initialExhaustivity = exhaustivity
         self._exhaustivity = exhaustivity
         self.dependencies = dependencies
@@ -97,7 +97,7 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
     package var concrete: (any _AnyModelTestScope)? { lock.withLock { _concrete } }
     package var registrationFileAndLine: FileAndLine? { lock.withLock { _registrationFileAndLine } }
 
-    package func assert(settleResetting: Exhaustivity? = nil, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt, predicates: [AssertBuilder.Predicate]) async {
+    package func assert(settleResetting: _ExhaustivityBits? = nil, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt, predicates: [AssertBuilder.Predicate]) async {
         guard let c = concrete else {
             reportIssue("No model was anchored in this .modelTesting test. Call withAnchor() first.", fileID: fileID, filePath: filePath, line: line, column: column)
             return
@@ -130,8 +130,8 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
         }
     }
 
-    package func checkExhaustion(at fileAndLine: FileAndLine) {
-        concrete?.checkExhaustion(at: fileAndLine)
+    package func checkExhaustion(at fileAndLine: FileAndLine) async {
+        await concrete?.checkExhaustion(at: fileAndLine)
     }
 
     package func cancelAndCleanup() {
@@ -142,14 +142,14 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
         await concrete?.waitForTeardown()
     }
 
-    package var exhaustivity: Exhaustivity {
+    package var exhaustivity: _ExhaustivityBits {
         get { lock.withLock { _concrete?.exhaustivity ?? _exhaustivity } }
         set { lock.withLock {
             _exhaustivity = newValue
             _concrete?.exhaustivity = newValue
         }}
     }
-    private var _exhaustivity: Exhaustivity = .full
+    private var _exhaustivity: _ExhaustivityBits = .full
 }
 
 // MARK: - Concrete type-erased scope
@@ -163,7 +163,7 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
     }
 
     package func assert(
-        settleResetting: Exhaustivity? = nil,
+        settleResetting: _ExhaustivityBits? = nil,
         fileID: StaticString,
         filePath: StaticString,
         line: UInt,
@@ -196,10 +196,46 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         }
     }
 
-    package func checkExhaustion(at fileAndLine: FileAndLine) {
+    package func checkExhaustion(at fileAndLine: FileAndLine) async {
         // Mark tester so its deinit skips cleanup — we are running it here instead.
         tester.cleanupHandledExternally = true
+
+        // Reuse the latency measured during the test body (expect/settle/require all
+        // update the cache). This avoids a fresh GCD hop here — which, under 500+
+        // parallel tests, would flood the global queue and add ~2 s to every test.
+        let cal = tester.access.calibrateWithCachedLatency()
+
+        // Phase 1: Seal — prevent any new task registrations across the entire context
+        // hierarchy. After sealing, Cancellations.register() immediately calls
+        // onCancel() on incoming registrations and does NOT add them to `registered`.
+        //
+        // Sealing first (before any drain or cancel) closes the race where a
+        // cooperatively-cancelled forEach task writes to the model AFTER cancellation,
+        // causing new child-model activations: those activations call register() on the
+        // already-sealed store and are immediately cancelled, so they never appear as
+        // "still running" in the exhaustion check.
+        //
+        // Previously a waitUntilIdle() drain preceded sealing, but that required the
+        // GCD backgroundCall queue to become completely empty — which under 500+
+        // parallel tests can take up to hardCap seconds per test and causes CI timeouts.
+        // The seal makes that drain unnecessary.
+        tester.access.context.sealRecursively()
+
+        // Phase 2: Cancel all currently-registered onActivate tasks.
         tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
+
+        // Phase 3: Wait for naturally-completing tasks to finish and drain any remaining
+        // backgroundCall writes.
+        //
+        // Tasks created during GCD-drain activation run in a non-async context
+        // (no Swift Task active), so AnyCancellable.contexts is empty and these
+        // tasks are NOT keyed with .onActivate. cancelAllRecursively(for: .onActivate)
+        // does not cancel them; they must complete on their own cooperative-pool turns.
+        //
+        // waitUntilSettled uses GCD-backed waitForModification (not Task.yield loops)
+        // so it is safe under 500+ parallel test load.
+        await tester.access.waitUntilSettled(calibration: cal, reportTimeout: false, at: fileAndLine)
+
         tester.access.checkExhaustion(at: fileAndLine, includeUpdates: false, checkTasks: true)
         tester.access.context.onRemoval()
     }
@@ -221,8 +257,8 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         await backgroundCall.waitUntilIdle(deadline: deadline)
     }
 
-    package var exhaustivity: Exhaustivity {
-        get { tester.exhaustivity }
-        set { tester.exhaustivity = newValue }
+    package var exhaustivity: _ExhaustivityBits {
+        get { tester.access.lock { tester.access.exhaustivity } }
+        set { tester.access.lock { tester.access.exhaustivity = newValue } }
     }
 }

@@ -1,7 +1,6 @@
 import Foundation
-import AsyncAlgorithms
 import CustomDump
-import ConcurrencyExtras
+import Dependencies
 import Observation
 
 /// A stream for observing changes to model properties.
@@ -27,7 +26,7 @@ public struct Observed<Element: Sendable>: AsyncSequence, Sendable {
     /// - Parameter debug: Debug options controlling trigger and change output. Only active in `DEBUG` builds.
     /// - Parameter access: closure providing the value to be observed
     @_disfavoredOverload
-    public init(initial: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions = [], _ access: @Sendable @escaping () -> Element) {
+    public init(initial: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions? = nil, _ access: @Sendable @escaping () -> Element) {
         self.init(access: access, initial: initial, isSame: { (l: Element, r: Element) in dynamicEqual(l, r) }, coalesceUpdates: coalesceUpdates, debug: debug)
     }
 
@@ -44,7 +43,7 @@ public extension Observed where Element: Equatable {
     /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to true).
     /// - Parameter debug: Debug options controlling trigger and change output. Only active in `DEBUG` builds.
     /// - Parameter access: closure providing the value to be observed
-    init(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions = [], _ access: @Sendable @escaping () -> Element) {
+    init(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions? = nil, _ access: @Sendable @escaping () -> Element) {
         let isSame: (@Sendable (Element, Element) -> Bool)? = removeDuplicates ? buildObservationIsSame(Element.self) : nil
         stream = Observed(access: access, initial: initial, isSame: isSame, coalesceUpdates: coalesceUpdates, debug: debug).stream
     }
@@ -58,7 +57,7 @@ public extension Observed {
     /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to true).
     /// - Parameter debug: Debug options controlling trigger and change output. Only active in `DEBUG` builds.
     /// - Parameter access: closure providing the value to be observed
-    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions = [], _ access: @Sendable @escaping () -> (repeat each T)) where Element == (repeat each T) {
+    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions? = nil, _ access: @Sendable @escaping () -> (repeat each T)) where Element == (repeat each T) {
         stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, coalesceUpdates: coalesceUpdates, debug: debug).stream
     }
 
@@ -69,7 +68,7 @@ public extension Observed {
     /// - Parameter coalesceUpdates: Whether to batch rapid dependency changes into single updates (defaults to true).
     /// - Parameter debug: Debug options controlling trigger and change output. Only active in `DEBUG` builds.
     /// - Parameter access: closure providing the value to be observed
-    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions = [], _ access: @Sendable @escaping () -> (repeat each T)?) where Element == (repeat each T)? {
+    init<each T: Equatable>(initial: Bool = true, removeDuplicates: Bool = true, coalesceUpdates: Bool = true, debug: DebugOptions? = nil, _ access: @Sendable @escaping () -> (repeat each T)?) where Element == (repeat each T)? {
         stream = Observed(access: access, initial: initial, isSame: removeDuplicates ? isSame : nil, coalesceUpdates: coalesceUpdates, debug: debug).stream
     }
 }
@@ -207,7 +206,7 @@ public extension ModelNode {
     ///
     /// - Note: For `Equatable` types, use the overload that accepts `isSame` to avoid recomputing
     ///         when the value hasn't actually changed.
-    func memoize<T: Sendable>(for key: some Hashable&Sendable, debug: DebugOptions = [], produce: @Sendable @escaping () -> T) -> T {
+    func memoize<T: Sendable>(for key: some Hashable&Sendable, debug: DebugOptions? = nil, produce: @Sendable @escaping () -> T) -> T {
         memoize(for: key, produce: produce, isSame: buildObservationIsSame(T.self), debug: debug)
     }
 
@@ -241,7 +240,7 @@ public extension ModelNode {
     /// model.query = "xyz"  // hasResults: false → false (no notification)
     /// model.items = [...]  // hasResults: false → true (notification sent!)
     /// ```
-    func memoize<T: Sendable&Equatable>(for key: some Hashable&Sendable, debug: DebugOptions = [], produce: @Sendable @escaping () -> T) -> T {
+    func memoize<T: Sendable&Equatable>(for key: some Hashable&Sendable, debug: DebugOptions? = nil, produce: @Sendable @escaping () -> T) -> T {
         memoize(for: key, produce: produce, isSame: buildObservationIsSame(T.self), debug: debug)
     }
 
@@ -252,7 +251,7 @@ public extension ModelNode {
     ///   - produce: A closure that computes the tuple value.
     ///
     /// - Returns: The cached tuple, or the result of `produce()` if not cached or dependencies changed.
-    func memoize<each T: Sendable&Equatable>(for key: some Hashable&Sendable, debug: DebugOptions = [], produce: @Sendable @escaping () -> (repeat each T)) -> (repeat each T) {
+    func memoize<each T: Sendable&Equatable>(for key: some Hashable&Sendable, debug: DebugOptions? = nil, produce: @Sendable @escaping () -> (repeat each T)) -> (repeat each T) {
         memoize(for: key, produce: produce, isSame: isSame, debug: debug)
     }
 
@@ -274,7 +273,7 @@ public extension ModelNode {
     ///
     /// - Parameter produce: A closure that computes the value.
     /// - Returns: The cached value, or the result of `produce()` if not cached or dependencies changed.
-    func memoize<T: Sendable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, debug: DebugOptions = [], produce: @Sendable @escaping () -> T) -> T {
+    func memoize<T: Sendable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, debug: DebugOptions? = nil, produce: @Sendable @escaping () -> T) -> T {
         memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), debug: debug, produce: produce)
     }
 
@@ -284,7 +283,7 @@ public extension ModelNode {
     ///
     /// - Parameter produce: A closure that computes the value.
     /// - Returns: The cached value, or the result of `produce()` if not cached or dependencies changed.
-    func memoize<T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, debug: DebugOptions = [], produce: @Sendable @escaping () -> T) -> T {
+    func memoize<T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, debug: DebugOptions? = nil, produce: @Sendable @escaping () -> T) -> T {
         memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), debug: debug, produce: produce)
     }
 
@@ -292,7 +291,7 @@ public extension ModelNode {
     ///
     /// - Parameter produce: A closure that computes the tuple value.
     /// - Returns: The cached tuple, or the result of `produce()` if not cached or dependencies changed.
-    func memoize<each T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, debug: DebugOptions = [], produce: @Sendable @escaping () -> (repeat each T)) -> (repeat each T) {
+    func memoize<each T: Sendable&Equatable>(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, debug: DebugOptions? = nil, produce: @Sendable @escaping () -> (repeat each T)) -> (repeat each T) {
         memoize(for: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), debug: debug, produce: produce)
     }
 
@@ -332,8 +331,8 @@ public extension ModelNode {
     }
 }
 
-private extension Observed {
-    init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false, debug: DebugOptions = []) {
+extension Observed {
+    init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false, debug: DebugOptions? = nil) {
         stream = AsyncStream { cont in
             // Detect whether accessed models use ObservationRegistrar.
             // If any accessed model was created with .disableObservationRegistrar, the
@@ -349,7 +348,7 @@ private extension Observed {
             }
 
 #if DEBUG
-            if !debug.options.isEmpty {
+            if let debug {
                 let cancel = debugObserve(
                     options: debug,
                     label: debug.name ?? "Observed",
@@ -417,7 +416,7 @@ private extension ModelNode {
     ///
     /// The dirty tracking optimization provides immediate fresh values when cache is dirty,
     /// while still ensuring all external observers are notified via the onUpdate callback.
-    func memoize<T: Sendable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T, isSame: (@Sendable (T, T) -> Bool)?, debug: DebugOptions = []) -> T {
+    func memoize<T: Sendable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T, isSame: (@Sendable (T, T) -> Bool)?, debug: DebugOptions? = nil) -> T {
         guard let context = enforcedContext() else { return produce() }
 
         let key = AnyHashableSendable(key)
@@ -428,7 +427,7 @@ private extension ModelNode {
         // We do this before the external willAccess so that the debug collector can intercept
         // property reads inside produce() during the first update() call.
         // When debug == [] (the default), memoizeDebugSetup returns nils for zero overhead.
-        let debugLabel = debug.name ?? "\(String(describing: M.self))[memoize: \"\(key.base)\"]"
+        let debugLabel = debug?.name ?? "\(String(describing: M.self))[memoize: \"\(key.base)\"]"
         let (debugPrint, debugPreviousValue, debugCollectorBox) = memoizeDebugSetup(
             options: debug,
             label: debugLabel

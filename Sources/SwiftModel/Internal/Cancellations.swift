@@ -4,6 +4,7 @@ final class Cancellations: @unchecked Sendable {
     fileprivate let lock = NSLock()
     fileprivate var registered: [Int: InternalCancellable] = [:]
     fileprivate var keyed: [CancellableKey: [Int]] = [:]
+    private var _sealed = false
 
     deinit {
         cancelAll()
@@ -24,13 +25,21 @@ final class Cancellations: @unchecked Sendable {
         }
     }
 
-    func register(_ c: InternalCancellable) {
-        lock {
-            registered[c.id] = c
+    func seal() {
+        lock { _sealed = true }
+    }
 
+    func register(_ c: InternalCancellable) {
+        let shouldImmediatelyCancel: Bool = lock {
+            if _sealed { return true }
+            registered[c.id] = c
             for key in AnyCancellable.contexts {
                 keyed[key, default: []].append(c.id)
             }
+            return false
+        }
+        if shouldImmediatelyCancel {
+            c.onCancel()
         }
     }
 

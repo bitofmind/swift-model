@@ -19,7 +19,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// When non-nil, `TestAccess.didModify` and `willAccess` tag their `ValueUpdate`/`Access`
     /// entries with this area instead of the default `.state`. Set by `Context<M>` around
     /// the typed context storage path calls so context changes are reported under `.local`.
-    var modificationArea: Exhaustivity? = nil
+    var modificationArea: _ExhaustivityBits? = nil
     /// Guards against infinite recursion in `willAccessStorage`/`didModifyStorage`.
     /// Reading `readModel[keyPath: \M[_metadata: storage]]` inside the TestAccess closure
     /// re-enters `willAccessStorage` through the context getter. This flag breaks that cycle.
@@ -56,6 +56,18 @@ final class ThreadLocals: @unchecked Sendable {
     /// `withObservationTracking` tracking — even when `isDirty=false` due to a concurrent
     /// `onUpdate` clearing it before this `performUpdate`'s `observe()` runs.
     var isInsideAsyncPerformUpdate = false
+    /// When non-nil, the Context subscript `_read` returns this value instead of the live
+    /// model value. Set by `TestAccess.willAccess` in transitions mode so that predicate
+    /// evaluation sees the front-of-queue historical value (or the expectedState baseline)
+    /// rather than the current live state.
+    /// Consumed by the `willAccess` returned closure after the Context subscript yields.
+    var transitionOverrideValue: Any? = nil
+    /// Monotonically incrementing counter set when an outer `node.transaction { }` begins.
+    /// Each outer transaction gets a new unique ID; nested transactions see the outer ID.
+    /// `TestAccess.didModify` captures this at write time so multiple writes to the same
+    /// path within one transaction can be coalesced into a single `valueUpdates` entry.
+    /// Zero means the write occurred outside any transaction.
+    var currentTransactionID: UInt = 0
 
     fileprivate init() {}
 

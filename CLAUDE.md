@@ -128,6 +128,15 @@ struct MyTests {
 
 `print()` output is not in `results`, but `RunSomeTests` returns a `fullConsoleLogsPath` — read that file to see all stdout. To surface a value inline without an extra file read, call `reportIssue("message")`: the message appears directly in `errorMessages` (test will be marked Failed). File-based logging to `/tmp` offers no advantage over `print()` + `fullConsoleLogsPath` and should be avoided.
 
+### Macro tests and destination
+
+`SwiftModelMacroTests` depends on `SwiftModelMacros`, which is a `.macro` target (a compiler plugin that only builds for the macOS host). When Xcode's active test destination is an iOS/tvOS/watchOS simulator, Xcode cannot build the test target for that platform and marks all 17 macro tests as **disabled** — this is expected. The tests run normally when:
+
+- The destination is **macOS**, or
+- Tests are run via the **`swift test` CLI** (always targets the host).
+
+Do not treat disabled macro tests as a failure when the destination is a simulator.
+
 ## CI
 
 GitHub Actions (`.github/workflows/ci.yml`):

@@ -20,25 +20,22 @@ let package = Package(
         // resolving a newer version via swift-clocks's transitive dependency.
         .package(url: "https://github.com/pointfreeco/combine-schedulers", "1.0.0"..<"1.1.0"),
         .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.3.3"),
-        .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "600.0.0"),
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.6.0"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.6"),
         .package(url: "https://github.com/apple/swift-collections", from: "1.1.0"),
         .package(url: "https://github.com/pointfreeco/swift-identified-collections", from: "1.1.0"),
-        .package(url: "https://github.com/pointfreeco/swift-concurrency-extras", from: "1.3.0"),
         .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.9.0"),
         .package(url: "https://github.com/pointfreeco/swift-clocks", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),
     ],
     targets: [
         .target(name: "SwiftModel", dependencies: [
             "SwiftModelMacros",
             .product(name: "Dependencies", package: "swift-dependencies"),
-            .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
             .product(name: "CustomDump", package: "swift-custom-dump"),
             .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
             .product(name: "OrderedCollections", package: "swift-collections"),
-            .product(name: "ConcurrencyExtras", package: "swift-concurrency-extras"),
             .product(name: "IssueReporting", package: "xctest-dynamic-overlay"),
         ]),
         .testTarget(
@@ -49,6 +46,7 @@ let package = Package(
                 .product(name: "InlineSnapshotTesting", package: "swift-snapshot-testing", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "Clocks", package: "swift-clocks"),
                 .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
+                .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
             ]
         ),
         .macro(

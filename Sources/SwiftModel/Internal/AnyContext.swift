@@ -37,10 +37,39 @@ class AnyContext: @unchecked Sendable {
 
     private var modeLifeTime: ModelLifetime = .anchored
 
-    private var eventContinuations: [Int: AsyncStream<EventInfo>.Continuation] = [:]
-    private let _mainObservationRegistrar: Any?
-    private let _backgroundObservationRegistrar: Any?
-    let cancellations = Cancellations()
+    private var eventContinuationsStore: [Int: AsyncStream<EventInfo>.Continuation]?
+    private var eventContinuations: [Int: AsyncStream<EventInfo>.Continuation] {
+        _read { yield eventContinuationsStore ?? [:] }
+        _modify {
+            if eventContinuationsStore != nil {
+                yield &eventContinuationsStore!
+                if eventContinuationsStore!.isEmpty { eventContinuationsStore = nil }
+            } else {
+                var temp: [Int: AsyncStream<EventInfo>.Continuation] = [:]
+                yield &temp
+                if !temp.isEmpty { eventContinuationsStore = temp }
+            }
+        }
+    }
+    let useObservationRegistrar: Bool
+    /// Lazily-allocated registrars. Written once (nil → non-nil) under `lock`.
+    /// `nonisolated(unsafe)`: `AnyContext` is `@unchecked Sendable` with manual locking.
+    /// The unsynchronised outer read in the double-checked locking pattern is benign:
+    /// a false nil causes one extra lock + re-check; a false non-nil cannot occur.
+    nonisolated(unsafe) var mainObservationRegistrarStore: Any?
+    nonisolated(unsafe) var backgroundObservationRegistrarStore: Any?
+    /// Lazily-allocated task registry. Written once (nil → non-nil) under `lock`.
+    /// `nonisolated(unsafe)`: manual locking discipline (same as other lazy stores).
+    nonisolated(unsafe) var cancellationsStore: Cancellations?
+    /// Returns the Cancellations registry, creating it lazily on first use.
+    /// All task-registration paths go through this; read-only paths use `cancellationsStore`.
+    var cancellations: Cancellations {
+        if let c = cancellationsStore { return c }
+        return lock {
+            if cancellationsStore == nil { cancellationsStore = Cancellations() }
+            return cancellationsStore!
+        }
+    }
 
     let mainCallQueue: MainCallQueue
 
@@ -49,7 +78,20 @@ class AnyContext: @unchecked Sendable {
     weak var taskLifecycleDelegate: (any TaskLifecycleDelegate)?
 
     private(set) var anyModificationActiveCount = 0
-    private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] = [:]
+    private var anyModificationCallbacksStore: [Int: (Bool) -> (() -> Void)?]?
+    private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] {
+        _read { yield anyModificationCallbacksStore ?? [:] }
+        _modify {
+            if anyModificationCallbacksStore != nil {
+                yield &anyModificationCallbacksStore!
+                if anyModificationCallbacksStore!.isEmpty { anyModificationCallbacksStore = nil }
+            } else {
+                var temp: [Int: (Bool) -> (() -> Void)?] = [:]
+                yield &temp
+                if !temp.isEmpty { anyModificationCallbacksStore = temp }
+            }
+        }
+    }
     private var _modificationCount = 0
 
     struct MemoizeCacheEntry: @unchecked Sendable {
@@ -74,7 +116,20 @@ class AnyContext: @unchecked Sendable {
         }
     }
     
-    var _memoizeCache: [AnyHashableSendable: MemoizeCacheEntry] = [:]
+    var memoizeCacheStore: [AnyHashableSendable: MemoizeCacheEntry]?
+    var _memoizeCache: [AnyHashableSendable: MemoizeCacheEntry] {
+        _read { yield memoizeCacheStore ?? [:] }
+        _modify {
+            if memoizeCacheStore != nil {
+                yield &memoizeCacheStore!
+                if memoizeCacheStore!.isEmpty { memoizeCacheStore = nil }
+            } else {
+                var temp: [AnyHashableSendable: MemoizeCacheEntry] = [:]
+                yield &temp
+                if !temp.isEmpty { memoizeCacheStore = temp }
+            }
+        }
+    }
 
     // Typed per-context storage for internal features (undo, environment, etc.).
     // Keyed by AnyHashableSendable (source location or explicit key from ContextStorage).
@@ -84,7 +139,20 @@ class AnyContext: @unchecked Sendable {
         // Type-erased onRemoval hook, set when the storage declares one.
         var cleanup: (() -> Void)?
     }
-    var contextStorage: [AnyHashableSendable: ContextStorageEntry] = [:]
+    var contextStorageStore: [AnyHashableSendable: ContextStorageEntry]?
+    var contextStorage: [AnyHashableSendable: ContextStorageEntry] {
+        _read { yield contextStorageStore ?? [:] }
+        _modify {
+            if contextStorageStore != nil {
+                yield &contextStorageStore!
+                if contextStorageStore!.isEmpty { contextStorageStore = nil }
+            } else {
+                var temp: [AnyHashableSendable: ContextStorageEntry] = [:]
+                yield &temp
+                if !temp.isEmpty { contextStorageStore = temp }
+            }
+        }
+    }
 
     /// The DependencyValues captured at this context's initialization time, after all dependency
     /// overrides from withDependencies closures have been applied.
@@ -114,7 +182,20 @@ class AnyContext: @unchecked Sendable {
         var value: any Sendable
         var cleanup: (() -> Void)?
     }
-    var preferenceStorage: [AnyHashableSendable: PreferenceStorageEntry] = [:]
+    var preferenceStorageStore: [AnyHashableSendable: PreferenceStorageEntry]?
+    var preferenceStorage: [AnyHashableSendable: PreferenceStorageEntry] {
+        _read { yield preferenceStorageStore ?? [:] }
+        _modify {
+            if preferenceStorageStore != nil {
+                yield &preferenceStorageStore!
+                if preferenceStorageStore!.isEmpty { preferenceStorageStore = nil }
+            } else {
+                var temp: [AnyHashableSendable: PreferenceStorageEntry] = [:]
+                yield &temp
+                if !temp.isEmpty { preferenceStorageStore = temp }
+            }
+        }
+    }
 
     func didModify() {
         _modificationCount &+= 1
@@ -341,16 +422,8 @@ class AnyContext: @unchecked Sendable {
         self.isObservable = isObservable
         self.mainCallQueue = parent?.mainCallQueue ?? MainCallQueue()
         
-        // Use ObservationRegistrar unless disabled
-        let useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
-        
-        if useObservationRegistrar, #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            _mainObservationRegistrar = ObservationRegistrar()
-            _backgroundObservationRegistrar = ObservationRegistrar()
-        } else {
-            _mainObservationRegistrar = nil
-            _backgroundObservationRegistrar = nil
-        }
+        // Registrars are created lazily on first access(); isObservable encodes availability.
+        self.useObservationRegistrar = isObservable && !self.options.contains(.disableObservationRegistrar)
 
         if let parent {
             // During init, no observers exist yet, so callbacks can be discarded.
@@ -363,19 +436,22 @@ class AnyContext: @unchecked Sendable {
     }
 
     var activeTasks: [(modelName: String, tasks: [(name: String, fileAndLine: FileAndLine)])] {
-        allChildren.reduce(into: cancellations.activeTasks) {
+        allChildren.reduce(into: cancellationsStore?.activeTasks ?? []) {
             $0.append(contentsOf: $1.activeTasks)
         }
     }
 
+    /// Returns the main registrar if it has already been created; nil otherwise.
+    /// Used from `willSet`/`didSet` — skip notification if no observer has ever called `access()`.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var mainObservationRegistrar: ObservationRegistrar? {
-        _mainObservationRegistrar as? ObservationRegistrar
+        mainObservationRegistrarStore as? ObservationRegistrar
     }
 
+    /// Returns the background registrar if it has already been created; nil otherwise.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var backgroundObservationRegistrar: ObservationRegistrar? {
-        _backgroundObservationRegistrar as? ObservationRegistrar
+        backgroundObservationRegistrarStore as? ObservationRegistrar
     }
 
     // Backward compatibility: return main registrar
@@ -384,8 +460,37 @@ class AnyContext: @unchecked Sendable {
         mainObservationRegistrar
     }
 
+    /// True when observation registrars are enabled for this context (regardless of
+    /// whether they have been lazily created yet).
     var hasObservationRegistrar: Bool {
-        _mainObservationRegistrar != nil
+        useObservationRegistrar
+    }
+
+    /// Returns the main registrar, creating both registrars lazily if this is the first
+    /// `access()` call. Must only be called from the observation-tracking path.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    var mainObservationRegistrarMakingIfNeeded: ObservationRegistrar {
+        if let r = mainObservationRegistrarStore as? ObservationRegistrar { return r }
+        return lock {
+            if mainObservationRegistrarStore == nil {
+                mainObservationRegistrarStore = ObservationRegistrar()
+                backgroundObservationRegistrarStore = ObservationRegistrar()
+            }
+            return mainObservationRegistrarStore as! ObservationRegistrar
+        }
+    }
+
+    /// Returns the background registrar, creating both registrars lazily if needed.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    var backgroundObservationRegistrarMakingIfNeeded: ObservationRegistrar {
+        if let r = backgroundObservationRegistrarStore as? ObservationRegistrar { return r }
+        return lock {
+            if mainObservationRegistrarStore == nil {
+                mainObservationRegistrarStore = ObservationRegistrar()
+                backgroundObservationRegistrarStore = ObservationRegistrar()
+            }
+            return backgroundObservationRegistrarStore as! ObservationRegistrar
+        }
     }
 
     var lifetime: ModelLifetime {
@@ -485,7 +590,7 @@ class AnyContext: @unchecked Sendable {
         preferenceStorage.removeAll()
 
         callbacks.append {
-            self.cancellations.cancelAll()
+            self.cancellationsStore?.cancelAll()
 
             for cont in events {
                 cont.finish()
@@ -603,8 +708,20 @@ class AnyContext: @unchecked Sendable {
     }
 
     func cancelAllRecursively(for id: some Hashable&Sendable) {
-        cancellations.cancelAll(for: id)
+        cancellationsStore?.cancelAll(for: id)
         forEachChild { $0.cancelAllRecursively(for: id) }
+    }
+
+    func sealRecursively() {
+        // Force-create the store if nil, then seal it atomically.
+        // If we only do `cancellationsStore?.seal()`, a nil store is a no-op and any
+        // subsequent lazy creation produces an unsealed store — allowing tasks to register
+        // after cancelAllRecursively() has already run.
+        lock {
+            if cancellationsStore == nil { cancellationsStore = Cancellations() }
+            cancellationsStore!.seal()
+        }
+        forEachChild { $0.sealRecursively() }
     }
 
     var typeDescription: String { fatalError() }

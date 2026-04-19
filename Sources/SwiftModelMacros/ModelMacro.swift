@@ -114,7 +114,12 @@ extension ModelMacro: MemberMacro {
             !$0.isComputed && $0.isInstance && $0.isValid
         }.compactMap { member -> String? in
             guard let identifier = member.identifier else { return nil }
-            return "visitor.visitStatically(at: \\.\(member.isImmutable ? "" :  "_")\(identifier))"
+            if member.isImmutable {
+                return "visitor.visitStatically(at: \\.\(identifier))"
+            } else {
+                let visibilityArg = member.isPrivateGetter ? ", visibility: .private" : ""
+                return "visitor.visitStatically(at: \\._\(identifier)\(visibilityArg))"
+            }
         }
 
         result.append(

@@ -128,7 +128,7 @@ public func settle(
         return
     }
     await scope.assert(
-        settleResetting: resetting,
+        settleResetting: resetting.apply(to: .full),
         fileID: fileID,
         filePath: filePath,
         line: line,
@@ -158,7 +158,7 @@ public func settle(
         return
     }
     await scope.assert(
-        settleResetting: resetting,
+        settleResetting: resetting.apply(to: .full),
         fileID: fileID,
         filePath: filePath,
         line: line,
@@ -341,57 +341,24 @@ public func require<T>(
     try await require(expression(), fileID: fileID, filePath: filePath, line: line, column: column)
 }
 
-/// Runs `body` with exhaustivity temporarily set to `exhaustivity` for the active
-/// `.modelTesting` test scope.
+/// Runs `body` with exhaustivity set by the given modifier for the active `.modelTesting` scope.
 ///
-/// Any calls to `expect { }` inside `body` will use the new exhaustivity. When `body`
+/// Any calls to `expect { }` inside `body` will use the modified exhaustivity. When `body`
 /// returns the previous exhaustivity is restored.
 ///
+/// Use absolute presets to override the current exhaustivity entirely:
 /// ```swift
-/// @Test(.modelTesting) func example() async {
-///     let model = MyModel().withAnchor()
-///     model.doSomething()
-///     await expect { model.state == .done }
-///
-///     // From here on, ignore events:
-///     await withExhaustivity(.off) {
-///         model.triggerSideEffects()
-///     }
+/// await withExhaustivity(.off) {
+///     model.triggerSideEffects()  // nothing checked inside
 /// }
 /// ```
 ///
-/// > Important: Must be called inside a `@Test(.modelTesting)` function.
-public func withExhaustivity(
-    _ exhaustivity: Exhaustivity,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column,
-    _ body: @Sendable () async throws -> Void
-) async rethrows {
-    guard let scope = _ModelTestingLocals.scope else {
-        reportIssue("withExhaustivity() must be called inside a @Test(.modelTesting) test function", fileID: fileID, filePath: filePath, line: line, column: column)
-        try await body()
-        return
-    }
-    let previous = scope.exhaustivity
-    scope.exhaustivity = exhaustivity
-    defer { scope.exhaustivity = previous }
-    try await body()
-}
-
-/// Runs `body` with exhaustivity modified relative to the current scope's exhaustivity.
-///
-/// The `modifier` is applied to the *current* exhaustivity — it adds or removes categories
-/// without fully resetting the inherited value. When `body` returns the previous exhaustivity
-/// is restored.
-///
+/// Use relative modifiers to adjust the current exhaustivity without replacing it:
 /// ```swift
 /// @Suite(.modelTesting(.removing(.events)))
 /// struct MyTests {
 ///     @Test func example() async {
-///         let model = MyModel().withAnchor()
-///         // Inside this block, events are added back temporarily:
+///         // Add events back temporarily for this block:
 ///         await withExhaustivity(.adding(.events)) {
 ///             model.doSomething()
 ///             await expect { model.didSend(.tapped) }
@@ -402,7 +369,7 @@ public func withExhaustivity(
 ///
 /// > Important: Must be called inside a `@Test(.modelTesting)` function.
 public func withExhaustivity(
-    _ modifier: ExhaustivityModifier,
+    _ modifier: Exhaustivity,
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
     line: UInt = #line,
@@ -447,15 +414,12 @@ public func withExhaustivity(
 /// Exhaustion is checked when the closure returns, then all background teardown work
 /// completes before `withModelTesting` itself returns.
 ///
-/// When called inside `@Suite(.modelTesting)` or another `withModelTesting`, the exhaustivity
-/// defaults to `.full` regardless of the enclosing scope. Use the
-/// `withModelTesting(_ modifier:)` overload to compose with the outer exhaustivity.
-///
 /// Dependency overrides passed here are applied before any overrides in `withAnchor()`,
 /// so `withAnchor`-level overrides win (same precedence as `.modelTesting(dependencies:)`).
 ///
 /// - Parameters:
-///   - exhaustivity: Which side-effect categories to check. Defaults to `.full`.
+///   - exhaustivity: Exhaustivity modifier to apply. Defaults to `.full`. Pass an absolute
+///     preset (`.off`, `.full`, `.state`) or a relative modifier (`.removing(.events)`).
 ///   - dependencies: A closure to override dependencies for all models anchored in this scope.
 ///   - body: The test body. Call `withAnchor()` inside to connect a model to the scope.
 public func withModelTesting(
@@ -468,14 +432,14 @@ public func withModelTesting(
     _ body: @Sendable () async throws -> Void
 ) async rethrows {
     try await _withModelTestingImpl(
-        modifier: ExhaustivityModifier { _ in exhaustivity },
+        modifier: exhaustivity,
         dependencies: dependencies,
         fileID: fileID, filePath: filePath, line: line, column: column,
         body
     )
 }
 
-/// Creates an inline model-testing scope with a relative exhaustivity modifier.
+/// Creates an inline model-testing scope with an exhaustivity modifier.
 ///
 /// The modifier is applied on top of the enclosing scope's exhaustivity, so nested
 /// calls compose rather than reset:
@@ -494,11 +458,11 @@ public func withModelTesting(
 /// ```
 ///
 /// - Parameters:
-///   - modifier: Applied relative to the enclosing scope's exhaustivity.
+///   − modifier: Applied on top of the enclosing scope's exhaustivity.
 ///   - dependencies: A closure to override dependencies for all models anchored in this scope.
 ///   - body: The test body. Call `withAnchor()` inside to connect a model.
 public func withModelTesting(
-    _ modifier: ExhaustivityModifier,
+    _ modifier: Exhaustivity,
     dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in },
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
@@ -515,7 +479,7 @@ public func withModelTesting(
 }
 
 private func _withModelTestingImpl(
-    modifier: ExhaustivityModifier,
+    modifier: Exhaustivity,
     dependencies: @escaping @Sendable (inout ModelDependencies) -> Void,
     fileID: StaticString,
     filePath: StaticString,
@@ -549,7 +513,7 @@ private func _withModelTestingImpl(
         // post-scope assertions see the final state. Both run inside the task-local
         // scope so any backgroundCall work from onRemoval() uses the per-test queue.
         if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
-            concrete.checkExhaustion(at: fl)
+            await concrete.checkExhaustion(at: fl)
             await concrete.waitForTeardown()
         }
     }
@@ -568,10 +532,10 @@ private func _withModelTestingImpl(
 /// factory on `Trait` instead.
 public struct ModelTestingTrait: Sendable {
     /// The exhaustivity modifier applied relative to the enclosing scope's exhaustivity.
-    let modifier: ExhaustivityModifier
+    let modifier: Exhaustivity
     let dependencies: @Sendable (inout ModelDependencies) -> Void
 
-    init(modifier: ExhaustivityModifier, dependencies: @escaping @Sendable (inout ModelDependencies) -> Void) {
+    init(modifier: Exhaustivity, dependencies: @escaping @Sendable (inout ModelDependencies) -> Void) {
         self.modifier = modifier
         self.dependencies = dependencies
     }
@@ -606,7 +570,7 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
             // After the test body completes, run exhaustion check (still inside the
             // test-local queue scope so any teardown backgroundCall work uses testQueue).
             if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
-                concrete.checkExhaustion(at: fl)
+                await concrete.checkExhaustion(at: fl)
             }
         }
     }
@@ -638,7 +602,7 @@ extension Trait where Self == ModelTestingTrait {
     /// }
     /// ```
     ///
-    /// Pass an `ExhaustivityModifier` (from `Exhaustivity.adding(_:)` / `.removing(_:)`) as the
+    /// Pass an `Exhaustivity` (from `Exhaustivity.adding(_:)` / `.removing(_:)`) as the
     /// first argument to compose with the enclosing scope's exhaustivity:
     ///
     /// ```swift
@@ -650,10 +614,10 @@ extension Trait where Self == ModelTestingTrait {
     /// ```
     ///
     /// - Parameters:
-    ///   - modifier: An `ExhaustivityModifier` to apply relative to the enclosing scope.
+    ///   - modifier: An `Exhaustivity` to apply relative to the enclosing scope.
     ///   - dependencies: A closure to override dependencies for the model.
     public static func modelTesting(
-        _ modifier: ExhaustivityModifier,
+        _ modifier: Exhaustivity,
         dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in }
     ) -> Self {
         Self(modifier: modifier, dependencies: dependencies)
@@ -686,19 +650,19 @@ extension Trait where Self == ModelTestingTrait {
     /// ```
     ///
     /// - Parameters:
-    ///   - exhaustivity: Which side-effect categories to check (absolute). Defaults to `.full`.
+    ///   - exhaustivity: Exhaustivity modifier to apply. Defaults to `.full`. Pass an absolute
+    ///     preset (`.off`, `.full`, `.state`) or a relative modifier (`.removing(.events)`).
     ///   - dependencies: A closure to override dependencies for the model.
     public static func modelTesting(
         exhaustivity: Exhaustivity = .full,
         dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in }
     ) -> Self {
-        // Wrap the absolute value in a modifier that ignores the inherited exhaustivity.
-        Self(modifier: ExhaustivityModifier { _ in exhaustivity }, dependencies: dependencies)
+        Self(modifier: exhaustivity, dependencies: dependencies)
     }
 
     /// Activates model testing infrastructure with default settings.
     public static var modelTesting: Self {
-        Self(modifier: ExhaustivityModifier { _ in .full }, dependencies: { _ in })
+        Self(modifier: Exhaustivity { _ in .full }, dependencies: { _ in })
     }
 }
 

@@ -47,7 +47,9 @@ import SwiftModel
     }
 }
 
-@Suite(.modelTesting(exhaustivity: .off))
+// node.touch() records a same-value write (e.g. count: 5 → 5) which state exhaustivity
+// tracks but cannot be consumed via value assertions — the final value equals the baseline.
+@Suite(.modelTesting(.removing(.state)))
 struct TouchTests {
 
     /// Verifies that writing the same Equatable value is silent by default (AccessCollector path).
@@ -57,9 +59,7 @@ struct TouchTests {
         // Same-value write — no notification expected
         model.count = 5
 
-        // Give any potential notification time to arrive
-        try? await Task.sleep(nanoseconds: 10_000_000)
-
+        // await expect yields to the scheduler, giving any spurious notification a chance to arrive
         await expect {
             model.notifications == []
             model.count == 5

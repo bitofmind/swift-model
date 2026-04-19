@@ -37,43 +37,61 @@
       }
     },
     {
+      "skippedTags" : {
+        "tags" : [
+          ".benchmark"
+        ]
+      },
       "target" : {
-        "containerPath" : "container:Examples/CounterFact/CounterFact.xcodeproj",
+        "containerPath" : "container:Examples\/CounterFact\/CounterFact.xcodeproj",
         "identifier" : "F61EBCD02786139400F098A8",
         "name" : "CounterFactTests"
       }
     },
     {
+      "skippedTags" : {
+        "tags" : [
+          ".benchmark"
+        ]
+      },
       "target" : {
-        "containerPath" : "container:Examples/SharedState/SharedState.xcodeproj",
-        "identifier" : "F61EBCD02786139400F098A8",
-        "name" : "SharedStateTests"
+        "containerPath" : "container:Examples\/Onboarding\/Onboarding.xcodeproj",
+        "identifier" : "047F55F13853AF5C5DC6AFF7",
+        "name" : "OnboardingTests"
       }
     },
     {
+      "skippedTags" : {
+        "tags" : [
+          ".benchmark"
+        ]
+      },
       "target" : {
-        "containerPath" : "container:Examples/SignUpFlow/SignUpFlow.xcodeproj",
-        "identifier" : "F61EBCD02786139400F098A8",
-        "name" : "SignUpFlowTests"
+        "containerPath" : "container:Examples\/Search\/Search.xcodeproj",
+        "identifier" : "A06EEE4D42E1D0968EDCC168",
+        "name" : "SearchTests"
       }
     },
     {
+      "skippedTags" : {
+        "tags" : [
+          ".benchmark"
+        ]
+      },
       "target" : {
-        "containerPath" : "container:Examples/SignUpFlowUsingDependency/SignUpFlowUsingDependency.xcodeproj",
-        "identifier" : "F61EBCD02786139400F098A8",
-        "name" : "SignUpFlowUsingDependencyTests"
-      }
-    },
-    {
-      "target" : {
-        "containerPath" : "container:Examples/Standups/Standups.xcodeproj",
+        "containerPath" : "container:Examples\/Standups\/Standups.xcodeproj",
         "identifier" : "DC808D7E29E9C3AD0072B4A9",
         "name" : "StandupsTests"
       }
     },
     {
+      "skippedTags" : {
+        "tags" : [
+          ".benchmark"
+        ]
+      },
       "target" : {
-        "containerPath" : "container:Examples/TodoList/TodoList.xcodeproj",
+        "containerPath" : "container:Examples\/TodoList\/TodoList.xcodeproj",
         "identifier" : "A1000017000000000000000",
         "name" : "TodoListTests"
       }
