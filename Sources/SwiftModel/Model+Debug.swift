@@ -174,14 +174,6 @@ final class PrinterBox: @unchecked Sendable {
 // MARK: - Public debug API
 
 public extension Model where Self: Sendable {
-    /// Will start to print state changes until cancelled, but only in `DEBUG` configurations.
-    @available(*, deprecated, renamed: "debug()")
-    @discardableResult
-    func _printChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Cancellable {
-        let p: (any TextOutputStream & Sendable)? = (printer is PrintTextOutputStream) ? nil : printer
-        return debug(.init(triggers: nil, name: name, printer: p))
-    }
-
     // MARK: - debug
 
     /// Observes this model's entire state tree and prints debug information whenever anything changes.

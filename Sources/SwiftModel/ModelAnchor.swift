@@ -89,11 +89,6 @@ public extension Model {
         return (model, ModelAnchor(context: context))
     }
 
-    /// Deprecated: use `returningAnchor(withDependencies:)` instead.
-    @available(*, deprecated, renamed: "returningAnchor(withDependencies:)")
-    func andAnchor(function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
-        returningAnchor(function: function, withDependencies: dependencies)
-    }
 }
 
 public class ModelAnchor<M: Model>: @unchecked Sendable {

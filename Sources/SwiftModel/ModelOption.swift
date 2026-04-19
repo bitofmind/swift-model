@@ -1,7 +1,7 @@
 import Foundation
 
 // Internal configuration options for model behavior. Not part of the public API.
-// Set via `ModelOption.$current.withValue(...)` before calling `withAnchor()` or `andTester()`.
+// Set via `ModelOption.$current.withValue(...)` before calling `withAnchor()`.
 // The value is captured into `AnyContext.options` at init time and inherited by child contexts.
 struct ModelOption: OptionSet, Sendable {
     let rawValue: Int

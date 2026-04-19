@@ -240,7 +240,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         modelContext.willAccess(at: untypedPath)?()
 
         // Typed writable path on M._ModelState — drives TestAccess snapshot tracking so that
-        // `model.node.local.myKey`/`model.node.environment.myKey` inside tester.assert {} is fully assertable.
+        // `model.node.local.myKey`/`model.node.environment.myKey` inside expect {} is fully assertable.
         // \M._ModelState[_metadata: storage] is a WritableKeyPath because ContextStorage<V>
         // is Hashable (via its key), giving Swift what it needs to form and distinguish paths.
         // Tag the access as `.metadata` so TestAccess records it under the correct exhaustivity area.

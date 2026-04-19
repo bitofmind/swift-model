@@ -81,7 +81,7 @@ public macro _ModelIgnored() = #externalMacro(module: "SwiftModelMacros", type: 
 ///
 /// Apply `@ModelDependency` to a variable declaration to automatically resolve its value from the
 /// model's dependency container rather than from a global `@Dependency`. This ensures the
-/// dependency respects any overrides injected via `andTester { }` or `withDependencies { }`:
+/// dependency respects any overrides injected via `withAnchor { }` or `withDependencies { }`:
 ///
 /// ```swift
 /// @Model

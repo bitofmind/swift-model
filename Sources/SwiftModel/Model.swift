@@ -203,13 +203,6 @@ public extension Model {
         }
     }
 
-    /// - Deprecated: Use ``withDebug()`` instead.
-    @available(*, deprecated, renamed: "withDebug()")
-    func _withPrintChanges(name: String? = nil, to printer: some TextOutputStream&Sendable = PrintTextOutputStream()) -> Self where Self: Sendable {
-        let p: (any TextOutputStream & Sendable)? = (printer is PrintTextOutputStream) ? nil : printer
-        return withDebug(.init(triggers: nil, name: name, printer: p))
-    }
-
     /// Prints a message each time this model is activated or deactivated.
     ///
     /// Useful during development to understand model lifecycle — for example, to confirm that

@@ -151,24 +151,6 @@ public extension ModelNode {
         _context?.removeEnvironmentValue(for: storage.storage)
     }
 
-    /// Typed access to per-node context storage via `@dynamicMemberLookup`.
-    ///
-    /// - Deprecated: Use `node.local` for node-private storage or `node.environment` for
-    ///   top-down propagating storage.
-    @available(*, deprecated, message: "Use node.local for node-private storage or node.environment for top-down propagating storage.")
-    var context: ContextValues {
-        ContextValues(context: _context, access: _$modelContext.activeAccess)
-    }
-
-    /// Removes a previously stored context value from this node.
-    ///
-    /// - Deprecated: Use `removeLocal(_:)` or `removeEnvironment(_:)`.
-    @available(*, deprecated, message: "Use removeLocal(_:) or removeEnvironment(_:).")
-    func removeContext<V>(_ key: KeyPath<ContextKeys, ContextStorage<V>>) {
-        let storage = ContextKeys()[keyPath: key]
-        _context?.removeEnvironmentValue(for: storage)
-    }
-
     /// Typed access to per-node preference storage via `@dynamicMemberLookup`.
     ///
     /// Preferences aggregate **bottom-up**: each node writes its own contribution and any ancestor
@@ -370,23 +352,6 @@ public extension ModelNode {
         }
     }
 
-    /// Batches multiple model mutations into a single atomic update with deferred notifications.
-    ///
-    /// - Deprecated: Transactions don't roll back on error, so a throwing closure provides no
-    ///   safety guarantee. Compute your values first, then apply them inside a non-throwing
-    ///   `transaction { }` closure.
-    @available(*, deprecated, message: "Transactions do not roll back on error. Compute values outside the transaction and apply them in a non-throwing closure.")
-    func transaction<T>(_ callback: () throws -> T) rethrows -> T {
-        if let context = _context {
-            return try _withBatchedUpdates {
-                try ModelAccess.$isInModelTaskContext.withValue(true) {
-                    try context.transaction(callback)
-                }
-            }
-        } else {
-            return try callback()
-        }
-    }
 
     /// Forces observation notifications for `path` without modifying the stored value.
     ///

@@ -1,6 +1,6 @@
 import Dependencies
 
-/// A mutable container of dependency overrides passed to `andTester`, `withDependencies`, or `withAnchor`.
+/// A mutable container of dependency overrides passed to `withDependencies` or `withAnchor`.
 ///
 /// `ModelDependencies` wraps `swift-dependencies`' `DependencyValues` and adds tracking of
 /// any model-typed dependencies so they can be managed as part of the model hierarchy.
@@ -9,7 +9,7 @@ import Dependencies
 /// mirrors the `DependencyValues` key path syntax:
 ///
 /// ```swift
-/// let (model, tester) = AppModel().andTester {
+/// let model = AppModel().withAnchor {
 ///     $0.uuid = .incrementing
 ///     $0.continuousClock = ImmediateClock()
 ///     $0.apiClient = .mock

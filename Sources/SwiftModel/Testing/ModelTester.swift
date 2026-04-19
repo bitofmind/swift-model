@@ -4,11 +4,6 @@ import IssueReporting
 import CustomDump
 
 /// The number of nanoseconds in one second (1,000,000,000).
-///
-/// Use this constant when specifying `timeoutNanoseconds` values:
-/// ```swift
-/// await expect(timeoutNanoseconds: 5 * nanosPerSecond) { ... }
-/// ```
 public let nanosPerSecond: UInt64 = 1_000_000_000
 
 /// Drives a model through a test, providing exhaustive checking of state, events, tasks, and callbacks.
@@ -79,33 +74,27 @@ public extension Model {
     /// - Parameters:
     ///   - exhaustivity: Which side-effect categories must be explicitly asserted. Defaults to `.full`.
     ///   - withDependencies: A closure to override dependencies injected into the model.
-    @available(*, deprecated, message: "Use @Test(.modelTesting) with withAnchor() and the global expect { } / require(_:) functions instead.")
-    func andTester(exhaustivity: Exhaustivity = .full, withDependencies dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, function: String = #function) -> (Self, ModelTester<Self>) {
-        assertInitialState(function: function)
-        let tester = ModelTester(self, exhaustivity: exhaustivity.apply(to: .full), dependencies: dependencies, fileID: fileID, filePath: filePath, line: line, column: column)
-        return (tester.model, tester)
-    }
 }
 
 
 public extension Model {
-    /// Asserts — inside a `tester.assert { }` block — that this model sent the given typed event.
+    /// Asserts — inside an `expect { }` block — that this model sent the given typed event.
     ///
-    /// Use this inside an `assert` block to consume an expected event and verify it was sent:
+    /// Use this inside an `expect` block to consume an expected event and verify it was sent:
     ///
     /// ```swift
-    /// await tester.assert {
+    /// await expect {
     ///     model.didSend(.startMeeting)
     /// }
     /// ```
     ///
-    /// > Important: Must be called inside a `ModelTester.assert` builder block. Calling it
+    /// > Important: Must be called inside an `expect { }` builder block. Calling it
     ///   outside will report an issue and return `false`.
     func didSend(_ event: Event, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Bool {
         didSend(event as Any, filePath: filePath, line: line)
     }
 
-    /// Asserts — inside a `tester.assert { }` block — that this model sent an event matching
+    /// Asserts — inside an `expect { }` block — that this model sent an event matching
     /// the given value. Use the typed overload (`didSend(_ event: Event)`) when the model has
     /// an associated `Event` type.
     func didSend(_ event: Any, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Bool {
@@ -160,16 +149,6 @@ public extension ModelTester {
         set { access.lock { access.showSkippedAssertions = newValue } }
     }
 
-    /// Registers `TestProbe` instances for exhaustion checking.
-    ///
-    /// > Deprecated: Probes created inside a `@Test(.modelTesting)` test auto-register with the
-    ///   active scope on creation and on every call. Explicit `install()` is no longer needed.
-    @available(*, deprecated, message: "TestProbe auto-installs on creation and on every call. Explicit install() is no longer needed.")
-    func install(_ probes: TestProbe...) {
-        for probe in probes {
-            access.install(probe)
-        }
-    }
 }
 
 // Package-internal bitmask used by TestAccess at runtime.
@@ -391,100 +370,6 @@ public func == <T: Equatable&Sendable>(lhs: @escaping @Sendable @autoclosure () 
 
 public func == <T: Equatable&Sendable>(lhs: @escaping @Sendable @autoclosure () -> T?, rhs: @escaping @Sendable @autoclosure () -> T) -> TestPredicate {
     TestPredicate(predicate: { lhs() == rhs() }, values: { (lhs() as Any, rhs() as Any) })
-}
-
-public extension ModelTester {
-    /// Waits for all pending model updates to propagate, then verifies that every predicate in
-    /// the builder body is `true` and that no unasserted side-effects remain (subject to `exhaustivity`).
-    ///
-    /// > Deprecated: Use the global `expect { }` function inside a `@Test(.modelTesting)` test instead.
-    ///
-    /// - Parameter timeout: Maximum nanoseconds to wait for the predicates to become true (default 1 s).
-    /// - Parameter builder: A result-builder block of Boolean predicates. Use the `==` operator for
-    ///   pretty-printed diff output on failure.
-    @available(*, deprecated, message: "Use the global expect { } function inside a @Test(.modelTesting) test instead.")
-    func assert(timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) async {
-        await access.expect(timeoutNanoseconds: timeout, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
-    }
-
-    /// Single-predicate convenience overload. Equivalent to `assert { predicate }` for a plain `Bool` expression.
-    ///
-    /// > Deprecated: Use the global `expect { }` function inside a `@Test(.modelTesting)` test instead.
-    @_disfavoredOverload
-    @available(*, deprecated, message: "Use the global expect { } function inside a @Test(.modelTesting) test instead.")
-    func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
-        let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
-        let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
-        await access.expect(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
-    }
-
-    /// Single-predicate convenience overload for a `TestPredicate` (the result of `==` between two `Equatable` values).
-    /// Provides a pretty-printed diff on failure.
-    ///
-    /// > Deprecated: Use the global `expect { }` function inside a `@Test(.modelTesting)` test instead.
-    @available(*, deprecated, message: "Use the global expect { } function inside a @Test(.modelTesting) test instead.")
-    func assert(_ predicate: TestPredicate, timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
-        let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
-        let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
-        await access.expect(timeoutNanoseconds: timeout, at: fileAndLine, predicates: [predicate])
-    }
-
-    /// Waits for an optional expression to become non-`nil`, then returns the unwrapped value.
-    ///
-    /// > Deprecated: Use the global `require(_:)` function inside a `@Test(.modelTesting)` test instead.
-    @available(*, deprecated, message: "Use the global require(_:) function inside a @Test(.modelTesting) test instead.")
-    func unwrap<T>(_ unwrap: @escaping @Sendable @autoclosure () -> T?, timeoutNanoseconds timeout: UInt64 = nanosPerSecond, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T  {
-        try await access.require(unwrap, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))
-    }
-}
-
-@available(macOS 13, iOS 16, watchOS 9, tvOS 16, *)
-public extension ModelTester {
-    /// Waits for all pending model updates to propagate, then verifies predicates with a `Duration` timeout.
-    ///
-    /// > Deprecated: Use the global `expect(timeout:)` function inside a `@Test(.modelTesting)` test instead.
-    @available(*, deprecated, message: "Use the global expect(timeout:) function inside a @Test(.modelTesting) test instead.")
-    func assert(timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column, @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result) async {
-        await access.expect(timeoutNanoseconds: timeout.toNanoseconds, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column), predicates: builder())
-    }
-
-    /// Single-predicate `Bool` overload with a `Duration` timeout.
-    ///
-    /// > Deprecated: Use the global `expect(timeout:)` function inside a `@Test(.modelTesting)` test instead.
-    @_disfavoredOverload
-    @available(*, deprecated, message: "Use the global expect(timeout:) function inside a @Test(.modelTesting) test instead.")
-    func assert(_ predicate: @escaping @Sendable @autoclosure () -> Bool, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
-        let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
-        let predicate = AssertBuilder.Predicate(predicate: predicate, fileAndLine: fileAndLine)
-        await access.expect(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
-    }
-
-    /// Single-predicate `TestPredicate` overload with a `Duration` timeout.
-    ///
-    /// > Deprecated: Use the global `expect(timeout:)` function inside a `@Test(.modelTesting)` test instead.
-    @available(*, deprecated, message: "Use the global expect(timeout:) function inside a @Test(.modelTesting) test instead.")
-    func assert(_ predicate: TestPredicate, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async {
-        let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
-        let predicate = AssertBuilder.Predicate(predicate: predicate.predicate, values: predicate.values, fileAndLine: fileAndLine)
-        await access.expect(timeoutNanoseconds: timeout.toNanoseconds, at: fileAndLine, predicates: [predicate])
-    }
-
-    /// Waits for an optional to become non-`nil` with a `Duration` timeout.
-    ///
-    /// > Deprecated: Use the global `require(_:timeout:)` function inside a `@Test(.modelTesting)` test instead.
-    @available(*, deprecated, message: "Use the global require(_:timeout:) function inside a @Test(.modelTesting) test instead.")
-    func unwrap<T>(_ unwrap: @escaping @Sendable @autoclosure () -> T?, timeout: Duration, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) async throws -> T {
-        try await access.require(unwrap, at: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))
-    }
-}
-
-@available(macOS 13, iOS 16, watchOS 9, tvOS 16, *)
-private extension Duration {
-    /// Converts a `Duration` to nanoseconds as `UInt64`, clamped to zero for negative values.
-    var toNanoseconds: UInt64 {
-        let (seconds, attoseconds) = components
-        return UInt64(max(seconds, 0)) * nanosPerSecond + UInt64(max(attoseconds, 0)) / nanosPerSecond
-    }
 }
 
 

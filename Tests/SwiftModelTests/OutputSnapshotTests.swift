@@ -691,17 +691,6 @@ struct OutOfScopeTests {
         }
     }
 
-    @Test("probe.install() outside modelTesting scope reports clear error")
-    func probeInstallOutsideScope() async {
-        let probe = TestProbe()
-        await assertIssueSnapshot {
-            probe._install()
-        } matches: {
-            """
-            install() must be called inside a @Test(.modelTesting) test function
-            """
-        }
-    }
 }
 
 // MARK: - Assertion failed (no-access fallback)

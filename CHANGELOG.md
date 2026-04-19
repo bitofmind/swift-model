@@ -4,6 +4,28 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [1.0.0] — Deprecated API Removal
+
+### Removed
+
+All APIs that were deprecated in prior releases have been removed:
+
+- **`model.andTester(exhaustivity:withDependencies:)`** — use `model.withAnchor()` inside `@Test(.modelTesting)` instead.
+- **`tester.assert { }` / `tester.assert(_:)` / `tester.unwrap(_:)`** — use the global `expect { }` and `require(_:)` functions instead.
+- **`TestProbe.install()`** — probes auto-register on creation and on every call.
+- **`expect(timeoutNanoseconds:)` / `require(_:timeoutNanoseconds:)`** — timeout is no longer configurable; remove the `timeoutNanoseconds` parameter.
+- **`ExpectMode` / `expect(.settling) { }`** — use `settle { }` instead.
+- **`_ModelTestingTrait`** typealias — use `ModelTestingTrait` directly.
+- **`node.context`** — use `node.local` or `node.environment` depending on the desired propagation.
+- **`node.removeContext(_:)`** — use `node.removeLocal(_:)` or `node.removeEnvironment(_:)`.
+- **`ContextKeys` / `ContextValues`** — use `LocalKeys` / `LocalStorage` or `EnvironmentKeys` / `EnvironmentStorage`.
+- **`node.transaction(_:) rethrows`** — transactions do not roll back on error; compute values outside the transaction, then apply them in a non-throwing `transaction { }` closure.
+- **`model.andAnchor(function:andDependencies:)`** — use `model.returningAnchor(withDependencies:)` instead.
+- **`model._printChanges(name:to:)`** — use `model.debug()` instead.
+- **`model._withPrintChanges(name:to:)`** — use `model.withDebug()` instead.
+
+---
+
 ## [0.15.0] — `@Model` Layout Redesign: Fixed 16-byte Struct + Separate State Storage
 
 ### Changed
