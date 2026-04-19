@@ -35,9 +35,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     // Only written once during init; thereafter read-only (under lock for thread safety).
     var _modelSeed: M
 
-    @Dependency(\.uuid) private var dependencies
-
-    init(model: M, lock: NSRecursiveLock, dependencies: (inout ModelDependencies) -> Void, parent: AnyContext?) {
+    init(model: M, lock: NSRecursiveLock, dependencies: ((inout ModelDependencies) -> Void)?, parent: AnyContext?) {
         // Allow `.initial` (normal first-time anchoring) and `.destructed` (re-anchoring a static
         // dependency model across test runs, or re-anchoring via undo). Block `.active` (already has
         // a live context) and `.frozenCopy` snapshots which must not be anchored.
@@ -60,26 +58,35 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         super.init(lock: lock, parent: parent)
 
         var dependencyModels: [AnyHashable: any Model] = [:]
-        // For child contexts, install parent.capturedDependencies (which includes all parent
-        // dep overrides) as _current before applying this context's own overrides. This ensures
-        // child contexts inherit the parent's explicit dep overrides, not just the Phase-1
-        // initial values that withDependencies(from: parent) would provide.
-        // For root contexts (parent == nil), self.capturedDependencies == .init() here, so
-        // withOwnDependencies is a no-op and withDependencies starts from the default values.
-        (parent ?? self).withOwnDependencies {
-            Dependencies.withDependencies {
-                var contextDependencies = ModelDependencies(dependencies: $0)
-                dependencies(&contextDependencies)
-                for dependency in modelSetup?.dependencies ?? [] {
-                    dependency(&contextDependencies)
-                }
+        let modelSetupDeps = modelSetup?.dependencies ?? []
+        let hasOverrides = dependencies != nil || !modelSetupDeps.isEmpty
 
-                $0 = contextDependencies.dependencies
-                dependencyModels = contextDependencies.models
-            } operation: {
-                _dependencies = Dependency(\.uuid)
-                capturedDependencies = DependencyValues._current
+        if hasOverrides || parent == nil {
+            // Full ceremony: root context, or context with explicit dependency overrides.
+            // For child contexts, install parent.capturedDependencies (which includes all parent
+            // dep overrides) as _current before applying this context's own overrides. This ensures
+            // child contexts inherit the parent's explicit dep overrides, not just the Phase-1
+            // initial values that withDependencies(from: parent) would provide.
+            // For root contexts (parent == nil), self.capturedDependencies == .init() here, so
+            // withOwnDependencies is a no-op and withDependencies starts from the default values.
+            (parent ?? self).withOwnDependencies {
+                Dependencies.withDependencies {
+                    var contextDependencies = ModelDependencies(dependencies: $0)
+                    dependencies?(&contextDependencies)
+                    for dependency in modelSetupDeps {
+                        dependency(&contextDependencies)
+                    }
+
+                    $0 = contextDependencies.dependencies
+                    dependencyModels = contextDependencies.models
+                } operation: {
+                    capturedDependencies = DependencyValues._current
+                }
             }
+        } else {
+            // Fast-path: child inherits parent dependencies unchanged. DependencyValues uses
+            // COW internally (shared storage + shared CachedValues class), so this is O(1).
+            capturedDependencies = parent!.capturedDependencies
         }
 
         // If this Reference was previously destroyed (re-anchoring a static let testValue),
@@ -119,12 +126,14 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // self.capturedDependencies as _current, not the caller's task-local. Without this,
         // a background task from an ancestor context would contaminate the model-dep context
         // with the ancestor's DependencyValues via the withDependencies(from: parent) merge.
-        withOwnDependencies {
-            withPostActions { postActions in
-                for (key, model) in dependencyModels {
-                    var model = model
-                    setupModelDependency(&model, cacheKey: nil, postSetups: &postActions)
-                    dependencyCache[key] = model
+        if !dependencyModels.isEmpty {
+            withOwnDependencies {
+                withPostActions { postActions in
+                    for (key, model) in dependencyModels {
+                        var model = model
+                        setupModelDependency(&model, cacheKey: nil, postSetups: &postActions)
+                        dependencyCache[key] = model
+                    }
                 }
             }
         }
@@ -963,7 +972,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 // its task-local would overwrite this context's dep overrides. By unconditionally
                 // replacing _current with self's deps, the child correctly inherits this context.
                 let child = withOwnDependencies {
-                    Context<Child>(model: childModel, lock: lock, dependencies: { _ in }, parent: self)
+                    Context<Child>(model: childModel, lock: lock, dependencies: nil, parent: self)
                 }
                 children[containerPath, default: [:]][modelRef] = child
                 return child

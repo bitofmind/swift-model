@@ -24,7 +24,7 @@ public final class ModelTester<M: Model> {
     var cleanupHandledExternally = false
 
     // Internal designated init — options are read from `ModelOption.current` (TaskLocal) by AnyContext.
-    init(_ model: M, exhaustivity: _ExhaustivityBits = .full, dependencies: (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
+    init(_ model: M, exhaustivity: _ExhaustivityBits = .full, dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
         let fl = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         fileAndLine = fl
         access = TestAccess(model: model, dependencies: dependencies, fileAndLine: fl)

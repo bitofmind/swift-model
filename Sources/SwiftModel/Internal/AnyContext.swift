@@ -841,7 +841,7 @@ class AnyContext: @unchecked Sendable {
                         model = model.initialCopy
                     }
                     assert(model.context == nil)
-                    let child = Context<D>(model: model, lock: lock, dependencies: { _ in }, parent: self)
+                    let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
                     dependencyContexts[ObjectIdentifier(D.self)] = child
                     model.withContextAdded(context: child)
@@ -883,7 +883,7 @@ class AnyContext: @unchecked Sendable {
                         model = model.initialDependencyCopy
                     }
                     assert(model.context == nil)
-                    let child = Context<D>(model: model, lock: lock, dependencies: { _ in }, parent: self)
+                    let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
                     rootParent.dependencyContexts[depTypeID] = child
                     model.withContextAdded(context: child)
@@ -923,7 +923,7 @@ class AnyContext: @unchecked Sendable {
                     }
                 } else {
                     assert(model.context == nil)
-                    let child = Context<D>(model: model, lock: lock, dependencies: { _ in }, parent: self)
+                    let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
                     dependencyContexts[ObjectIdentifier(D.self)] = child
                     model.withContextAdded(context: child)
