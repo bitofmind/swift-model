@@ -3,20 +3,6 @@ import Dependencies
 import OrderedCollections
 import Observation
 
-enum ModelLifetime: Comparable {
-    case initial
-    case anchored
-    case active
-    case destructed
-    case frozenCopy
-}
-
-extension ModelLifetime {
-    var isDestructedOrFrozenCopy: Bool {
-        self == .destructed || self == .frozenCopy
-    }
-}
-
 class AnyContext: @unchecked Sendable {
     let lock: NSRecursiveLock
     internal let options: ModelOption
