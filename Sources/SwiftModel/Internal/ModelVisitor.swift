@@ -153,6 +153,30 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
             return
         }
 
+        // Lazy context: during initial anchor setup (context.reference.context == nil, i.e. before
+        // setContext is called in Context.init), collection elements can be registered lazily when
+        // the .lazyChildContexts option is set. Their context is created on demand (first write,
+        // node use, etc.) via materializeLazyContext().
+        //
+        // Post-anchor updates (e.g. parent.children.append(...)) always use the eager path because
+        // context.reference.context is non-nil by then — the newly added element needs its context
+        // immediately so that onActivate() fires and the element participates in the hierarchy.
+        //
+        // Direct single-model children (e.g. `var child: Child`) are always eager regardless —
+        // the MutableCollection check excludes them.
+        if !isSelf && context.options.contains(.lazyChildContexts) && (value is any MutableCollection) && context.reference.context == nil && childModel.modelContext.reference?.context == nil {
+            context.registerLazyChild(containerPath: containerPath, elementPath: modelElementPath, childModel: childModel)
+            return
+        }
+
+        // Skip children that are still lazily pending (have a creator but no context yet).
+        // This prevents the second withContextAdded traversal in returningAnchor (and updateContext
+        // re-traversals) from prematurely triggering childContext() → materializeLazyContext(),
+        // which would fire onActivate() before the parent's onActivate() runs.
+        if !isSelf, let childRef = childModel.modelContext.reference, childRef.hasLazyContextCreator {
+            return
+        }
+
         let childContext = isSelf ? (context as! Context<T>) : context.childContext(containerPath: containerPath, elementPath: modelElementPath, childModel: childModel)
 
         if childContext !== childModel.context {

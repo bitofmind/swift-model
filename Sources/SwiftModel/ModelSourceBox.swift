@@ -196,7 +196,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             return reference.state[keyPath: path]
         }
         set {
-            if _isLive || (reference.context == nil && !reference.isSnapshot) {
+            if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
                 // Pre-anchor or internal direct-access: write directly to reference.state.
                 reference.state[keyPath: path] = newValue
             } else if reference.lifetime == .frozenCopy, threadLocals.isApplyingSnapshot {
@@ -221,7 +221,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             return reference.state
         }
         nonmutating set {
-            if _isLive || (reference.context == nil && !reference.isSnapshot) {
+            if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
                 reference.state = newValue
             } else if reference.lifetime == .frozenCopy, threadLocals.isApplyingSnapshot {
                 reference.state = newValue
@@ -233,7 +233,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
     /// Used by willSet/didSet `nonmutating set` to short-circuit writes before anchoring.
     @discardableResult
     public func _storePendingIfNeeded<T>(_ path: WritableKeyPath<M._ModelState, T>, _ value: T) -> Bool {
-        guard !_isLive, reference.context == nil, !reference.isSnapshot else { return false }
+        guard !_isLive, reference.context == nil, !reference.isSnapshot, !reference.hasLazyContextCreator else { return false }
         reference.state[keyPath: path] = value
         return true
     }
@@ -330,6 +330,8 @@ extension _ModelSourceBox {
     func _modifyContext(accessBox: _ModelAccessBox) -> Context<M>? {
         if _isLive { return nil }  // internal direct-access copy — bypass context
         if let context = reference.context { return context }
+        // Try lazy materialization before falling through to pre-anchor/snapshot path.
+        if let context = reference.materializeLazyContext() { return context }
         // No live context — check for snapshot (warn) vs pre-anchor (silent).
         if reference.isSnapshot {
             switch reference.lifetime {
@@ -459,7 +461,7 @@ extension _ModelSourceBox {
         nonmutating set {
             // Pre-anchor or live: store directly without anchoring semantics.
             // _modifyContext returns nil for this case and would silently drop the write.
-            if _isLive || (reference.context == nil && !reference.isSnapshot) {
+            if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
                 reference.state[keyPath: statePath] = newValue
                 return
             }
@@ -507,7 +509,7 @@ extension _ModelSourceBox {
         nonmutating set {
             // Pre-anchor: store directly without anchoring semantics.
             // _modifyContext returns nil for this case and would silently drop the write.
-            if !_isLive && reference.context == nil && !reference.isSnapshot {
+            if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
                 reference.state[keyPath: statePath] = newValue
                 return
             }

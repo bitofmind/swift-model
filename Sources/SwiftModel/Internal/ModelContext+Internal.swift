@@ -16,7 +16,7 @@ extension ModelContext {
     }
 
     var context: Context<M>? {
-        _source.reference.context
+        _source.reference.context ?? _source.reference.materializeLazyContext()
     }
 
     var modelID: ModelID {

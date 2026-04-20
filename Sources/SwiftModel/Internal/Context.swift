@@ -942,6 +942,26 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
+    /// Defers context creation for a child: stores a factory on its Reference and skips
+    /// the `Context.init` + lock work until the child is first accessed.
+    ///
+    /// NOTE: We intentionally do NOT insert into `modelRefs` here. `modelRefs` is cleared
+    /// and re-populated on every `updateContext` call, so an upfront insert would be
+    /// discarded immediately. Removal detection only concerns children that have a live
+    /// context (tracked in `children` dict); lazy children with no context have nothing
+    /// to tear down and are simply not re-registered if they disappear from the array.
+    func registerLazyChild<C: ModelContainer, Child: Model>(containerPath: WritableKeyPath<M, C>, elementPath: WritableKeyPath<C, Child>, childModel: Child) {
+        // Weak self to avoid a retain cycle: the factory closure is stored on the child's
+        // Reference which may outlive this parent context.
+        childModel.modelContext._source.reference.setLazyContextCreator { [weak self] in
+            // Re-entrance guard: context may have been created by a concurrent materialize call.
+            if let existing = childModel.modelContext._source.reference.context { return existing }
+            // Parent context is gone; cannot create child context.
+            guard let self else { return nil }
+            return self.childContext(containerPath: containerPath, elementPath: elementPath, childModel: childModel)
+        }
+    }
+
     func childContext<C: ModelContainer, Child: Model>(containerPath: WritableKeyPath<M, C>, elementPath: WritableKeyPath<C, Child>, childModel: Child) -> Context<Child> {
         var postLockCallbacks: [() -> Void] = []
         defer {
@@ -1023,6 +1043,10 @@ extension Context {
         /// Set by `reserveOrFork()` before Context.init to pre-increment `_liveContextCount`.
         /// Consumed (cleared) by the next `setContext(_:)` call.
         private var _isReserved: Bool = false
+        /// Lazy context factory, set by `registerLazyChild` for collection elements.
+        /// Cleared (set to nil) after first use in `materializeLazyContext()`.
+        /// Returns nil if the parent context was deallocated before the child was materialized.
+        private var _lazyContextCreator: (() -> Context<M>?)?
         /// Live/lastSeen/snapshot state. Non-optional — always holds a valid value while
         /// `!_stateCleared`. After `clear()`, zeroed via `_zeroInit()` to break retain cycles.
         var state: M._ModelState
@@ -1041,6 +1065,39 @@ extension Context {
         private let _snapshotLifetime: ModelLifetime?
         /// True when this Reference backs a snapshot (frozen copy or lastSeen) rather than a live model.
         var isSnapshot: Bool { _snapshotLifetime != nil }
+
+        /// True when a lazy context factory is pending (not yet materialized).
+        var hasLazyContextCreator: Bool {
+            lock { _lazyContextCreator != nil }
+        }
+
+        /// Registers a factory that creates this Reference's context on demand.
+        /// Called by `Context.registerLazyChild` for collection element children.
+        func setLazyContextCreator(_ creator: @escaping () -> Context<M>?) {
+            lock { _lazyContextCreator = creator }
+        }
+
+        /// Creates the context on demand if a lazy factory was registered.
+        ///
+        /// Lock ordering: grab+clear factory under Reference lock, release, then call factory
+        /// (which acquires tree lock → setContext re-acquires Reference lock re-entrantly).
+        /// This avoids holding both locks simultaneously.
+        func materializeLazyContext() -> Context<M>? {
+            // Fast path: context already exists.
+            if let ctx = lock({ _context }) { return ctx }
+
+            // Grab and clear the factory under the Reference lock, then release before calling it.
+            let factory: (() -> Context<M>?)? = lock {
+                let f = _lazyContextCreator
+                _lazyContextCreator = nil
+                return f
+            }
+
+            guard let factory, let ctx = factory() else { return nil }
+
+            _ = ctx.onActivate()
+            return ctx
+        }
 
         /// Creates a live Reference with initial state.
         init(modelID: ModelID, state: M._ModelState) {
