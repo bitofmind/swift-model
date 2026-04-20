@@ -1006,14 +1006,6 @@ extension Context {
     /// All copies of a model (pending and live) share the same Reference from creation.
     /// When `Context.init` calls `setContext`, all those copies immediately see the context
     /// via `ref._context` — no forwarding indirection needed.
-    /// Immutable heap box for the genesis state snapshot. Class reference (8 bytes) avoids
-    /// storing `M._ModelState` twice inline in every Reference — the Optional null pointer is
-    /// never a spare-bit collision risk because `_GenesisBox` is a class (pointer type).
-    private final class _GenesisBox: @unchecked Sendable {
-        let state: M._ModelState
-        init(_ state: M._ModelState) { self.state = state }
-    }
-
     final class Reference: @unchecked Sendable {
         let modelID: ModelID
         private let lock = NSRecursiveLock()
@@ -1037,14 +1029,14 @@ extension Context {
         /// True after `clear()` when state has been zeroed to break retain cycles. Reads from
         /// a cleared reference will reportIssue and return _zeroInit().
         var _stateCleared: Bool = false
-        /// Boxed genesis state captured at the first `setContext` call (post-`withContextAdded`).
-        /// Nil until first anchor. Heap-boxed so `M._ModelState` is not stored twice inline.
-        /// Immutable after creation; forked References share the same box without copying.
-        private var _genesis: _GenesisBox?
+        /// Genesis state captured at the first `setContext` call (post-`withContextAdded`).
+        /// All property values are correct at that point (no self-referencing closures yet).
+        /// Used to restore `state` when re-anchoring a static dependency model, and as a
+        /// safe fallback for reads on a cleared reference. Stored inline — always needed for
+        /// every anchored model, so boxing would only add malloc overhead with no saving.
+        var _genesisState: M._ModelState = _zeroInit()
         /// True once genesis has been captured (set in `setContext` on first anchor).
-        var _hasGenesis: Bool { _genesis != nil }
-        /// The genesis state (valid only when `_hasGenesis` is true).
-        var _genesisState: M._ModelState { _genesis!.state }
+        var _hasGenesis: Bool = false
         /// Non-nil only for snapshot references (frozen/lastSeen). Immutable after init.
         private let _snapshotLifetime: ModelLifetime?
         /// True when this Reference backs a snapshot (frozen copy or lastSeen) rather than a live model.
@@ -1092,8 +1084,8 @@ extension Context {
         /// The full re-anchoring reset (`_isDestructed`, generation) happens in `setContext`.
         func prepareForReanchoring() {
             lock {
-                guard _isDestructed, _stateCleared, let genesis = _genesis else { return }
-                state = genesis.state
+                guard _isDestructed, _stateCleared, _hasGenesis else { return }
+                state = _genesisState
                 _stateCleared = false
             }
         }
@@ -1132,9 +1124,12 @@ extension Context {
                     _isReserved = true
                     return self
                 }
-                let initialState = _genesis?.state ?? state
+                let initialState = _hasGenesis ? _genesisState : state
                 let newRef = Context<M>.Reference(modelID: .generate(), state: initialState)
-                newRef._genesis = _genesis  // share immutable box; no copy needed
+                if _hasGenesis {
+                    newRef._genesisState = _genesisState
+                    newRef._hasGenesis = true
+                }
                 newRef._liveContextCount = 1
                 newRef._isReserved = true
                 return newRef
@@ -1152,17 +1147,18 @@ extension Context {
                     // no self-referencing closures). `prepareForReanchoring()` may have already
                     // restored `state`, but ensure it is set here too in case the old
                     // Context.deinit ran between prepareForReanchoring and setContext.
-                    if _stateCleared, let genesis = _genesis {
-                        state = genesis.state
+                    if _stateCleared, _hasGenesis {
+                        state = _genesisState
                         _stateCleared = false
                     }
                     _isDestructed = false
-                } else if _genesis == nil {
+                } else if !_hasGenesis {
                     // First anchor: capture genesis state. At this point `withContextAdded` has
                     // run so all property values (including MIDDLE properties from user-written
                     // inits) are correct. No self-referencing closures exist yet (those are set
                     // up in onActivate, which runs after setContext returns).
-                    _genesis = _GenesisBox(state)
+                    _genesisState = state
+                    _hasGenesis = true
                 }
                 _generation += 1
                 if _isReserved {
