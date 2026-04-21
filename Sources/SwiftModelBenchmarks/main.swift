@@ -33,6 +33,7 @@ func runAll() {
     benchPropertyAccessWithObserver()
     benchEventDispatch()
     benchHierarchyMutation()
+    benchContainerValueUpdate()
     benchDependencyAccess()
     benchAnchorDependencies()
     print("")

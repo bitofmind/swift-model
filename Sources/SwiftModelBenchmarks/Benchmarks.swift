@@ -124,6 +124,29 @@ func benchHierarchyMutation() {
     }
 }
 
+// MARK: - 5b. Container value-update (ID-only fast path)
+
+/// Write a container back with the same live elements (same References, same IDs).
+/// With the structural-change fast path, updateContext and activate() are skipped entirely
+/// because containerIsSame returns true before the O(N) traversal is reached.
+/// Hot path: containerIsSame ID check, stateTransaction (isSame=true, no notifications).
+func benchContainerValueUpdate() {
+    printHeader("5b. Container value-update (same IDs, fast path)")
+
+    for n in [0, 100, 500] {
+        var items: IdentifiedArrayOf<BenchItem> = []
+        for i in 0..<n { items.append(BenchItem(id: i)) }
+        let (list, anchor) = BenchList(items: items).returningAnchor()
+        let liveItems = list.items  // capture live References
+
+        measure("value-update (n=\(n))", iterations: 2_000) {
+            list.items = liveItems
+        }
+
+        withExtendedLifetime(anchor) {}
+    }
+}
+
 // MARK: - 6. Dependency access
 
 /// Access a dependency via `node.<name>` on a live model.

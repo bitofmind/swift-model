@@ -526,11 +526,18 @@ extension _ModelSourceBox {
 
             let modelPath = M._modelStateKeyPath.appending(path: statePath)
             var postLockCallbacks: [() -> Void] = []
+            var structuralChange = false
             context.stateTransaction(at: statePath, isSame: {
                 containerIsSame($0, $1)
             }, accessBox: accessBox, modify: { container in
-                var newContainer = newValue
+                // Fast path: if element structure is unchanged (same IDs in same order),
+                // skip the O(N) updateContext traversal — no child contexts need to change.
+                if containerIsSame(newValue, container) {
+                    container = newValue
+                    return
+                }
 
+                var newContainer = newValue
                 var didReplaceModelWithDestructedOrFrozenCopy = false
                 let oldContexts = threadLocals.withValue({
                     didReplaceModelWithDestructedOrFrozenCopy = true
@@ -543,6 +550,7 @@ extension _ModelSourceBox {
                     return
                 }
 
+                structuralChange = true
                 container = newContainer
 
                 for oldContext in oldContexts {
@@ -554,13 +562,15 @@ extension _ModelSourceBox {
                 callback()
             }
 
-            let access = accessBox._reference?.access ?? ModelAccess.current
-            if let access, access.shouldPropagateToChildren {
-                usingAccess(access) {
+            if structuralChange {
+                let access = accessBox._reference?.access ?? ModelAccess.current
+                if let access, access.shouldPropagateToChildren {
+                    usingAccess(access) {
+                        context.reference.state[keyPath: statePath].activate()
+                    }
+                } else {
                     context.reference.state[keyPath: statePath].activate()
                 }
-            } else {
-                context.reference.state[keyPath: statePath].activate()
             }
         }
     }
