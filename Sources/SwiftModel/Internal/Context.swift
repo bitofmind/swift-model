@@ -673,11 +673,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// Uses `_StateObserver` for registrar calls (no Model instance needed).
     /// Uses `_StateObserver` for registrar calls; delegates to `activeAccess.willAccess/didModify(from:at:)` for TestAccess.
     func willAccessDirect<T>(statePath: WritableKeyPath<M._ModelState, T>, accessBox: _ModelAccessBox) -> (() -> Void)? {
+        let cachedActive = ModelAccess.active
         let access = accessBox._reference?.access ?? ModelAccess.current
-        let activeAccess = ModelAccess.active ?? access
+        let activeAccess = cachedActive ?? access
 
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar,
-           !(threadLocals.isInsideAsyncPerformUpdate && ModelAccess.active != nil) {
+           !(threadLocals.isInsideAsyncPerformUpdate && cachedActive != nil) {
             let observer = _StateObserver<M._ModelState>()
             let observerKP = (\_StateObserver<M._ModelState>._state).appending(path: statePath)
             if isOnMainThread {
