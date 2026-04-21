@@ -56,6 +56,14 @@ let package = Package(
                 .product(name: "SwiftCompilerPlugin", package: "swift-syntax")
             ]
         ),
+        .executableTarget(
+            name: "SwiftModelBenchmarks",
+            dependencies: [
+                "SwiftModel",
+                .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
+            ],
+            path: "Sources/SwiftModelBenchmarks"
+        ),
         .testTarget(
             name: "SwiftModelMacroTests",
             dependencies: [

@@ -131,19 +131,24 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
     let context: Context<M>
     let containerPath: WritableKeyPath<M, Container>
     let elementPath: WritableKeyPath<Container, Value>
+    /// When `true`, the hierarchy lock is known to be already held by the caller (e.g., inside
+    /// `stateTransaction`). The fast path calls `findOrTrackChildLocked` instead of
+    /// `findOrTrackChild`, eliminating O(N) redundant recursive lock re-entries during container
+    /// traversal in `updateContext`.
+    let hierarchyLockHeld: Bool
 
-    init(value: Value, context: Context<M>, containerPath: WritableKeyPath<M, Container>, elementPath: WritableKeyPath<Container, Value>) {
+    init(value: Value, context: Context<M>, containerPath: WritableKeyPath<M, Container>, elementPath: WritableKeyPath<Container, Value>, hierarchyLockHeld: Bool = false) {
         self.value = value
         self.context = context
         self.containerPath = containerPath
         self.elementPath = elementPath
+        self.hierarchyLockHeld = hierarchyLockHeld
     }
 
     mutating func visit<T: Model>(path: WritableKeyPath<Value, T>) {
         let childModel = value[keyPath: path]
-        
+
         let isSelf = path == \Value.self && containerPath == \M.self && elementPath == \Container.self
-        let modelElementPath = elementPath.appending(path: path)
 
         // For child models: bail if destructed/frozen (they were removed, don't re-anchor them).
         // For the top-level model being anchored (isSelf): allow even if destructed — this is the
@@ -151,6 +156,36 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
         if !isSelf && childModel.lifetime.isDestructedOrFrozenCopy {
             threadLocals.didReplaceModelWithDestructedOrFrozenCopy()
             return
+        }
+
+        // Skip children that are still lazily pending (have a creator but no context yet).
+        // This prevents the second withContextAdded traversal in returningAnchor (and updateContext
+        // re-traversals) from prematurely triggering childContext() → materializeLazyContext(),
+        // which would fire onActivate() before the parent's onActivate() runs.
+        if !isSelf, let childRef = childModel.modelContext.reference, childRef.hasLazyContextCreator {
+            return
+        }
+
+        // Fast path: for non-self children, look up by ID only (no key-path construction).
+        // Inserts the element into `modelRefs` (required for the set-subtraction diff in
+        // `updateContext`) and returns the already-registered child context when found.
+        // If the context is current, all remaining work is skipped — this is the common case for
+        // existing elements during `append`/`remove` mutations on large arrays.
+        //
+        // When `hierarchyLockHeld` is true (called from within `stateTransaction`), we use
+        // `findOrTrackChildLocked` to skip the redundant per-element lock re-entry, eliminating
+        // O(N) recursive NSRecursiveLock acquisitions for the existing-elements fast path.
+        if !isSelf {
+            let existing: Context<T>? = hierarchyLockHeld
+                ? context.findOrTrackChildLocked(containerPath: containerPath, childModel: childModel)
+                : context.findOrTrackChild(containerPath: containerPath, childModel: childModel)
+            if let existing {
+                if existing === childModel.context {
+                    return
+                }
+                // Context is registered but the element's modelContext points elsewhere (re-anchoring).
+                // Fall through to the slow path; modelRefs was already updated by findOrTrackChild(Locked).
+            }
         }
 
         // Lazy context: during initial anchor setup (context.reference.context == nil, i.e. before
@@ -164,23 +199,19 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
         //
         // Direct single-model children (e.g. `var child: Child`) are always eager regardless —
         // the MutableCollection check excludes them.
+        // Construct the full element key path. Only reached for new or re-anchoring elements,
+        // so the O(path-composition) cost is paid at most once per added/changed item.
+        let modelElementPath = elementPath.appending(path: path)
+
         if !isSelf && context.options.contains(.lazyChildContexts) && (value is any MutableCollection) && context.reference.context == nil && childModel.modelContext.reference?.context == nil {
             context.registerLazyChild(containerPath: containerPath, elementPath: modelElementPath, childModel: childModel)
-            return
-        }
-
-        // Skip children that are still lazily pending (have a creator but no context yet).
-        // This prevents the second withContextAdded traversal in returningAnchor (and updateContext
-        // re-traversals) from prematurely triggering childContext() → materializeLazyContext(),
-        // which would fire onActivate() before the parent's onActivate() runs.
-        if !isSelf, let childRef = childModel.modelContext.reference, childRef.hasLazyContextCreator {
             return
         }
 
         let childContext = isSelf ? (context as! Context<T>) : context.childContext(containerPath: containerPath, elementPath: modelElementPath, childModel: childModel)
 
         if childContext !== childModel.context {
-            value[keyPath: path].withContextAdded(context: childContext, containerPath: \.self, elementPath: \.self, includeSelf: false)
+            value[keyPath: path].withContextAdded(context: childContext, containerPath: \.self, elementPath: \.self, includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
             // For non-self children: set .reference source so they can redirect through context.
             // For self (readModel in Context.init): leave .live source intact so key path access
             // reads directly from Reference._state without going through the context subscript.
@@ -192,9 +223,9 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
 
     mutating func visit<T: ModelContainer>(path: WritableKeyPath<Value, T>) {
         if containerPath == \.self, elementPath == \.self {
-            value[keyPath: path].withContextAdded(context: context, containerPath: path as! WritableKeyPath<M, T>, elementPath: \.self, includeSelf: false)
+            value[keyPath: path].withContextAdded(context: context, containerPath: path as! WritableKeyPath<M, T>, elementPath: \.self, includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
         } else {
-            value[keyPath: path].withContextAdded(context: context, containerPath: containerPath, elementPath: elementPath.appending(path: path), includeSelf: false)
+            value[keyPath: path].withContextAdded(context: context, containerPath: containerPath, elementPath: elementPath.appending(path: path), includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
         }
     }
 }

@@ -95,8 +95,8 @@ extension Model {
 }
 
 extension ModelContainer {
-    mutating func withContextAdded<M: Model, Container: ModelContainer>(context: Context<M>, containerPath: WritableKeyPath<M, Container>, elementPath: WritableKeyPath<Container, Self>, includeSelf: Bool) {
-        var visitor = AnchorVisitor(value: self, context: context, containerPath: containerPath, elementPath: elementPath)
+    mutating func withContextAdded<M: Model, Container: ModelContainer>(context: Context<M>, containerPath: WritableKeyPath<M, Container>, elementPath: WritableKeyPath<Container, Self>, includeSelf: Bool, hierarchyLockHeld: Bool = false) {
+        var visitor = AnchorVisitor(value: self, context: context, containerPath: containerPath, elementPath: elementPath, hierarchyLockHeld: hierarchyLockHeld)
         visit(with: &visitor, includeSelf: includeSelf)
         self = visitor.value
     }

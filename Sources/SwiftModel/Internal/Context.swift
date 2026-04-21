@@ -511,19 +511,29 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     private var modelRefs: Set<ModelRef> = []
 
+    /// Updates contexts for the elements of a `ModelContainer` property.
+    ///
+    /// **Must be called with the hierarchy lock held.** This method is always invoked from within
+    /// `stateTransaction.modify`, which acquires the lock before calling the closure. The `lock { }`
+    /// wrapper is intentionally absent to avoid a redundant re-entrant lock acquisition. Calling
+    /// this method without holding the lock is a data race and must never happen.
+    ///
+    /// The `hierarchyLockHeld: true` flag passed to `withContextAdded` further eliminates O(N)
+    /// per-element lock re-entries for the existing-elements fast path in `AnchorVisitor`.
     func updateContext<C: ModelContainer>(for container: inout C, at path: WritableKeyPath<M, C>) -> [AnyContext] {
         guard !isDestructed else { return [] }
 
-        return lock {
-            let prevChildren = (children[path] ?? [:])
-            let prevRefs = Set(prevChildren.keys)
+        // Called from stateTransaction.modify — lock already held. No lock { } wrapper needed.
+        let prevChildren = (children[path] ?? [:])
+        let prevRefs = Set(prevChildren.keys)
 
-            modelRefs.removeAll(keepingCapacity: true)
-            container.withContextAdded(context: self, containerPath: path, elementPath: \.self, includeSelf: false)
+        modelRefs.removeAll(keepingCapacity: true)
+        // hierarchyLockHeld: true lets AnchorVisitor skip N redundant recursive lock re-entries
+        // for existing elements, using the inlined findOrTrackChildLocked fast path instead.
+        container.withContextAdded(context: self, containerPath: path, elementPath: \.self, includeSelf: false, hierarchyLockHeld: true)
 
-            let oldRefs = prevRefs.subtracting(modelRefs)
-            return oldRefs.map { prevChildren[$0]! }
-        }
+        let oldRefs = prevRefs.subtracting(modelRefs)
+        return oldRefs.map { prevChildren[$0]! }
     }
 
     /// Model-keypath transaction for undo restore of Model/ModelContainer-typed properties.
@@ -980,6 +990,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             if let child = childModel.modelContext.context {
                 child.addParent(self, callbacks: &postLockCallbacks)
                 children[containerPath, default: [:]][modelRef] = child
+                // Only update myModelRef for same-hierarchy children (child.lock === self.lock).
+                // Cross-hierarchy children (e.g. re-anchoring into a different test's hierarchy)
+                // must not have their myModelRef overwritten under a foreign lock, as that would
+                // race with findOrTrackChild reading myModelRef under the child's own lock.
+                if child.lock === self.lock {
+                    child.myModelRef = modelRef
+                }
                 return child
             } else {
                 // Ensure that DependencyValues._current reflects this context's own captured
@@ -995,9 +1012,68 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                     Context<Child>(model: childModel, lock: lock, dependencies: nil, parent: self)
                 }
                 children[containerPath, default: [:]][modelRef] = child
+                child.myModelRef = modelRef
                 return child
             }
         }
+    }
+
+    /// Fast-path check used by `AnchorVisitor` during container traversal.
+    ///
+    /// If the child model already has a live context that is registered under `containerPath`
+    /// in this parent, inserts the child's `ModelRef` into `modelRefs` (required for the
+    /// set-subtraction diff in `updateContext`) and returns the registered context.
+    ///
+    /// Returning non-nil with `existing === childModel.context` means the element is fully
+    /// up-to-date — the caller can skip all remaining work, including key-path construction.
+    /// Returning nil (or non-nil but context mismatch) falls through to the full `childContext`
+    /// slow path, which constructs the element key path and registers a new context.
+    ///
+    /// - Complexity: O(1) — uses the child context's stored `myModelRef` key, avoiding any
+    ///   key-path composition (`elementPath.appending(path:)`) for already-registered elements.
+    func findOrTrackChild<C: ModelContainer, Child: Model>(
+        containerPath: WritableKeyPath<M, C>,
+        childModel: Child
+    ) -> Context<Child>? {
+        lock {
+            // Look up the child's live context. If it has a stored modelRef, check whether
+            // it's actually registered under this parent at the given containerPath.
+            guard let existing = childModel.modelContext.context,
+                  // Only use the fast path when the child shares our lock (same hierarchy).
+                  // If locks differ (e.g. re-anchoring, cross-test shared dependency),
+                  // reading `existing.myModelRef` without `existing`'s lock is a data race.
+                  existing.lock === self.lock,
+                  let modelRef = existing.myModelRef,
+                  children[containerPath]?[modelRef] === existing
+            else { return nil }
+            // Found: track in modelRefs so this element is not mistakenly treated as removed.
+            modelRefs.insert(modelRef)
+            return existing
+        }
+    }
+
+    /// Like `findOrTrackChild` but assumes the hierarchy lock is already held by the caller.
+    ///
+    /// Use this instead of `findOrTrackChild` when the hierarchy lock is known to be held
+    /// (e.g., from within `stateTransaction`). This eliminates the redundant re-entrant
+    /// `lock { }` acquisition, saving ~N × 2 × NSRecursiveLock.lock/unlock calls during
+    /// container traversal in `updateContext`.
+    ///
+    /// **Thread safety**: all accessed state (`myModelRef`, `children`, `modelRefs`) is
+    /// protected by the hierarchy lock. This method assumes the caller holds the lock; calling
+    /// it without the lock held is a data race.
+    func findOrTrackChildLocked<C: ModelContainer, Child: Model>(
+        containerPath: WritableKeyPath<M, C>,
+        childModel: Child
+    ) -> Context<Child>? {
+        // No lock { } — hierarchy lock already held by caller.
+        guard let existing = childModel.modelContext.context,
+              existing.lock === self.lock,
+              let modelRef = existing.myModelRef,
+              children[containerPath]?[modelRef] === existing
+        else { return nil }
+        modelRefs.insert(modelRef)
+        return existing
     }
 }
 

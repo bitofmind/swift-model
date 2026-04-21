@@ -20,6 +20,18 @@ class AnyContext: @unchecked Sendable {
     var children: OrderedDictionary<AnyKeyPath, OrderedDictionary<ModelRef, AnyContext>> = [:]
     var dependencyContexts: [ObjectIdentifier: AnyContext] = [:]
     var dependencyCache: [AnyHashable: Any] = [:]
+    /// The `ModelRef` key under which this context is registered in its parent's `children` dict.
+    /// Set by `childContext` when the context is first inserted. Used by `findOrTrackChild` as an
+    /// O(1) fast path: instead of constructing the element key path to do a dict lookup, we look
+    /// up the child's already-stored ModelRef directly via the child's live context pointer.
+    ///
+    /// **Thread safety**: both the write (in `childContext`) and the read (in `findOrTrackChild`)
+    /// are guarded by the hierarchy lock AND require that the accessing context shares the same
+    /// lock as this context (`child.lock === self.lock`). Cross-hierarchy accesses are rejected by
+    /// the `existing.lock === self.lock` guard in `findOrTrackChild` and by the matching guard in
+    /// `childContext`, so no concurrent cross-lock read/write of this field can occur.
+    /// `nonisolated(unsafe)`: locking discipline is enforced at the call sites.
+    nonisolated(unsafe) var myModelRef: ModelRef?
 
     private var modeLifeTime: ModelLifetime = .anchored
 
@@ -610,10 +622,10 @@ class AnyContext: @unchecked Sendable {
     // the recursive `reduce` helper. Deduplication prevents processing a context twice
     // in cases where a model is reachable via multiple paths (e.g. shared models, or a
     // model that is both a dependency and a child).
-    func reduceHierarchy<Result, Element>(for relation: ModelRelation, transform: (AnyContext) throws -> Element?, into initialResult: Result, _ updateAccumulatingResult: (inout Result, Element) throws -> ()) rethrows -> Result {
+    func reduceHierarchy<Result, Element>(for relation: ModelRelation, observeParents: Bool = true, transform: (AnyContext) throws -> Element?, into initialResult: Result, _ updateAccumulatingResult: (inout Result, Element) throws -> ()) rethrows -> Result {
         var result = initialResult
         var uniques = Set<ObjectIdentifier>()
-        try reduce(for: relation, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
+        try reduce(for: relation, observeParents: observeParents, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
         return result
     }
 
@@ -629,16 +641,20 @@ class AnyContext: @unchecked Sendable {
     //   each visited context are also included.
     // - `uniques` prevents visiting the same context more than once across the entire
     //   traversal (important for shared models and multi-parent scenarios).
-    // - When a relation includes `.parent` or `.ancestors`, `observedParents` is used instead
-    //   of `parents` so that any active observation tracking (AccessCollector, ObservationRegistrar,
-    //   ViewAccess) registers a dependency on the parents relationship itself. This means that
-    //   adding or removing a parent will trigger re-evaluation in observers.
-    private func reduce<Result, Element>(for relation: ModelRelation, transform: (AnyContext) throws -> Element?, into result: inout Result, updateAccumulatingResult: (inout Result, Element) throws -> (), uniques: inout Set<ObjectIdentifier>) rethrows {
+    // - When a relation includes `.parent` or `.ancestors` AND `observeParents` is true,
+    //   `observedParents` is used instead of `parents` so that any active observation tracking
+    //   (AccessCollector, ObservationRegistrar, ViewAccess) registers a dependency on the
+    //   parents relationship. This means adding or removing a parent triggers re-evaluation in
+    //   observers. Pass `observeParents: false` for traversals that don't need observation
+    //   (e.g. event routing via `sendEvent`).
+    private func reduce<Result, Element>(for relation: ModelRelation, observeParents: Bool = true, transform: (AnyContext) throws -> Element?, into result: inout Result, updateAccumulatingResult: (inout Result, Element) throws -> (), uniques: inout Set<ObjectIdentifier>) rethrows {
         // Read parents under lock to avoid data races on the weakParents array.
         // Use observedParents (instead of plain `parents`) when the traversal needs to walk
-        // upward — this registers the read with any active observation tracking so that
-        // adding/removing a parent triggers re-evaluation.
-        let parents = lock(relation.contains(.parent) || relation.contains(.ancestors) ? observedParents : parents)
+        // upward AND observation registration is requested — this registers the read with any
+        // active observation tracking so that adding/removing a parent triggers re-evaluation.
+        // For event routing (sendEvent), observation is not needed and skipped via observeParents: false.
+        let needsParents = relation.contains(.parent) || relation.contains(.ancestors)
+        let parents = lock(needsParents && observeParents ? observedParents : self.parents)
 
         // Preserve the dependencies flag so it propagates to all levels of the traversal.
         let dependencies: ModelRelation = relation.contains(.dependencies) ? .dependencies : []
@@ -655,10 +671,10 @@ class AnyContext: @unchecked Sendable {
             if relation.contains(.ancestors) {
                 // Continue upward traversal: pass [.self, .ancestors] so each ancestor is
                 // processed and the walk keeps going towards the root.
-                try parent.reduce(for: dependencies.union([.self, .ancestors]), transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
+                try parent.reduce(for: dependencies.union([.self, .ancestors]), observeParents: observeParents, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
             } else if relation.contains(.parent) {
                 // One-hop upward: pass .self only so the parent is processed but no further.
-                try parent.reduce(for: dependencies.union(.self), transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
+                try parent.reduce(for: dependencies.union(.self), observeParents: observeParents, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
             }
         }
 
@@ -670,17 +686,20 @@ class AnyContext: @unchecked Sendable {
         // Walk downward: descendants (all levels) or children (one hop).
         if relation.contains(.descendants) {
             for child in children {
-                try child.reduce(for: dependencies.union([.self, .descendants]), transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
+                try child.reduce(for: dependencies.union([.self, .descendants]), observeParents: observeParents, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
             }
         } else if relation.contains(.children) {
             for child in children {
-                try child.reduce(for: dependencies.union(.self), transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
+                try child.reduce(for: dependencies.union(.self), observeParents: observeParents, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
             }
         }
     }
 
     func sendEvent(_ eventInfo: EventInfo, to relation: ModelRelation) {
-        reduceHierarchy(for: relation, transform: \.self, into: ()) { _, context in
+        // observeParents: false — event routing never needs to register observation dependencies
+        // on the parent relationship. Using plain `parents` (not `observedParents`) avoids the
+        // `willAccessParents()` call at every level, reducing lock hold time and observation overhead.
+        reduceHierarchy(for: relation, observeParents: false, transform: \.self, into: ()) { _, context in
             for continuation in context.eventContinuations.values {
                 continuation.yield(eventInfo)
             }
