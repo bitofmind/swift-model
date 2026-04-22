@@ -16,6 +16,14 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
+    // Protects `weakParents` independently of the hierarchy lock.
+    // Writers (addParent / removeParent) hold BOTH locks (hierarchy lock already held by caller,
+    // then parentsLock). Event-routing reads (sendEvent / nearestDependencyContext) hold ONLY
+    // parentsLock, so they never contend with concurrent property reads/writes (hierarchy lock).
+    // Observation-path reads (observedParents) use the hierarchy lock, which is sufficient
+    // because writers always hold the hierarchy lock when parentsLock is taken — no concurrent
+    // write can be racing an observation read.
+    private let parentsLock = NSLock()
     private(set) var weakParents: [WeakParent] = []
     var children: OrderedDictionary<AnyKeyPath, OrderedDictionary<ModelRef, AnyContext>> = [:]
     var dependencyContexts: [ObjectIdentifier: AnyContext] = [:]
@@ -307,20 +315,25 @@ class AnyContext: @unchecked Sendable {
 
     func addParent(_ parent: AnyContext, callbacks: inout [() -> Void]) {
         willModifyParents()
-        weakParents.append(WeakParent(parent: parent))
+        parentsLock { weakParents.append(WeakParent(parent: parent)) }
         anyModificationActiveCount += parent.anyModificationActiveCount
         didModifyParents(callbacks: &callbacks)
     }
 
     func removeParent(_ parent: AnyContext, callbacks: inout [() -> Void]) {
         willModifyParents()
-        for i in weakParents.indices {
-            if weakParents[i].parent === parent {
-                weakParents.remove(at: i)
-                anyModificationActiveCount -= parent.anyModificationActiveCount
-
-                break
+        var found = false
+        parentsLock {
+            for i in weakParents.indices {
+                if weakParents[i].parent === parent {
+                    weakParents.remove(at: i)
+                    found = true
+                    break
+                }
             }
+        }
+        if found {
+            anyModificationActiveCount -= parent.anyModificationActiveCount
         }
 
         didModifyParents(callbacks: &callbacks)
@@ -648,13 +661,25 @@ class AnyContext: @unchecked Sendable {
     //   observers. Pass `observeParents: false` for traversals that don't need observation
     //   (e.g. event routing via `sendEvent`).
     private func reduce<Result, Element>(for relation: ModelRelation, observeParents: Bool = true, transform: (AnyContext) throws -> Element?, into result: inout Result, updateAccumulatingResult: (inout Result, Element) throws -> (), uniques: inout Set<ObjectIdentifier>) rethrows {
-        // Read parents under lock to avoid data races on the weakParents array.
-        // Use observedParents (instead of plain `parents`) when the traversal needs to walk
-        // upward AND observation registration is requested — this registers the read with any
-        // active observation tracking so that adding/removing a parent triggers re-evaluation.
-        // For event routing (sendEvent), observation is not needed and skipped via observeParents: false.
+        // Read parents under the appropriate lock for the traversal kind.
+        // - Observation traversals use the hierarchy lock via `lock(observedParents)` so that
+        //   adding/removing a parent triggers re-evaluation in observers.
+        // - Event-routing traversals (observeParents: false) use only `parentsLock` — a
+        //   dedicated lightweight lock that is independent of the hierarchy lock used for
+        //   property reads/writes. This eliminates lock contention between sendEvent and
+        //   concurrent property mutations (e.g. a forEach Task updating state while events fly).
+        // - When no parent traversal is needed, skip both lock acquisitions entirely.
         let needsParents = relation.contains(.parent) || relation.contains(.ancestors)
-        let parents = lock(needsParents && observeParents ? observedParents : self.parents)
+        let parents: [AnyContext]
+        if needsParents {
+            if observeParents {
+                parents = lock(observedParents)
+            } else {
+                parents = parentsLock { weakParents.compactMap(\.parent) }
+            }
+        } else {
+            parents = []
+        }
 
         // Preserve the dependencies flag so it propagates to all levels of the traversal.
         let dependencies: ModelRelation = relation.contains(.dependencies) ? .dependencies : []
@@ -804,7 +829,7 @@ class AnyContext: @unchecked Sendable {
                 return dep
             }
             if ctx === rootParent { break }
-            current = ctx.weakParents.first?.parent
+            current = ctx.parentsLock { ctx.weakParents.first?.parent }
         }
         return nil
     }
