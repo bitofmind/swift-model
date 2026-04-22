@@ -78,12 +78,31 @@ private struct MakeInitialTransformer: ModelTransformer {
 
 private struct MakeInitialDependencyCopyTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
+        // Capture the original reference BEFORE shallowCopy may convert an anchored model
+        // to a frozen snapshot. shallowCopy creates a brand-new Reference with no genesis,
+        // losing the original's _genesisState. We need the original to recover genesis.
+        // For pre-anchor models, shallowCopy returns self unchanged, so originalRef === srcRef.
+        let originalRef = model.modelContext._source.reference
         model = model.shallowCopy
         // Create a fresh Reference with a new identity and copy state from the frozen copy.
         // Without state, Context.init's `hasState` assertion would fire when anchoring this copy.
         let srcRef = model.modelContext._source.reference
-        guard !srcRef._stateCleared else { return }
-        let newRef = Context<M>.Reference(modelID: .generate(), state: srcRef.state)
+        // Prefer genesis state when available — matching reserveOrFork() — so that a fresh
+        // dependency copy always starts from the clean initial state, not from mutations
+        // made by a concurrently-running test that has the same static `testValue` anchored.
+        // Use originalRef for genesis since shallowCopy may have replaced srcRef with a
+        // frozen snapshot reference that has no _hasGenesis/_genesisState of its own.
+        // If state has been cleared post-TTL but genesis was captured, genesis is also used.
+        // If neither live state nor genesis is available, bail out and leave model.context
+        // intact; setupModelDependency guards against this residual non-nil context.
+        let genesisRef = originalRef._hasGenesis ? originalRef : srcRef
+        guard !srcRef._stateCleared || genesisRef._hasGenesis else { return }
+        let sourceState = genesisRef._hasGenesis ? genesisRef._genesisState : srcRef.state
+        let newRef = Context<M>.Reference(modelID: .generate(), state: sourceState)
+        if genesisRef._hasGenesis {
+            newRef._genesisState = genesisRef._genesisState
+            newRef._hasGenesis = true
+        }
         model.modelContext.setReference(newRef)
     }
 }

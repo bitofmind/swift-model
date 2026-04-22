@@ -147,6 +147,21 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     // Same as dependencyMetadataUpdates but for preference storage writes on dependency models.
     private var dependencyPreferenceUpdates: [DependencyMetadataKey: ValueUpdate] = [:]
 
+    // Per-(context, path) write-ordering counters. Keyed by the same DependencyMetadataKey
+    // used for dependency storage so we re-use the existing struct.
+    //
+    // Each didModify call captures `context.modificationCount` (already post-incremented
+    // before invokeDidModifyDirect is called) as `mySeqNum`. The post-lock closure then
+    // checks — under the TestAccess lock — whether a later modification (higher seqNum) has
+    // already written for this (context, path) pair. If so, the earlier closure's write is
+    // discarded, preventing a stale value from permanently corrupting `lastState`.
+    //
+    // This is the fix for the following race with 10 concurrent `count += 1` calls:
+    //   T1 modifies count to 1 (seqNum=1), releases lock, closure reads count=1 (before T10).
+    //   T10 modifies count to 10 (seqNum=10), closure writes lastState.count=10.
+    //   T1's closure acquires TestAccess lock after T10 → seqNum=1 < lastWritten=10 → rejected.
+    private var lastWriteSeqNums: [DependencyMetadataKey: Int] = [:]
+
     var events: [Event] = []
     var probes: [TestProbe] = []
     let fileAndLine: FileAndLine
@@ -474,6 +489,19 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         let precomputedStorage: Any? = threadLocals.precomputedStorageValue
         let precomputedPreference: Any? = threadLocals.precomputedPreferenceValue
 
+        // Capture a monotonically-increasing sequence number for this modification.
+        // AnyContext.didModify() (which increments _modificationCount) is called immediately
+        // before invokeDidModifyDirect, so modificationCount already reflects this write.
+        // The post-lock closure uses mySeqNum — under the TestAccess lock — to reject stale
+        // writes: if a LATER modification (higher seqNum) has already written lastState for
+        // this (context, path) pair, this earlier closure's write is silently discarded.
+        //
+        // NOTE: rootPaths CANNOT be captured here — see the deadlock comment above.
+        // NOTE: context.modificationCount acquires context.lock (NSRecursiveLock); safe here
+        //       because NSRecursiveLock supports re-entrant acquisition on the same thread.
+        let mySeqNum = context.modificationCount
+        let contextPathKey = DependencyMetadataKey(contextID: ObjectIdentifier(context), path: path)
+
         return { [weak self] in
             guard let self else { return }
 
@@ -511,6 +539,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     value = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
                 }
                 self.lock {
+                    guard (self.lastWriteSeqNums[key] ?? 0) < mySeqNum else { return }
+                    self.lastWriteSeqNums[key] = mySeqNum
                     let update = ValueUpdate(
                         apply: { _ in },  // dependency storage not in Root snapshot
                         debugInfo: { "\(String(describing: M.self)).\(prefix).\(name ?? "UNKNOWN") == \(String(customDumping: value))" },
@@ -548,6 +578,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 value = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
             }
             self.lock {
+                guard (self.lastWriteSeqNums[contextPathKey] ?? 0) < mySeqNum else { return }
+                self.lastWriteSeqNums[contextPathKey] = mySeqNum
                 for fullPath in fullPaths {
                     // Private properties are not tracked for exhaustivity: tests cannot observe
                     // them from outside the declaring type, so requiring assertions would produce

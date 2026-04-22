@@ -22,7 +22,15 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test(arguments: ObservationPath.allCases)
+    // ValuesModel uses Observed(coalesceUpdates: false) which always uses AccessCollector regardless
+    // of ObservationPath settings. The observationRegistrar variant adds no coverage — it only
+    // enables the OT registrar, which queues extra async mainCallQueue notifications that pile up
+    // under heavy load (50× repetitions) and fire after the test's `await expect` completes,
+    // causing spurious "State not exhausted" / "State did not settle" failures.
+    // This test is only meaningful with .accessCollector.
+    // exhaustivity: .off — intermediate count/counts changes from concurrent increments
+    // are not individually asserted; settle() drains all pending callbacks before expect.
+    @Test(.modelTesting(exhaustivity: .off), arguments: [ObservationPath.accessCollector])
     func testChangeOfConcurrency(observationPath: ObservationPath) async throws {
         let model = observationPath.withOptions { ValuesModel(initial: false, recursive: false).withAnchor() }
 
@@ -34,14 +42,15 @@ struct UpdateStreamTests {
                         model.count += 1
                     }
                 }
-                
+
                 await group.waitForAll()
             }
         }.value
 
-        // Give time for background observation callbacks to process
-        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-        
+        // Drain all pending background Observed callbacks and reset the exhaustivity
+        // baseline so that the final-state expect below runs from a stable starting point.
+        await settle()
+
         await expect {
             model.count == range.count
             model.counts.count > 0

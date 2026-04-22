@@ -182,14 +182,14 @@ struct ModelInitAccessorTests {
     // MARK: Pre-anchor mutations
 
     @Test func preAnchorMutation() async {
-        var m = SimpleCounterModel()
+        let m = SimpleCounterModel()
         m.count = 99
         let live = m.withAnchor()
         await expect { live.count == 99 }
     }
 
     @Test func preAnchorThenCustomInit() async {
-        var m = ActivationCountModel(activateCount: 3)
+        let m = ActivationCountModel(activateCount: 3)
         m.activateCount = 10
         let live = m.withAnchor()
         await expect { live.activateCount == 10 }
@@ -210,7 +210,7 @@ struct ModelInitAccessorTests {
     }
 
     @Test func mixedPreAnchorMutation() async {
-        var m = MixedModel(label: "pre")
+        let m = MixedModel(label: "pre")
         m.count = 3
         m.flag = true
         let live = m.withAnchor()

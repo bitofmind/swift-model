@@ -46,7 +46,10 @@ struct ModelDependencyTests {
             }
 
             model.child.dependency.value = 7
-            await expect(testResult.value.contains("->7"))
+            // Wait for BOTH existing children (id:1 and id:3) to receive the change.
+            // Waiting for only one "->7" would be racy: child 5 could be appended
+            // before the second callback fires, changing the expected ordering.
+            await expect(testResult.value.components(separatedBy: "->7").count >= 3)
 
             model.children.append(Child(id:5))
 
@@ -193,7 +196,9 @@ struct ModelDependencyTests {
     }
 
     @Test func testDefaultDependency() async throws {
-        #expect(Dependency.testValue.lifetime == .initial)
+        // Either .initial (first-ever process run) or .destructed (safe to re-anchor after
+        // a prior repetition of this test in the same process).
+        #expect(Dependency.testValue.lifetime == .initial || Dependency.testValue.lifetime == .destructed)
 
         let testResult = TestResult()
         await withModelTesting {

@@ -169,7 +169,7 @@ struct LazyContextBenchmarks {
     @Test func profileEagerAnchorFullWrite_loop() {
         let start = ContinuousClock.now
         for _ in 0..<100 {
-            var anchored = makeFeed(count: 2000).withAnchor()
+            let anchored = makeFeed(count: 2000).withAnchor()
             for i in anchored.posts.indices {
                 anchored.posts[i].title = "Updated"
             }
@@ -182,7 +182,7 @@ struct LazyContextBenchmarks {
     @Test func profileLazyAnchorFullWrite_loop() {
         let start = ContinuousClock.now
         for _ in 0..<100 {
-            var anchored = withModelOptions(.lazyChildContexts) { makeFeed(count: 2000).withAnchor() }
+            let anchored = withModelOptions(.lazyChildContexts) { makeFeed(count: 2000).withAnchor() }
             for i in anchored.posts.indices {
                 anchored.posts[i].title = "Updated"
             }

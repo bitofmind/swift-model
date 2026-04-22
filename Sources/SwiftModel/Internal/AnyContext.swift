@@ -58,12 +58,48 @@ class AnyContext: @unchecked Sendable {
         }
     }
     let useObservationRegistrar: Bool
-    /// Lazily-allocated registrars. Written once (nil → non-nil) under `lock`.
-    /// `nonisolated(unsafe)`: `AnyContext` is `@unchecked Sendable` with manual locking.
-    /// The unsynchronised outer read in the double-checked locking pattern is benign:
-    /// a false nil causes one extra lock + re-check; a false non-nil cannot occur.
-    nonisolated(unsafe) var mainObservationRegistrarStore: Any?
-    nonisolated(unsafe) var backgroundObservationRegistrarStore: Any?
+
+    /// Pairs both observation registrars in one heap allocation so that the
+    /// optional backing field below is pointer-sized (8 bytes), enabling safe
+    /// double-checked locking on ARM64/x86-64 without a lock on the read path.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    private final class RegistrarPair: @unchecked Sendable {
+        let main: ObservationRegistrar
+        let background: ObservationRegistrar
+        init() {
+            main = ObservationRegistrar()
+            background = ObservationRegistrar()
+        }
+    }
+
+    /// Pointer-sized backing for both observation registrars.
+    /// `nonisolated(unsafe)`: written exactly once (nil → non-nil) under `lock`.
+    /// Safe for the unsynchronised double-checked fast-path read because
+    /// `Optional<AnyObject>` is a nullable pointer (8 bytes); naturally-aligned
+    /// 8-byte loads/stores are atomic on ARM64 and x86-64.
+    ///
+    /// The previous two `nonisolated(unsafe) var ... : Any?` fields (~40 bytes
+    /// each) were not safe: multi-word stores are non-atomic on ARM64, so a
+    /// concurrent unsynchronised read could observe a torn value — a partially
+    /// written existential container whose type-metadata or box pointer was
+    /// garbage. That garbage caused use-after-free / double-free crashes during
+    /// `AnyContext.deinit` when Swift released the corrupted `Any?` values.
+    nonisolated(unsafe) var _registrarPairStore: AnyObject?
+
+    /// Computed accessors that preserve the stored-property interface used by
+    /// test assertions (LazyContextFieldTests) and `willSet`/`didSet` fast paths.
+    var mainObservationRegistrarStore: Any? {
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            return (_registrarPairStore as? RegistrarPair)?.main
+        }
+        return nil
+    }
+    var backgroundObservationRegistrarStore: Any? {
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            return (_registrarPairStore as? RegistrarPair)?.background
+        }
+        return nil
+    }
     /// Lazily-allocated task registry. Written once (nil → non-nil) under `lock`.
     /// `nonisolated(unsafe)`: manual locking discipline (same as other lazy stores).
     nonisolated(unsafe) var cancellationsStore: Cancellations?
@@ -449,13 +485,13 @@ class AnyContext: @unchecked Sendable {
     /// Used from `willSet`/`didSet` — skip notification if no observer has ever called `access()`.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var mainObservationRegistrar: ObservationRegistrar? {
-        mainObservationRegistrarStore as? ObservationRegistrar
+        (_registrarPairStore as? RegistrarPair)?.main
     }
 
     /// Returns the background registrar if it has already been created; nil otherwise.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var backgroundObservationRegistrar: ObservationRegistrar? {
-        backgroundObservationRegistrarStore as? ObservationRegistrar
+        (_registrarPairStore as? RegistrarPair)?.background
     }
 
     // Backward compatibility: return main registrar
@@ -474,26 +510,21 @@ class AnyContext: @unchecked Sendable {
     /// `access()` call. Must only be called from the observation-tracking path.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var mainObservationRegistrarMakingIfNeeded: ObservationRegistrar {
-        if let r = mainObservationRegistrarStore as? ObservationRegistrar { return r }
+        // Fast path: atomic 8-byte pointer read — safe without synchronisation.
+        if let pair = _registrarPairStore as? RegistrarPair { return pair.main }
         return lock {
-            if mainObservationRegistrarStore == nil {
-                mainObservationRegistrarStore = ObservationRegistrar()
-                backgroundObservationRegistrarStore = ObservationRegistrar()
-            }
-            return mainObservationRegistrarStore as! ObservationRegistrar
+            if _registrarPairStore == nil { _registrarPairStore = RegistrarPair() }
+            return (_registrarPairStore as! RegistrarPair).main
         }
     }
 
     /// Returns the background registrar, creating both registrars lazily if needed.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var backgroundObservationRegistrarMakingIfNeeded: ObservationRegistrar {
-        if let r = backgroundObservationRegistrarStore as? ObservationRegistrar { return r }
+        if let pair = _registrarPairStore as? RegistrarPair { return pair.background }
         return lock {
-            if mainObservationRegistrarStore == nil {
-                mainObservationRegistrarStore = ObservationRegistrar()
-                backgroundObservationRegistrarStore = ObservationRegistrar()
-            }
-            return backgroundObservationRegistrarStore as! ObservationRegistrar
+            if _registrarPairStore == nil { _registrarPairStore = RegistrarPair() }
+            return (_registrarPairStore as! RegistrarPair).background
         }
     }
 
@@ -703,17 +734,21 @@ class AnyContext: @unchecked Sendable {
             }
         }
 
-        // Collect children (and dependency contexts if requested) under lock.
-        let children = lock {
-            self.children.values.flatMap { $0.values } + (relation.contains(.dependencies) ? Array(dependencyContexts.values) : [])
-        }
-
         // Walk downward: descendants (all levels) or children (one hop).
+        // Collect children under lock only when a downward traversal is actually needed —
+        // ancestor-only relations (e.g. sendEvent routing upward) skip this entirely,
+        // making them completely free of the hierarchy lock.
         if relation.contains(.descendants) {
+            let children = lock {
+                self.children.values.flatMap { $0.values } + (relation.contains(.dependencies) ? Array(dependencyContexts.values) : [])
+            }
             for child in children {
                 try child.reduce(for: dependencies.union([.self, .descendants]), observeParents: observeParents, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
             }
         } else if relation.contains(.children) {
+            let children = lock {
+                self.children.values.flatMap { $0.values } + (relation.contains(.dependencies) ? Array(dependencyContexts.values) : [])
+            }
             for child in children {
                 try child.reduce(for: dependencies.union(.self), observeParents: observeParents, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
             }
@@ -884,7 +919,11 @@ class AnyContext: @unchecked Sendable {
                     } else {
                         model = model.initialCopy
                     }
-                    assert(model.context == nil)
+                    // After the copy transforms above, context must be nil. It can still be non-nil
+                    // in the extreme edge case where _stateCleared AND _hasGenesis == false (e.g.
+                    // a reference that was cleared before its first anchoring). Guard defensively
+                    // rather than crashing — the dependency simply won't be registered this call.
+                    guard model.context == nil else { return }
                     let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
                     dependencyContexts[ObjectIdentifier(D.self)] = child
@@ -926,7 +965,8 @@ class AnyContext: @unchecked Sendable {
                     if model.context != nil {
                         model = model.initialDependencyCopy
                     }
-                    assert(model.context == nil)
+                    // Guard defensively — see equivalent comment at the other call site above.
+                    guard model.context == nil else { return }
                     let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
                     rootParent.dependencyContexts[depTypeID] = child

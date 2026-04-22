@@ -1216,9 +1216,14 @@ extension Context {
         /// Restores `state` from `_genesisState` if the Reference was previously destroyed.
         /// Must be called before `withContextAdded` so child-model traversal can read state.
         /// The full re-anchoring reset (`_isDestructed`, generation) happens in `setContext`.
+        ///
+        /// Always restores genesis (not just when `_stateCleared`) so that re-anchored
+        /// `static let testValue` models start from a clean initial state even while the
+        /// TTL window is open from a prior test run. Without this, a test that mutated the
+        /// model's state would leave those mutations visible to the next test.
         func prepareForReanchoring() {
             lock {
-                guard _isDestructed, _stateCleared, _hasGenesis else { return }
+                guard _isDestructed, _hasGenesis else { return }
                 state = _genesisState
                 _stateCleared = false
             }
@@ -1281,7 +1286,11 @@ extension Context {
                     // no self-referencing closures). `prepareForReanchoring()` may have already
                     // restored `state`, but ensure it is set here too in case the old
                     // Context.deinit ran between prepareForReanchoring and setContext.
-                    if _stateCleared, _hasGenesis {
+                    //
+                    // Always restore genesis regardless of `_stateCleared` — even when the
+                    // TTL window is still open (state not yet zeroed), the previous test's
+                    // mutations must not bleed into the next test's anchor.
+                    if _hasGenesis {
                         state = _genesisState
                         _stateCleared = false
                     }

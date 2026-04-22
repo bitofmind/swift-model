@@ -174,7 +174,7 @@ private struct InstallUndoVisitor<M: Model>: ModelVisitor, _ModelStateVisitor {
         // ContainerVisitor always calls with N == M (V.State == the model this visitor was
         // created for), so the unsafeBitCast from WritableKeyPath<N._ModelState, T> to
         // WritableKeyPath<M._ModelState, T> is safe.
-        let typedPath = unsafeBitCast(statePath, to: WritableKeyPath<M._ModelState, T>.self)
+        let typedPath = unsafeDowncast(statePath, to: WritableKeyPath<M._ModelState, T>.self)
         guard shouldInstall(statePath: typedPath) else { return }
         // Model/ModelContainer-typed properties need initialCopy so restored values can be
         // re-anchored by the context assignment path (frozenCopy would be rejected by the setter).
