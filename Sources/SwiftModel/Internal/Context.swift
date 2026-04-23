@@ -680,7 +680,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar,
            !(threadLocals.isInsideAsyncPerformUpdate && cachedActive != nil) {
             let observer = _StateObserver<M._ModelState>()
-            let observerKP = (\_StateObserver<M._ModelState>._state).appending(path: statePath)
+            // Cache the appended KP to avoid a heap allocation on every read.
+            // `appending(path:)` constructs a new KeyPath object each call (~1.7 μs);
+            // caching by AnyKeyPath equality gives O(1) warm-path reads at ~15-20 ns.
+            let observerKP: KeyPath<_StateObserver<M._ModelState>, T> = _cachedStateObserverKP(for: statePath as AnyKeyPath) {
+                (\_StateObserver<M._ModelState>._state).appending(path: statePath)
+            }
             if isOnMainThread {
                 mainObservationRegistrarMakingIfNeeded.access(observer, keyPath: observerKP)
             } else {
@@ -705,7 +710,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar {
             let observer = _StateObserver<M._ModelState>()
-            nonisolated(unsafe) let observerKP = (\_StateObserver<M._ModelState>._state).appending(path: statePath)
+            // Use cached KP to avoid per-write appending(path:) allocation (same rationale as willAccessDirect).
+            nonisolated(unsafe) let observerKP: KeyPath<_StateObserver<M._ModelState>, T> = _cachedStateObserverKP(for: statePath as AnyKeyPath) {
+                (\_StateObserver<M._ModelState>._state).appending(path: statePath)
+            }
             let sendableStatePath: (WritableKeyPath<M._ModelState, T> & Sendable)? = activeAccess != nil ? unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self) : nil
             if threadLocals.pendingObservationNotifications != nil {
                 // Batched: defer registrar notifications, collect activeAccess callback immediately.

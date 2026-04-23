@@ -95,6 +95,49 @@ struct _StateObserver<State>: Observable, Sendable {
     subscript(memoizeKey _: AnyHashableSendable) -> AnyHashableSendable { fatalError() }
 }
 
+// MARK: - _stateObserverKPCache
+
+/// Process-wide cache: `_ModelState` state-path KP → `_StateObserver`-prefixed KP for registrar calls.
+///
+/// `(\_StateObserver<M._ModelState>._state).appending(path: statePath)` allocates a new heap
+/// `KeyPath` object on every call (~1.7 μs). Since `statePath` is a literal keypath (same value
+/// for the same property across all calls), caching by `AnyKeyPath` value equality eliminates
+/// the per-call allocation. One write per property per process lifetime; all subsequent accesses
+/// are cache hits.
+///
+/// `LockIsolated` cannot be used here because its `withValue` closure is `@Sendable`, which
+/// requires captured types and the return type to be provably `Sendable`. `KeyPath<_StateObserver<State>, T>`
+/// cannot be proven `Sendable` for unconstrained `T` under Swift 6 strict concurrency.
+/// `@unchecked Sendable` is safe: the lock ensures mutual exclusion for all cache mutations.
+@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+private final class _StateObserverKPCacheStorage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cache = [AnyKeyPath: AnyObject]()
+
+    func getOrInsert<State, T>(
+        _ key: AnyKeyPath,
+        make: () -> KeyPath<_StateObserver<State>, T>
+    ) -> KeyPath<_StateObserver<State>, T> {
+        lock {
+            if let cached = cache[key] as? KeyPath<_StateObserver<State>, T> { return cached }
+            let kp = make()
+            cache[key] = kp
+            return kp
+        }
+    }
+}
+
+@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+private let _stateObserverKPCacheStorage = _StateObserverKPCacheStorage()
+
+@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+func _cachedStateObserverKP<State, T>(
+    for key: AnyKeyPath,
+    make: () -> KeyPath<_StateObserver<State>, T>
+) -> KeyPath<_StateObserver<State>, T> {
+    _stateObserverKPCacheStorage.getOrInsert(key, make: make)
+}
+
 // MARK: - _ModelStateType
 
 /// Default `_ModelState` for `Model` types without any tracked `var` properties (non-macro types
