@@ -34,6 +34,17 @@ public struct ContainerVisitor<V: ModelVisitor> {
 }
 
 public extension ContainerVisitor {
+    /// Forwards `shouldSkipElement` to the underlying `ModelVisitor`.
+    ///
+    /// `ModelContainer.visit` implementations call this **before** constructing a cursor for each
+    /// element. When the visitor returns `true`, the container skips cursor construction entirely.
+    /// Dispatches via the `ModelVisitor` witness table, so `AnchorVisitor`'s override is called.
+    mutating func shouldSkipElement<T: Model>(element: T, id: AnyHashable) -> Bool {
+        modelVisitor.shouldSkipElement(element: element, id: id)
+    }
+}
+
+public extension ContainerVisitor {
     /// Visits a child whose concrete type is not known statically.
     ///
     /// Use this in generic `ModelContainer` implementations (such as `Array` or `Dictionary`)

@@ -10,6 +10,14 @@ public protocol ModelVisitor<State> {
     /// The default implementation delegates to `visit(path:)`, preserving backward compatibility
     /// for all existing `ModelVisitor` conformers that have no need for visibility information.
     mutating func visit<T>(path: WritableKeyPath<State, T>, visibility: PropertyVisibility)
+    /// Called by `ModelContainer.visit` implementations **before** constructing a cursor for each
+    /// element. When this returns `true` the container skips cursor construction entirely,
+    /// eliminating the three heap allocations that `path(id:get:set:)` would otherwise produce.
+    ///
+    /// The default implementation returns `false`, preserving unchanged behaviour for all existing
+    /// `ModelVisitor` conformers. `AnchorVisitor` overrides this to implement the fast path for
+    /// already-registered container children during `updateContext` traversal.
+    mutating func shouldSkipElement<T: Model>(element: T, id: AnyHashable) -> Bool
 }
 
 public extension ModelVisitor {
@@ -18,6 +26,7 @@ public extension ModelVisitor {
     mutating func visit<T>(path: WritableKeyPath<State, T>, visibility: PropertyVisibility) {
         visit(path: path)
     }
+    mutating func shouldSkipElement<T: Model>(element: T, id: AnyHashable) -> Bool { false }
 }
 
 public extension ModelVisitor where State: Model {
@@ -227,5 +236,27 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
         } else {
             value[keyPath: path].withContextAdded(context: context, containerPath: containerPath, elementPath: elementPath.appending(path: path), includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
         }
+    }
+
+    /// Fast-path: returns `true` when the element is already registered and up-to-date so the
+    /// container can skip all cursor construction (3 heap allocations) for this element.
+    ///
+    /// Called from `ModelContainer.visit` before `path(id:get:set:)` cursor construction.
+    /// When `hierarchyLockHeld` is `true` (the common path from `updateContext`), uses the
+    /// lock-free `findOrTrackChildLocked`; otherwise acquires the lock via `findOrTrackChild`.
+    mutating func shouldSkipElement<T: Model>(element: T, id: AnyHashable) -> Bool {
+        // Guard: destructed/frozen copies are handled in the slow path visit<T:Model>(path:).
+        guard !element.lifetime.isDestructedOrFrozenCopy else { return false }
+        // Lazily-pending elements (have a creator but no context yet) must go through childContext
+        // so that onActivate() fires and they participate in the hierarchy.
+        if let childRef = element.modelContext.reference, childRef.hasLazyContextCreator { return false }
+
+        let existing: Context<T>? = hierarchyLockHeld
+            ? context.findOrTrackChildLocked(containerPath: containerPath, childModel: element)
+            : context.findOrTrackChild(containerPath: containerPath, childModel: element)
+        guard let existing else { return false }
+        // Only skip when the element's modelContext still points to the registered context.
+        // If they differ (re-anchoring case), fall through to the slow path.
+        return existing === element.modelContext.context
     }
 }

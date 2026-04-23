@@ -41,6 +41,14 @@ public extension MutableCollection where Self: ModelContainer, Element: Identifi
         for index in indices {
             let element = self[index]
             let id = threadLocals.withValue(true, at: \.forceDirectAccess) { element.id }
+            let anyID = AnyHashable(id)
+
+            // Fast path: if the element is already registered and up-to-date, skip all cursor
+            // construction (3 heap allocations: ContainerCursor + 2 @escaping closures).
+            // Only applies to direct Model elements; nested ModelContainers fall through.
+            if let model = element as? any Model, !(element is OptionalModel),
+               visitor.shouldSkipElement(element: model, id: anyID) { continue }
+
             let path = path(id: id) { collection in
                 if index >= collection.startIndex && index < collection.endIndex {
                     let element = collection[index]
@@ -77,6 +85,13 @@ extension IdentifiedArray: ModelContainer where Element: ModelContainer {
             // Guard against elements removed during traversal (e.g. when ImmediateClock
             // causes a synchronous task completion that mutates the array mid-visit).
             guard let element = self[id: id] else { continue }
+            let anyID = AnyHashable(id)
+
+            // Fast path: if the element is already registered and up-to-date, skip all cursor
+            // construction (3 heap allocations: ContainerCursor + 2 @escaping closures).
+            // Only applies to direct Model elements; nested ModelContainers fall through.
+            if let model = element as? any Model, !(element is OptionalModel),
+               visitor.shouldSkipElement(element: model, id: anyID) { continue }
 
             let path = path(id: id) { collection -> Element in
                 // Fall back to the captured snapshot if the element was removed
@@ -94,13 +109,22 @@ extension IdentifiedArray: ModelContainer where Element: ModelContainer {
 extension Dictionary: ModelContainer where Value: ModelContainer {
     public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) where Key: Sendable {
         for key in keys {
+            let element = self[key]!
+            let anyID = AnyHashable(key)
+
+            // Fast path: if the element is already registered and up-to-date, skip all cursor
+            // construction (3 heap allocations: ContainerCursor + 2 @escaping closures).
+            // Only applies to direct Model elements; nested ModelContainers fall through.
+            if let model = element as? any Model, !(element is OptionalModel),
+               visitor.shouldSkipElement(element: model, id: anyID) { continue }
+
             let path = path(id: key) { collection in
                 collection[key]!
             } set: { collection, value in
                 collection[key] = value
             }
 
-            visitor.visitDynamically(with: self[key]!, at: path)
+            visitor.visitDynamically(with: element, at: path)
         }
     }
 }
