@@ -159,10 +159,10 @@ func frozenCopy<T>(_ value: T) -> T {
     copy(value, shouldFreeze: true)
 }
 
-class ContainerCursor<ID: Hashable, Root, Value>: Hashable, @unchecked Sendable {
+struct ContainerCursor<ID: Hashable, Root, Value>: Hashable, @unchecked Sendable {
     let id: ID
-    let get: (Root) -> Value
-    let set: (inout Root, Value) -> Void
+    let get: @Sendable (Root) -> Value
+    let set: @Sendable (inout Root, Value) -> Void
 
     init(id: ID, get: @escaping @Sendable (Root) -> Value, set: @escaping @Sendable (inout Root, Value) -> Void) {
         self.id = id
