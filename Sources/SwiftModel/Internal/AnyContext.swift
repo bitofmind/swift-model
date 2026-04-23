@@ -59,11 +59,11 @@ class AnyContext: @unchecked Sendable {
     }
     let useObservationRegistrar: Bool
 
-    /// Pairs both observation registrars in one heap allocation so that the
-    /// optional backing field below is pointer-sized (8 bytes), enabling safe
-    /// double-checked locking on ARM64/x86-64 without a lock on the read path.
+    /// Pairs both observation registrars in one heap allocation.
+    /// Created lazily (via `RegistrarBox`) at the root context and shared by all children
+    /// in the tree, so that the whole hierarchy uses O(2) registrar instances instead of O(2N).
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-    private final class RegistrarPair: @unchecked Sendable {
+    final class RegistrarPair: @unchecked Sendable {
         let main: ObservationRegistrar
         let background: ObservationRegistrar
         init() {
@@ -72,31 +72,36 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    /// Pointer-sized backing for both observation registrars.
-    /// `nonisolated(unsafe)`: written exactly once (nil → non-nil) under `lock`.
-    /// Safe for the unsynchronised double-checked fast-path read because
-    /// `Optional<AnyObject>` is a nullable pointer (8 bytes); naturally-aligned
-    /// 8-byte loads/stores are atomic on ARM64 and x86-64.
-    ///
-    /// The previous two `nonisolated(unsafe) var ... : Any?` fields (~40 bytes
-    /// each) were not safe: multi-word stores are non-atomic on ARM64, so a
-    /// concurrent unsynchronised read could observe a torn value — a partially
-    /// written existential container whose type-metadata or box pointer was
-    /// garbage. That garbage caused use-after-free / double-free crashes during
-    /// `AnyContext.deinit` when Swift released the corrupted `Any?` values.
-    nonisolated(unsafe) var _registrarPairStore: AnyObject?
+    /// Lightweight container for the lazily-allocated `RegistrarPair`.
+    /// Created cheaply at the root context (1 allocation); the `RegistrarPair` inside
+    /// (3 allocations: class + 2 `ObservationRegistrar._Storage`) is only created on first
+    /// observation access, keeping activation cost low for unobserved models.
+    /// All child contexts inherit the same box reference — thread-safe as a `let` constant.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    final class RegistrarBox: @unchecked Sendable {
+        /// Lazily-populated pair. Written once (nil → non-nil) under the hierarchy lock.
+        /// `nonisolated(unsafe)`: locking discipline enforced at all call sites.
+        nonisolated(unsafe) var _pair: AnyObject?  // RegistrarPair?
+    }
 
-    /// Computed accessors that preserve the stored-property interface used by
-    /// test assertions (LazyContextFieldTests) and `willSet`/`didSet` fast paths.
+    /// Shared lazy box for the `ObservationRegistrar` pair for the entire model tree.
+    /// Created at the root context when `useObservationRegistrar` is true; all child
+    /// contexts inherit this same reference — thread-safe as a `let` constant.
+    /// Stored as `AnyObject?` to avoid an `@available` annotation on the stored property.
+    let _registrarBox: AnyObject?  // RegistrarBox?
+
+    /// Computed accessors exposing the individual registrars for callers that use
+    /// type-checked access (test assertions, willSet/didSet fast paths).
+    /// Returns nil when observation is disabled or before the first observation access.
     var mainObservationRegistrarStore: Any? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            return (_registrarPairStore as? RegistrarPair)?.main
+            return (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?.main
         }
         return nil
     }
     var backgroundObservationRegistrarStore: Any? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            return (_registrarPairStore as? RegistrarPair)?.background
+            return (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?.background
         }
         return nil
     }
@@ -462,8 +467,18 @@ class AnyContext: @unchecked Sendable {
         self.lock = lock
         self.options = parent?.options ?? ModelOption.current
         self.mainCallQueue = parent?.mainCallQueue ?? MainCallQueue()
-
         self.useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
+
+        // Share a single RegistrarBox across the whole tree. The box is cheap to create (1 alloc);
+        // the RegistrarPair inside is allocated lazily on first observation access.
+        // Children inherit the parent's reference; root creates a new box when obs is enabled.
+        if let parent {
+            self._registrarBox = parent._registrarBox
+        } else if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), self.useObservationRegistrar {
+            self._registrarBox = RegistrarBox()
+        } else {
+            self._registrarBox = nil
+        }
 
         if let parent {
             // During init, no observers exist yet, so callbacks can be discarded.
@@ -481,50 +496,50 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    /// Returns the main registrar if it has already been created; nil otherwise.
-    /// Used from `willSet`/`didSet` — skip notification if no observer has ever called `access()`.
+    /// Returns the main registrar if the pair has already been allocated, or nil otherwise.
+    /// `_registrarBox` is a `let` constant — safe to read from any thread.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var mainObservationRegistrar: ObservationRegistrar? {
-        (_registrarPairStore as? RegistrarPair)?.main
+        (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?.main
     }
 
-    /// Returns the background registrar if it has already been created; nil otherwise.
+    /// Returns the background registrar if the pair has already been allocated, or nil otherwise.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var backgroundObservationRegistrar: ObservationRegistrar? {
-        (_registrarPairStore as? RegistrarPair)?.background
+        (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?.background
     }
 
-    // Backward compatibility: return main registrar
+    // Backward compatibility alias.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var observationRegistrar: ObservationRegistrar? {
         mainObservationRegistrar
     }
 
-    /// True when observation registrars are enabled for this context (regardless of
-    /// whether they have been lazily created yet).
+    /// True when observation registrars are enabled for this context.
     var hasObservationRegistrar: Bool {
         useObservationRegistrar
     }
 
-    /// Returns the main registrar, creating both registrars lazily if this is the first
-    /// `access()` call. Must only be called from the observation-tracking path.
+    /// Returns the main registrar, allocating the `RegistrarPair` lazily on first call.
+    /// Only called when `useObservationRegistrar` is true, so `_registrarBox` is non-nil.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var mainObservationRegistrarMakingIfNeeded: ObservationRegistrar {
-        // Fast path: atomic 8-byte pointer read — safe without synchronisation.
-        if let pair = _registrarPairStore as? RegistrarPair { return pair.main }
+        let box = _registrarBox as! RegistrarBox
+        if let pair = box._pair as? RegistrarPair { return pair.main }
         return lock {
-            if _registrarPairStore == nil { _registrarPairStore = RegistrarPair() }
-            return (_registrarPairStore as! RegistrarPair).main
+            if box._pair == nil { box._pair = RegistrarPair() }
+            return (box._pair as! RegistrarPair).main
         }
     }
 
-    /// Returns the background registrar, creating both registrars lazily if needed.
+    /// Returns the background registrar. Only called when `useObservationRegistrar` is true.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var backgroundObservationRegistrarMakingIfNeeded: ObservationRegistrar {
-        if let pair = _registrarPairStore as? RegistrarPair { return pair.background }
+        let box = _registrarBox as! RegistrarBox
+        if let pair = box._pair as? RegistrarPair { return pair.background }
         return lock {
-            if _registrarPairStore == nil { _registrarPairStore = RegistrarPair() }
-            return (_registrarPairStore as! RegistrarPair).background
+            if box._pair == nil { box._pair = RegistrarPair() }
+            return (box._pair as! RegistrarPair).background
         }
     }
 

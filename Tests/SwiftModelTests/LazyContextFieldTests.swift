@@ -52,10 +52,14 @@ struct LazyContextFieldTests {
 
     // MARK: - ObservationRegistrar lazy allocation
 
+    /// With `RegistrarBox`, the `RegistrarPair` (3 allocations) is created lazily on first
+    /// observation access. The box itself is allocated cheaply at root anchor time.
     @Test func observationRegistrarNilBeforeFirstAccess() async {
         let model = LeafForLazyTests().withAnchor()
-        #expect(model.context?.mainObservationRegistrarStore == nil)
-        #expect(model.context?.backgroundObservationRegistrarStore == nil)
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            #expect(model.context?.mainObservationRegistrarStore == nil)
+            #expect(model.context?.backgroundObservationRegistrarStore == nil)
+        }
     }
 
     @Test func observationRegistrarAllocatesOnFirstObservationAccess() async {

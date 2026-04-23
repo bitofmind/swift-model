@@ -313,7 +313,7 @@ private extension ModelNode {
         // External tracking: notify observers that this property is being accessed.
         // Registrar call uses _StateObserver (no Model Observable conformance needed).
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            context.willAccessSyntheticPath(\_StateObserver<M._ModelState>[memoizeKey: key])
+            context.willAccessSyntheticPath(\_StateObserver<M._ModelState>[memoizeKey: key, modelID: context.reference.modelID])
         }
         // ViewAccess/AccessCollector/TestAccess tracking via active access:
         _$modelContext.willAccess(at: path)?()
@@ -537,7 +537,7 @@ private extension ModelNode {
 
                                         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
                                             callbacks.append {
-                                                context.invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[memoizeKey: key])
+                                                context.invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[memoizeKey: key, modelID: context.reference.modelID])
                                             }
                                         }
                                     }
@@ -582,7 +582,7 @@ private extension ModelNode {
 
                                 if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
                                     postCallbacks.append {
-                                        context.invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[memoizeKey: key])
+                                        context.invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[memoizeKey: key, modelID: context.reference.modelID])
                                     }
                                 }
                             }

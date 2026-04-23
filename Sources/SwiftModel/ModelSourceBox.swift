@@ -78,48 +78,64 @@ final class TypedPendingValue<V>: PendingValue, @unchecked Sendable {
 /// This wrapper provides an Observable subject type with `@dynamicMemberLookup` so that
 /// `\_StateObserver<_State>.count` is a valid keypath for registrar calls.
 ///
-/// The subscript is never called — only used for keypath construction. The registrar
-/// tracks by (registrar identity, AnyKeyPath), not by subject value.
+/// The subscripts are never called — only used for keypath construction. With the shared
+/// tree registrar (one `ObservationRegistrar` pair for the whole model hierarchy), per-instance
+/// and per-property identity is encoded in the keypath subscript arguments so that each
+/// `(registrar, keyPath)` pair is unique, preserving fine-grained observation semantics.
 @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
 struct _StateObserver<State>: Observable, Sendable {
-    /// Computed property enabling runtime keypath composition:
-    /// `\_StateObserver<State>._state.appending(path: stateKeyPath)`
-    /// produces `KeyPath<_StateObserver<State>, T>` for registrar calls.
-    var _state: State { fatalError("_StateObserver: keypath-only type") }
+    /// Per-instance + per-property subscript for direct state paths.
+    /// Arguments are raw pointer values (`ObjectIdentifier.rawValue`) so that UInt arguments
+    /// hash as trivial single integers — much cheaper than a compound `(ModelID, WritableKeyPath)`
+    /// key where the WritableKeyPath itself is a nested subscript argument.
+    /// Never called — used only for keypath construction.
+    subscript(contextID _: UInt, propID _: UInt) -> AnyHashable { fatalError() }
 
     /// Synthetic subscripts for non-`_State` observation paths.
+    /// `modelID` is included so that a single shared registrar can distinguish
+    /// observations from different context instances of the same type.
     /// Never called — used only for keypath construction.
-    subscript(environmentKey _: AnyHashableSendable) -> AnyHashableSendable { fatalError() }
-    subscript(preferenceKey _: AnyHashableSendable) -> AnyHashableSendable { fatalError() }
-    subscript(_parentsObservationKey _: _ParentsObservationKey) -> [ModelID] { fatalError() }
-    subscript(memoizeKey _: AnyHashableSendable) -> AnyHashableSendable { fatalError() }
+    subscript(environmentKey _: AnyHashableSendable, modelID _: ModelID) -> AnyHashableSendable { fatalError() }
+    subscript(preferenceKey _: AnyHashableSendable, modelID _: ModelID) -> AnyHashableSendable { fatalError() }
+    subscript(_parentsObservationKey _: _ParentsObservationKey, modelID _: ModelID) -> [ModelID] { fatalError() }
+    subscript(memoizeKey _: AnyHashableSendable, modelID _: ModelID) -> AnyHashableSendable { fatalError() }
 }
 
 // MARK: - _stateObserverKPCache
 
-/// Process-wide cache: `_ModelState` state-path KP → `_StateObserver`-prefixed KP for registrar calls.
+/// Process-wide cache: `(contextID, propID)` → `_StateObserver`-subscript KP for registrar calls.
 ///
-/// `(\_StateObserver<M._ModelState>._state).appending(path: statePath)` allocates a new heap
-/// `KeyPath` object on every call (~1.7 μs). Since `statePath` is a literal keypath (same value
-/// for the same property across all calls), caching by `AnyKeyPath` value equality eliminates
-/// the per-call allocation. One write per property per process lifetime; all subsequent accesses
-/// are cache hits.
+/// `\_StateObserver<M._ModelState>[contextID: contextID, propID: propID]` allocates a new heap
+/// `KeyPath` object on every call via `_swift_getKeyPath` (~1.7 μs). Since both IDs are stable
+/// for the lifetime of the context, caching by the compound `(contextID, propID)` pair eliminates
+/// the per-call allocation. One write per (property, model-instance) pair per process lifetime;
+/// all subsequent accesses are cache hits.
+///
+/// Cache size: O(instances × properties). For typical apps (dozens to hundreds of live instances,
+/// a handful of properties each) this is bounded and small. Entries are never evicted — the per-
+/// entry overhead is negligible.
 ///
 /// `LockIsolated` cannot be used here because its `withValue` closure is `@Sendable`, which
-/// requires captured types and the return type to be provably `Sendable`. `KeyPath<_StateObserver<State>, T>`
-/// cannot be proven `Sendable` for unconstrained `T` under Swift 6 strict concurrency.
+/// requires the return type to be provably `Sendable`. `KeyPath<_StateObserver<State>, AnyHashable>`
+/// cannot be proven `Sendable` under Swift 6 strict concurrency.
 /// `@unchecked Sendable` is safe: the lock ensures mutual exclusion for all cache mutations.
+@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+private struct _StateObserverKPKey: Hashable, Sendable {
+    let contextID: UInt  // UInt(bitPattern: ObjectIdentifier(context))
+    let propID: UInt     // UInt(bitPattern: ObjectIdentifier(statePath as AnyKeyPath))
+}
+
 @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
 private final class _StateObserverKPCacheStorage: @unchecked Sendable {
     private let lock = NSLock()
-    private var cache = [AnyKeyPath: AnyObject]()
+    private var cache = [_StateObserverKPKey: AnyObject]()
 
-    func getOrInsert<State, T>(
-        _ key: AnyKeyPath,
-        make: () -> KeyPath<_StateObserver<State>, T>
-    ) -> KeyPath<_StateObserver<State>, T> {
+    func getOrInsert<State>(
+        _ key: _StateObserverKPKey,
+        make: () -> KeyPath<_StateObserver<State>, AnyHashable>
+    ) -> KeyPath<_StateObserver<State>, AnyHashable> {
         lock {
-            if let cached = cache[key] as? KeyPath<_StateObserver<State>, T> { return cached }
+            if let cached = cache[key] as? KeyPath<_StateObserver<State>, AnyHashable> { return cached }
             let kp = make()
             cache[key] = kp
             return kp
@@ -131,11 +147,12 @@ private final class _StateObserverKPCacheStorage: @unchecked Sendable {
 private let _stateObserverKPCacheStorage = _StateObserverKPCacheStorage()
 
 @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-func _cachedStateObserverKP<State, T>(
-    for key: AnyKeyPath,
-    make: () -> KeyPath<_StateObserver<State>, T>
-) -> KeyPath<_StateObserver<State>, T> {
-    _stateObserverKPCacheStorage.getOrInsert(key, make: make)
+func _cachedStateObserverKP<State>(
+    contextID: UInt,
+    propID: UInt,
+    make: () -> KeyPath<_StateObserver<State>, AnyHashable>
+) -> KeyPath<_StateObserver<State>, AnyHashable> {
+    _stateObserverKPCacheStorage.getOrInsert(_StateObserverKPKey(contextID: contextID, propID: propID), make: make)
 }
 
 // MARK: - _ModelStateType
