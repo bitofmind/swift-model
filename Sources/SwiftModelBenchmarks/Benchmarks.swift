@@ -147,6 +147,67 @@ func benchContainerValueUpdate() {
     }
 }
 
+// MARK: - 5b2. Array hierarchy mutation ([BenchItem: @Model])
+
+/// Append one item to a live Array of N items, then remove it.
+/// `[BenchItem]` conforms to `ModelContainer` via `extension Array: ModelContainer where Element: ModelContainer & Identifiable`.
+/// Hot path: `MutableCollection.visit` with `shouldSkipElement` fast path (cursor skipped for existing elements).
+/// NOT the same path as `IdentifiedArrayOf<BenchItem>` (which uses `visitCollection`).
+func benchArrayHierarchyMutation() {
+    printHeader("5b2. Array hierarchy mutation ([BenchItem: @Model] via ModelContainer.visit+shouldSkipElement)")
+
+    for n in [0, 100, 500] {
+        var items: [BenchItem] = []
+        for i in 0..<n { items.append(BenchItem(id: i)) }
+        let (list, anchor) = BenchArrayList(items: items).returningAnchor()
+        let extraID = n  // unique id not in the list
+
+        measure("append+remove item (base n=\(n))", iterations: 2_000) {
+            list.items.append(BenchItem(id: extraID))
+            list.items.removeLast()
+        }
+
+        withExtendedLifetime(anchor) {}
+    }
+}
+
+// MARK: - 5c. ContainerCollection mutation (IdentifiedArray<@ModelContainer>)
+
+/// Append one BenchPath element to a live IdentifiedArray of N elements, then remove it.
+/// Hot path: Context.updateContextForContainerCollection diff — uses the cursor-free
+/// `AnchorVisitorForContainerElement` with `ModelRef(\C.self, id)` sentinel keys.
+func benchContainerCollectionMutation() {
+    printHeader("5c. ContainerCollection mutation (IdentifiedArray<@ModelContainer>)")
+
+    for n in [0, 100, 500] {
+        var paths: IdentifiedArrayOf<BenchPath> = []
+        for i in 0..<n { paths.append(.item(BenchItem(id: i))) }
+        let (list, anchor) = BenchContainerList(paths: paths).returningAnchor()
+        let extraID = n  // unique id not in the list
+
+        measure("append+remove path (base n=\(n))", iterations: 2_000) {
+            list.paths.append(.item(BenchItem(id: extraID)))
+            list.paths.remove(id: extraID)
+        }
+
+        withExtendedLifetime(anchor) {}
+    }
+
+    // Value-update: write back same live elements (no structural change).
+    for n in [0, 100, 500] {
+        var paths: IdentifiedArrayOf<BenchPath> = []
+        for i in 0..<n { paths.append(.item(BenchItem(id: i))) }
+        let (list, anchor) = BenchContainerList(paths: paths).returningAnchor()
+        let livePaths = list.paths  // capture live References
+
+        measure("value-update (n=\(n))", iterations: 2_000) {
+            list.paths = livePaths
+        }
+
+        withExtendedLifetime(anchor) {}
+    }
+}
+
 // MARK: - 6. Dependency access
 
 /// Access a dependency via `node.<name>` on a live model.

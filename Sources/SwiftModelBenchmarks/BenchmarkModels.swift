@@ -46,6 +46,38 @@ import IdentifiedCollections
     enum Event: Sendable { case updated }
 }
 
+// MARK: - Array list (Array<@Model>)
+
+/// Root model holding a plain Swift Array of children.
+/// `Array<BenchItem: @Model & Identifiable>` conforms to `ModelContainer` via the library's
+/// `extension Array: ModelContainer where Element: ModelContainer & Identifiable`.
+/// Uses the cursor-based `MutableCollection.visit` path with `shouldSkipElement` fast path.
+@Model struct BenchArrayList: Sendable {
+    var items: [BenchItem] = []
+}
+
+// MARK: - ContainerCollection (IdentifiedArray<@ModelContainer enum>)
+
+/// A @ModelContainer enum whose cases hold @Model children.
+/// Used to benchmark IdentifiedArray<BenchPath> — an IdentifiedArray of ModelContainer elements.
+@ModelContainer enum BenchPath: Identifiable, Sendable {
+    case item(BenchItem)
+    case counter(BenchCounter)
+
+    var id: Int {
+        switch self {
+        case .item(let m): return m.id
+        case .counter: return -1
+        }
+    }
+}
+
+/// Root model holding a wide IdentifiedArray of BenchPath elements.
+/// The IdentifiedArray is NOT itself ModelContainer — uses visitContainerCollection.
+@Model struct BenchContainerList: Sendable {
+    var paths: IdentifiedArrayOf<BenchPath> = []
+}
+
 // MARK: - onChange model
 
 /// Reacts to its own counter changes via onChange. Used to benchmark the observation / coalescing path.

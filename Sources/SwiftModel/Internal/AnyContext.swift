@@ -41,6 +41,13 @@ class AnyContext: @unchecked Sendable {
     /// `nonisolated(unsafe)`: locking discipline is enforced at the call sites.
     nonisolated(unsafe) var myModelRef: ModelRef?
 
+    /// Lazy map from a collection property's key path to an element-path maker closure.
+    /// Registered once per collection property on first `visitCollection` call.
+    /// Only consulted by `rootPathTree()` when `rootPaths` is queried (TestAccess / undo
+    /// observation). Never accessed in production. Protected by the hierarchy lock;
+    /// `nonisolated(unsafe)` since locking discipline is enforced at call sites.
+    nonisolated(unsafe) var collectionElementPathMakersStore: [AnyKeyPath: @Sendable (AnyHashable) -> AnyKeyPath]?
+
     private var modeLifeTime: ModelLifetime = .anchored
 
     private var eventContinuationsStore: [Int: AsyncStream<EventInfo>.Continuation]?
@@ -425,6 +432,19 @@ class AnyContext: @unchecked Sendable {
         case node([(childPath: AnyKeyPath, elementPath: AnyKeyPath, parentTree: RootPathTree)])
     }
 
+    /// Registers a lazy element-path maker for `collectionPath`. No-op if already registered.
+    /// Must be called under the hierarchy lock.
+    func registerCollectionElementPathMaker(
+        for collectionPath: AnyKeyPath,
+        maker: @Sendable @escaping (AnyHashable) -> AnyKeyPath
+    ) {
+        if collectionElementPathMakersStore == nil {
+            collectionElementPathMakersStore = [collectionPath: maker]
+        } else if collectionElementPathMakersStore![collectionPath] == nil {
+            collectionElementPathMakersStore![collectionPath] = maker
+        }
+    }
+
     /// Collects the raw path segments for this context. Must be called under the lock.
     private func rootPathTree() -> RootPathTree {
         if parents.isEmpty {
@@ -435,7 +455,17 @@ class AnyContext: @unchecked Sendable {
             parent.children.flatMap { childPath, modelRefs in
                 modelRefs.compactMap { modalRef, context -> (childPath: AnyKeyPath, elementPath: AnyKeyPath, parentTree: RootPathTree)? in
                     guard context === self else { return nil }
-                    return (childPath: childPath, elementPath: modalRef.elementPath, parentTree: parent.rootPathTree())
+                    // If a lazy element-path maker was registered for this collection
+                    // property (by visitCollection), use it to build the element-level
+                    // key path on demand. Without a maker, fall back to the stored
+                    // elementPath (cursor-based or sentinel \C.self for non-collection children).
+                    let elementPath: AnyKeyPath
+                    if let maker = parent.collectionElementPathMakersStore?[childPath] {
+                        elementPath = maker(modalRef.id)
+                    } else {
+                        elementPath = modalRef.elementPath
+                    }
+                    return (childPath: childPath, elementPath: elementPath, parentTree: parent.rootPathTree())
                 }
             }
         })

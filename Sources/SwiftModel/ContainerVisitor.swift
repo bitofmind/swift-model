@@ -88,6 +88,51 @@ public extension ContainerVisitor {
         modelVisitor.visit(path: path)
     }
 
+    /// Handles `MutableCollection` properties whose element type is `Model & Identifiable` but
+    /// that do not necessarily conform to `ModelContainer` (e.g. `IdentifiedArray`, custom
+    /// sorted-array types). More constrained than both `ModelContainer` and `Sequence`, so this
+    /// overload wins for any matching type.
+    mutating func visitStatically<C: MutableCollection>(at path: WritableKeyPath<V.State, C>)
+        where C: Sendable, C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        modelVisitor.visitCollection(path: path)
+    }
+
+    /// Disambiguation overload for collections that are BOTH `MutableCollection` and `ModelContainer`
+    /// (e.g. `Array<@Model>`) whose elements conform to `Model & Identifiable`. This breaks the
+    /// ambiguity between `T: ModelContainer & Sequence` and the `C: MutableCollection where
+    /// C.Element: Model` overload above — Swift cannot pick a winner without this tiebreaker.
+    ///
+    /// Routes to `visit(path:)` — same as `T: ModelContainer` — to preserve cursor-based removal
+    /// detection. This overload is called from within `@ModelContainer` enum `visit(with:)` bodies
+    /// (which use full paths). In that context, children must be stored under the enum's container
+    /// path so that `updateContext<C: ModelContainer>` can detect removed elements correctly.
+    /// For top-level `@Model` properties, the `statePath:` disambiguation overload wins instead,
+    /// using `_dispatchCollectionStatePath` (sentinel-keyed for `AnchorVisitor`).
+    mutating func visitStatically<C: MutableCollection & ModelContainer>(at path: WritableKeyPath<V.State, C>)
+        where C: Sendable, C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        modelVisitor.visit(path: path)
+    }
+
+    /// Handles `MutableCollection` properties whose element type is `ModelContainer & Identifiable`
+    /// but that do not themselves conform to `ModelContainer` (e.g. `IdentifiedArray` of a
+    /// `@ModelContainer` enum). More constrained than `Sequence`, so this overload wins for
+    /// any `MutableCollection` type whose elements are identifiable ModelContainers.
+    mutating func visitStatically<C: MutableCollection>(at path: WritableKeyPath<V.State, C>)
+        where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        modelVisitor.visitContainerCollection(path: path)
+    }
+
+    /// Disambiguation overload for collections that are BOTH `MutableCollection` and `ModelContainer`
+    /// (e.g. `Array<@ModelContainer>`) whose elements conform to `ModelContainer & Identifiable`
+    /// but not to `Model`. Breaks the ambiguity between `T: ModelContainer & Sequence` and the
+    /// `C: MutableCollection where C.Element: ModelContainer` overload above.
+    /// Routes to `visit(path:)` — same as `T: ModelContainer` — to preserve cursor-based
+    /// removal detection for arrays inside `@ModelContainer` enum cases.
+    mutating func visitStatically<C: MutableCollection & ModelContainer>(at path: WritableKeyPath<V.State, C>)
+        where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        modelVisitor.visit(path: path)
+    }
+
     mutating func visitStatically<T: Sequence>(at path: WritableKeyPath<V.State, T>) where T.Element: Model {
         reportIssue("Collection of models needs to conform to ModelContainer")
         modelVisitor.visit(path: path)
@@ -136,6 +181,32 @@ public extension ContainerVisitor {
 
     mutating func visitStatically<T: ModelContainer & Sequence>(at path: WritableKeyPath<V.State, T>, visibility: PropertyVisibility) {
         // Container-sequence properties: ignore visibility and recurse normally.
+        modelVisitor.visit(path: path)
+    }
+
+    mutating func visitStatically<C: MutableCollection>(at path: WritableKeyPath<V.State, C>, visibility: PropertyVisibility)
+        where C: Sendable, C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        // MutableCollection of Model elements: ignore visibility and traverse.
+        modelVisitor.visitCollection(path: path)
+    }
+
+    mutating func visitStatically<C: MutableCollection & ModelContainer>(at path: WritableKeyPath<V.State, C>, visibility: PropertyVisibility)
+        where C: Sendable, C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        // Disambiguation overload (Array<@Model>): use visit(path:) — cursor-based — same as T: ModelContainer.
+        // This is called from @ModelContainer enum visit(with:) bodies; cursor-based storage is required
+        // so that updateContext<C: ModelContainer> can detect removed elements correctly.
+        modelVisitor.visit(path: path)
+    }
+
+    mutating func visitStatically<C: MutableCollection>(at path: WritableKeyPath<V.State, C>, visibility: PropertyVisibility)
+        where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        // MutableCollection of ModelContainer elements: ignore visibility and traverse.
+        modelVisitor.visitContainerCollection(path: path)
+    }
+
+    mutating func visitStatically<C: MutableCollection & ModelContainer>(at path: WritableKeyPath<V.State, C>, visibility: PropertyVisibility)
+        where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        // Disambiguation overload (Array<@ModelContainer>): route to visit(path:) same as T: ModelContainer.
         modelVisitor.visit(path: path)
     }
 }
@@ -195,6 +266,65 @@ public extension ContainerVisitor where V.State: Model {
     mutating func visitStatically<T: ModelContainer & Sequence>(statePath: WritableKeyPath<V.State._ModelState, T>, visibility: PropertyVisibility) {
         _dispatchStatePath(statePath)
     }
+
+    mutating func visitStatically<C: MutableCollection>(statePath: WritableKeyPath<V.State._ModelState, C>)
+        where C: Sendable, C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        modelVisitor.visitCollection(statePath: statePath)
+    }
+
+    mutating func visitStatically<C: MutableCollection>(statePath: WritableKeyPath<V.State._ModelState, C>, visibility: PropertyVisibility)
+        where C: Sendable, C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        modelVisitor.visitCollection(statePath: statePath)
+    }
+
+    /// Disambiguation overload for collections that are BOTH `MutableCollection` and
+    /// `ModelContainer` (e.g. `Array<@Model>`) whose elements conform to `Model & Identifiable`.
+    /// Resolves the ambiguity between `T: ModelContainer` and the `C: MutableCollection where
+    /// C.Element: Model & Identifiable` overload above.
+    /// Routes via `_dispatchCollectionStatePath` — for `_ModelStateVisitor` types (e.g.
+    /// `InstallUndoVisitor`) this calls `_visitStatePath` so undo is registered; for other
+    /// visitors (e.g. `AnchorVisitor`) it falls through to `visitCollection(statePath:)`
+    /// (sentinel-keyed). A lazy element-path maker is registered in `visitCollection` so that
+    /// `rootPaths` still yields element-level paths for TestAccess/undo observation.
+    mutating func visitStatically<C: MutableCollection & ModelContainer>(statePath: WritableKeyPath<V.State._ModelState, C>)
+        where C: Sendable, C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        _dispatchCollectionStatePath(statePath)
+    }
+
+    mutating func visitStatically<C: MutableCollection & ModelContainer>(statePath: WritableKeyPath<V.State._ModelState, C>, visibility: PropertyVisibility)
+        where C: Sendable, C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        _dispatchCollectionStatePath(statePath)
+    }
+
+    mutating func visitStatically<C: MutableCollection>(statePath: WritableKeyPath<V.State._ModelState, C>)
+        where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        modelVisitor.visitContainerCollection(statePath: statePath)
+    }
+
+    mutating func visitStatically<C: MutableCollection>(statePath: WritableKeyPath<V.State._ModelState, C>, visibility: PropertyVisibility)
+        where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        modelVisitor.visitContainerCollection(statePath: statePath)
+    }
+
+    /// Disambiguation overload for `Array<@ModelContainer>` and similar collections that are
+    /// BOTH `MutableCollection` and `ModelContainer` whose elements conform to
+    /// `ModelContainer & Identifiable` but NOT to `Model` (e.g. `@ModelContainer` enum values).
+    /// Breaks the ambiguity between `T: ModelContainer & Sequence` and `C: MutableCollection
+    /// where C.Element: ModelContainer & Identifiable` — Swift cannot pick a winner without
+    /// this tiebreaker.
+    /// Routes through `_dispatchStatePath` (cursor-based fallback via `visit<T: ModelContainer>`),
+    /// consistent with the write path (`T: ModelContainer` subscript → `updateContext`).
+    /// Note: when `C.Element: Model & Identifiable` the more-specific `Model` disambiguation
+    /// overload wins instead of this one (since `Model: ModelContainer`).
+    mutating func visitStatically<C: MutableCollection & ModelContainer>(statePath: WritableKeyPath<V.State._ModelState, C>)
+        where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        _dispatchStatePath(statePath)
+    }
+
+    mutating func visitStatically<C: MutableCollection & ModelContainer>(statePath: WritableKeyPath<V.State._ModelState, C>, visibility: PropertyVisibility)
+        where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        _dispatchStatePath(statePath)
+    }
 }
 
 // MARK: - _ModelStateVisitor runtime dispatch helpers
@@ -252,6 +382,27 @@ private extension ContainerVisitor where V.State: Model {
             modelVisitor.visit(statePath: statePath, visibility: visibility)
         }
     }
+
+    /// Dispatches a collection `statePath` visit correctly for both `_ModelStateVisitor` and
+    /// standard visitors.
+    ///
+    /// - For `_ModelStateVisitor` types (e.g. `InstallUndoVisitor`): calls `_visitStatePath` so
+    ///   the concrete visitor can register undo/observation for the collection property itself.
+    /// - For all other visitors (e.g. `AnchorVisitor`): calls `visitCollection(statePath:)` which
+    ///   uses sentinel-keyed child registration (no per-element allocations).
+    ///
+    /// Used by the `Array<@Model>` disambiguation overloads to avoid the `ModelContainer`
+    /// cursor-keyed path while still keeping `InstallUndoVisitor` working correctly.
+    mutating func _dispatchCollectionStatePath<C: MutableCollection & Sendable>(_ statePath: WritableKeyPath<V.State._ModelState, C>)
+        where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        if var sv = modelVisitor as? any _ModelStateVisitor {
+            sv._visitStatePath(statePath, forState: V.State.self)
+            if let updated = sv as? V { modelVisitor = updated }
+        } else {
+            modelVisitor.visitCollection(statePath: statePath)
+        }
+    }
+
 }
 
 private extension ContainerVisitor {

@@ -388,7 +388,9 @@ extension _ModelSourceBox {
     /// Returns the Context when this is a live anchored model.
     /// Returns nil (with `reportIssue` for snapshots) when writes should be direct or no-ops.
     func _modifyContext(accessBox: _ModelAccessBox) -> Context<M>? {
-        if _isLive { return nil }  // internal direct-access copy — bypass context
+        if _isLive {
+            return nil  // internal direct-access copy — bypass context
+        }
         if let context = reference.context { return context }
         // Try lazy materialization before falling through to pre-anchor/snapshot path.
         if let context = reference.materializeLazyContext() { return context }
@@ -459,6 +461,32 @@ extension _ModelSourceBox {
                 }
             } else {
                 yield self[dynamicMember: statePath]
+            }
+        }
+    }
+
+    /// Handles `MutableCollection` properties whose element type is `Model & Identifiable & Sendable`
+    /// but that do NOT conform to `ModelContainer` (e.g. `IdentifiedArray<Model>`).
+    /// Disfavored so that when the collection also conforms to `ModelContainer`, the
+    /// `subscript<T: ModelContainer>(read:)` overload wins and applies full recursive `withDeepAccess`.
+    @_disfavoredOverload
+    public subscript<C: MutableCollection>(read statePath: WritableKeyPath<M._ModelState, C>, access accessBox: _ModelAccessBox) -> C
+        where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        get {
+            let access = accessBox._reference?.access ?? ModelAccess.current
+            if threadLocals.forceDirectAccess || _isLive {
+                return self[dynamicMember: statePath]
+            } else if let context = reference.context {
+                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox)
+                let value: C = context[statePath: statePath, observeCallback: callback]
+                guard let access, access.shouldPropagateToChildren else { return value }
+                var result = value
+                for index in result.indices {
+                    result[index] = result[index].withAccessIfPropagateToChildren(access)
+                }
+                return result
+            } else {
+                return self[dynamicMember: statePath]
             }
         }
     }
@@ -560,6 +588,180 @@ extension _ModelSourceBox {
                 }
             } else {
                 _ = context.reference.state[keyPath: statePath].context?.onActivate()
+            }
+        }
+    }
+
+    /// Handles `MutableCollection & ModelContainer` properties (e.g. `[Model]`, `Array<Model>`).
+    /// More constrained than `subscript<T: ModelContainer>` alone, so this overload wins when
+    /// both `MutableCollection` (with `Model` elements) and `ModelContainer` apply — ensuring the
+    /// write path uses `updateContextForCollection` (consistent with the `visitCollection` read path
+    /// that uses `\C.self`-keyed child registration).
+    public subscript<C: MutableCollection & ModelContainer>(write statePath: WritableKeyPath<M._ModelState, C>, access accessBox: _ModelAccessBox) -> C
+        where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        get { self[read: statePath, access: accessBox] }
+        nonmutating set { _performCollectionSet(statePath: statePath, accessBox: accessBox, newValue: newValue) }
+    }
+
+    /// Handles `MutableCollection` properties whose element type is `Model & Identifiable`
+    /// but that do NOT conform to `ModelContainer` themselves (e.g. `IdentifiedArray`, custom
+    /// sorted-array types). Not disfavored, so it beats the disfavored `ModelContainer &
+    /// Identifiable` overload below when both match (e.g. `IdentifiedArray<@Model>`).
+    /// When the collection is also `ModelContainer`, the more-constrained
+    /// `MutableCollection & ModelContainer` overload above wins via specificity.
+    public subscript<C: MutableCollection>(write statePath: WritableKeyPath<M._ModelState, C>, access accessBox: _ModelAccessBox) -> C
+        where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        get { self[read: statePath, access: accessBox] }
+        nonmutating set { _performCollectionSet(statePath: statePath, accessBox: accessBox, newValue: newValue) }
+    }
+
+    /// Shared implementation for both `MutableCollection` write subscripts.
+    private func _performCollectionSet<C: MutableCollection>(
+        statePath: WritableKeyPath<M._ModelState, C>,
+        accessBox: _ModelAccessBox,
+        newValue: C
+    ) where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
+            reference.state[keyPath: statePath] = newValue
+            return
+        }
+        guard let context = _modifyContext(accessBox: accessBox) else { return }
+
+        let modelPath = M._modelStateKeyPath.appending(path: statePath)
+        var postLockCallbacks: [() -> Void] = []
+        var structuralChange = false
+        context.stateTransaction(at: statePath, isSame: {
+            collectionIsSame($0, $1)
+        }, accessBox: accessBox, modify: { collection in
+            var newCollection = newValue
+            var didReplaceModelWithDestructedOrFrozenCopy = false
+            let oldContexts = threadLocals.withValue({
+                didReplaceModelWithDestructedOrFrozenCopy = true
+            }, at: \.didReplaceModelWithDestructedOrFrozenCopy) {
+                context.updateContextForCollection(for: &newCollection, at: modelPath)
+            }
+
+            if didReplaceModelWithDestructedOrFrozenCopy {
+                reportIssue("It is not allowed to add a destructed nor frozen model.")
+                return
+            }
+
+            if !collectionIsSame(newCollection, collection) {
+                structuralChange = true
+            }
+            collection = newCollection
+
+            for oldContext in oldContexts {
+                context.removeChild(oldContext, at: modelPath, callbacks: &postLockCallbacks)
+            }
+        })
+
+        for callback in postLockCallbacks {
+            callback()
+        }
+
+        if structuralChange {
+            let access = accessBox._reference?.access ?? ModelAccess.current
+            if let access, access.shouldPropagateToChildren {
+                usingAccess(access) {
+                    for element in context.reference.state[keyPath: statePath] {
+                        element.activate()
+                    }
+                }
+            } else {
+                for element in context.reference.state[keyPath: statePath] {
+                    element.activate()
+                }
+            }
+        }
+    }
+
+    /// Fallback for `MutableCollection` properties whose element type is `ModelContainer & Identifiable`
+    /// but that do NOT conform to `ModelContainer` themselves (e.g. `IdentifiedArray` of a
+    /// `@ModelContainer` enum). Disfavored so that when a type is also `ModelContainer` the
+    /// more-constrained overload wins.
+    @_disfavoredOverload
+    public subscript<C: MutableCollection>(write statePath: WritableKeyPath<M._ModelState, C>, access accessBox: _ModelAccessBox) -> C
+        where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        get { self[read: statePath, access: accessBox] }
+        nonmutating set { _performContainerCollectionSet(statePath: statePath, accessBox: accessBox, newValue: newValue) }
+    }
+
+    private func _performContainerCollectionSet<C: MutableCollection>(
+        statePath: WritableKeyPath<M._ModelState, C>,
+        accessBox: _ModelAccessBox,
+        newValue: C
+    ) where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
+            reference.state[keyPath: statePath] = newValue
+            return
+        }
+        let context: Context<M>
+        if _isLive {
+            guard let ctx = reference.context else {
+                // Live source but no context yet — occurs during withContextAdded in Context.init
+                // before setContext is called (e.g. pre-populated collection elements whose
+                // modelContext is updated by visitContainerCollection). Write directly, mirroring
+                // the Equatable subscript behaviour for this initialisation case.
+                reference.state[keyPath: statePath] = newValue
+                return
+            }
+            context = ctx
+        } else {
+            guard let ctx = _modifyContext(accessBox: accessBox) else { return }
+            context = ctx
+        }
+
+        let modelPath = M._modelStateKeyPath.appending(path: statePath)
+        var postLockCallbacks: [() -> Void] = []
+        var structuralChange = false
+        context.stateTransaction(at: statePath, isSame: { lhs, rhs in
+            guard lhs.count == rhs.count else { return false }
+            return zip(lhs, rhs).allSatisfy { $0.id == $1.id }
+        }, accessBox: accessBox, modify: { collection in
+            var newCollection = newValue
+            var didReplaceModelWithDestructedOrFrozenCopy = false
+            let oldContexts = threadLocals.withValue({
+                didReplaceModelWithDestructedOrFrozenCopy = true
+            }, at: \.didReplaceModelWithDestructedOrFrozenCopy) {
+                context.updateContextForContainerCollection(for: &newCollection, at: modelPath)
+            }
+
+            if didReplaceModelWithDestructedOrFrozenCopy {
+                reportIssue("It is not allowed to add a destructed nor frozen model.")
+                return
+            }
+
+            let sameStructure: Bool = {
+                guard newCollection.count == collection.count else { return false }
+                return zip(newCollection, collection).allSatisfy { $0.id == $1.id }
+            }()
+            if !sameStructure {
+                structuralChange = true
+            }
+            collection = newCollection
+
+            for oldContext in oldContexts {
+                context.removeChild(oldContext, at: modelPath, callbacks: &postLockCallbacks)
+            }
+        })
+
+        for callback in postLockCallbacks {
+            callback()
+        }
+
+        if structuralChange {
+            let access = accessBox._reference?.access ?? ModelAccess.current
+            if let access, access.shouldPropagateToChildren {
+                usingAccess(access) {
+                    for element in context.reference.state[keyPath: statePath] {
+                        element.activate()
+                    }
+                }
+            } else {
+                for element in context.reference.state[keyPath: statePath] {
+                    element.activate()
+                }
             }
         }
     }

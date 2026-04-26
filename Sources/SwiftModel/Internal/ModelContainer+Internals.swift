@@ -194,6 +194,32 @@ extension ModelContainer {
     }
 }
 
+/// Cursor subscript for `MutableCollection` types that do not conform to `ModelContainer`.
+///
+/// Enables cursor-keyed `WritableKeyPath` construction (`\C.[cursor: cursor]`) for
+/// non-`ModelContainer` MutableCollections — e.g. `IdentifiedArray<Path>` where `Path` is
+/// a `@ModelContainer` enum. Used internally by `visitContainerCollection` and
+/// `updateContextForContainerCollection` to build per-element paths without requiring the
+/// collection itself to be a `ModelContainer`.
+///
+/// `@_disfavoredOverload` ensures that for types satisfying both this extension and
+/// `ModelContainer` (e.g. `Array<Path>`), the `ModelContainer.subscript(cursor:)` wins.
+extension MutableCollection where Self: Sendable, Element: Identifiable & Sendable, Index: Sendable, Element.ID: Sendable {
+    @_disfavoredOverload
+    subscript<ID: Hashable, Value>(cursor cursor: ContainerCursor<ID, Self, Value>) -> Value {
+        get {
+            threadLocals.withValue(true, at: \.forceDirectAccess) {
+                cursor.get(self)
+            }
+        }
+        set {
+            threadLocals.withValue(true, at: \.forceDirectAccess) {
+                cursor.set(&self, newValue)
+            }
+        }
+    }
+}
+
 struct CaseAndID<ID: Hashable>: Hashable {
     var caseName: String
     var id: ID

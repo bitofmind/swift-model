@@ -1090,6 +1090,257 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         modelRefs.insert(modelRef)
         return existing
     }
+
+    // MARK: - MutableCollection variants (no ModelContainer constraint)
+    //
+    // These mirror the existing ModelContainer-constrained overloads but work with any
+    // MutableCollection whose elements are Model & Identifiable. The `elementPath` in
+    // ModelRef uses \C.self (identity key path on the collection type) as a sentinel —
+    // the outer `containerPath` dict key already distinguishes collections, so only `id`
+    // needs to disambiguate elements within a collection.
+
+    /// Creates or retrieves the child context for a `MutableCollection` element,
+    /// using `ModelRef(elementPath: \C.self, id: childModel.id)` as the registry key.
+    func childContextForCollection<C: MutableCollection, Child: Model>(
+        containerPath: WritableKeyPath<M, C>,
+        childModel: Child
+    ) -> Context<Child> where C.Element == Child {
+        let elementPath = \C.self
+        var postLockCallbacks: [() -> Void] = []
+        defer { runPostLockCallbacks(postLockCallbacks) }
+        return lock {
+            let modelRef = ModelRef(elementPath: elementPath, id: childModel.id)
+            modelRefs.insert(modelRef)
+
+            if let child = children[containerPath]?[modelRef] as? Context<Child> {
+                return child
+            }
+
+            assert(children[containerPath]?[modelRef] == nil)
+
+            if let child = childModel.modelContext.context {
+                child.addParent(self, callbacks: &postLockCallbacks)
+                children[containerPath, default: [:]][modelRef] = child
+                if child.lock === self.lock {
+                    child.myModelRef = modelRef
+                }
+                return child
+            } else {
+                let child = withOwnDependencies {
+                    Context<Child>(model: childModel, lock: lock, dependencies: nil, parent: self)
+                }
+                children[containerPath, default: [:]][modelRef] = child
+                child.myModelRef = modelRef
+                return child
+            }
+        }
+    }
+
+    /// Fast-path check for `MutableCollection` elements. Mirrors `findOrTrackChild` but
+    /// without the `C: ModelContainer` constraint.
+    func findOrTrackChildForCollection<C: MutableCollection, Child: Model>(
+        containerPath: WritableKeyPath<M, C>,
+        childModel: Child
+    ) -> Context<Child>? where C.Element == Child {
+        lock {
+            guard let existing = childModel.modelContext.context,
+                  existing.lock === self.lock,
+                  let modelRef = existing.myModelRef,
+                  children[containerPath]?[modelRef] === existing
+            else { return nil }
+            modelRefs.insert(modelRef)
+            return existing
+        }
+    }
+
+    /// Like `findOrTrackChildForCollection` but assumes the hierarchy lock is already held.
+    func findOrTrackChildLockedForCollection<C: MutableCollection, Child: Model>(
+        containerPath: WritableKeyPath<M, C>,
+        childModel: Child
+    ) -> Context<Child>? where C.Element == Child {
+        guard let existing = childModel.modelContext.context,
+              existing.lock === self.lock,
+              let modelRef = existing.myModelRef,
+              children[containerPath]?[modelRef] === existing
+        else { return nil }
+        modelRefs.insert(modelRef)
+        return existing
+    }
+
+    /// Defers context creation for a `MutableCollection` child element.
+    func registerLazyChildForCollection<C: MutableCollection, Child: Model>(
+        containerPath: WritableKeyPath<M, C>,
+        childModel: Child
+    ) where C.Element == Child {
+        childModel.modelContext._source.reference.setLazyContextCreator { [weak self] in
+            if let existing = childModel.modelContext._source.reference.context { return existing }
+            guard let self else { return nil }
+            return self.childContextForCollection(containerPath: containerPath, childModel: childModel)
+        }
+    }
+
+    /// Updates contexts for elements of a `MutableCollection` property that does not
+    /// conform to `ModelContainer`. Mirrors `updateContext(for:at:)` using cursor-free
+    /// index-based traversal.
+    ///
+    /// **Must be called with the hierarchy lock held** — same contract as `updateContext`.
+    func updateContextForCollection<C: MutableCollection>(
+        for collection: inout C,
+        at path: WritableKeyPath<M, C>
+    ) -> [AnyContext] where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        guard !isDestructed else { return [] }
+
+        let prevChildren = (children[path] ?? [:])
+        let prevRefs = Set(prevChildren.keys)
+
+        modelRefs.removeAll(keepingCapacity: true)
+
+        for index in collection.indices {
+            let element = collection[index]
+
+            guard !element.lifetime.isDestructedOrFrozenCopy else {
+                threadLocals.didReplaceModelWithDestructedOrFrozenCopy()
+                continue
+            }
+            if let childRef = element.modelContext.reference, childRef.hasLazyContextCreator { continue }
+
+            // O(1) fast path: element already registered and context is current.
+            let existing = findOrTrackChildLockedForCollection(containerPath: path, childModel: element)
+            if let existing, existing === element.modelContext.context { continue }
+
+            // Slow path: create or update child context.
+            let childCtx = childContextForCollection(containerPath: path, childModel: element)
+            if childCtx !== element.modelContext.context {
+                var elem = collection[index]
+                elem.withContextAdded(context: childCtx, containerPath: \.self, elementPath: \.self, includeSelf: false, hierarchyLockHeld: true)
+                elem.modelContext = ModelContext(context: childCtx)
+                collection[index] = elem
+            }
+        }
+
+        let oldRefs = prevRefs.subtracting(modelRefs)
+        return oldRefs.map { prevChildren[$0]! }
+    }
+
+    // MARK: - ContainerCollection variants (MutableCollection<ModelContainer & Identifiable>)
+    //
+    // These handle MutableCollection properties whose element type is `ModelContainer & Identifiable`
+    // but the collection itself is NOT ModelContainer (e.g. IdentifiedArray<@ModelContainer enum>).
+    // Child model contexts are stored under `children[collectionPath]` using
+    // `ModelRef(elementPath: \C.self, id: childModel.id)` as the registry key — the same
+    // sentinel strategy used by `childContextForCollection`. Model IDs (UUIDs) are globally unique,
+    // so no cursor key path is needed, eliminating the 3 heap allocations that cursor construction
+    // would otherwise require before every registry lookup.
+
+    /// Creates or retrieves the child context for a `Model` child inside a `ModelContainer`
+    /// element of a `MutableCollection` that is not itself `ModelContainer`.
+    ///
+    /// Uses `ModelRef(elementPath: \C.self, id: childModel.id)` as the registry key — the same
+    /// sentinel strategy as `childContextForCollection`. Model IDs (UUIDs) are globally unique,
+    /// so no cursor key path is needed to disambiguate elements. This eliminates the 3 cursor
+    /// allocations that would otherwise be required before every registry lookup.
+    func childContextForContainerCollectionModel<C: MutableCollection, Child: Model>(
+        collectionPath: WritableKeyPath<M, C>,
+        childModel: Child
+    ) -> Context<Child> where C.Element: ModelContainer & Identifiable & Sendable {
+        var postLockCallbacks: [() -> Void] = []
+        defer { runPostLockCallbacks(postLockCallbacks) }
+        return lock {
+            let modelRef = ModelRef(elementPath: \C.self, id: childModel.id)
+            modelRefs.insert(modelRef)
+
+            if let child = children[collectionPath]?[modelRef] as? Context<Child> {
+                return child
+            }
+
+            assert(children[collectionPath]?[modelRef] == nil)
+
+            if let child = childModel.modelContext.context {
+                child.addParent(self, callbacks: &postLockCallbacks)
+                children[collectionPath, default: [:]][modelRef] = child
+                if child.lock === self.lock {
+                    child.myModelRef = modelRef
+                }
+                return child
+            } else {
+                let child = withOwnDependencies {
+                    Context<Child>(model: childModel, lock: lock, dependencies: nil, parent: self)
+                }
+                children[collectionPath, default: [:]][modelRef] = child
+                child.myModelRef = modelRef
+                return child
+            }
+        }
+    }
+
+    /// Fast-path check for `Model` children inside a `ModelContainer` element of a
+    /// `MutableCollection`. Mirrors `findOrTrackChildForCollection` but uses the stored
+    /// `myModelRef` (composedPath-based key) to look up under `children[collectionPath]`.
+    func findOrTrackChildForContainerCollectionModel<C: MutableCollection, Child: Model>(
+        collectionPath: WritableKeyPath<M, C>,
+        childModel: Child
+    ) -> Context<Child>? where C.Element: ModelContainer & Identifiable & Sendable {
+        lock {
+            guard let existing = childModel.modelContext.context,
+                  existing.lock === self.lock,
+                  let modelRef = existing.myModelRef,
+                  children[collectionPath]?[modelRef] === existing
+            else { return nil }
+            modelRefs.insert(modelRef)
+            return existing
+        }
+    }
+
+    /// Like `findOrTrackChildForContainerCollectionModel` but assumes the hierarchy lock is held.
+    func findOrTrackChildLockedForContainerCollectionModel<C: MutableCollection, Child: Model>(
+        collectionPath: WritableKeyPath<M, C>,
+        childModel: Child
+    ) -> Context<Child>? where C.Element: ModelContainer & Identifiable & Sendable {
+        guard let existing = childModel.modelContext.context,
+              existing.lock === self.lock,
+              let modelRef = existing.myModelRef,
+              children[collectionPath]?[modelRef] === existing
+        else { return nil }
+        modelRefs.insert(modelRef)
+        return existing
+    }
+
+    /// Updates contexts for `ModelContainer` elements of a `MutableCollection` property that
+    /// does not conform to `ModelContainer`. Mirrors `updateContextForCollection` but uses
+    /// `AnchorVisitorForContainerElement` to traverse each element's model children.
+    ///
+    /// **Must be called with the hierarchy lock held** — same contract as `updateContext`.
+    func updateContextForContainerCollection<C: MutableCollection>(
+        for collection: inout C,
+        at path: WritableKeyPath<M, C>
+    ) -> [AnyContext]
+        where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        guard !isDestructed else { return [] }
+
+        let prevChildren = (children[path] ?? [:])
+        let prevRefs = Set(prevChildren.keys)
+
+        modelRefs.removeAll(keepingCapacity: true)
+
+        for index in collection.indices {
+            let element = collection[index]
+            let id = threadLocals.withValue(true, at: \.forceDirectAccess) { element.id }
+
+            var elementVisitor = AnchorVisitorForContainerElement(
+                value: element,
+                context: self,
+                collectionPath: path,
+                elementID: id,
+                capturedElement: element,
+                hierarchyLockHeld: true
+            )
+            element.visit(with: &elementVisitor, includeSelf: false)
+            collection[index] = elementVisitor.value
+        }
+
+        let oldRefs = prevRefs.subtracting(modelRefs)
+        return oldRefs.map { prevChildren[$0]! }
+    }
 }
 
 extension Context {

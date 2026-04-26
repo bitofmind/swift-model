@@ -24,7 +24,7 @@ let package = Package(
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.6.0"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.6"),
         .package(url: "https://github.com/apple/swift-collections", from: "1.1.0"),
-        .package(url: "https://github.com/pointfreeco/swift-identified-collections", from: "1.1.0"),
+        .package(url: "https://github.com/pointfreeco/swift-identified-collections", from: "1.1.0"), // Used by SwiftModelBenchmarks only
         .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.9.0"),
         .package(url: "https://github.com/pointfreeco/swift-clocks", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),
@@ -34,7 +34,6 @@ let package = Package(
             "SwiftModelMacros",
             .product(name: "Dependencies", package: "swift-dependencies"),
             .product(name: "CustomDump", package: "swift-custom-dump"),
-            .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
             .product(name: "OrderedCollections", package: "swift-collections"),
             .product(name: "IssueReporting", package: "xctest-dynamic-overlay"),
         ]),

@@ -1,5 +1,4 @@
 import Foundation
-import IdentifiedCollections
 
 /// A protocol for types that hold `@Model`-typed children and expose them for hierarchy traversal.
 ///
@@ -15,8 +14,9 @@ import IdentifiedCollections
 /// }
 /// ```
 ///
-/// `Optional<M>`, `Array<M>`, `IdentifiedArray<M>`, and `Dictionary<Key, M>` already conform
-/// for any `ModelContainer`-conforming element type `M`.
+/// `Optional<M>`, `Array<M>`, and `Dictionary<Key, M>` already conform for any
+/// `ModelContainer`-conforming element type `M`. Any `MutableCollection` whose element type
+/// is `Model & Identifiable` is handled automatically — no explicit conformance needed.
 public protocol ModelContainer: Sendable {
     func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>)
 }
@@ -72,33 +72,6 @@ public extension MutableCollection where Self: ModelContainer, Element: Identifi
                 guard let index = collection.firstIndex(where: { $0.id == id }) else { return }
 
                 collection[index] = value
-            }
-
-            visitor.visitDynamically(with: element, at: path)
-        }
-    }
-}
-
-extension IdentifiedArray: ModelContainer where Element: ModelContainer {
-    public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) where ID: Sendable {
-        for id in ids {
-            // Guard against elements removed during traversal (e.g. when ImmediateClock
-            // causes a synchronous task completion that mutates the array mid-visit).
-            guard let element = self[id: id] else { continue }
-            let anyID = AnyHashable(id)
-
-            // Fast path: if the element is already registered and up-to-date, skip all cursor
-            // construction (3 heap allocations: ContainerCursor + 2 @escaping closures).
-            // Only applies to direct Model elements; nested ModelContainers fall through.
-            if let model = element as? any Model, !(element is OptionalModel),
-               visitor.shouldSkipElement(element: model, id: anyID) { continue }
-
-            let path = path(id: id) { collection -> Element in
-                // Fall back to the captured snapshot if the element was removed
-                // between cursor creation and access.
-                collection[id: id] ?? element
-            } set: { collection, value in
-                collection[id: id] = value
             }
 
             visitor.visitDynamically(with: element, at: path)

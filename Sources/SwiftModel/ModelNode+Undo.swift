@@ -226,7 +226,6 @@ private func installPropertyUndoUnchecked<M: Model, T>(
 
         let oldValue = baseline.value
         let newValue = snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: sendableStatePath], useInitialCopy: useInitialCopy)
-
         guard !areEqual(oldValue, newValue) else { return nil }
 
         // Builds a closure that writes `value` back into the live model.
