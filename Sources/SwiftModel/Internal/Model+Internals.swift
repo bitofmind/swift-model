@@ -7,7 +7,7 @@ import Dispatch
 
 /// Returns whether the current execution context is the main thread.
 /// On WASI (single-threaded), this is always true.
-private var isOnMainThread: Bool {
+var isOnMainThread: Bool {
     #if os(WASI)
     return true
     #else
@@ -192,6 +192,7 @@ private struct CallQueueState {
 
 /// Drain loop for `MainCallQueue`. Runs on `@MainActor` until the queue is empty,
 /// then cancels the task and fires idle callbacks.
+@MainActor
 private func mainCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {

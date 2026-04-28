@@ -1378,7 +1378,7 @@ private func _dynamicContainerEqual<T: ModelContainer>(_ lhs: T, _ rhs: Any) -> 
     return containerIsSame(lhs, r)
 }
 
-private func _dynamicEquatableEqual<T: Equatable>(_ lhs: T, _ rhs: Any) -> Bool {
+func _dynamicEquatableEqual<T: Equatable>(_ lhs: T, _ rhs: Any) -> Bool {
     guard let r = rhs as? T else { return false }
     return lhs == r
 }
