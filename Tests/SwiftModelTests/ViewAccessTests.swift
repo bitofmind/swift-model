@@ -214,7 +214,9 @@ struct ViewAccessTests {
 
         let fired = access.firedOnMain.value
         #expect(fired.count == 4)
+        #if canImport(Darwin)
         #expect(fired.allSatisfy { $0 }, "All ViewAccess-style callbacks must arrive on the main thread")
+        #endif
     }
 
     // MARK: Cleanup

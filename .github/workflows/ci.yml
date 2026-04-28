@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
-      image: swift:6.3
+      image: swift:6.3.0
     steps:
       - uses: actions/checkout@v6
 
@@ -115,7 +115,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 7
     container:
-      image: swift:6.3
+      image: swift:6.3.0
     steps:
       - uses: actions/checkout@v6
 
