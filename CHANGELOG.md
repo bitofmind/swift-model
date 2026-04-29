@@ -4,6 +4,20 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [0.14.1] — ModelScope + iOS 16 Bug Fixes
+
+### Added
+- **`ModelScope`** — new SwiftUI view that scopes observation to its content, preventing unnecessary parent re-renders. Wrapping reactive content in `ModelScope` confines observation to that sub-tree: only `ModelScope` re-renders when its accessed properties change, leaving the parent unaffected. Also fixes an iOS 16 issue where model properties accessed inside lazy `@ViewBuilder` closures (`.sheet`, `.popover`, `GeometryReader`, `NavigationStack` destinations) were not observed. On iOS 17 and later, `ModelScope` is a transparent pass-through — the platform already scopes observation per view boundary.
+
+### Deprecated
+- **`UsingModel`** — superseded by `ModelScope`. Replace `UsingModel(model) { model in … }` with `ModelScope { … }`, capturing the model from the enclosing scope. `ModelScope` naturally handles multiple models accessed in the same closure.
+
+### Fixed
+- **`@MainActor` missing from `mainCallQueueDrainLoop`** — on iOS 16, `objectWillChange.send()` could fire off the main thread after the drain loop's first `Task.yield()` suspension, breaking the `AccessCollector` observation path. Adding `@MainActor` ensures every batch — including post-yield batches — runs on the main thread.
+- **`containerIsSame` for `@ModelContainer` enums** — when an enum conforming to `Equatable` (via `@ModelContainer` synthesis or explicitly) was written with the same value, the write was incorrectly treated as a mutation, triggering spurious view re-renders and `onChange` callbacks. The equality check is now performed before recording a modification.
+
+---
+
 ## [0.14.0] — Exhaustivity Improvements + Convenience Helpers
 
 ### Added
