@@ -230,8 +230,12 @@ public extension Model where Self: Sendable {
         // Initialize previous snapshot with the current model value.
         previous.setValue(snapshot(context.lock { context.readModel }))
 
-        let cancel = context.onAnyModification { [weak context] didFinish in
-            guard !didFinish, let context else { return nil }
+        let cancel = context.onAnyModification { [weak context] source in
+            guard !source.isFinished, let context else { return nil }
+            // Only react to changes that alter the model struct value.
+            // Environment and preference changes are stored outside the struct and
+            // never appear in readModel, so they'd produce empty diffs or duplicate value lines.
+            guard source.kind.intersects([.properties, .parentRelationship]) else { return nil }
             if let fmt = changeFormat {
                 let value = context.lock { context.readModel }
                 switch fmt {

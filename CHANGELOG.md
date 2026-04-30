@@ -4,6 +4,23 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [0.15.0] — observeModifications() with Scope, Kind, and Predicate Filtering
+
+### Added
+- **`observeModifications(scope:kinds:where:debug:)`** — replaces `observeAnyModification()` with rich filtering options:
+  - `scope: ModificationScope` — narrow or widen which hierarchy levels trigger: `.self`, `.children`, `.descendants`, or combinations (default: `[.self, .descendants]`)
+  - `kinds: ModificationKind` — filter by change category: `.properties`, `.environment`, `.preferences`, `.parentRelationship`, or `.all` (default). Use `kinds: .properties` to skip environment/preference noise in autosave scenarios
+  - `where: (@Sendable (Any) -> Bool)?` — model-type predicate; return `true` to include the emission. Useful for filtering to a specific protocol or type in large hierarchies
+  - `debug: DebugOptions?` — pass `.triggers()` to print a line for each emission with model name, kind, and depth. Only active in DEBUG builds
+- **`node.excludeFromModifications(_ paths:)`** — declares specific properties of a model as "transient": their changes will not trigger any `observeModifications()` registered on this model or its ancestors. Useful for caches, scroll positions, and other volatile state. Declared in `onActivate()`, mirrors the `trackUndo(_ paths:)` API. Only affects `observeModifications()` — other observation mechanisms are unaffected
+- **`ModificationKind`** — new `OptionSet` type categorising modification kinds (`.properties`, `.environment`, `.preferences`, `.parentRelationship`, `.all`)
+- **`ModificationScope`** — new `OptionSet` type describing hierarchy depth (`.self`, `.children`, `.descendants`)
+
+### Deprecated
+- **`observeAnyModification()`** — superseded by `observeModifications()`. Replace `observeAnyModification()` with `observeModifications()` for identical behaviour; use the new parameters to filter as needed
+
+---
+
 ## [0.14.1] — ModelScope + iOS 16 Bug Fixes
 
 ### Added

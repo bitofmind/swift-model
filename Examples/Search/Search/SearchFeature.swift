@@ -16,16 +16,16 @@ enum SortOption: String, CaseIterable, Sendable {
 ///
 /// Demonstrates:
 /// - Enum child model (`@ModelContainer`)
-/// - `observeAnyModification()` — autosave filter preferences on any change
+/// - `observeModifications()` — autosave filter preferences on any property change
 @Model struct FilterModel: Sendable {
     var sortBy: SortOption = .stars
     var language: String   = ""
 
     func onActivate() {
-        // observeAnyModification() fires whenever *anything* in this model changes.
-        // Useful for autosave patterns — here we just log to show the pattern.
+        // observeModifications(kinds: .properties) fires whenever a real property changes.
+        // Skipping environment/preference noise keeps autosave from triggering on UI-only changes.
         // In a real app: node.userDefaults.saveFilterPreferences(sortBy, language)
-        node.forEach(observeAnyModification()) { _ in
+        node.forEach(observeModifications(kinds: .properties)) { _ in
             print("[FilterModel] preferences changed — would autosave here")
         }
     }

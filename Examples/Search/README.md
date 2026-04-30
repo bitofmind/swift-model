@@ -8,7 +8,7 @@ A GitHub repository search app that demonstrates real-world async patterns in Sw
 |---|---|
 | Cancel-in-flight | `SearchModel.onActivate()` — `node.forEach(Observed { query }, cancelPrevious: true)` cancels the previous search task on each new keystroke |
 | Per-item async loading | `SearchResultItem.onActivate()` — `node.task` loads a detail line per row, cancelled automatically when the item is removed |
-| `observeAnyModification()` | `FilterModel.onActivate()` — fires whenever any property in the model changes; useful for autosave |
+| `observeModifications(kinds: .properties)` | `FilterModel.onActivate()` — fires whenever any property in the model changes, skipping environment/preference noise; useful for autosave |
 | Targeted debug | `SearchModel.onActivate()` — `Observed(debug: [.triggers(), .changes()]) { (query, results.count) }` prints only when those two properties change |
 | `withActivation` | Previews and tests inject extra setup (e.g. pre-set query) without touching `onActivate()` |
 | Optional child models | `filter: FilterModel?` and `detail: RepoDetailModel?` — exist only while their sheets are open |

@@ -74,9 +74,10 @@ public extension Observed {
 }
 
 public extension Model {
-    /// Returns a stream that emits whenever any state in the model or any of its descendants changes.
+    /// Returns a stream that emits whenever state in the model or its descendants changes,
+    /// with optional filtering by scope, modification kind, and model type.
     ///
-    /// This is useful for cross-cutting concerns that need to react to *any* change in a subtree
+    /// This is useful for cross-cutting concerns that need to react to changes in a subtree
     /// without caring about which specific property changed. Common use cases include:
     ///
     /// - **Dirty tracking**: detect unsaved changes to show a "modified" indicator
@@ -87,15 +88,20 @@ public extension Model {
     /// ```swift
     /// func onActivate() {
     ///     // Show unsaved-changes indicator whenever anything in the form changes
-    ///     node.forEach(observeAnyModification()) { _ in
+    ///     node.forEach(observeModifications()) { _ in
     ///         hasUnsavedChanges = true
     ///     }
     ///
-    ///     // Debounced autosave
+    ///     // Debounced autosave — skip environment/preference UI-state noise
     ///     node.task {
-    ///         for await _ in observeAnyModification().debounce(for: .seconds(2)) {
+    ///         for await _ in observeModifications(kinds: .properties).debounce(for: .seconds(2)) {
     ///             await save()
     ///         }
+    ///     }
+    ///
+    ///     // Only react to this model's own changes (not descendants)
+    ///     node.forEach(observeModifications(scope: .self)) { _ in
+    ///         recalculateSomething()
     ///     }
     /// }
     /// ```
@@ -103,28 +109,95 @@ public extension Model {
     /// The stream emits once per transaction (multiple mutations inside a `node.transaction { }`
     /// produce a single emission). It finishes when the model is deactivated.
     ///
+    /// - Parameters:
+    ///   - scope: Which levels of the hierarchy to observe. Defaults to `[.self, .descendants]`
+    ///     (the full subtree — same as the previous `observeAnyModification()` behaviour).
+    ///   - kinds: Which kinds of state changes to include. Defaults to `.all`.
+    ///     Use `kinds: .properties` to skip environment/preference noise when autosaving.
+    ///   - predicate: An optional closure that receives the model instance that changed.
+    ///     Return `true` to include the change, `false` to skip it. Useful for filtering
+    ///     by model type in complex hierarchies, e.g. `{ $0 is Persistable }`.
+    ///   - debug: Debug options controlling what is printed for each emission.
+    ///     Only active in `DEBUG` builds. Pass `.all` or `.triggers()` to diagnose
+    ///     unexpected emissions.
+    ///
     /// > Note: This method is on `Model` directly (not `node`), so you call it as
-    /// > `observeAnyModification()` from within the model, or `model.observeAnyModification()`
+    /// > `observeModifications()` from within the model, or `child.observeModifications()`
     /// > from a parent.
-    func observeAnyModification() -> AsyncStream<()> {
+    func observeModifications(
+        scope: ModificationScope = [.self, .descendants],
+        kinds: ModificationKind = .all,
+        where predicate: (@Sendable (Any) -> Bool)? = nil,
+        debug: DebugOptions? = nil
+    ) -> AsyncStream<()> {
         guard let context = enforcedContext() else { return .finished }
 
         return AsyncStream { cont in
-            let cancel = context.onAnyModification { didFinish in
-                if didFinish {
+            let cancel = context.onAnyModification { source in
+                if source.isFinished {
                     cont.finish()
-                } else {
-                    cont.yield(())
+                    return nil
                 }
-                return nil
+
+                // Kind filter
+                guard kinds.contains(source.kind) else { return nil }
+
+                // Scope filter
+                guard _modificationScopeAccepts(scope, depth: source.depth) else { return nil }
+
+                // Model-type predicate
+                if let predicate, let origin = source.origin {
+                    guard predicate(origin.anyModel) else { return nil }
+                }
+
+#if DEBUG
+                if let debug, let triggers = debug.triggers, let origin = source.origin {
+                    let label = debug.name ?? "\(String(describing: Self.self)).observeModifications"
+                    let modelName = String(describing: type(of: origin.anyModel))
+                    let kindDesc = source.kind.description
+                    let depthDesc = source.depth == 0 ? "local" : "depth \(source.depth)"
+                    let printerBox = PrinterBox(debug.effectivePrinter)
+                    let triggerLine: String
+                    switch triggers {
+                    case .name:
+                        triggerLine = "\(label): triggered by \(modelName) (\(kindDesc))"
+                    case .withValue, .withDiff:
+                        triggerLine = "\(label): triggered by \(modelName) (\(kindDesc), \(depthDesc))"
+                    }
+                    printerBox.write(triggerLine + "\n")
+                }
+#endif
+
+                return { cont.yield(()) }
             }
 
-            cont.onTermination = { _ in
-                cancel()
-            }
+            cont.onTermination = { _ in cancel() }
         }
     }
 
+    /// Returns a stream that emits whenever any state in the model or any of its descendants changes.
+    ///
+    /// - Note: Deprecated. Use ``observeModifications(scope:kinds:where:debug:)`` instead,
+    ///   which supports filtering by scope, kind, and model type.
+    @available(*, deprecated, renamed: "observeModifications()")
+    func observeAnyModification() -> AsyncStream<()> {
+        observeModifications()
+    }
+}
+
+/// Returns `true` when the given `scope` should accept a modification at `depth` levels
+/// below the registered observer.
+///
+/// - depth 0: the context that registered the callback (`.self`)
+/// - depth 1: a direct child (`.children`)
+/// - depth 2+: a deeper descendant (`.descendants`)
+@inline(__always)
+func _modificationScopeAccepts(_ scope: ModificationScope, depth: Int) -> Bool {
+    switch depth {
+    case 0:  return scope.contains(.self)
+    case 1:  return scope.contains(.children) || scope.contains(.descendants)
+    default: return scope.contains(.descendants)
+    }
 }
 
 public extension ModelNode {
