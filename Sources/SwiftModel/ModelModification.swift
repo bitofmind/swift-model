@@ -48,6 +48,15 @@ extension ModificationKind: CustomStringConvertible {
     }
 }
 
+// MARK: - OptionSet helpers
+
+extension OptionSet {
+    /// Returns `true` if this set and `other` share at least one member.
+    func intersects(_ other: Self) -> Bool {
+        !intersection(other).isEmpty
+    }
+}
+
 // MARK: - ModificationScope
 
 /// Describes which levels of the model hierarchy are observed by
