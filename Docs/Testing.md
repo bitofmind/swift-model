@@ -25,18 +25,27 @@ import SwiftModel
 
 > Assertions must `await` because state and event propagation is asynchronous.
 
-### Xcodeproj App-Hosted Tests
+> **Swift 6.0:** The `.modelTesting` trait requires Swift 6.1 or later. On Swift 6.0, wrap your test body in `withModelTesting { }` instead:
+> ```swift
+> @Test func testAddCounter() async {
+>     await withModelTesting {
+>         let model = AppModel().withAnchor()
+>         // …
+>     }
+> }
+> ```
 
-SPM-based packages work with no extra configuration — `import SwiftModel` is all you need.
+### Xcodeproj Setup
 
-If your test target uses `BUNDLE_LOADER` (the Xcode default for xcodeproj targets that test an app binary), two build settings are required on the **app target** (not the test target):
+> **App target prerequisite:** Any Xcode app target using SwiftModel must add `OTHER_LDFLAGS = $(inherited) -weak_framework Testing` to its build settings. This is required for the app to launch, independently of whether you have any tests. See [Install](../README.md#install) in the README.
+
+If your test target uses `BUNDLE_LOADER` (the Xcode default for xcodeproj targets that test an app binary), one additional build setting is required on the **app target**:
 
 ```
 ENABLE_TESTING_SEARCH_PATHS = YES
-OTHER_LDFLAGS = $(inherited) -weak_framework Testing
 ```
 
-`ENABLE_TESTING_SEARCH_PATHS` makes the testing APIs available inside the app binary, which the test bundle inherits at runtime via `BUNDLE_LOADER`. `-weak_framework Testing` is required so the app doesn't crash at launch outside a test context — without it, `Testing.framework` is hard-linked and dyld fails to find it when the app runs standalone.
+`ENABLE_TESTING_SEARCH_PATHS` makes the testing APIs available inside the app binary, which the test bundle inherits at runtime via `BUNDLE_LOADER`.
 
 Do **not** add `SwiftModel` to the test target's Frameworks — the test bundle gets all symbols from the app, and adding extra links creates duplicate symbol errors.
 
