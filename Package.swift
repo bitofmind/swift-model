@@ -46,6 +46,7 @@ let package = Package(
                 .product(name: "Clocks", package: "swift-clocks"),
                 .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
+                .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
             ]
         ),
         .macro(

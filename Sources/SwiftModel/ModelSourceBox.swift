@@ -312,7 +312,11 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
     /// thread-local stack (phase-1 init accessor path).
     public static func _threadLocalStoreOrLatest<V>(_ path: WritableKeyPath<M._ModelState, V>, _ value: V) {
         if let ref = _pendingStackStorage.latest as? Context<M>.Reference {
-            ref.state[keyPath: path] = value
+            // Keep old value alive past the write so its deinit cannot fire while
+            // ref.state is exclusively held, preventing Swift exclusivity violations.
+            withExtendedLifetime(ref.state[keyPath: path]) {
+                ref.state[keyPath: path] = value
+            }
         } else {
             _PendingStack.store(path, value)
         }
@@ -500,6 +504,10 @@ extension _ModelSourceBox {
             guard let context = _modifyContext(accessBox: accessBox) else {
                 if _isLive || (reference.context == nil && !reference.isSnapshot) {
                     yield &reference.state[keyPath: statePath]
+                    // Track pre-anchor state mutations so Context.init can detect dep model
+                    // pollution: a child's RMW on an inherited dep increments _stateVersion,
+                    // letting the dep loop substitute the pre-mutation snapshot for root.
+                    reference._stateVersion &+= 1
                 } else {
                     var value = self[dynamicMember: statePath]
                     yield &value
@@ -517,6 +525,7 @@ extension _ModelSourceBox {
             guard let context = _modifyContext(accessBox: accessBox) else {
                 if _isLive || (reference.context == nil && !reference.isSnapshot) {
                     yield &reference.state[keyPath: statePath]
+                    reference._stateVersion &+= 1
                 } else {
                     var value = self[dynamicMember: statePath]
                     yield &value
@@ -534,6 +543,7 @@ extension _ModelSourceBox {
             guard let context = _modifyContext(accessBox: accessBox) else {
                 if _isLive || (reference.context == nil && !reference.isSnapshot) {
                     yield &reference.state[keyPath: statePath]
+                    reference._stateVersion &+= 1
                 } else {
                     var value = self[dynamicMember: statePath]
                     yield &value

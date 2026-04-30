@@ -35,7 +35,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     // Only written once during init; thereafter read-only (under lock for thread safety).
     var _modelSeed: M
 
-    init(model: M, lock: NSRecursiveLock, dependencies: ((inout ModelDependencies) -> Void)?, parent: AnyContext?) {
+    init(model: M, lock: NSRecursiveLock, dependencies: ((inout ModelDependencies) -> Void)?, parent: AnyContext?, isDepContext: Bool = false) {
         // Allow `.initial` (normal first-time anchoring) and `.destructed` (re-anchoring a static
         // dependency model across test runs, or re-anchoring via undo). Block `.active` (already has
         // a live context) and `.frozenCopy` snapshots which must not be anchored.
@@ -55,9 +55,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // use `_anyReference` to cover all source kinds rather than `_liveReference` alone.
         reference = localModel.modelContext._source._anyReference
         _modelSeed = localModel  // Phase-1 placeholder; updated in phase 2 after withContextAdded.
-        super.init(lock: lock, parent: parent)
+        super.init(lock: lock, parent: parent, isDepContext: isDepContext)
 
-        var dependencyModels: [AnyHashable: any Model] = [:]
+        var dependencyModels: [AnyHashableSendable: ModelDependencies.DepModelEntry] = [:]
         let modelSetupDeps = modelSetup?.dependencies ?? []
         let hasOverrides = dependencies != nil || !modelSetupDeps.isEmpty
 
@@ -93,6 +93,27 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // restore state from _genesisState so withContextAdded can traverse children.
         // The full re-anchoring reset (_isDestructed, generation) happens in setContext below.
         reference.prepareForReanchoring()
+
+        // Create pre-`withContextAdded` snapshots for RMW pollution protection.
+        // A stored child's dep closure may perform a read-modify-write on an inherited dep
+        // (e.g. deps.envProp.state = "childDefault"). Because @_ModelTracked generates
+        // nonmutating _modify, the RMW mutates the shared Reference's class state in place
+        // without going through ModelDependencies.subscript — so dependencyModels[key].model
+        // still points to the same Reference, but its state and _stateVersion have changed.
+        // DepModelEntry.capturedVersion records _stateVersion at write time. After
+        // withContextAdded, if _stateVersion changed the dep model in dependencyModels is
+        // polluted; we use the pre-snapshot clone (correct state, fresh modelID, no cache
+        // collision) instead. If version unchanged, we use entry.model directly — this is
+        // critical for sharing: sibling children with the same dep model instance share one
+        // dep context via _PendingDepKey (same modelID → cache hit).
+        var depPreSnapshots: [AnyHashableSendable: any Model] = [:]
+        if !dependencyModels.isEmpty {
+            func makeClone<D: Model>(_ m: D) -> any Model { m.initialDependencyCopy }
+            for (key, entry) in dependencyModels {
+                depPreSnapshots[key] = makeClone(entry.model)
+            }
+        }
+
         localModel.withContextAdded(context: self)
         // Nil out access on localModel: the incoming model may carry ModelSetupAccess
         // (or another access) in _access. Storing it would create a retain cycle:
@@ -129,10 +150,33 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         if !dependencyModels.isEmpty {
             withOwnDependencies {
                 withPostActions { postActions in
-                    for (key, model) in dependencyModels {
-                        var model = model
+                    for (key, entry) in dependencyModels {
+                        // If a stored child's RMW mutated this dep's Reference (bypassing
+                        // ModelDependencies.subscript), _stateVersion will have changed. In
+                        // that case use the pre-snapshot clone — correct state, fresh modelID,
+                        // avoids _PendingDepKey cache collision with the child's dep context.
+                        // If version unchanged, use entry.model directly so its modelID is
+                        // preserved for sharing (sibling children with the same dep instance
+                        // share one dep context via _PendingDepKey cache hit).
+                        func currentVer<D: Model>(_ m: D) -> Int { m.modelContext._source.reference._stateVersion }
+                        let versionChanged = currentVer(entry.model) != entry.capturedVersion
+                        var model: any Model = versionChanged ? depPreSnapshots[key]! : entry.model
+                        // For dep contexts: if an ancestor already has an explicit dep context for
+                        // this type (set by the ancestor's dep loop which ran before ours), skip
+                        // creating a competing local one. nearestDependencyContext will find it.
+                        if isDepContext,
+                           nearestDependencyContext(for: ObjectIdentifier(type(of: model))) != nil {
+                            continue
+                        }
                         setupModelDependency(&model, cacheKey: nil, postSetups: &postActions)
-                        dependencyCache[key] = model
+                        if versionChanged {
+                            // capturedDependencies still has the RMW-polluted original Reference;
+                            // update it to point to the clone's live Reference.
+                            entry.restoreInto(&capturedDependencies, model)
+                        }
+                        if !isDepContext {
+                            dependencyCache[key] = model
+                        }
                     }
                 }
             }
@@ -580,16 +624,14 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             if unprotectedIsDestructed {
                 threadLocals.transitionOverrideValue = nil
                 if reference._stateCleared {
-                    // Use genesis state (valid non-zeroed values) to prevent crashes on
-                    // reference-containing types like Array<T> whose _zeroInit() produces
-                    // a null backing pointer that crashes on access (e.g. .count, .reduce).
-                    // This path is hit when a background performUpdate runs after destruction.
-                    // Only report an issue when there's no genesis — with genesis we have a
-                    // valid fallback (e.g. memoize performUpdate running after model teardown).
+                    // clear() now stores genesis into state (or leaves state valid when !_hasGenesis),
+                    // so reference.state is always safe to read here. Report an issue only when
+                    // there is no genesis — that means the model was destructed without ever being
+                    // anchored, which is a bug in the caller (e.g. a background performUpdate).
                     if !reference._hasGenesis {
                         reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
                     }
-                    yield reference._hasGenesis ? reference._genesisState[keyPath: statePath] : _zeroInit()
+                    yield reference.state[keyPath: statePath]
                 } else {
                     yield reference.state[keyPath: statePath]
                 }
@@ -795,7 +837,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                     if !reference._hasGenesis {
                         reportIssue("Modifying a fully destructed model with no last-seen snapshot.")
                     }
-                    var value: T = reference._hasGenesis ? reference._genesisState[keyPath: statePath] : _zeroInit()
+                    var value: T = reference.state[keyPath: statePath]
                     yield &value
                 } else {
                     yield &reference.state[keyPath: statePath]
@@ -803,6 +845,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 lock.unlock()
             } else {
                 let oldValue = reference.state[keyPath: statePath]
+                // Pin old value alive past the yield so its deinit cannot fire while
+                // reference.state is exclusively held, preventing Swift exclusivity violations.
+                defer { _fixLifetime(oldValue) }
                 yield &reference.state[keyPath: statePath]
 
                 if let isSame, isSame(reference.state[keyPath: statePath], oldValue) {
@@ -830,7 +875,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 if !reference._hasGenesis {
                     reportIssue("Modifying a fully destructed model with no last-seen snapshot.")
                 }
-                value = reference._hasGenesis ? reference._genesisState[keyPath: statePath] : _zeroInit()
+                value = reference.state[keyPath: statePath]
             } else {
                 value = reference.state[keyPath: statePath]
             }
@@ -1389,20 +1434,28 @@ extension Context {
         /// Cleared (set to nil) after first use in `materializeLazyContext()`.
         /// Returns nil if the parent context was deallocated before the child was materialized.
         private var _lazyContextCreator: (() -> Context<M>?)?
-        /// Live/lastSeen/snapshot state. Non-optional — always holds a valid value while
-        /// `!_stateCleared`. After `clear()`, zeroed via `_zeroInit()` to break retain cycles.
+        /// Live/lastSeen/snapshot state. Non-optional — always holds a valid value.
+        /// After `clear()`, replaced with genesis state to release live-model references.
         var state: M._ModelState
-        /// True after `clear()` when state has been zeroed to break retain cycles. Reads from
-        /// a cleared reference will reportIssue and return _zeroInit().
+        /// True after `clear()`. Reads from a cleared reference will reportIssue and
+        /// return a genesis fallback.
         var _stateCleared: Bool = false
         /// Genesis state captured at the first `setContext` call (post-`withContextAdded`).
         /// All property values are correct at that point (no self-referencing closures yet).
         /// Used to restore `state` when re-anchoring a static dependency model, and as a
         /// safe fallback for reads on a cleared reference. Stored inline — always needed for
         /// every anchored model, so boxing would only add malloc overhead with no saving.
-        var _genesisState: M._ModelState = _zeroInit()
+        /// Initialized to `state` in Reference.init as a safe placeholder (never read until
+        /// _hasGenesis = true, at which point setContext overwrites it with the correct value).
+        var _genesisState: M._ModelState
         /// True once genesis has been captured (set in `setContext` on first anchor).
         var _hasGenesis: Bool = false
+        /// Incremented by `_ModelSourceBox.subscript[write:access:]._modify` whenever a tracked
+        /// property is mutated on a pre-anchor Reference. Used by `Context.init` to detect whether
+        /// a stored child's dep closure performed a read-modify-write on a dep model inherited from
+        /// the parent's `capturedDependencies` — even when Swift's compound-access optimization
+        /// bypasses the outer `ModelDependencies.subscript` write-back.
+        var _stateVersion: Int = 0
         /// Non-nil only for snapshot references (frozen/lastSeen). Immutable after init.
         private let _snapshotLifetime: ModelLifetime?
         /// True when this Reference backs a snapshot (frozen copy or lastSeen) rather than a live model.
@@ -1445,6 +1498,7 @@ extension Context {
         init(modelID: ModelID, state: M._ModelState) {
             self.modelID = modelID
             self.state = state
+            self._genesisState = state
             self._snapshotLifetime = nil
         }
 
@@ -1452,6 +1506,7 @@ extension Context {
         init(modelID: ModelID, state: M._ModelState, lifetime: ModelLifetime) {
             self.modelID = modelID
             self.state = state
+            self._genesisState = state
             self._snapshotLifetime = lifetime
         }
 
@@ -1501,16 +1556,29 @@ extension Context {
             }
         }
 
-        /// Zeroes `state` to break retain cycles after the last-seen TTL expires.
+        /// Replaces `state` with genesis to release live-model references and break retain
+        /// cycles after the last-seen TTL expires. Using genesis (pre-anchor state, no live
+        /// child contexts) avoids _zeroInit(), which crashes for property types with class
+        /// references (e.g. SwiftUI.ScrollPosition). If no genesis was captured the model
+        /// was never anchored, so there are no retain cycles to break.
         /// `_context` is intentionally NOT cleared here — that happens in `clearStateForGeneration`
         /// (called from Context.deinit). Clearing `_context` here would make `ModelNode.isDestructed`
         /// return `true` before `onCancel` callbacks fire, causing dependency lookups to fall
         /// through to the live default instead of the test override.
         func clear() {
-            lock {
+            // Return old state from the lock so its contents are destroyed AFTER the lock
+            // releases. Deinits triggered by state destruction (e.g. onDeinit callbacks
+            // reading model properties via Context.subscript.read) would cause Swift
+            // exclusivity violations if reference.state were still exclusively held.
+            let stateToRelease: M._ModelState = lock {
                 _stateCleared = true
-                state = _zeroInit()
+                let old = state
+                if _hasGenesis {
+                    state = _genesisState
+                }
+                return old
             }
+            _fixLifetime(stateToRelease)
         }
 
         /// Atomically claims this Reference for a new Context, or creates a fresh

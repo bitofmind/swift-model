@@ -83,15 +83,25 @@ extension ModelMacro: ExtensionMacro {
 
             var extensions: [DeclSyntax] = []
 
-            func isConforming(to name: String) -> Bool {
-                structDecl.inheritanceClause.map {
-                    $0.inheritedTypes.contains(where: { $0.type.trimmedDescription.contains(name)
-                    })
-                } ?? false
+            // When the real Swift compiler expands a macro, `protocols` contains only the
+            // protocols from the macro's `conformances:` list that the type doesn't already
+            // satisfy — including conformances declared in separate extensions elsewhere.
+            // MacroTesting passes an empty array, so we fall back to checking the struct's
+            // own inheritance clause in that case.
+            let requestedProtocols = Set(protocols.map { $0.trimmedDescription })
+
+            func isNeeded(_ name: String) -> Bool {
+                if !requestedProtocols.isEmpty {
+                    return requestedProtocols.contains(name)
+                }
+                // Fallback for MacroTesting (protocols is empty): check inheritance clause.
+                return !(structDecl.inheritanceClause.map {
+                    $0.inheritedTypes.contains(where: { $0.type.trimmedDescription.contains(name) })
+                } ?? false)
             }
 
             func addConformance(_ name: String, qualifiedName: String? = nil) {
-                if !isConforming(to: name) {
+                if isNeeded(name) {
                     extensions.append(
                     """
                     extension \(raw: type.trimmedDescription): \(raw: qualifiedName ?? name) {}
@@ -115,7 +125,7 @@ extension ModelMacro: ExtensionMacro {
                 return "(\"\(identifier)\", \(identifier) as Any)"
             }
 
-            if !isConforming(to: "CustomReflectable") {
+            if isNeeded("CustomReflectable") {
                 extensions.append(
                 """
                 extension \(raw: type.trimmedDescription): \(raw: "CustomReflectable") {
@@ -126,14 +136,25 @@ extension ModelMacro: ExtensionMacro {
                 """)
             }
 
-            if !isConforming(to: "CustomStringConvertible") {
+            let needsDescription = isNeeded("CustomStringConvertible")
+            let needsDebugDescription = isNeeded("CustomDebugStringConvertible")
+            if needsDescription || needsDebugDescription {
+                let conformances = [
+                    needsDescription ? "CustomStringConvertible" : nil,
+                    needsDebugDescription ? "CustomDebugStringConvertible" : nil,
+                ].compactMap { $0 }.joined(separator: ", ")
+                // Use \n with explicit indentation so the multi-line description body
+                // matches what a literal string interpolation would produce.
+                let descriptionMember = "public var description: String {\n        node.description(of: self)\n    }"
+                let debugDescriptionMember = "public var debugDescription: String { description }"
+                let members = [
+                    needsDescription ? descriptionMember : nil,
+                    needsDebugDescription ? debugDescriptionMember : nil,
+                ].compactMap { $0 }.joined(separator: "\n    ")
                 extensions.append(
                 """
-                extension \(raw: type.trimmedDescription): \(raw: "CustomStringConvertible"), \(raw: "CustomDebugStringConvertible") {
-                    public var description: String {
-                        node.description(of: self)
-                    }
-                    public var debugDescription: String { description }
+                extension \(raw: type.trimmedDescription): \(raw: conformances) {
+                    \(raw: members)
                 }
                 """)
             }

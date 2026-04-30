@@ -6,6 +6,18 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [1.0.0] — Deprecated API Removal
 
+### Fixed
+
+- **Dep context instance mismatch** — when a `@Model` dependency (dep context) resolves another dependency via `node[Dep.self]`, `nearestDependencyContext` now starts its search from the parent rather than the dep context itself. This ensures the root's explicit `withAnchor { $0[Dep.self] = … }` override wins over the dep model's own `testValue` dep defaults, regardless of dep-loop ordering. Previously, non-deterministic dictionary iteration could cause the dep context to find its own dep instance (D1) while root writes went to a different instance (D2), resulting in `Observed { … }` streams that never fired.
+
+- **Stored-child read-modify-write dep pollution** — when a stored child's `withDependencies` closure performed a read-modify-write on an inherited dep model (e.g. `$0.envProp.state = "childDefault"`), the mutation bypassed `ModelDependencies.subscript` and mutated the shared `Reference` in place, contaminating the parent's `dependencyModels` entry. The parent's dep loop then hit the `_PendingDepKey` cache (same `modelID`) and reused the child's dep context, causing the parent to see the child's overridden value instead of the anchor's explicit two-step override. Fix: dep model entries are snapshotted via `initialDependencyCopy` before `withContextAdded` runs. If the snapshot's `_stateVersion` differs after `withContextAdded`, the clone (correct pre-RMW state, independent `modelID`) is used for the parent's dep context instead.
+
+- **Swift exclusivity violation when replaced property deinits read sibling properties** — in three call paths (`Context._modify`, `_threadLocalStoreOrLatest`, `Reference.clear`), the old property value could be destroyed while `Reference.state` was still exclusively held. If the value's `deinit` (e.g. a stored closure) read any model property on the same model, it triggered a fatal "Simultaneous accesses" exclusivity violation. Fixed by pinning the old value alive until after exclusive access ends (`defer { _fixLifetime(oldValue) }` / `withExtendedLifetime`).
+
+- **Crash at construction and teardown for models with class-reference-containing properties** — `Reference._genesisState` was previously initialised via `_zeroInit()` (all-zero bytes). For property types whose value representation uses a class reference (e.g. `SwiftUI.ScrollPosition`, any struct with a `class` field), all-zero memory is not a valid Swift value; accessing or retaining it crashes. Fixed by initialising `_genesisState` to `state` (the model's actual initial value) in `Reference.init`. `Reference.clear()` now stores genesis into `state` instead of calling `_zeroInit()`, ensuring all reads on a cleared reference return valid values.
+
+- **`@Model` macro: duplicate conformance extensions** — when a user declared `CustomStringConvertible` on their `@Model` type (in the inheritance clause or a separate extension), the macro would still emit an `extension MyType: CustomStringConvertible, CustomDebugStringConvertible { … }` block. The compiler rejected duplicate conformances. Fixed by checking the real compiler's `protocols` parameter (which only lists unsatisfied conformances) instead of inspecting the inheritance clause; `CustomStringConvertible` and `CustomDebugStringConvertible` are now synthesised independently so a user-provided `description` suppresses only the description extension, not `debugDescription`.
+
 ### Removed
 
 All APIs that were deprecated in prior releases have been removed:

@@ -1183,6 +1183,106 @@ struct ModelMacroTests {
             """
         }
     }
+    // When the user declares CustomStringConvertible in the inheritance clause (or in a separate
+    // extension — handled at real compile time via the `conformingTo protocols` parameter), the
+    // macro skips generating the description/debugDescription extension.
+    @Test func testCustomStringConvertibleOverride() {
+        assertMacro {
+            """
+            @Model struct MyModel: CustomStringConvertible {
+                var count = 0
+                var description: String { "MyModel(\\(count))" }
+            }
+            """
+        } expansion: {
+            #"""
+            struct MyModel: CustomStringConvertible {
+                var count = 0 {
+                    @storageRestrictions(initializes: _$modelAccess, _$modelSource)
+                    init(newValue) {
+                        _$modelAccess = _ModelAccessBox()
+                        _ModelSourceBox<Self>._threadLocalStoreFirst(\.count, newValue)
+                        _$modelSource = ._popFromThreadLocal(Self._makeState)
+                    }
+                    _read {
+                        yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                    }
+                    nonmutating _modify {
+                        yield &_$modelSource[write: \_State.count, access: _$modelAccess]
+                    }
+                }
+                var description: String { "MyModel(\(count))" }
+
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                    visitor.visitStatically(statePath: \.count)
+                }
+
+                public struct _State: _ModelStateType {
+                    var count = 0
+                }
+
+                public typealias _ModelState = _State
+
+                private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                    _State(count: pending.value(for: \.count, default: 0))
+                }
+
+                private var _modelState: _State {
+                    get {
+                        _$modelSource._modelState
+                    }
+                    nonmutating set {
+                        _$modelSource._modelState = newValue
+                    }
+                }
+
+                private var _$modelAccess: _ModelAccessBox = _ModelAccessBox()
+
+                private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
+
+                public static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                    \Self._modelState
+                }
+
+                private var _$modelContext: ModelContext<Self> {
+                    get {
+                        ModelContext(_access: _$modelAccess, _source: _$modelSource)
+                    }
+                }
+
+                public var _context: ModelContextAccess<Self> {
+                    ModelContextAccess(_$modelContext)
+                }
+
+                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                    _$modelAccess = update._$modelContext._access
+                    _$modelSource = update._$modelContext._source
+                }
+            }
+
+            extension MyModel: SwiftModel.Model {
+            }
+
+            extension MyModel: @unchecked Sendable {
+            }
+
+            extension MyModel: Identifiable {
+            }
+
+            extension MyModel: CustomReflectable {
+                public var customMirror: Mirror {
+                    node.mirror(of: self, children: [("count", count as Any)])
+                }
+            }
+
+            extension MyModel: CustomDebugStringConvertible {
+                public var debugDescription: String {
+                    description
+                }
+            }
+            """#
+        }
+    }
 }
 
 #endif // canImport(SwiftModelMacros)

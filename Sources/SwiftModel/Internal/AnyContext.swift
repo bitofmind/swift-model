@@ -28,6 +28,11 @@ class AnyContext: @unchecked Sendable {
     var children: OrderedDictionary<AnyKeyPath, OrderedDictionary<ModelRef, AnyContext>> = [:]
     var dependencyContexts: [ObjectIdentifier: AnyContext] = [:]
     var dependencyCache: [AnyHashable: Any] = [:]
+    /// True for contexts created by `setupModelDependency` (dep model contexts).
+    /// When true, `nearestDependencyContext` skips this context's own `dependencyContexts`
+    /// and starts the search from the parent — preventing dep models from shadowing
+    /// the root's explicit overrides with their own `testValue` dep defaults.
+    var isDepContext: Bool = false
     /// The `ModelRef` key under which this context is registered in its parent's `children` dict.
     /// Set by `childContext` when the context is first inserted. Used by `findOrTrackChild` as an
     /// O(1) fast path: instead of constructing the element key path to do a dict lookup, we look
@@ -493,8 +498,9 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    init(lock: NSRecursiveLock, parent: AnyContext?) {
+    init(lock: NSRecursiveLock, parent: AnyContext?, isDepContext: Bool = false) {
         self.lock = lock
+        self.isDepContext = isDepContext
         self.options = parent?.options ?? ModelOption.current
         self.mainCallQueue = parent?.mainCallQueue ?? MainCallQueue()
         self.useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
@@ -903,7 +909,13 @@ class AnyContext: @unchecked Sendable {
     /// dependency context found for the given type ID. This ensures child-level
     /// withDependencies overrides take precedence over root-level ones.
     func nearestDependencyContext(for typeID: ObjectIdentifier) -> AnyContext? {
-        var current: AnyContext? = self
+        // Dep contexts search parents first so the root's explicit override wins over the dep
+        // model's own testValue dep defaults (e.g. BackendModel.testValue overrides EnvDep to
+        // "backendEnv", but root sets EnvDep to "editor" — root must win). If no parent has
+        // an override, fall back to self's own dep contexts (set up by the dep loop in init).
+        var current: AnyContext? = isDepContext
+            ? parentsLock { weakParents.first?.parent }
+            : self
         while let ctx = current {
             if let dep = ctx.dependencyContexts[typeID] {
                 return dep
@@ -911,7 +923,8 @@ class AnyContext: @unchecked Sendable {
             if ctx === rootParent { break }
             current = ctx.parentsLock { ctx.weakParents.first?.parent }
         }
-        return nil
+        // For dep contexts with no parent override, use own dep-loop context as fallback.
+        return isDepContext ? dependencyContexts[typeID] : nil
     }
 
     func setupModelDependency<D: Model>(_ model: inout D, cacheKey: AnyHashable?, postSetups: inout [() -> Void]) {
@@ -969,7 +982,7 @@ class AnyContext: @unchecked Sendable {
                     // a reference that was cleared before its first anchoring). Guard defensively
                     // rather than crashing — the dependency simply won't be registered this call.
                     guard model.context == nil else { return }
-                    let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self)
+                    let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self, isDepContext: true)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
                     dependencyContexts[ObjectIdentifier(D.self)] = child
                     model.withContextAdded(context: child)
@@ -1012,7 +1025,7 @@ class AnyContext: @unchecked Sendable {
                     }
                     // Guard defensively — see equivalent comment at the other call site above.
                     guard model.context == nil else { return }
-                    let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self)
+                    let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self, isDepContext: true)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
                     rootParent.dependencyContexts[depTypeID] = child
                     model.withContextAdded(context: child)
@@ -1043,18 +1056,19 @@ class AnyContext: @unchecked Sendable {
                 // (e.g. shared dependency anchored by a sibling child via withDependencies).
                 // All copies share the same Reference, so modelID is the same across copies.
                 let pendingKey = _PendingDepKey(typeID: ObjectIdentifier(D.self), modelID: model.modelID)
+                let depTypeID = ObjectIdentifier(D.self)
                 if let existing = rootParent.dependencyCache[pendingKey] as? Context<D> {
                     model.withContextAdded(context: existing)
                     model.modelContext = ModelContext(context: existing)
-                    if dependencyContexts[ObjectIdentifier(D.self)] == nil {
-                        dependencyContexts[ObjectIdentifier(D.self)] = existing
+                    if dependencyContexts[depTypeID] == nil {
+                        dependencyContexts[depTypeID] = existing
                         existing.addParent(self, callbacks: &postSetups)
                     }
                 } else {
                     assert(model.context == nil)
-                    let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self)
+                    let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self, isDepContext: true)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
-                    dependencyContexts[ObjectIdentifier(D.self)] = child
+                    dependencyContexts[depTypeID] = child
                     model.withContextAdded(context: child)
                     model.modelContext = ModelContext(context: child)
                     // No _linkedReference needed: all pre-anchor copies already hold child.reference

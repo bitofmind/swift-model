@@ -27,6 +27,16 @@ extension EnvDep: DependencyKey {
     static let testValue = EnvDep(state: "test")
 }
 
+// Expose EnvDep on DependencyValues so tests can use the dynamicMember subscript form
+// ($0.envProp = model; $0.envProp.state = "modified") — exactly like the production app uses
+// $0.streamEnvironment = X; $0.streamEnvironment.streamMode = .editor.
+extension DependencyValues {
+    fileprivate var envProp: EnvDep {
+        get { self[EnvDep.self] }
+        set { self[EnvDep.self] = newValue }
+    }
+}
+
 /// A consumer model that observes its injected dependency and logs changes.
 /// This is the analogue of the "media bin child model" from the bug report.
 @Model private struct Consumer {
@@ -355,6 +365,61 @@ extension AuxDepWithChild: DependencyKey {
         self.child = ChildWithGrandchild().withDependencies { deps in
             deps[EnvDep.self] = EnvDep(state: "childDep")
         }
+    }
+}
+
+// MARK: - Models for dep-with-own-EnvDep override tests
+//
+// Reproduces the production scenario:
+//   EditorModel.withAnchor {
+//     $0.streamEnvironment = StreamEnvironmentModel(date: .now)  // step 1
+//     $0.streamEnvironment.streamMode = .editor                  // step 2
+//     $0.backend.xxx = something                                 // trigger BackendModel dep
+//   }
+//
+// BackendModel.testValue carries its own streamEnvironment override via withDependencies.
+// Bug hypothesis: when root's dep loop processes BackendModel, BackendModel.Context.init
+// creates a fresh dep context for its own EnvDep override — which could shadow root's
+// .editor context if stored at rootParent rather than at BackendModel.context.
+//
+// EditorModel's children (e.g. streams items) must see "editor", not "backendEnv".
+
+/// Analog of BackendModel: a dep model whose testValue carries its own EnvDep override.
+/// When set up as a root-level dep, its internal dep context must NOT shadow the
+/// root-level two-step override seen by root's other children.
+@Model private struct BackendModelWithOwnEnv {
+    @ModelDependency var env: EnvDep
+
+    func onActivate() {
+        node.testResult.add("backendOn:\(env.state)")
+    }
+}
+
+extension BackendModelWithOwnEnv: DependencyKey {
+    static let liveValue = BackendModelWithOwnEnv()
+    static let testValue = BackendModelWithOwnEnv().withDependencies { deps in
+        deps[EnvDep.self] = EnvDep(state: "backendEnv")
+    }
+}
+
+extension DependencyValues {
+    fileprivate var backendModelProp: BackendModelWithOwnEnv {
+        get { self[BackendModelWithOwnEnv.self] }
+        set { self[BackendModelWithOwnEnv.self] = newValue }
+    }
+}
+
+/// Root model that mirrors the production EditorModel pattern:
+/// has both @ModelDependency var env: EnvDep AND @ModelDependency var backend: BackendModelWithOwnEnv.
+/// The root model itself resolves env in onActivate — this is the key scenario: EditorModel
+/// (root) must see the root-level two-step override, not the dep model's backendEnv.
+@Model private struct EditorLikeRoot {
+    @ModelDependency var env: EnvDep
+    @ModelDependency var backend: BackendModelWithOwnEnv
+
+    func onActivate() {
+        node.testResult.add("editorOn:\(env.state)")
+        _ = backend
     }
 }
 
@@ -1228,5 +1293,368 @@ struct ModelDependencyOverrideTests {
 
             return root
         }
+    }
+
+    /// Root has a dep override. An intermediate child container has NO override.
+    /// Items are dynamically added to the intermediate container at runtime.
+    /// Items must see the root's dep — covering the exact EditorModel → StreamsModel → StreamModel pattern.
+    ///
+    /// EditorModel (root, $0.env = editorDep)
+    ///   └─ streamsModel: Container (no withDependencies — inherits root dep via fast-path)
+    ///        └─ Item(id: N) added at runtime — must see "editorDep"
+    @Test(arguments: ObservationPath.allCases)
+    func dynamicallyAddedItemInUnoverriddenChildInheritsRootDep(path: ObservationPath) async throws {
+        let testResult = TestResult()
+        let editorDep = EnvDep(state: "editorDep")
+
+        try await waitUntilRemoved {
+            let root = path.withOptions { TwoContainersModel()
+                .withAnchor {
+                    $0.testResult = testResult
+                    $0[EnvDep.self] = editorDep
+                } }
+
+            // Dynamically add an Item to container `a` (which has no dep override).
+            // This is the StreamsModel → StreamModel pattern: items added at runtime
+            // must inherit the root's dep, not the testValue/liveValue.
+            root.a.items.append(Item(id: 1))
+
+            try await waitUntil(testResult.value.contains("itemOn:1:"))
+            #expect(testResult.value.contains("itemOn:1:editorDep"),
+                    "[\(path)] Dynamically-added item in unoverridden child must see root's dep. Got: \(testResult.value)")
+
+            return root
+        }
+    }
+
+    // =========================================================================
+    // MARK: - DynamicMember two-step dep setup (production app pattern)
+    //
+    // The production app uses:
+    //   $0.streamEnvironment = StreamEnvironmentModel(date: .now)   // step 1
+    //   $0.streamEnvironment.streamMode = .editor                   // step 2
+    //
+    // This is the @dynamicMemberLookup subscript path on ModelDependencies, which stores
+    // the model under a WritableKeyPath key in `models` (vs ObjectIdentifier for the
+    // type subscript `$0[D.self] = model` path). Step 2 reads, modifies, and writes back
+    // via get+set (no _modify on ModelDependencies), so the modified value ends up in
+    // both `models` and `dependencies`.
+    //
+    // Items added to an unoverridden child container (analogous to StreamsModel with no
+    // override) must see the step-2 modified value, not the step-1 initial value or
+    // the DependencyKey testValue.
+    // =========================================================================
+
+    /// Two-step dynamicMember dep setup: assign model then modify a property.
+    /// Dynamically-added items in an unoverridden sibling container must see the
+    /// step-2 modified value — mirroring the exact production app pattern.
+    ///
+    /// Hierarchy:
+    ///   TwoContainersModel.withAnchor {
+    ///     $0.envProp = EnvDep(state: "initial")    // step 1: dynamicMember assign
+    ///     $0.envProp.state = "editor"              // step 2: property modification
+    ///   }
+    ///   ├─ a: Container (no override) ← items dynamically added here
+    ///   └─ b: Container.withDependencies { $0[EnvDep.self] = isolated }   ← like contextPreviewStreams
+    @Test(arguments: ObservationPath.allCases)
+    func dynamicMemberTwoStepDepSetupPropagatesModifiedValue(path: ObservationPath) async throws {
+        let testResult = TestResult()
+        let isolatedDep = EnvDep(state: "isolated")
+
+        try await waitUntilRemoved {
+            let root = path.withOptions { TwoContainersModel(
+                a: Container(),
+                b: Container().withDependencies { $0[EnvDep.self] = isolatedDep }
+            ).withAnchor {
+                $0.testResult = testResult
+                $0.envProp = EnvDep(state: "initial")  // step 1: dynamicMember form
+                $0.envProp.state = "editor"            // step 2: modify via get+set
+            } }
+
+            root.a.items.append(Item(id: 1))
+
+            try await waitUntil(testResult.value.contains("itemOn:1:"))
+            #expect(testResult.value.contains("itemOn:1:editor"),
+                    "[\(path)] Item must see step-2 modified value 'editor', not step-1 'initial' or testValue. Got: \(testResult.value)")
+            #expect(!testResult.value.contains("itemOn:1:initial"),
+                    "[\(path)] Item must NOT see the pre-modification step-1 value 'initial'. Got: \(testResult.value)")
+            #expect(!testResult.value.contains("itemOn:1:test"),
+                    "[\(path)] Item must NOT see the DependencyKey testValue. Got: \(testResult.value)")
+
+            return root
+        }
+    }
+
+    // =========================================================================
+    // MARK: - Root two-step env setup is visible to dynamically-added children
+    //
+    // Verifies that the root's two-step EnvDep setup (assign then modify) is visible to
+    // items that are dynamically appended after anchoring.
+    // Root's children (and dynamically-added items) must see the root's "editor" value.
+    //
+    // Hierarchy:
+    //   TwoContainersModel.withAnchor {
+    //     $0.envProp = EnvDep("initial")           // step 1
+    //     $0.envProp.state = "editor"              // step 2
+    //   }
+    //   ├─ a: Container (no override) ← items dynamically added here
+    //   └─ b: Container.withDependencies { $0[EnvDep.self] = isolated }
+    // =========================================================================
+
+    /// Root's two-step EnvDep override must be visible to items dynamically appended to
+    /// Container a after anchoring. Items must see "editor", not "initial" or "test".
+    @Test(arguments: ObservationPath.allCases)
+    func depModelOwnEnvDoesNotShadowRootTwoStepEnvOverride(path: ObservationPath) async throws {
+        let testResult = TestResult()
+        let isolatedDep = EnvDep(state: "isolated")
+
+        try await waitUntilRemoved {
+            let root = path.withOptions { TwoContainersModel(
+                a: Container(),
+                b: Container().withDependencies { $0[EnvDep.self] = isolatedDep }
+            ).withAnchor {
+                $0.testResult = testResult
+                $0.envProp = EnvDep(state: "initial")  // step 1: dynamicMember form
+                $0.envProp.state = "editor"            // step 2: modify via get+set
+            } }
+
+            root.a.items.append(Item(id: 1))
+
+            try await waitUntil(testResult.value.contains("itemOn:1:"))
+            #expect(testResult.value.contains("itemOn:1:editor"),
+                    "[\(path)] Item must see root's 'editor' override, not dep's 'backendEnv'. Got: \(testResult.value)")
+            #expect(!testResult.value.contains("itemOn:1:backendEnv"),
+                    "[\(path)] Item must NOT see BackendModelWithOwnEnv's 'backendEnv'. Got: \(testResult.value)")
+            #expect(!testResult.value.contains("itemOn:1:initial"),
+                    "[\(path)] Item must NOT see pre-modification step-1 value 'initial'. Got: \(testResult.value)")
+            #expect(!testResult.value.contains("itemOn:1:test"),
+                    "[\(path)] Item must NOT see the DependencyKey testValue. Got: \(testResult.value)")
+
+            return root
+        }
+    }
+
+    /// A dep model whose testValue carries its own EnvDep override ("backendEnv") must still
+    /// see the root's explicitly-injected "editor" dep, not its own default.
+    ///
+    /// In 0.14.0: lazy dep resolution always used rootParent.dependencyContexts → root wins.
+    /// Regression in current HEAD: nearestDependencyContext starts at BackendModel.context and
+    /// finds backendEnvCtx (from BackendModel's own dep loop) before reaching root's editorEnvCtx.
+    ///
+    /// The fix: dep contexts (isDepContext == true) must skip their own dependencyContexts when
+    /// resolving — they should start from self.parent so that the root's explicit override wins.
+    @Test(arguments: ObservationPath.allCases)
+    func depModelSeesRootEnvOverrideNotItsOwnDefault(path: ObservationPath) async throws {
+        let testResult = TestResult()
+
+        try await waitUntilRemoved {
+            let root = path.withOptions { EditorLikeRoot().withAnchor {
+                $0.testResult = testResult
+                $0.envProp = EnvDep(state: "initial")  // step 1: dynamicMember form
+                $0.envProp.state = "editor"            // step 2: modify via get+set
+            } }
+
+            try await waitUntil(testResult.value.contains("backendOn:"))
+            #expect(testResult.value.contains("backendOn:editor"),
+                    "[\(path)] BackendModel dep must see root's 'editor' override, not its own 'backendEnv'. Got: \(testResult.value)")
+            #expect(!testResult.value.contains("backendOn:backendEnv"),
+                    "[\(path)] BackendModel dep must NOT see its own testValue dep. Got: \(testResult.value)")
+
+            return root
+        }
+    }
+
+    /// Root model itself (not a child) has @ModelDependency var env: EnvDep, mirroring
+    /// the production EditorModel pattern where EditorModel IS the root AND resolves
+    /// streamEnvironment in its own onActivate. A backend dep with its own EnvDep override
+    /// ("backendEnv") must not shadow the root's two-step "editor" override seen by the root.
+    @Test(arguments: ObservationPath.allCases)
+    func rootModelSeesItsOwnTwoStepEnvOverrideNotDepModelOverride(path: ObservationPath) async throws {
+        let testResult = TestResult()
+
+        try await waitUntilRemoved {
+            let root = path.withOptions { EditorLikeRoot().withAnchor {
+                $0.testResult = testResult
+                $0.envProp = EnvDep(state: "initial")  // step 1: dynamicMember form
+                $0.envProp.state = "editor"            // step 2: modify via get+set
+            } }
+
+            try await waitUntil(testResult.value.contains("editorOn:"))
+            #expect(testResult.value.contains("editorOn:editor"),
+                    "[\(path)] EditorLikeRoot.onActivate must see root's 'editor' override. Got: \(testResult.value)")
+            #expect(!testResult.value.contains("editorOn:backendEnv"),
+                    "[\(path)] EditorLikeRoot must NOT see BackendModelWithOwnEnv's 'backendEnv'. Got: \(testResult.value)")
+            #expect(!testResult.value.contains("editorOn:test"),
+                    "[\(path)] EditorLikeRoot must NOT see the DependencyKey testValue. Got: \(testResult.value)")
+
+            return root
+        }
+    }
+
+    /// Stored-child dep-loop shadowing regression (production EditorModel scenario).
+    ///
+    /// Layout mirrors the production case:
+    ///   RootWithNestedChild
+    ///     └─ NestedChildHolder  (regular stored property, NOT a dep model)
+    ///          └─ ChildWithEnvDep  (regular stored property)
+    ///               └─ EnvDep  (dep model via @ModelDependency)
+    ///
+    /// `ChildWithEnvDep`'s testValue dep loop runs during `withContextAdded` for
+    /// `RootWithNestedChild`, BEFORE the root's own dep loop creates `envDepCtx_editor`.
+    /// Without the fix, `nearestDependencyContext` called from `ChildWithEnvDep`'s context
+    /// finds `ChildWithEnvDep`'s own dep context first (mode "childDefault"), shadowing the
+    /// root's explicit override (mode "root").
+    @Test(arguments: ObservationPath.allCases)
+    func storedChildDepLoopDoesNotShadowExplicitRootOverride(path: ObservationPath) async throws {
+        let testResult = TestResult()
+
+        try await waitUntilRemoved {
+            let root = path.withOptions { RootWithNestedChild().withAnchor {
+                $0.testResult = testResult
+                $0.envProp = EnvDep(state: "root")
+            } }
+
+            try await waitUntil(testResult.value.contains("childOn:"))
+            #expect(testResult.value.contains("childOn:root"),
+                    "[\(path)] Stored child's dep must see root explicit override 'root', not its own default. Got: \(testResult.value)")
+            #expect(!testResult.value.contains("childOn:childDefault"),
+                    "[\(path)] Stored child dep must NOT see its own testValue 'childDefault'. Got: \(testResult.value)")
+            return root
+        }
+    }
+
+    // =========================================================================
+    // MARK: - Stored-child read-modify-write dep override does not pollute root's dep cache
+    //
+    // The production bug (EditorModel / StreamsModel) scenario:
+    //
+    //   1. Root anchored with two-step dep setup:
+    //        $0.envProp = EnvDep(state: "initial")   // creates refA in dependencyModels
+    //        $0.envProp.state = "editor"             // mutates refA.state — still in dependencyModels
+    //
+    //   2. Root has a stored child `child` with a withDependencies closure that does a
+    //      READ-MODIFY-WRITE on the inherited dep:
+    //        self.child = ChildModel().withDependencies { $0.envProp.state = "childDefault" }
+    //
+    //      During withContextAdded, the child's modelSetupDeps closure reads envProp from
+    //      capturedDependencies (backed by refA), mutates refA.state.state = "childDefault",
+    //      and writes it back. The child's dependencyModels now has envProp → refA (mutated).
+    //
+    //   3. Child's dep loop (inside withContextAdded, BEFORE root's dep loop) calls
+    //      setupModelDependency with refA → caches a dep context keyed _PendingDepKey(EnvDep, refA.modelID).
+    //
+    //   4. Root's dep loop also iterates over dependencyModels, which ALSO has refA.
+    //      Without the fix: _PendingDepKey(EnvDep, refA.modelID) → CACHE HIT → root reuses
+    //      child's dep context (state "childDefault") → root's onActivate sees "childDefault" ✗
+    //
+    //   The fix: clone dependencyModels entries (via initialDependencyCopy) before withContextAdded.
+    //   Root's dep loop then uses refB (independent Reference, state "editor" at clone time).
+    //   Child mutates refA — refB is unaffected. Root sees "editor" ✓
+    // =========================================================================
+
+    /// Reproduces the production EditorModel bug where a stored child's read-modify-write
+    /// dep override (withDependencies { $0.envProp.state = "childDefault" }) would pollute
+    /// the _PendingDepKey cache and cause the root to pick up the child's state instead of
+    /// the anchor's explicit two-step override.
+    ///
+    /// Without the fix: root.onActivate logs "rootOn:childDefault" ✗
+    /// With the fix: root.onActivate logs "rootOn:editor" ✓
+    @Test func storedChildRMWDepDoesNotPolluteDependencyModelsCache() async throws {
+        let testResult = TestResult()
+
+        try await waitUntilRemoved {
+            let root = RootWithRMWChild().withAnchor {
+                $0.testResult = testResult
+                $0.envProp = EnvDep(state: "initial")  // step 1: creates refA in dependencyModels
+                $0.envProp.state = "editor"            // step 2: mutates refA.state — stays in dependencyModels
+            }
+
+            try await waitUntil(testResult.value.contains("rootRMWOn:"))
+            #expect(testResult.value.contains("rootRMWOn:editor"),
+                    "Root must see anchor's 'editor' override. Got: \(testResult.value)")
+            #expect(!testResult.value.contains("rootRMWOn:childDefault"),
+                    "Root must NOT be polluted by child's RMW 'childDefault'. Got: \(testResult.value)")
+            #expect(!testResult.value.contains("rootRMWOn:initial"),
+                    "Root must NOT see pre-modification step-1 value 'initial'. Got: \(testResult.value)")
+
+            return root
+        }
+    }
+}
+
+// MARK: - Models for storedChildDepLoopDoesNotShadowExplicitRootOverride
+
+/// A dep model that declares its own EnvDep override in testValue.
+/// Represents e.g. StreamsModel in the production EditorModel hierarchy.
+@Model private struct ChildWithEnvDep {
+    @ModelDependency var env: EnvDep
+
+    func onActivate() {
+        node.testResult.add("childOn:\(env.state)")
+    }
+}
+
+extension ChildWithEnvDep: DependencyKey {
+    static let liveValue = ChildWithEnvDep()
+    static let testValue = ChildWithEnvDep().withDependencies { deps in
+        deps[EnvDep.self] = EnvDep(state: "childDefault")
+    }
+}
+
+/// Intermediate stored container — NOT a dep model. Mirrors e.g. ContextPreviewState.
+@Model private struct NestedChildHolder {
+    var child = ChildWithEnvDep()
+}
+
+/// Root model that has both an explicit dep override for EnvDep AND a stored
+/// property (NestedChildHolder → ChildWithEnvDep) whose testValue dep loop
+/// would shadow the override without the fix.
+@Model private struct RootWithNestedChild {
+    @ModelDependency var env: EnvDep
+    var holder = NestedChildHolder()
+
+    func onActivate() {
+        _ = holder.child  // ensure the stored child is accessed
+    }
+}
+
+// MARK: - Models for storedChildRMWDepDoesNotPolluteDependencyModelsCache
+
+/// A simple child model used to exercise the read-modify-write dep pollution bug.
+/// Stored as a plain property in RootWithRMWChild; the parent assigns withDependencies
+/// in its own init body, analogous to how EditorModel stores its child containers.
+@Model private struct ChildWithRMWEnvDep {
+    @ModelDependency var env: EnvDep
+
+    func onActivate() {
+        node.testResult.add("rmwChildOn:\(env.state)")
+    }
+}
+
+/// Root that has BOTH a @ModelDependency var env (resolved in onActivate) AND a stored
+/// child whose withDependencies closure does a read-modify-write on the same dep type.
+///
+/// The read-modify-write ($0.envProp.state = "childDefault") in init causes the child's
+/// modelSetupDeps to mutate the shared Reference that also lives in root's dependencyModels
+/// (created by the two-step anchor setup). Without the fix this shared Reference causes a
+/// _PendingDepKey cache collision: child's dep loop caches first, root's dep loop gets a
+/// hit and picks up the child's state. With the fix, root's dependencyModels are cloned
+/// before withContextAdded, giving the root an independent Reference that the child cannot
+/// mutate.
+@Model private struct RootWithRMWChild {
+    @ModelDependency var env: EnvDep
+    var child: ChildWithRMWEnvDep
+
+    init() {
+        // Read-modify-write: reads the inherited EnvDep from capturedDependencies (refA),
+        // mutates refA.state.state = "childDefault", and writes it back into dependencyModels.
+        // This is the pattern that triggers the _PendingDepKey cache collision without the fix.
+        self.child = ChildWithRMWEnvDep().withDependencies { deps in
+            deps.envProp.state = "childDefault"
+        }
+    }
+
+    func onActivate() {
+        node.testResult.add("rootRMWOn:\(env.state)")
     }
 }
