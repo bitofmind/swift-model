@@ -16,6 +16,10 @@ struct _ModificationCallbackSource: @unchecked Sendable {
     var depth: Int
     /// The context where the change originated. `nil` only when `isFinished == true`.
     var origin: AnyContext?
+    /// Lazily-produced human-readable name of what changed (e.g. `"duration"`,
+    /// `"environment.theme"`, `"preference.score"`). Evaluated post-lock. Nil when
+    /// unavailable (parentRelationship, touch, or finish signals).
+    var propertyDescription: (@Sendable () -> String?)?
 }
 
 enum ModelLifetime: Comparable {
@@ -797,11 +801,11 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    func didModify(callbacks: inout [() -> Void], kind: ModificationKind, depth: Int, origin: AnyContext) {
+    func didModify(callbacks: inout [() -> Void], kind: ModificationKind, depth: Int, origin: AnyContext, propertyDescription: (@Sendable () -> String?)? = nil) {
         _modificationCounts = nil
         guard anyModificationActiveCount > 0 else { return }
 
-        let source = _ModificationCallbackSource(isFinished: false, kind: kind, depth: depth, origin: origin)
+        let source = _ModificationCallbackSource(isFinished: false, kind: kind, depth: depth, origin: origin, propertyDescription: propertyDescription)
         for callback in anyModificationCallbacks.values {
             if let c = callback(source) {
                 callbacks.append(c)
@@ -809,7 +813,7 @@ class AnyContext: @unchecked Sendable {
         }
 
         for parent in parents {
-            parent.didModify(callbacks: &callbacks, kind: kind, depth: depth + 1, origin: origin)
+            parent.didModify(callbacks: &callbacks, kind: kind, depth: depth + 1, origin: origin, propertyDescription: propertyDescription)
         }
     }
 

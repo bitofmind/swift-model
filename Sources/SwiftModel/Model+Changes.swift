@@ -128,7 +128,9 @@ public extension Model {
         scope: ModificationScope = [.self, .descendants],
         kinds: ModificationKind = .all,
         where predicate: (@Sendable (Any) -> Bool)? = nil,
-        debug: DebugOptions? = nil
+        debug: DebugOptions? = nil,
+        fileID: StaticString = #fileID,
+        line: UInt = #line
     ) -> AsyncStream<()> {
         guard let context = enforcedContext() else { return .finished }
 
@@ -151,20 +153,20 @@ public extension Model {
                 }
 
 #if DEBUG
-                if let debug, let triggers = debug.triggers, let origin = source.origin {
-                    let label = debug.name ?? "\(String(describing: Self.self)).observeModifications"
+                if let debug, let _ = debug.triggers, let origin = source.origin {
+                    let label = debug.name ?? "\(String(describing: Self.self)).observeModifications(\(debugFileLocation(fileID, line)))"
                     let modelName = String(describing: type(of: origin.anyModel))
-                    let kindDesc = source.kind.description
-                    let depthDesc = source.depth == 0 ? "local" : "depth \(source.depth)"
                     let printerBox = PrinterBox(debug.effectivePrinter)
-                    let triggerLine: String
-                    switch triggers {
-                    case .name:
-                        triggerLine = "\(label): triggered by \(modelName) (\(kindDesc))"
-                    case .withValue, .withDiff:
-                        triggerLine = "\(label): triggered by \(modelName) (\(kindDesc), \(depthDesc))"
+
+                    // Resolve the property description lazily (already post-lock here).
+                    let propDesc = source.propertyDescription?()
+                    let subject: String
+                    if let prop = propDesc {
+                        subject = "\(modelName).\(prop)"
+                    } else {
+                        subject = "\(modelName) (\(source.kind.description))"
                     }
-                    printerBox.write(triggerLine + "\n")
+                    printerBox.write("\(label): triggered by \(subject)")
                 }
 #endif
 

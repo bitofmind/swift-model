@@ -248,7 +248,14 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 }
             }
             // Use the typed path for post-lock callbacks so modifyCallbacks keyed on it fire correctly.
+            #if DEBUG
+            let storagePropArea = storage.propagation == .environment ? "environment" : "local"
+            let storagePropName = storage.name
+            let envPropDesc: (@Sendable () -> String?)? = { "\(storagePropArea).\(storagePropName)" }
+            let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath, kind: .environment, propertyDescription: envPropDesc) }
+            #else
             let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath, kind: .environment) }
+            #endif
             runPostLockCallbacks(postLockCallbacks)
         }
     }
@@ -322,7 +329,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 }
             }
             // Post-lock callbacks for this context.
+            #if DEBUG
+            let prefName = storage.name
+            let prefPropDesc: (@Sendable () -> String?)? = { "preference.\(prefName)" }
+            let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath, kind: .preferences, propertyDescription: prefPropDesc) }
+            #else
             let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath, kind: .preferences) }
+            #endif
             runPostLockCallbacks(postLockCallbacks)
 
             // Preferences are bottom-up: a child contribution change must invalidate ancestor observers.
@@ -346,7 +359,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         lock { self.didModify() }
         modelContext.invokeDidModify(readModel, at: untypedPath)?()
         let typedPath: WritableKeyPath<M, V>&Sendable = \M[_preference: storage]
+        #if DEBUG
+        let prefName = storage.name
+        let prefPropDesc: (@Sendable () -> String?)? = { "preference.\(prefName)" }
+        let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath, kind: .preferences, propertyDescription: prefPropDesc) }
+        #else
         let postLockCallbacks = lock { buildPostLockCallbacks(for: typedPath, kind: .preferences) }
+        #endif
         runPostLockCallbacks(postLockCallbacks)
 
         let parents = lock(self.parents)
@@ -506,7 +525,16 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 // by onAnyModification's withModificationActiveCount (parent→child).
                 let activeAccessCallback = modelContext.invokeDidModify(readModel, at: path)
 
+                #if DEBUG
+                var propDesc: (@Sendable () -> String?)? = nil
+                if anyModificationActiveCount > 0 {
+                    let modelSnapshot = readModel
+                    propDesc = { [modelSnapshot] in debugPropertyName(from: modelSnapshot, path: path) }
+                }
+                let postLockCallbacks = buildPostLockCallbacks(for: path, propertyDescription: propDesc)
+                #else
                 let postLockCallbacks = buildPostLockCallbacks(for: path)
+                #endif
                 lock.unlock()
 
                 activeAccessCallback?()
@@ -540,7 +568,16 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // avoidance as in the _modify subscript above).
             let activeAccessCallback = modelContext.invokeDidModify(readModel, at: path)
 
+            #if DEBUG
+            var propDesc: (@Sendable () -> String?)? = nil
+            if anyModificationActiveCount > 0 {
+                let modelSnapshot = readModel
+                propDesc = { [modelSnapshot] in debugPropertyName(from: modelSnapshot, path: path) }
+            }
+            let postLockCallbacks = buildPostLockCallbacks(for: path, propertyDescription: propDesc)
+            #else
             let postLockCallbacks = buildPostLockCallbacks(for: path)
+            #endif
             lock.unlock()
 
             activeAccessCallback?()
@@ -552,7 +589,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// Builds the post-lock callbacks array for a property modification.
     /// Returns nil when there is nothing to do, avoiding the array allocation entirely.
     /// Must be called while the context lock is held.
-    private func buildPostLockCallbacks(for path: PartialKeyPath<M>, kind: ModificationKind = .properties) -> [() -> Void]? {
+    private func buildPostLockCallbacks(for path: PartialKeyPath<M>, kind: ModificationKind = .properties, propertyDescription: (@Sendable () -> String?)? = nil) -> [() -> Void]? {
         // Fast path: skip allocation when no observers exist and we're not in a batched transaction.
         guard modifyCallbacks[path] != nil || anyModificationActiveCount > 0 || threadLocals.postTransactions != nil else {
             return nil
@@ -570,7 +607,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // excludeFromModifications(). Other kinds (environment, preferences, etc.) are
             // always forwarded — they use synthetic paths not registered as exclusions.
             if kind != .properties || self.modificationExcludedPaths?.contains(path) != true {
-                self.didModify(callbacks: &postCallbacks, kind: kind, depth: 0, origin: self)
+                self.didModify(callbacks: &postCallbacks, kind: kind, depth: 0, origin: self, propertyDescription: propertyDescription)
             }
         }
         return postLockCallbacks
