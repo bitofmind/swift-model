@@ -597,6 +597,74 @@ extension ServiceModelWithEnv: DependencyKey {
 /// Minimal root model — just an anchor point for dep context tests.
 @Model private struct AppContainerModel {}
 
+// MARK: - Nested 3-level hierarchy models for updateSegments regression tests
+
+/// Custom struct ID matching the production StreamInfo.ID pattern (not UUID).
+private struct NestedStreamID: Hashable, Sendable {
+    var asset: String
+    var offset: Int
+}
+
+/// Simulates StreamModel: tracks activation and cancellation for regression detection.
+@Model private struct NestedUpdateStreamModel: Identifiable {
+    let id: NestedStreamID
+    var priority: Int
+    var isActivated = false
+    let cancelCount: LockIsolated<Int> = LockIsolated(0)
+
+    func onActivate() {
+        isActivated = true
+        let counter = cancelCount
+        node.onCancel {
+            counter.withValue { $0 += 1 }
+        }
+    }
+}
+
+/// Simulates StreamsModel<Config>: the intermediate @Model child holding the IdentifiedArray.
+@Model private struct NestedUpdateContainerModel {
+    var streams: IdentifiedArrayOf<NestedUpdateStreamModel> = []
+
+    func addStream(id: NestedStreamID, priority: Int) {
+        streams[id: id] = NestedUpdateStreamModel(id: id, priority: priority)
+    }
+
+    /// Mirrors StreamsModel.updateSegments: add new, update existing, remove absent.
+    func updateSegments(to configs: [NestedStreamID: Int]) {
+        let current = streams
+        for (id, priority) in configs where current[id: id] == nil {
+            streams[id: id] = NestedUpdateStreamModel(id: id, priority: priority)
+        }
+    outer:
+        for stream in current {
+            for (id, priority) in configs where stream.id == id {
+                stream.priority = priority
+                continue outer
+            }
+            streams[id: stream.id] = nil
+        }
+    }
+}
+
+/// Mirrors ContextPreviewState: a @Model that initializes its child with withDependencies,
+/// creating a nested dep-context subtree within the root anchor.
+@Model private struct NestedUpdateParentModel {
+    var container: NestedUpdateContainerModel
+
+    init() {
+        container = NestedUpdateContainerModel().withDependencies { deps in
+            deps[EnvDepModel.self] = EnvDepModel(isInForeground: true)
+        }
+    }
+}
+
+/// Mirrors EditorModel: a plain @Model root that holds ContextPreviewState (NestedUpdateParentModel)
+/// as a regular child (no withDependencies). Creates the production 4-level hierarchy:
+///   FourLevelRootModel → NestedUpdateParentModel → NestedUpdateContainerModel → IdentifiedArray
+@Model private struct FourLevelRootModel {
+    var intermediate = NestedUpdateParentModel()
+}
+
 // MARK: - Production-like tests (no TestAccess, concurrent writes)
 
 /// Tests that run WITHOUT `.modelTesting` to match production conditions:
@@ -787,6 +855,171 @@ struct ProductionLikeDepObservationTests {
 
         let v1 = await iter.next()
         #expect(v1 == false, "Root dep change must propagate to re-added stream's isStandby")
+    }
+
+    /// Regression: adding a stream to a collection that already contains activated streams
+    /// must not cancel the pre-existing streams. Mirrors the production scenario where
+    /// updateSegments adds a new StreamModel to an IdentifiedArray that already has live
+    /// streams: the resulting _performCollectionSet must preserve existing contexts.
+    ///
+    /// Uses a 3-level hierarchy (root → container child → IdentifiedArray elements) and
+    /// a custom struct ID to match the production StreamModel / StreamInfo.ID setup more
+    /// closely than the UUID-based testDynamicallyAddedStreamObservesDepChanges test.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    @Test func testNestedCollectionAddDoesNotCancelExistingStreams() async {
+        let parent = NestedUpdateParentModel().withAnchor()
+        defer { _ = parent }
+
+        let id1 = NestedStreamID(asset: "videoA", offset: 0)
+        let id2 = NestedStreamID(asset: "videoB", offset: 0)
+
+        // Add first stream and wait for it to activate (so onCancel is registered).
+        parent.container.addStream(id: id1, priority: 1)
+
+        guard let stream1 = parent.container.streams[id: id1] else {
+            Issue.record("stream1 not found after addStream")
+            return
+        }
+
+        for await activated in Observed({ stream1.isActivated }) {
+            if activated { break }
+        }
+
+        let cancelCount1 = stream1.cancelCount
+
+        // Add a second stream — triggers _performCollectionSet with {stream1, stream2}.
+        // stream1's context must survive: prevRefs ⊇ modelRefs should hold.
+        parent.container.addStream(id: id2, priority: 1)
+        #expect(parent.container.streams.count == 2)
+
+        // Allow any deferred cancellations to propagate.
+        await Task.yield()
+        await Task.yield()
+
+        #expect(cancelCount1.value == 0, "stream1 must not be cancelled when stream2 is added")
+    }
+
+    /// Regression: calling updateSegments with the same IDs (just updated config/priority)
+    /// must not cancel existing streams. Mirrors the production path where
+    /// ContextPreviewState calls updateSegments on each frame update.
+    ///
+    /// The container model is initialized with withDependencies (matching
+    /// ContextPreviewState.init() which sets deps.streamEnvironment.streamMode = .editor),
+    /// placing it in a nested dep-context subtree inside the root anchor.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    @Test func testNestedUpdateSegmentsDoesNotCancelExistingStreams() async {
+        let parent = NestedUpdateParentModel().withAnchor()
+        defer { _ = parent }
+
+        let id1 = NestedStreamID(asset: "videoA", offset: 0)
+        let id2 = NestedStreamID(asset: "videoB", offset: 0)
+
+        // First updateSegments: add both streams.
+        parent.container.updateSegments(to: [id1: 1, id2: 1])
+        #expect(parent.container.streams.count == 2)
+
+        guard let stream1 = parent.container.streams[id: id1],
+              let stream2 = parent.container.streams[id: id2] else {
+            Issue.record("Streams not found after first updateSegments")
+            return
+        }
+
+        // Wait for both streams to activate so their onCancel callbacks are registered.
+        for await activated in Observed({ stream1.isActivated && stream2.isActivated }) {
+            if activated { break }
+        }
+
+        let cancelCount1 = stream1.cancelCount
+        let cancelCount2 = stream2.cancelCount
+
+        // Second updateSegments: same IDs, just priority change — triggers _performCollectionSet
+        // once for id3 addition (which exercises context preservation of existing streams).
+        let id3 = NestedStreamID(asset: "videoC", offset: 0)
+        parent.container.updateSegments(to: [id1: 2, id2: 2, id3: 1])
+        #expect(parent.container.streams.count == 3, "All three streams must be present")
+
+        await Task.yield()
+        await Task.yield()
+
+        #expect(cancelCount1.value == 0, "stream1 must not be cancelled when stream3 is added")
+        #expect(cancelCount2.value == 0, "stream2 must not be cancelled when stream3 is added")
+    }
+
+    /// 4-level hierarchy regression: mirrors the exact production structure
+    ///   EditorModel → ContextPreviewState → StreamsModel (withDependencies) → IdentifiedArray
+    ///
+    /// The extra intermediate level (FourLevelRootModel → NestedUpdateParentModel)
+    /// is the key difference from the passing 3-level tests. Adding a new stream to the
+    /// collection must not cancel pre-existing streams at this nesting depth.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    @Test func testFourLevelHierarchyAddDoesNotCancelExistingStreams() async {
+        let root = FourLevelRootModel().withAnchor()
+        defer { _ = root }
+
+        let id1 = NestedStreamID(asset: "videoA", offset: 0)
+        let id2 = NestedStreamID(asset: "videoB", offset: 0)
+
+        // Add first stream and wait for it to activate.
+        root.intermediate.container.addStream(id: id1, priority: 1)
+
+        guard let stream1 = root.intermediate.container.streams[id: id1] else {
+            Issue.record("stream1 not found after addStream")
+            return
+        }
+
+        for await activated in Observed({ stream1.isActivated }) {
+            if activated { break }
+        }
+
+        let cancelCount1 = stream1.cancelCount
+
+        // Add a second stream — triggers _performCollectionSet with {stream1, stream2}.
+        root.intermediate.container.addStream(id: id2, priority: 1)
+        #expect(root.intermediate.container.streams.count == 2)
+
+        await Task.yield()
+        await Task.yield()
+
+        #expect(cancelCount1.value == 0, "stream1 must not be cancelled when stream2 is added in 4-level hierarchy")
+    }
+
+    /// 4-level hierarchy regression: updateSegments (same-ID config update) must not cancel
+    /// existing streams in the 4-level hierarchy matching production.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    @Test func testFourLevelHierarchyUpdateSegmentsDoesNotCancelExistingStreams() async {
+        let root = FourLevelRootModel().withAnchor()
+        defer { _ = root }
+
+        let id1 = NestedStreamID(asset: "videoA", offset: 0)
+        let id2 = NestedStreamID(asset: "videoB", offset: 0)
+
+        // First updateSegments: add both streams.
+        root.intermediate.container.updateSegments(to: [id1: 1, id2: 1])
+        #expect(root.intermediate.container.streams.count == 2)
+
+        guard let stream1 = root.intermediate.container.streams[id: id1],
+              let stream2 = root.intermediate.container.streams[id: id2] else {
+            Issue.record("Streams not found after first updateSegments")
+            return
+        }
+
+        for await activated in Observed({ stream1.isActivated && stream2.isActivated }) {
+            if activated { break }
+        }
+
+        let cancelCount1 = stream1.cancelCount
+        let cancelCount2 = stream2.cancelCount
+
+        // Second updateSegments: add stream3 while keeping id1 and id2.
+        let id3 = NestedStreamID(asset: "videoC", offset: 0)
+        root.intermediate.container.updateSegments(to: [id1: 2, id2: 2, id3: 1])
+        #expect(root.intermediate.container.streams.count == 3)
+
+        await Task.yield()
+        await Task.yield()
+
+        #expect(cancelCount1.value == 0, "stream1 must not be cancelled in 4-level hierarchy updateSegments")
+        #expect(cancelCount2.value == 0, "stream2 must not be cancelled in 4-level hierarchy updateSegments")
     }
 }
 
