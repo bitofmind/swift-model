@@ -2,6 +2,24 @@
 import PackageDescription
 import CompilerPluginSupport
 
+#if swift(>=6.2)
+let defaultIsolationTargets: [Target] = [
+    .testTarget(
+        name: "SwiftModelMainActorTests",
+        dependencies: [
+            "SwiftModel",
+            .product(name: "Dependencies", package: "swift-dependencies"),
+            .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
+        ],
+        swiftSettings: [
+            .unsafeFlags(["-default-isolation", "MainActor"])
+        ]
+    )
+]
+#else
+let defaultIsolationTargets: [Target] = []
+#endif
+
 let package = Package(
     name: "swift-model",
     platforms: [.macOS(.v11), .iOS(.v14), .tvOS(.v14), .watchOS(.v6), .macCatalyst(.v13)],
@@ -77,6 +95,6 @@ let package = Package(
                 .product(name: "MacroTesting", package: "swift-macro-testing", condition: .when(platforms: [.macOS, .linux])),
             ]
         ),
-    ],
+    ] + defaultIsolationTargets,
     swiftLanguageModes: [.v6]
 )

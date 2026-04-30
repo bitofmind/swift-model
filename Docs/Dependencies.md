@@ -68,6 +68,67 @@ extension DependencyValues {
 let fact = try await node.factClient.fetch(count)
 ```
 
+### Swift 6.2 — `defaultIsolation: MainActor`
+
+Xcode 26 creates new projects with `defaultIsolation: MainActor`, which makes every declaration in the module `@MainActor`-isolated by default. SwiftModel itself is designed to be `nonisolated` — its internals access model state through a lock, not through actor isolation — so this setting creates a mismatch that needs a few targeted annotations to resolve.
+
+> **`nonisolated` vs `Sendable`** — these solve different problems. `Sendable` says "this value is safe to pass across isolation boundaries." `nonisolated` says "this declaration does not run on `@MainActor`." Under `defaultIsolation: MainActor`, the problem is that property accessors and protocol conformances get `@MainActor` injected, so the code runs on the wrong executor — not that data is being shared unsafely. Adding `Sendable` to a type that already has `@MainActor`-isolated accessors does not fix the errors.
+
+Three patterns cover the cases that arise:
+
+**1. Plain domain structs accessed from other modules (e.g. test targets)**
+
+Under `defaultIsolation: MainActor`, every stored-property getter becomes `@MainActor`-isolated — even on `let` properties. Test targets compiled without the setting are `nonisolated` and cannot read those properties.
+
+```swift
+// Breaks cross-module access — name/owner getters are @MainActor
+struct Repo: Sendable {
+    let name: String
+    let owner: String
+}
+
+// Fix: opts the synthesised accessors out of the module default
+nonisolated struct Repo: Sendable {
+    let name: String
+    let owner: String
+}
+```
+
+**2. Dependency struct with mutable properties**
+
+Same issue: `var fetch` gets a `@MainActor` setter, breaking the `withAnchor { $0.factClient.fetch = … }` call from any `nonisolated` context.
+
+```swift
+nonisolated struct FactClient {
+    var fetch: @Sendable (Int) async throws -> String
+}
+```
+
+**3. `DependencyKey` conformance and `DependencyValues` accessor**
+
+A plain `extension FactClient: DependencyKey` under `defaultIsolation: MainActor` produces a `@MainActor`-isolated conformance. SwiftModel's non-`@MainActor` internals call `liveValue` when resolving dependencies; a `@MainActor`-isolated conformance can't satisfy that call from a `nonisolated` context.
+
+```swift
+nonisolated extension FactClient: DependencyKey {
+    static let liveValue = FactClient(...)
+}
+
+extension DependencyValues {
+    nonisolated var factClient: FactClient {
+        get { self[FactClient.self] }
+        set { self[FactClient.self] = newValue }
+    }
+}
+```
+
+Any private helper types used inside `liveValue` closures (e.g. `Decodable` structs for JSON parsing) need the same treatment if they appear in a `nonisolated` context:
+
+```swift
+private nonisolated struct SearchResponse: Decodable { ... }
+```
+
+> **Note:** You don't need `defaultIsolation: MainActor` in a SwiftModel module for safety. State mutations are protected by SwiftModel's internal lock regardless of actor isolation — no `@MainActor` hop is required. If you keep the setting (e.g. because Xcode 26 added it automatically), the patterns above are all that's needed.
+
 ### Overriding Dependencies
 
 When anchoring your root model you can provide a trailing closure where you can override default dependencies. This is especially useful for testing and previews.

@@ -6,6 +6,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [1.0.0] — Deprecated API Removal
 
+### Added
+
+- **Swift 6.2 `defaultIsolation: MainActor` support** — `@Model`-annotated types now compile and behave correctly in modules that use Xcode 26's default project setting `defaultIsolation: MainActor`. All conformance extensions (`Model`, `Sendable`, `Identifiable`, `CustomReflectable`, `CustomStringConvertible`) and all framework-facing member declarations (`visit(with:)`, `_State`, `_makeState`, `_modelState`, `_modelStateKeyPath`, `_$modelContext`, `_context`, `_updateContext`) are now generated with explicit `nonisolated`. This is a no-op in modules without a default isolation; it is required so that SwiftModel's non-`@MainActor` internals can access model state without compile errors when the user module injects `@MainActor` as the default. See `Docs/Dependencies.md` for the companion patterns needed on dependency types and plain domain structs in such modules.
+
+- **`SwiftModelMainActorTests` test target** — new conditional target (Swift 6.2+, `#if swift(>=6.2)`) that validates the full `@Model` feature set under `defaultIsolation: MainActor` module isolation: tracked properties, `@ModelDependency`, `node.task`, optional child models, and arrays of child models.
+
 ### Fixed
 
 - **Dep context instance mismatch** — when a `@Model` dependency (dep context) resolves another dependency via `node[Dep.self]`, `nearestDependencyContext` now starts its search from the parent rather than the dep context itself. This ensures the root's explicit `withAnchor { $0[Dep.self] = … }` override wins over the dep model's own `testValue` dep defaults, regardless of dep-loop ordering. Previously, non-deterministic dictionary iteration could cause the dep context to find its own dep instance (D1) while root writes went to a different instance (D2), resulting in `Observed { … }` streams that never fired.

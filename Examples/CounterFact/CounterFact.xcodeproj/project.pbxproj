@@ -304,6 +304,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_TESTING_SEARCH_PATHS = YES;
 				OTHER_LDFLAGS = "$(inherited) -weak_framework Testing";
+				OTHER_SWIFT_FLAGS = "-default-isolation MainActor";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CounterFact/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -342,6 +343,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_TESTING_SEARCH_PATHS = YES;
 				OTHER_LDFLAGS = "$(inherited) -weak_framework Testing";
+				OTHER_SWIFT_FLAGS = "-default-isolation MainActor";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = CounterFact/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

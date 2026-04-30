@@ -104,7 +104,7 @@ extension ModelMacro: ExtensionMacro {
                 if isNeeded(name) {
                     extensions.append(
                     """
-                    extension \(raw: type.trimmedDescription): \(raw: qualifiedName ?? name) {}
+                    nonisolated extension \(raw: type.trimmedDescription): \(raw: qualifiedName ?? name) {}
                     """)
                 }
             }
@@ -128,7 +128,7 @@ extension ModelMacro: ExtensionMacro {
             if isNeeded("CustomReflectable") {
                 extensions.append(
                 """
-                extension \(raw: type.trimmedDescription): \(raw: "CustomReflectable") {
+                nonisolated extension \(raw: type.trimmedDescription): \(raw: "CustomReflectable") {
                     public var customMirror: Mirror {
                         node.mirror(of: self, children: [\(raw: mirrorChildren.joined(separator: ", "))])
                     }
@@ -153,7 +153,7 @@ extension ModelMacro: ExtensionMacro {
                 ].compactMap { $0 }.joined(separator: "\n    ")
                 extensions.append(
                 """
-                extension \(raw: type.trimmedDescription): \(raw: conformances) {
+                nonisolated extension \(raw: type.trimmedDescription): \(raw: conformances) {
                     \(raw: members)
                 }
                 """)
@@ -197,7 +197,7 @@ extension ModelMacro: MemberMacro {
 
         result.append(
         """
-        public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+        public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
             \(raw: visits.joined(separator: "\n"))
         }
         """
@@ -221,7 +221,7 @@ extension ModelMacro: MemberMacro {
 
             result.append(
             """
-            public static func ==(_ lhs: Self, _ rhs: Self) -> Bool {
+            public nonisolated static func ==(_ lhs: Self, _ rhs: Self) -> Bool {
                 \(raw: equals.isEmpty ? "true" : equals.joined(separator: " && "))
             }
             """
@@ -241,7 +241,7 @@ extension ModelMacro: MemberMacro {
 
             result.append(
             """
-            func hash(into hasher: inout Hasher) {
+            nonisolated func hash(into hasher: inout Hasher) {
                 \(raw: hashables.joined(separator: "\n"))
             }
             """
@@ -269,9 +269,11 @@ extension ModelMacro: MemberMacro {
             // _State is public (required for public _ModelState typealias) but NOT Sendable —
             // protected by the framework's internal lock. Conforms to _ModelStateType to
             // provide synthetic keypath subscripts for modifyCallbacksStore observation.
+            // nonisolated: opts out of the containing module's default actor isolation so that
+            // SwiftModel's non-@MainActor framework code can access _State members via keypaths.
             result.append(
             """
-            public struct _State: _ModelStateType {
+            public nonisolated struct _State: _ModelStateType {
                 \(raw: stateFields.joined(separator: "\n    "))
             }
             """)
@@ -297,7 +299,7 @@ extension ModelMacro: MemberMacro {
             let makeStateBody = makeStateArgs.joined(separator: ", ")
             result.append(
             """
-            private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+            private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
                 _State(\(raw: makeStateBody))
             }
             """)
@@ -307,7 +309,7 @@ extension ModelMacro: MemberMacro {
             // Generic framework code accesses state via the _modelStateKeyPath value, not directly.
             result.append(
             """
-            private var _modelState: _State {
+            private nonisolated var _modelState: _State {
                 get { _$modelSource._modelState }
                 nonmutating set { _$modelSource._modelState = newValue }
             }
@@ -336,7 +338,7 @@ extension ModelMacro: MemberMacro {
             // (direct dispatch), so keypath equality holds when composed generically in Context.
             result.append(
             """
-            public static var _modelStateKeyPath: WritableKeyPath<Self, _State> { \\Self._modelState }
+            public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> { \\Self._modelState }
             """)
         }
 
@@ -350,7 +352,7 @@ extension ModelMacro: MemberMacro {
         } else {
             result.append(
             """
-            private var _$modelContext: ModelContext<Self> {
+            private nonisolated var _$modelContext: ModelContext<Self> {
                 get { ModelContext(_access: _$modelAccess, _source: _$modelSource) }
             }
             """)
@@ -358,21 +360,21 @@ extension ModelMacro: MemberMacro {
 
         result.append(
         """
-        public var _context: ModelContextAccess<Self> { ModelContextAccess(_$modelContext) }
+        public nonisolated var _context: ModelContextAccess<Self> { ModelContextAccess(_$modelContext) }
         """)
 
         // _updateContext: sets both stored props from the update token.
         if trackedMutableVars.isEmpty {
             result.append(
             """
-            public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+            public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                 _$modelContext = update._$modelContext
             }
             """)
         } else {
             result.append(
             """
-            public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+            public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                 _$modelAccess = update._$modelContext._access
                 _$modelSource = update._$modelContext._source
             }
