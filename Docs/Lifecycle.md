@@ -299,38 +299,101 @@ node.transaction {
 }
 ```
 
-All mutations inside the block appear atomically to other threads. Observation callbacks (and `observeAnyModification()` emissions) are deferred until the transaction completes, so observers see only the final consistent state.
+All mutations inside the block appear atomically to other threads. Observation callbacks (and `observeModifications()` emissions) are deferred until the transaction completes, so observers see only the final consistent state.
 
 The closure is non-throwing by design — transactions have no rollback, so a throwing closure provides no safety guarantee. If you need conditional application, compute the new values first, then apply them inside the transaction.
 
 > `withAnimation { model.someProperty = newValue }` works as expected when called from a SwiftUI view or any `@MainActor` context. SwiftModel's observation is compatible with active `Transaction` objects, so animations driven by model mutations behave correctly without any special handling. Note that `withAnimation` itself is a `@MainActor` function — it cannot be called directly from a non-main-actor model method.
 
-### Observing Any Modification
+### Observing Modifications
 
-`observeAnyModification()` returns a stream that emits whenever *any* state in a model or its descendants changes, without needing to specify which property. This is useful for cross-cutting concerns:
+`observeModifications()` returns a stream that emits whenever state in a model or its descendants changes, without needing to specify which property. This is useful for cross-cutting concerns like dirty tracking and debounced autosave:
 
 ```swift
 func onActivate() {
     // Show unsaved-changes indicator whenever anything in the form changes
-    node.forEach(observeAnyModification()) { _ in
+    node.forEach(observeModifications()) { _ in
         hasUnsavedChanges = true
     }
 }
 ```
 
-Multiple mutations inside a `node.transaction { }` produce a single emission, so rapid batched changes don't cause redundant work. Combined with `AsyncAlgorithms` you can build debounced autosave:
+Multiple mutations inside a `node.transaction { }` produce a single emission. Combined with `AsyncAlgorithms` you can build debounced autosave:
 
 ```swift
 func onActivate() {
     node.task {
-        for await _ in observeAnyModification().debounce(for: .seconds(2)) {
+        // kinds: .properties skips environment/preference noise — only real data changes trigger a save
+        for await _ in observeModifications(kinds: .properties).debounce(for: .seconds(2)) {
             await autosave()
         }
     }
 }
 ```
 
-> `observeAnyModification()` is on `Model` directly, so you call it as `observeAnyModification()` from within a model, or `childModel.observeAnyModification()` from a parent model.
+#### Scope
+
+By default, `observeModifications()` covers the full subtree (`scope: [.self, .descendants]`). You can narrow or widen this:
+
+```swift
+// Only react to changes on this model itself (not children)
+observeModifications(scope: .self)
+
+// This model and its direct children, but not grandchildren
+observeModifications(scope: [.self, .children])
+
+// Only descendants (not self)
+observeModifications(scope: .descendants)
+```
+
+#### Kind filtering
+
+Changes are categorised into four kinds. Use the `kinds:` parameter to ignore irrelevant categories:
+
+| Kind | What it covers |
+|---|---|
+| `.properties` | `@Tracked` model properties |
+| `.environment` | Context-local environment values (`node.environment`, `node.local`) |
+| `.preferences` | Bottom-up preference contributions (`node.preference`) |
+| `.parentRelationship` | Model added to or removed from the hierarchy |
+| `.all` | All of the above (default) |
+
+```swift
+// Autosave: only care about real data changes, not UI-state environment changes
+observeModifications(kinds: .properties)
+```
+
+#### Model-type predicate
+
+Pass a `where:` closure to filter by the model that changed. Return `true` to include the emission, `false` to skip it:
+
+```swift
+// Only fire when a Persistable model in the subtree changes
+observeModifications(where: { $0 is Persistable })
+```
+
+#### Excluding specific properties
+
+To exclude volatile or cache-like properties from triggering `observeModifications()`, call `node.excludeFromModifications(_:)` in `onActivate()`:
+
+```swift
+func onActivate() {
+    // cachedResults and scrollOffset changes won't trigger the parent's observeModifications()
+    node.excludeFromModifications(\.cachedResults, \.scrollOffset)
+}
+```
+
+Exclusions only affect `observeModifications()`. Other observation mechanisms (`Observed`, `memoize`, `trackUndo`, SwiftUI) are unaffected.
+
+#### Debug
+
+Pass `debug: .triggers()` to print a line for each emission. Useful for diagnosing unexpected trigger sources:
+
+```swift
+observeModifications(debug: .triggers())
+```
+
+> `observeModifications()` is on `Model` directly, so you call it as `observeModifications()` from within a model, or `childModel.observeModifications()` from a parent model.
 
 ### Combine Integration
 

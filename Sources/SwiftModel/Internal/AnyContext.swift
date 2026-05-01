@@ -3,6 +3,25 @@ import Dependencies
 import OrderedCollections
 import Observation
 
+/// Internal carrier passed through the `anyModificationCallbacks` notification chain.
+/// Carries what kind of change occurred, how deep in the hierarchy it was relative to the
+/// registered observer, and which context originated the change.
+struct _ModificationCallbackSource: @unchecked Sendable {
+    /// `true` when the model is deactivating — the stream should finish.
+    var isFinished: Bool
+    /// The kind of state that changed.
+    var kind: ModificationKind
+    /// Distance from the registered observer context to the origin context.
+    /// 0 = the context that registered the callback, 1 = a direct child, 2+ = deeper descendants.
+    var depth: Int
+    /// The context where the change originated. `nil` only when `isFinished == true`.
+    var origin: AnyContext?
+    /// Lazily-produced human-readable name of what changed (e.g. `"duration"`,
+    /// `"environment.theme"`, `"preference.score"`). Evaluated post-lock. Nil when
+    /// unavailable (parentRelationship, touch, or finish signals).
+    var propertyDescription: (@Sendable () -> String?)?
+}
+
 enum ModelLifetime: Comparable {
     case initial
     case anchored
@@ -78,21 +97,25 @@ class AnyContext: @unchecked Sendable {
     weak var taskLifecycleDelegate: (any TaskLifecycleDelegate)?
 
     private(set) var anyModificationActiveCount = 0
-    private var anyModificationCallbacksStore: [Int: (Bool) -> (() -> Void)?]?
-    private var anyModificationCallbacks: [Int: (Bool) -> (() -> Void)?] {
+    private var anyModificationCallbacksStore: [Int: (_ModificationCallbackSource) -> (() -> Void)?]?
+    private var anyModificationCallbacks: [Int: (_ModificationCallbackSource) -> (() -> Void)?] {
         _read { yield anyModificationCallbacksStore ?? [:] }
         _modify {
             if anyModificationCallbacksStore != nil {
                 yield &anyModificationCallbacksStore!
                 if anyModificationCallbacksStore!.isEmpty { anyModificationCallbacksStore = nil }
             } else {
-                var temp: [Int: (Bool) -> (() -> Void)?] = [:]
+                var temp: [Int: (_ModificationCallbackSource) -> (() -> Void)?] = [:]
                 yield &temp
                 if !temp.isEmpty { anyModificationCallbacksStore = temp }
             }
         }
     }
     private var _modificationCount = 0
+
+    /// Paths excluded from `observeModifications()` notifications. Nil means no exclusions.
+    /// Set by `ModelNode.excludeFromModifications`. Only checked for `.properties` kind changes.
+    var modificationExcludedPaths: Set<AnyKeyPath>?
 
     struct MemoizeCacheEntry: @unchecked Sendable {
         var value: Any & Sendable
@@ -597,7 +620,7 @@ class AnyContext: @unchecked Sendable {
             }
 
             for cont in anyModifies {
-                cont(true)?()
+                cont(_ModificationCallbackSource(isFinished: true, kind: .all, depth: 0, origin: nil))?()
             }
 
             // Release memoize cache entries outside the lock. The entries'
@@ -759,7 +782,7 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    func onAnyModification(callback: @Sendable @escaping (Bool) -> (() -> Void)?) -> @Sendable () -> Void {
+    func onAnyModification(callback: @Sendable @escaping (_ModificationCallbackSource) -> (() -> Void)?) -> @Sendable () -> Void {
         let key = generateKey()
         lock {
             anyModificationCallbacks[key] = callback
@@ -778,18 +801,19 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    func didModify(callbacks: inout [() -> Void]) {
+    func didModify(callbacks: inout [() -> Void], kind: ModificationKind, depth: Int, origin: AnyContext, propertyDescription: (@Sendable () -> String?)? = nil) {
         _modificationCounts = nil
         guard anyModificationActiveCount > 0 else { return }
 
+        let source = _ModificationCallbackSource(isFinished: false, kind: kind, depth: depth, origin: origin, propertyDescription: propertyDescription)
         for callback in anyModificationCallbacks.values {
-            if let c = callback(false) {
+            if let c = callback(source) {
                 callbacks.append(c)
             }
         }
 
         for parent in parents {
-            parent.didModify(callbacks: &callbacks)
+            parent.didModify(callbacks: &callbacks, kind: kind, depth: depth + 1, origin: origin, propertyDescription: propertyDescription)
         }
     }
 

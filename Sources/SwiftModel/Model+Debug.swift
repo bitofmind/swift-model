@@ -139,6 +139,16 @@ public extension ChangeFormat {
     static var diff: Self { .diff() }
 }
 
+// MARK: - debugFileLocation
+
+/// Formats a `#fileID` + `#line` pair as `"filename.swift:line"` — identical to
+/// `FileAndLine.description` used in memoize auto-keys.
+func debugFileLocation(_ fileID: StaticString, _ line: UInt) -> String {
+    let s = "\(fileID)"
+    let filename = String(s.split(separator: "/").last ?? Substring(s))
+    return "\(filename):\(line)"
+}
+
 // MARK: - PrintTextOutputStream
 
 public struct PrintTextOutputStream: TextOutputStream, Sendable {
@@ -230,8 +240,12 @@ public extension Model where Self: Sendable {
         // Initialize previous snapshot with the current model value.
         previous.setValue(snapshot(context.lock { context.readModel }))
 
-        let cancel = context.onAnyModification { [weak context] didFinish in
-            guard !didFinish, let context else { return nil }
+        let cancel = context.onAnyModification { [weak context] source in
+            guard !source.isFinished, let context else { return nil }
+            // Only react to changes that alter the model struct value.
+            // Environment and preference changes are stored outside the struct and
+            // never appear in readModel, so they'd produce empty diffs or duplicate value lines.
+            guard source.kind.intersects([.properties, .parentRelationship]) else { return nil }
             if let fmt = changeFormat {
                 let value = context.lock { context.readModel }
                 switch fmt {
