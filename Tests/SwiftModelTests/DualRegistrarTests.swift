@@ -435,6 +435,41 @@ struct DualRegistrarTests {
         #expect(v1 == false, "configIsStandby=false + isInForeground already true → isStandby=false")
     }
 
+    /// Regression test: `withObservationTracking` must fire for generic `@Model` properties.
+    ///
+    /// For generic `@Model` types, Swift's `_swift_getKeyPath` does not always intern key path
+    /// objects to the same pointer across the getter (`_read`) and setter (`_modify`) call sites.
+    /// If `propID` is computed via `ObjectIdentifier(statePath as AnyKeyPath)` (pointer identity),
+    /// the getter and setter land in different cache slots → different `observerKP` objects →
+    /// `ObservationRegistrar` cannot pair `access` with `willSet` → `onChange` never fires.
+    ///
+    /// The fix: use `(statePath as PartialKeyPath<M._ModelState>).hashValue` (structural equality),
+    /// which is the same regardless of whether the runtime interns the key path.
+    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+    @Test func testObservationRegistrarFiresForGenericModel() async throws {
+        let model = GenericValueModel(value: 0).withAnchor()
+
+        let changeDetected = LockIsolated(false)
+
+        // Register on the main thread — mirrors how SwiftUI's withObservationTracking installs
+        // the onChange callback in the view body (always on the main actor).
+        await MainActor.run {
+            withObservationTracking {
+                _ = model.value
+            } onChange: {
+                changeDetected.setValue(true)
+            }
+        }
+
+        // Mutate from a background task — mirrors a background notification changing a stream
+        // state. The change queues a `mainCallQueue` dispatch for the main registrar.
+        await Task.detached { model.value = 42 }.value
+
+        // Wait for the main call queue to deliver the notification.
+        try await waitUntil(changeDetected.value)
+        #expect(changeDetected.value, "withObservationTracking onChange must fire for generic @Model property (propID must use structural hashValue, not pointer ObjectIdentifier)")
+    }
+
     /// Test that Observed streams correctly re-fire when a @Model computed property
     /// that reads an embedded @Observable changes.
     ///
@@ -480,6 +515,15 @@ struct DualRegistrarTests {
 
 @Model private struct TestModel {
     var value = 0
+}
+
+/// A generic @Model whose key path objects for `value` are constructed by `_swift_getKeyPath`
+/// at runtime for each specialization. For generic models, Swift does not always intern key
+/// path objects across the getter and setter call sites, so `ObjectIdentifier(statePath)`
+/// gives different values in `willAccessDirect` (getter) vs `invokeDidModifyDirect` (setter).
+/// Using `hashValue` (structural equality) for `propID` guarantees they match.
+@Model private struct GenericValueModel<T: Sendable & Equatable> {
+    var value: T
 }
 
 @Model private struct MemoizeModel {

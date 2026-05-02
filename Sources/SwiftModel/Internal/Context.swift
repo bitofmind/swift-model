@@ -725,10 +725,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // Cache the KP to avoid a heap allocation on every read.
             // `_swift_getKeyPath` for a subscript KP allocates (~1.7 μs);
             // caching by (contextID, propID) gives O(1) warm-path reads at ~15-20 ns.
-            // Raw UInt pointer values hash as trivial single integers — cheaper than a
-            // compound key embedding a WritableKeyPath as a subscript argument.
+            // Use hashValue (structural key path equality) instead of ObjectIdentifier
+            // (pointer identity) so that dynamically-constructed key paths — which Swift
+            // produces via appending and are never the same object across sites — still
+            // yield the same propID and therefore the same cached observerKP.
             let contextID = UInt(bitPattern: ObjectIdentifier(self))
-            let propID = UInt(bitPattern: ObjectIdentifier(statePath as AnyKeyPath))
+            let propID = UInt(bitPattern: (statePath as PartialKeyPath<M._ModelState>).hashValue)
             let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = _cachedStateObserverKP(contextID: contextID, propID: propID) {
                 \_StateObserver<M._ModelState>[contextID: contextID, propID: propID]
             }
@@ -758,7 +760,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             let observer = _StateObserver<M._ModelState>()
             // Use cached KP to avoid per-write _swift_getKeyPath allocation (same rationale as willAccessDirect).
             let contextID = UInt(bitPattern: ObjectIdentifier(self))
-            let propID = UInt(bitPattern: ObjectIdentifier(statePath as AnyKeyPath))
+            let propID = UInt(bitPattern: (statePath as PartialKeyPath<M._ModelState>).hashValue)
             nonisolated(unsafe) let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = _cachedStateObserverKP(contextID: contextID, propID: propID) {
                 \_StateObserver<M._ModelState>[contextID: contextID, propID: propID]
             }

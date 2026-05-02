@@ -78,21 +78,21 @@ struct ModelMacroTests {
                     }
                 }
 
-                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     visitor.visitStatically(statePath: \.count)
                 }
 
-                public struct _State: _ModelStateType {
+                public nonisolated struct _State: _ModelStateType {
                     var count = 0
                 }
 
                 public typealias _ModelState = _State
 
-                private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 
-                private var _modelState: _State {
+                private nonisolated var _modelState: _State {
                     get {
                         _$modelSource._modelState
                     }
@@ -105,42 +105,42 @@ struct ModelMacroTests {
 
                 private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
 
-                public static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
                     \Self._modelState
                 }
 
-                private var _$modelContext: ModelContext<Self> {
+                private nonisolated var _$modelContext: ModelContext<Self> {
                     get {
                         ModelContext(_access: _$modelAccess, _source: _$modelSource)
                     }
                 }
 
-                public var _context: ModelContextAccess<Self> {
+                public nonisolated var _context: ModelContextAccess<Self> {
                     ModelContextAccess(_$modelContext)
                 }
 
-                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                     _$modelAccess = update._$modelContext._access
                     _$modelSource = update._$modelContext._source
                 }
             }
 
-            extension MyModel: SwiftModel.Model {
+            nonisolated extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: @unchecked Sendable {
+            nonisolated extension MyModel: @unchecked Sendable {
             }
 
-            extension MyModel: Identifiable {
+            nonisolated extension MyModel: Identifiable {
             }
 
-            extension MyModel: CustomReflectable {
+            nonisolated extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
                     node.mirror(of: self, children: [("count", count as Any)])
                 }
             }
 
-            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+            nonisolated extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     node.description(of: self)
                 }
@@ -186,21 +186,21 @@ struct ModelMacroTests {
                     self.activateCount = activateCount
                 }
 
-                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     visitor.visitStatically(statePath: \.activateCount)
                 }
 
-                public struct _State: _ModelStateType {
+                public nonisolated struct _State: _ModelStateType {
                     var activateCount: Int
                 }
 
                 public typealias _ModelState = _State
 
-                private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
                     _State(activateCount: pending.value(for: \.activateCount, default: _zeroInit()))
                 }
 
-                private var _modelState: _State {
+                private nonisolated var _modelState: _State {
                     get {
                         _$modelSource._modelState
                     }
@@ -213,42 +213,42 @@ struct ModelMacroTests {
 
                 private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
 
-                public static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
                     \Self._modelState
                 }
 
-                private var _$modelContext: ModelContext<Self> {
+                private nonisolated var _$modelContext: ModelContext<Self> {
                     get {
                         ModelContext(_access: _$modelAccess, _source: _$modelSource)
                     }
                 }
 
-                public var _context: ModelContextAccess<Self> {
+                public nonisolated var _context: ModelContextAccess<Self> {
                     ModelContextAccess(_$modelContext)
                 }
 
-                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                     _$modelAccess = update._$modelContext._access
                     _$modelSource = update._$modelContext._source
                 }
             }
 
-            extension MyModel: SwiftModel.Model {
+            nonisolated extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: @unchecked Sendable {
+            nonisolated extension MyModel: @unchecked Sendable {
             }
 
-            extension MyModel: Identifiable {
+            nonisolated extension MyModel: Identifiable {
             }
 
-            extension MyModel: CustomReflectable {
+            nonisolated extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
                     node.mirror(of: self, children: [("activateCount", activateCount as Any)])
                 }
             }
 
-            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+            nonisolated extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     node.description(of: self)
                 }
@@ -285,29 +285,29 @@ struct ModelMacroTests {
                     }
                 }
 
-                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     visitor.visitStatically(statePath: \.count)
                 }
 
-                public static func ==(_ lhs: Self, _ rhs: Self) -> Bool {
+                public nonisolated static func ==(_ lhs: Self, _ rhs: Self) -> Bool {
                     lhs.count == rhs.count
                 }
 
-                func hash(into hasher: inout Hasher) {
+                nonisolated func hash(into hasher: inout Hasher) {
                     hasher.combine(count)
                 }
 
-                public struct _State: _ModelStateType {
+                public nonisolated struct _State: _ModelStateType {
                     var count = 0
                 }
 
                 public typealias _ModelState = _State
 
-                private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 
-                private var _modelState: _State {
+                private nonisolated var _modelState: _State {
                     get {
                         _$modelSource._modelState
                     }
@@ -320,42 +320,42 @@ struct ModelMacroTests {
 
                 private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
 
-                public static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
                     \Self._modelState
                 }
 
-                private var _$modelContext: ModelContext<Self> {
+                private nonisolated var _$modelContext: ModelContext<Self> {
                     get {
                         ModelContext(_access: _$modelAccess, _source: _$modelSource)
                     }
                 }
 
-                public var _context: ModelContextAccess<Self> {
+                public nonisolated var _context: ModelContextAccess<Self> {
                     ModelContextAccess(_$modelContext)
                 }
 
-                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                     _$modelAccess = update._$modelContext._access
                     _$modelSource = update._$modelContext._source
                 }
             }
 
-            extension MyModel: SwiftModel.Model {
+            nonisolated extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: @unchecked Sendable {
+            nonisolated extension MyModel: @unchecked Sendable {
             }
 
-            extension MyModel: Identifiable {
+            nonisolated extension MyModel: Identifiable {
             }
 
-            extension MyModel: CustomReflectable {
+            nonisolated extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
                     node.mirror(of: self, children: [("count", count as Any)])
                 }
             }
 
-            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+            nonisolated extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     node.description(of: self)
                 }
@@ -417,22 +417,22 @@ struct ModelMacroTests {
                 var computed: Int { 4711 }
                 var computedGet: Int { get { 4711 } }
 
-                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     visitor.visitStatically(at: \.id)
                     visitor.visitStatically(statePath: \.count)
                 }
 
-                public struct _State: _ModelStateType {
+                public nonisolated struct _State: _ModelStateType {
                     var count = 0
                 }
 
                 public typealias _ModelState = _State
 
-                private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 
-                private var _modelState: _State {
+                private nonisolated var _modelState: _State {
                     get {
                         _$modelSource._modelState
                     }
@@ -445,42 +445,42 @@ struct ModelMacroTests {
 
                 private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
 
-                public static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
                     \Self._modelState
                 }
 
-                private var _$modelContext: ModelContext<Self> {
+                private nonisolated var _$modelContext: ModelContext<Self> {
                     get {
                         ModelContext(_access: _$modelAccess, _source: _$modelSource)
                     }
                 }
 
-                public var _context: ModelContextAccess<Self> {
+                public nonisolated var _context: ModelContextAccess<Self> {
                     ModelContextAccess(_$modelContext)
                 }
 
-                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                     _$modelAccess = update._$modelContext._access
                     _$modelSource = update._$modelContext._source
                 }
             }
 
-            extension MyModel: SwiftModel.Model {
+            nonisolated extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: @unchecked Sendable {
+            nonisolated extension MyModel: @unchecked Sendable {
             }
 
-            extension MyModel: Identifiable {
+            nonisolated extension MyModel: Identifiable {
             }
 
-            extension MyModel: CustomReflectable {
+            nonisolated extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
                     node.mirror(of: self, children: [("id", id as Any), ("count", count as Any)])
                 }
             }
 
-            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+            nonisolated extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     node.description(of: self)
                 }
@@ -517,21 +517,21 @@ struct ModelMacroTests {
                     }
                 }
 
-                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     visitor.visitStatically(statePath: \.count)
                 }
 
-                public struct _State: _ModelStateType {
+                public nonisolated struct _State: _ModelStateType {
                     var count = 0
                 }
 
                 public typealias _ModelState = _State
 
-                private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 
-                private var _modelState: _State {
+                private nonisolated var _modelState: _State {
                     get {
                         _$modelSource._modelState
                     }
@@ -544,42 +544,42 @@ struct ModelMacroTests {
 
                 private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
 
-                public static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
                     \Self._modelState
                 }
 
-                private var _$modelContext: ModelContext<Self> {
+                private nonisolated var _$modelContext: ModelContext<Self> {
                     get {
                         ModelContext(_access: _$modelAccess, _source: _$modelSource)
                     }
                 }
 
-                public var _context: ModelContextAccess<Self> {
+                public nonisolated var _context: ModelContextAccess<Self> {
                     ModelContextAccess(_$modelContext)
                 }
 
-                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                     _$modelAccess = update._$modelContext._access
                     _$modelSource = update._$modelContext._source
                 }
             }
 
-            extension MyModel: SwiftModel.Model {
+            nonisolated extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: @unchecked Sendable {
+            nonisolated extension MyModel: @unchecked Sendable {
             }
 
-            extension MyModel: Identifiable {
+            nonisolated extension MyModel: Identifiable {
             }
 
-            extension MyModel: CustomReflectable {
+            nonisolated extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
                     node.mirror(of: self, children: [("count", count as Any)])
                 }
             }
 
-            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+            nonisolated extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     node.description(of: self)
                 }
@@ -616,21 +616,21 @@ struct ModelMacroTests {
                     }
                 }
 
-                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     visitor.visitStatically(statePath: \.animating, visibility: .private)
                 }
 
-                public struct _State: _ModelStateType {
+                public nonisolated struct _State: _ModelStateType {
                     var animating = false
                 }
 
                 public typealias _ModelState = _State
 
-                private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
                     _State(animating: pending.value(for: \.animating, default: false))
                 }
 
-                private var _modelState: _State {
+                private nonisolated var _modelState: _State {
                     get {
                         _$modelSource._modelState
                     }
@@ -643,42 +643,42 @@ struct ModelMacroTests {
 
                 private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
 
-                public static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
                     \Self._modelState
                 }
 
-                private var _$modelContext: ModelContext<Self> {
+                private nonisolated var _$modelContext: ModelContext<Self> {
                     get {
                         ModelContext(_access: _$modelAccess, _source: _$modelSource)
                     }
                 }
 
-                public var _context: ModelContextAccess<Self> {
+                public nonisolated var _context: ModelContextAccess<Self> {
                     ModelContextAccess(_$modelContext)
                 }
 
-                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                     _$modelAccess = update._$modelContext._access
                     _$modelSource = update._$modelContext._source
                 }
             }
 
-            extension MyModel: SwiftModel.Model {
+            nonisolated extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: @unchecked Sendable {
+            nonisolated extension MyModel: @unchecked Sendable {
             }
 
-            extension MyModel: Identifiable {
+            nonisolated extension MyModel: Identifiable {
             }
 
-            extension MyModel: CustomReflectable {
+            nonisolated extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
                     node.mirror(of: self, children: [("animating", animating as Any)])
                 }
             }
 
-            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+            nonisolated extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     node.description(of: self)
                 }
@@ -744,13 +744,13 @@ struct ModelMacroTests {
                     }
                 }
 
-                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     visitor.visitStatically(statePath: \.count)
                     visitor.visitStatically(statePath: \.label)
                     visitor.visitStatically(statePath: \.flag)
                 }
 
-                public struct _State: _ModelStateType {
+                public nonisolated struct _State: _ModelStateType {
                     var count = 0
                     var label: String
                     var flag = false
@@ -758,11 +758,11 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
                     _State(count: pending.value(for: \.count, default: 0), label: pending.value(for: \.label, default: _zeroInit()), flag: pending.value(for: \.flag, default: false))
                 }
 
-                private var _modelState: _State {
+                private nonisolated var _modelState: _State {
                     get {
                         _$modelSource._modelState
                     }
@@ -775,42 +775,42 @@ struct ModelMacroTests {
 
                 private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
 
-                public static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
                     \Self._modelState
                 }
 
-                private var _$modelContext: ModelContext<Self> {
+                private nonisolated var _$modelContext: ModelContext<Self> {
                     get {
                         ModelContext(_access: _$modelAccess, _source: _$modelSource)
                     }
                 }
 
-                public var _context: ModelContextAccess<Self> {
+                public nonisolated var _context: ModelContextAccess<Self> {
                     ModelContextAccess(_$modelContext)
                 }
 
-                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                     _$modelAccess = update._$modelContext._access
                     _$modelSource = update._$modelContext._source
                 }
             }
 
-            extension MyModel: SwiftModel.Model {
+            nonisolated extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: @unchecked Sendable {
+            nonisolated extension MyModel: @unchecked Sendable {
             }
 
-            extension MyModel: Identifiable {
+            nonisolated extension MyModel: Identifiable {
             }
 
-            extension MyModel: CustomReflectable {
+            nonisolated extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
                     node.mirror(of: self, children: [("count", count as Any), ("label", label as Any), ("flag", flag as Any)])
                 }
             }
 
-            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+            nonisolated extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     node.description(of: self)
                 }
@@ -852,22 +852,22 @@ struct ModelMacroTests {
                     }
                 }
 
-                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     visitor.visitStatically(at: \.id)
                     visitor.visitStatically(statePath: \.count)
                 }
 
-                public struct _State: _ModelStateType {
+                public nonisolated struct _State: _ModelStateType {
                     var count = 0
                 }
 
                 public typealias _ModelState = _State
 
-                private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 
-                private var _modelState: _State {
+                private nonisolated var _modelState: _State {
                     get {
                         _$modelSource._modelState
                     }
@@ -880,42 +880,42 @@ struct ModelMacroTests {
 
                 private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
 
-                public static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
                     \Self._modelState
                 }
 
-                private var _$modelContext: ModelContext<Self> {
+                private nonisolated var _$modelContext: ModelContext<Self> {
                     get {
                         ModelContext(_access: _$modelAccess, _source: _$modelSource)
                     }
                 }
 
-                public var _context: ModelContextAccess<Self> {
+                public nonisolated var _context: ModelContextAccess<Self> {
                     ModelContextAccess(_$modelContext)
                 }
 
-                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                     _$modelAccess = update._$modelContext._access
                     _$modelSource = update._$modelContext._source
                 }
             }
 
-            extension MyModel: SwiftModel.Model {
+            nonisolated extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: @unchecked Sendable {
+            nonisolated extension MyModel: @unchecked Sendable {
             }
 
-            extension MyModel: Identifiable {
+            nonisolated extension MyModel: Identifiable {
             }
 
-            extension MyModel: CustomReflectable {
+            nonisolated extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
                     node.mirror(of: self, children: [("id", id as Any), ("tag", tag as Any), ("count", count as Any)])
                 }
             }
 
-            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+            nonisolated extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     node.description(of: self)
                 }
@@ -953,21 +953,21 @@ struct ModelMacroTests {
                     }
                 }
 
-                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     visitor.visitStatically(statePath: \.counter)
                 }
 
-                public struct _State: _ModelStateType {
+                public nonisolated struct _State: _ModelStateType {
                     var counter = ChildModel()
                 }
 
                 public typealias _ModelState = _State
 
-                private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
                     _State(counter: pending.value(for: \.counter, default: ChildModel()))
                 }
 
-                private var _modelState: _State {
+                private nonisolated var _modelState: _State {
                     get {
                         _$modelSource._modelState
                     }
@@ -980,42 +980,42 @@ struct ModelMacroTests {
 
                 private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
 
-                public static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
                     \Self._modelState
                 }
 
-                private var _$modelContext: ModelContext<Self> {
+                private nonisolated var _$modelContext: ModelContext<Self> {
                     get {
                         ModelContext(_access: _$modelAccess, _source: _$modelSource)
                     }
                 }
 
-                public var _context: ModelContextAccess<Self> {
+                public nonisolated var _context: ModelContextAccess<Self> {
                     ModelContextAccess(_$modelContext)
                 }
 
-                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                     _$modelAccess = update._$modelContext._access
                     _$modelSource = update._$modelContext._source
                 }
             }
 
-            extension ParentModel: SwiftModel.Model {
+            nonisolated extension ParentModel: SwiftModel.Model {
             }
 
-            extension ParentModel: @unchecked Sendable {
+            nonisolated extension ParentModel: @unchecked Sendable {
             }
 
-            extension ParentModel: Identifiable {
+            nonisolated extension ParentModel: Identifiable {
             }
 
-            extension ParentModel: CustomReflectable {
+            nonisolated extension ParentModel: CustomReflectable {
                 public var customMirror: Mirror {
                     node.mirror(of: self, children: [("counter", counter as Any)])
                 }
             }
 
-            extension ParentModel: CustomStringConvertible, CustomDebugStringConvertible {
+            nonisolated extension ParentModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     node.description(of: self)
                 }
@@ -1142,37 +1142,37 @@ struct ModelMacroTests {
                     }
                 }
 
-                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
 
                 }
 
                 var _$modelContext: ModelContext<Self> = .init()
 
-                public var _context: ModelContextAccess<Self> {
+                public nonisolated var _context: ModelContextAccess<Self> {
                     ModelContextAccess(_$modelContext)
                 }
 
-                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                     _$modelContext = update._$modelContext
                 }
             }
 
-            extension MyModel: SwiftModel.Model {
+            nonisolated extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: @unchecked Sendable {
+            nonisolated extension MyModel: @unchecked Sendable {
             }
 
-            extension MyModel: Identifiable {
+            nonisolated extension MyModel: Identifiable {
             }
 
-            extension MyModel: CustomReflectable {
+            nonisolated extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
                     node.mirror(of: self, children: [])
                 }
             }
 
-            extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+            nonisolated extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
                 public var description: String {
                     node.description(of: self)
                 }
@@ -1213,21 +1213,21 @@ struct ModelMacroTests {
                 }
                 var description: String { "MyModel(\(count))" }
 
-                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     visitor.visitStatically(statePath: \.count)
                 }
 
-                public struct _State: _ModelStateType {
+                public nonisolated struct _State: _ModelStateType {
                     var count = 0
                 }
 
                 public typealias _ModelState = _State
 
-                private static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 
-                private var _modelState: _State {
+                private nonisolated var _modelState: _State {
                     get {
                         _$modelSource._modelState
                     }
@@ -1240,42 +1240,42 @@ struct ModelMacroTests {
 
                 private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
 
-                public static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
                     \Self._modelState
                 }
 
-                private var _$modelContext: ModelContext<Self> {
+                private nonisolated var _$modelContext: ModelContext<Self> {
                     get {
                         ModelContext(_access: _$modelAccess, _source: _$modelSource)
                     }
                 }
 
-                public var _context: ModelContextAccess<Self> {
+                public nonisolated var _context: ModelContextAccess<Self> {
                     ModelContextAccess(_$modelContext)
                 }
 
-                public mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
                     _$modelAccess = update._$modelContext._access
                     _$modelSource = update._$modelContext._source
                 }
             }
 
-            extension MyModel: SwiftModel.Model {
+            nonisolated extension MyModel: SwiftModel.Model {
             }
 
-            extension MyModel: @unchecked Sendable {
+            nonisolated extension MyModel: @unchecked Sendable {
             }
 
-            extension MyModel: Identifiable {
+            nonisolated extension MyModel: Identifiable {
             }
 
-            extension MyModel: CustomReflectable {
+            nonisolated extension MyModel: CustomReflectable {
                 public var customMirror: Mirror {
                     node.mirror(of: self, children: [("count", count as Any)])
                 }
             }
 
-            extension MyModel: CustomDebugStringConvertible {
+            nonisolated extension MyModel: CustomDebugStringConvertible {
                 public var debugDescription: String {
                     description
                 }
