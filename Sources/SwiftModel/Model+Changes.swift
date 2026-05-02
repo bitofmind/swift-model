@@ -41,7 +41,7 @@ public extension Model {
     ///
     /// - Parameters:
     ///   - scope: Which levels of the hierarchy to observe. Defaults to `[.self, .descendants]`
-    ///     (the full subtree — same as the previous `observeAnyModification()` behaviour).
+    ///     (the full subtree).
     ///   - kinds: Which kinds of state changes to include. Defaults to `.all`.
     ///     Use `kinds: .properties` to skip environment/preference noise when autosaving.
     ///   - predicate: An optional closure that receives the model instance that changed.
@@ -107,14 +107,6 @@ public extension Model {
         }
     }
 
-    /// Returns a stream that emits whenever any state in the model or any of its descendants changes.
-    ///
-    /// - Note: Deprecated. Use ``observeModifications(scope:kinds:where:debug:)`` instead,
-    ///   which supports filtering by scope, kind, and model type.
-    @available(*, deprecated, renamed: "observeModifications()")
-    func observeAnyModification() -> AsyncStream<()> {
-        observeModifications()
-    }
 }
 
 /// Returns `true` when the given `scope` should accept a modification at `depth` levels

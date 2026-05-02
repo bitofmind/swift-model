@@ -62,6 +62,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 All APIs that were deprecated in prior releases have been removed:
 
+- **`UsingModel`** — use `ModelScope { … }` instead, capturing models from the enclosing scope.
+- **`observeAnyModification()`** — use `observeModifications()` for identical behaviour; the new API adds scope, kind, and predicate filtering.
 - **`model.andTester(exhaustivity:withDependencies:)`** — use `model.withAnchor()` inside `@Test(.modelTesting)` instead.
 - **`tester.assert { }` / `tester.assert(_:)` / `tester.unwrap(_:)`** — use the global `expect { }` and `require(_:)` functions instead.
 - **`TestProbe.install()`** — probes auto-register on creation and on every call.
