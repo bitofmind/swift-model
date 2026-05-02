@@ -4,7 +4,41 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
-## [1.0.0] — Deprecated API Removal
+## [1.0.0] — `@Model` Layout Redesign, Performance Overhaul + API Cleanup
+
+### Changed
+
+- **`@Model` generated code restructured** — tracked `var` properties are now stored in a nested `_State` struct inside the macro expansion rather than as individual backing fields directly on the value type. The model struct itself stores only `_$modelAccess` (8 bytes) and `_$modelSource` (8 bytes).
+
+- **`@Model` no longer synthesises an `Observable` conformance** — the generated `extension MyModel: Observation.Observable { … }` block is removed. Observation tracking for SwiftUI and `TestAccess` is handled internally through typed key paths without requiring `Observable` conformance. Explicit `Observable` conformance on `@Model` types is now redundant.
+
+- **`ContainerVisitor<State>` → `ContainerVisitor<V: ModelVisitor>`** — the generic parameter is now the concrete visitor type rather than the raw state type. `@ModelContainer`-generated `visit(with:)` bodies are updated automatically. Any hand-written `visit(with:)` that spells out `ContainerVisitor<…>` by type-parameter name must be updated; call sites of `visitStatically` / `visitDynamically` are otherwise unchanged.
+
+- **Custom `@Model` inits must use `self.property = value`** — the init-accessor storage layout has no underscore-prefixed backing fields. The old `_property = value` pattern no longer compiles; all properties in user-written initialisers must be assigned through `self.property =`.
+
+### Added
+
+- **`MutableCollection` of `Model` or `ModelContainer` elements handled automatically** — any `var` property whose type is a `MutableCollection` with `Model & Identifiable & Sendable` elements (e.g. a custom sorted-array type) is now traversed and activated by the framework without requiring an explicit `ModelContainer` conformance on the collection type. The same applies to collections of `ModelContainer & Identifiable` elements.
+
+- **Benchmark target** — new `SwiftModelBenchmarks` executable target (`scripts/benchmark`) covers activation, property reads/writes, hierarchy update, event dispatch, and `reduceHierarchy`. Used to track and validate performance improvements.
+
+### Performance
+
+- **`@Model` struct size is now 16 bytes + `let` fields** — tracked `var` properties live in a `_State` struct inside the reference-counted context and no longer contribute to the value-type size. Only `let` properties remain as direct stored fields.
+
+- **Lazy child context creation** — `Context<M>` instances for child models are allocated only on first access. Models with many rarely-reached children pay no upfront cost.
+
+- **Cached key-path → registrar path mapping** — per-property `ObservationRegistrar` key paths are cached after first use, eliminating a per-read heap allocation that dominated property-read cost (~1,910 ns → ~730 ns, ~2.5× faster reads).
+
+- **Shared observation registrar** — all models rooted at the same anchor share a single `RegistrarBox`, reducing per-model allocation and `withObservationTracking` overhead.
+
+- **Reduced lock contention** — `AnyContext.parentsLock` decouples the parents-path lock from the main context lock, reducing contention in read-heavy hierarchies.
+
+- **Cursor-based `ModelContainer` updates** — `ContainerCursor` is now a `struct`; `shouldSkipElement` lets the traversal short-circuit unchanged children, avoiding unnecessary context-lookup work on large stable collections.
+
+- **Lazy dependency capture** — child contexts that have no dependency overrides no longer copy the parent's dependency stack, saving allocations in the common case.
+
+- **Faster `reduceHierarchy` and event dispatch** — internal iteration no longer boxes each step through an existential; ~30–40% faster for wide hierarchies.
 
 ### Added
 
@@ -42,25 +76,12 @@ All APIs that were deprecated in prior releases have been removed:
 - **`model._printChanges(name:to:)`** — use `model.debug()` instead.
 - **`model._withPrintChanges(name:to:)`** — use `model.withDebug()` instead.
 
----
-
-## [0.15.0] — `@Model` Layout Redesign: Fixed 16-byte Struct + Separate State Storage
-
-### Changed
-
-- **`@Model` generated code restructured** — tracked `var` properties are now stored in a nested `_State` struct inside the macro expansion rather than as individual backing fields directly on the value type. The model struct itself stores only `_$modelAccess` (8 bytes) and `_$modelSource` (8 bytes).
-
-- **`@Model` no longer synthesises an `Observable` conformance** — the generated `extension MyModel: Observation.Observable { … }` block is removed. Observation tracking for SwiftUI and `TestAccess` is handled internally through typed key paths without requiring `Observable` conformance. Explicit `Observable` conformance on `@Model` types is now redundant.
-
-- **`ContainerVisitor<State>` → `ContainerVisitor<V: ModelVisitor>`** — the generic parameter is now the concrete visitor type rather than the raw state type. `@ModelContainer`-generated `visit(with:)` bodies are updated automatically. Any hand-written `visit(with:)` that spells out `ContainerVisitor<…>` by type-parameter name must be updated; call sites of `visitStatically` / `visitDynamically` are otherwise unchanged.
-
-### Performance
-
-- **`@Model` struct size is now 16 bytes + `let` fields** — tracked `var` properties live in a `_State` struct stored inside the reference-counted context, so they no longer contribute to the value-type size. Only `let` properties, which cannot participate in context-routed storage, remain as direct stored fields. Previously, each tracked `var` property added its own backing stored field to the struct.
-
 ### Tests
+
 - **Memory layout regression tests** — `MemoryTests` verifies that `_ModelSourceBox` is 8 bytes, `_ModelAccessBox` is 8 bytes, and a zero-field `@Model` struct is 16 bytes total.
-- **Init accessor sequencing tests** — new `ModelInitAccessorTests` suite covers init-accessor ordering, zero-init fallbacks, nested models, and property-default capture sequencing.
+- **Init accessor sequencing tests** — `ModelInitAccessorTests` covers init-accessor ordering, zero-init fallbacks, nested models, property-default capture sequencing, and custom inits with child-model collections (regression guard for the `self.property` requirement).
+- **Lazy context field tests** — `LazyContextFieldTests` verifies that lazy backing stores (`cancellations`, `memoizeCache`, `contextStorage`, `preferenceStorage`, `observationRegistrar`) remain `nil` until first use.
+- **Benchmark harness** — `LazyContextBenchmarks` provides a repeatable in-process benchmark for CI performance regression detection.
 
 ---
 
@@ -331,7 +352,8 @@ All APIs that were deprecated in prior releases have been removed:
 - `_printChanges()` / `_withPrintChanges()` — debug-build state change printing.
 - Example apps: `CounterFact`, `Standups`, `TodoList`.
 
-[Unreleased]: https://github.com/bitofmind/swift-model/compare/0.14.0...HEAD
+[Unreleased]: https://github.com/bitofmind/swift-model/compare/1.0.0...HEAD
+[1.0.0]: https://github.com/bitofmind/swift-model/compare/0.14.0...1.0.0
 [0.14.0]: https://github.com/bitofmind/swift-model/compare/0.13.1...0.14.0
 [0.13.1]: https://github.com/bitofmind/swift-model/compare/0.13.0...0.13.1
 [0.13.0]: https://github.com/bitofmind/swift-model/compare/0.12.0...0.13.0
