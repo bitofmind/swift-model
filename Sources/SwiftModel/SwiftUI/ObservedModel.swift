@@ -79,6 +79,11 @@ public extension Binding {
     }
 }
 
+/// A view that presents a model with observation enabled, passing it to a content closure.
+///
+/// > This view is deprecated. Use ``ModelScope`` instead — it covers all use cases
+/// > without requiring an explicit model parameter and no longer ties the scope to a single model type.
+@available(*, deprecated, message: "Use ModelScope instead.")
 public struct UsingModel<M: Model, Content: View>: View {
     @ObservedModel var model: M
     var content: (Binding<M>) -> Content
@@ -102,6 +107,98 @@ public struct UsingModel<M: Model, Content: View>: View {
 
     public var body: some View {
         content($model.binding)
+    }
+}
+
+/// A view that scopes observation to its content, preventing unnecessary
+/// re-renders of the containing view.
+///
+/// When a parent view accesses a model property, SwiftUI re-renders the
+/// *entire* parent whenever that property changes — even if the property is
+/// only used in a small part of the view hierarchy. Wrapping that part in
+/// `ModelScope` confines observation to the scope itself: only `ModelScope`
+/// re-renders when its accessed properties change, leaving the parent unaffected.
+///
+/// ```swift
+/// struct TrackView: View {
+///     var segment: SegmentModel  // no @ObservedModel — view is stable
+///
+///     var body: some View {
+///         baseTrackView
+///             .overlay {
+///                 // Only this scope re-renders when isHovering changes.
+///                 // Without ModelScope the overlay has no observation at all
+///                 // (no @ObservedModel in TrackView), or with @ObservedModel
+///                 // the entire TrackView re-renders for every hover change.
+///                 ModelScope {
+///                     if segment.isHovering { HoverOverlay() }
+///                 }
+///             }
+///     }
+/// }
+/// ```
+///
+/// `ModelScope` observes *all* models accessed inside the closure — not just
+/// one — so mixed-model content is naturally handled:
+///
+/// ```swift
+/// ModelScope {
+///     if segment.isHovering || editor.isExternalPaneActive { ... }
+/// }
+/// ```
+///
+/// ## Migrating from `UsingModel`
+///
+/// `UsingModel` is deprecated. `ModelScope` covers all its use cases without
+/// requiring an explicit model parameter — the content closure captures models
+/// from the enclosing scope:
+///
+/// ```swift
+/// // Before (deprecated):
+/// UsingModel(segment) { segment in
+///     if segment.isHovering { ... }
+/// }
+///
+/// // After:
+/// ModelScope {
+///     if segment.isHovering { ... }
+/// }
+/// ```
+///
+/// ## iOS 16 lazy-closure fix
+///
+/// `ModelScope` also fixes a secondary iOS 16 issue: certain SwiftUI APIs
+/// evaluate their `@ViewBuilder` content in a separate rendering context,
+/// breaking the observation chain if no scope boundary is present. Affected
+/// APIs include `ModalContext`, `GeometryReader`, `.sheet`, `.popover`,
+/// `.fullScreenCover`, and `NavigationStack` destination closures. On iOS 17
+/// and later, SwiftUI's `withObservationTracking` handles these automatically.
+///
+/// ```swift
+/// ModalContext {
+///     ModelScope {
+///         switch model.step { ... }
+///     }
+/// }
+/// ```
+public struct ModelScope<Content: View>: View {
+    @StateObject private var access = ViewAccess()
+    private let content: () -> Content
+
+    public init(@ViewBuilder content: @escaping () -> Content) {
+        self.content = content
+    }
+
+    public var body: some View {
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            // On iOS 17+, SwiftUI wraps every view body in withObservationTracking,
+            // so the view boundary already scopes observation correctly.
+            content()
+        } else {
+            usingActiveAccess(access) {
+                content()
+            }
+        }
     }
 }
 

@@ -135,6 +135,10 @@ func containerIsSame<T: ModelContainer>(_ lhs: T, _ rhs: T) -> Bool {
         return collectionIsSame(leftCollection, rhs)
     }
 
+    if let leftEquatable = lhs as? any Equatable {
+        return _dynamicEquatableEqual(leftEquatable, rhs as Any)
+    }
+
     return false
 }
 

@@ -137,6 +137,16 @@ public extension ChangeFormat {
     static var diff: Self { .diff() }
 }
 
+// MARK: - debugFileLocation
+
+/// Formats a `#fileID` + `#line` pair as `"filename.swift:line"` — identical to
+/// `FileAndLine.description` used in memoize auto-keys.
+func debugFileLocation(_ fileID: StaticString, _ line: UInt) -> String {
+    let s = "\(fileID)"
+    let filename = String(s.split(separator: "/").last ?? Substring(s))
+    return "\(filename):\(line)"
+}
+
 // MARK: - PrintTextOutputStream
 
 public struct PrintTextOutputStream: TextOutputStream, Sendable {

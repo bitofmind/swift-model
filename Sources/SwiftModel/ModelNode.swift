@@ -462,8 +462,8 @@ public extension ModelNode {
         return AsyncStream { cont in
             cont.yield(isUniquelyReferenced)
 
-            let cancel = rootParent.onAnyModification { isFinished in
-                if isFinished {
+            let cancel = rootParent.onAnyModification { source in
+                if source.isFinished {
                     cont.finish()
                 } else {
                     cont.yield(isUniquelyReferenced)

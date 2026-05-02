@@ -954,4 +954,96 @@ struct DebugTests {
             """
         }
     }
+
+    // MARK: observeModifications debug
+
+    /// observeModifications shows the originating model type and property name.
+    @Test func observeModifications_debug_property() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Observer") }) { output in
+            let model = DebugCounter().withAnchor()
+            let stream = model.observeModifications(
+                kinds: .properties,
+                debug: .init(changes: nil, name: "Observer", printer: output)
+            )
+            model.count = 5
+            withExtendedLifetime(stream) {}
+        } result: {
+            """
+            Observer: triggered by DebugCounter.count
+
+            """
+        }
+    }
+
+    /// observeModifications shows environment key names for environment kind.
+    @Test func observeModifications_debug_environment() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Observer") }) { output in
+            let model = DebugContextModel().withAnchor()
+            let stream = model.observeModifications(
+                kinds: .environment,
+                debug: .init(changes: nil, name: "Observer", printer: output)
+            )
+            model.node.local.debugContextCount = 7
+            withExtendedLifetime(stream) {}
+        } result: {
+            """
+            Observer: triggered by DebugContextModel.local.debugContextCount
+
+            """
+        }
+    }
+
+    /// observeModifications shows preference key names for preferences kind.
+    @Test func observeModifications_debug_preference() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Observer") }) { output in
+            let model = DebugContextModel().withAnchor()
+            let stream = model.observeModifications(
+                kinds: .preferences,
+                debug: .init(changes: nil, name: "Observer", printer: output)
+            )
+            model.node.preference.debugPreferenceScore = 3
+            withExtendedLifetime(stream) {}
+        } result: {
+            """
+            Observer: triggered by DebugContextModel.preference.debugPreferenceScore
+
+            """
+        }
+    }
+
+    /// observeModifications on a parent shows the child model and property that changed.
+    @Test func observeModifications_debug_descendant() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Observer") }) { output in
+            let parent = DebugParent().withAnchor()
+            let stream = parent.observeModifications(
+                kinds: .properties,
+                debug: .init(changes: nil, name: "Observer", printer: output)
+            )
+            parent.child.count = 42
+            withExtendedLifetime(stream) {}
+        } result: {
+            """
+            Observer: triggered by DebugCounter.count
+
+            """
+        }
+    }
+
+    /// observeModifications shows model type with kind when no property description is available (parentRelationship).
+    @Test func observeModifications_debug_parentRelationship() async throws {
+        try await assertOutputSnapshot(until: { $0.contains("Observer") }) { output in
+            let parent = DebugOptionalParent().withAnchor()
+            let stream = parent.observeModifications(
+                kinds: .parentRelationship,
+                debug: .init(changes: nil, name: "Observer", printer: output)
+            )
+            parent.child = DebugCounter()
+            withExtendedLifetime(stream) {}
+        } result: {
+            """
+            Observer: triggered by DebugCounter (.parentRelationship)
+
+            """
+        }
+    }
 }

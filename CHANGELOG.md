@@ -85,6 +85,37 @@ All APIs that were deprecated in prior releases have been removed:
 
 ---
 
+## [0.15.0] — observeModifications() with Scope, Kind, and Predicate Filtering
+
+### Added
+- **`observeModifications(scope:kinds:where:debug:)`** — replaces `observeAnyModification()` with rich filtering options:
+  - `scope: ModificationScope` — narrow or widen which hierarchy levels trigger: `.self`, `.children`, `.descendants`, or combinations (default: `[.self, .descendants]`)
+  - `kinds: ModificationKind` — filter by change category: `.properties`, `.environment`, `.preferences`, `.parentRelationship`, or `.all` (default). Use `kinds: .properties` to skip environment/preference noise in autosave scenarios
+  - `where: (@Sendable (Any) -> Bool)?` — model-type predicate; return `true` to include the emission. Useful for filtering to a specific protocol or type in large hierarchies
+  - `debug: DebugOptions?` — pass `.triggers()` to print a line for each emission with model name, kind, and depth. Only active in DEBUG builds
+- **`node.excludeFromModifications(_ paths:)`** — declares specific properties of a model as "transient": their changes will not trigger any `observeModifications()` registered on this model or its ancestors. Useful for caches, scroll positions, and other volatile state. Declared in `onActivate()`, mirrors the `trackUndo(_ paths:)` API. Only affects `observeModifications()` — other observation mechanisms are unaffected
+- **`ModificationKind`** — new `OptionSet` type categorising modification kinds (`.properties`, `.environment`, `.preferences`, `.parentRelationship`, `.all`)
+- **`ModificationScope`** — new `OptionSet` type describing hierarchy depth (`.self`, `.children`, `.descendants`)
+
+### Deprecated
+- **`observeAnyModification()`** — superseded by `observeModifications()`. Replace `observeAnyModification()` with `observeModifications()` for identical behaviour; use the new parameters to filter as needed
+
+---
+
+## [0.14.1] — ModelScope + iOS 16 Bug Fixes
+
+### Added
+- **`ModelScope`** — new SwiftUI view that scopes observation to its content, preventing unnecessary parent re-renders. Wrapping reactive content in `ModelScope` confines observation to that sub-tree: only `ModelScope` re-renders when its accessed properties change, leaving the parent unaffected. Also fixes an iOS 16 issue where model properties accessed inside lazy `@ViewBuilder` closures (`.sheet`, `.popover`, `GeometryReader`, `NavigationStack` destinations) were not observed. On iOS 17 and later, `ModelScope` is a transparent pass-through — the platform already scopes observation per view boundary.
+
+### Deprecated
+- **`UsingModel`** — superseded by `ModelScope`. Replace `UsingModel(model) { model in … }` with `ModelScope { … }`, capturing the model from the enclosing scope. `ModelScope` naturally handles multiple models accessed in the same closure.
+
+### Fixed
+- **`@MainActor` missing from `mainCallQueueDrainLoop`** — on iOS 16, `objectWillChange.send()` could fire off the main thread after the drain loop's first `Task.yield()` suspension, breaking the `AccessCollector` observation path. Adding `@MainActor` ensures every batch — including post-yield batches — runs on the main thread.
+- **`containerIsSame` for `@ModelContainer` enums** — when an enum conforming to `Equatable` (via `@ModelContainer` synthesis or explicitly) was written with the same value, the write was incorrectly treated as a mutation, triggering spurious view re-renders and `onChange` callbacks. The equality check is now performed before recording a modification.
+
+---
+
 ## [0.14.0] — Exhaustivity Improvements + Convenience Helpers
 
 ### Added

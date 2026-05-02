@@ -250,3 +250,25 @@ Stepper(value: $model.count) {
   Text("\(model.count)")
 }
 ```
+
+### ModelScope
+
+`ModelScope` is a view that scopes observation to its content, preventing unnecessary re-renders of the containing view. When a parent view accesses a model property, SwiftUI re-renders the *entire* parent on each change. Wrapping reactive content in `ModelScope` confines observation to that sub-tree — only the scope re-renders, leaving the parent unaffected.
+
+```swift
+struct TrackView: View {
+    var segment: SegmentModel  // no @ObservedModel — view stays stable
+
+    var body: some View {
+        baseTrackView
+            .overlay {
+                // Only this scope re-renders when isHovering changes.
+                ModelScope {
+                    if segment.isHovering { HoverOverlay() }
+                }
+            }
+    }
+}
+```
+
+`ModelScope` observes *all* models accessed inside the closure, so it naturally handles content that reads from multiple models at once. On iOS 17 and later it is a transparent pass-through — the platform already scopes observation per view boundary. On iOS 16 it also fixes an issue where model properties accessed inside lazy `@ViewBuilder` closures (`.sheet`, `.popover`, `GeometryReader`, `NavigationStack` destinations) are not observed unless wrapped in a `ModelScope`.

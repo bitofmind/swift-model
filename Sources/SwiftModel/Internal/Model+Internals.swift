@@ -121,8 +121,3 @@ extension Model {
     }
 }
 
-
-// Two purpose-specific queue types route observation callbacks:
-//
-// - `MainCallQueue` / `mainCall`: delivers SwiftUI ObservationRegistrar notifications on
-//   the main actor. Fast-paths when already on the main thread. Supports synchronous

@@ -144,13 +144,13 @@ struct SearchTests {
 
 // MARK: - FilterModel tests
 //
-// FilterModel uses observeAnyModification() to autosave on any state change, creating
-// tasks that the test doesn't need to track. State changes (sortBy, language) are incidental.
+// FilterModel uses observeModifications(kinds: .properties) to autosave on any property change,
+// creating tasks that the test doesn't need to track. State changes (sortBy, language) are incidental.
 
 @Suite(.modelTesting(.removing(.state)))
 struct FilterModelTests {
 
-    /// FilterModel uses observeAnyModification() to detect any state change.
+    /// FilterModel uses observeModifications() to detect any property change.
     @Test func initialFilterState() async {
         let filter = FilterModel().withAnchor()
         await settle {
