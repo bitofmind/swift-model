@@ -544,9 +544,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    override var typeDescription: String {
-        String(describing: M.self)
-    }
+    override var typeDescription: String { String(describing: M.self) }
 
     override var selfPath: AnyKeyPath { \M.self }
 

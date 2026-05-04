@@ -589,9 +589,7 @@ extension ModelNode {
         modelContext.access
     }
 
-    var typeDescription: String {
-        String(describing: M.self)
-    }
+    var typeDescription: String { String(describing: M.self) }
 
     var modelID: ModelID {
         modelContext.modelID

@@ -32,7 +32,7 @@ Composable models for SwiftUI — struct-based, automatic async lifetime, exhaus
 ## Install
 
 ```swift
-.package(url: "https://github.com/bitofmind/swift-model", from: "0.15.0")
+.package(url: "https://github.com/bitofmind/swift-model", from: "1.0.0")
 ```
 
 **Xcode app targets:** SwiftModel references `Testing.framework` symbols at compile time (Xcode 16+). Without a weak link the app crashes at launch outside a test context with `Library not loaded: @rpath/Testing.framework/Testing`. Add this to your **app target's** build settings, regardless of whether you use SPM or xcodeproj to structure your project:

@@ -65,6 +65,15 @@ public extension Model {
         guard let context = enforcedContext() else { return .finished }
 
         return AsyncStream { cont in
+#if DEBUG
+            // Capture label and printer once at setup time, not on every emission.
+            let debugState: (label: String, printer: PrinterBox)? = debug.flatMap { d in
+                guard d.triggers != nil else { return nil }
+                let label = d.name ?? "\(String(describing: Self.self)).observeModifications(\(debugFileLocation(fileID, line)))"
+                return (label, PrinterBox(d.effectivePrinter))
+            }
+#endif
+
             let cancel = context.onAnyModification { source in
                 if source.isFinished {
                     cont.finish()
@@ -83,12 +92,8 @@ public extension Model {
                 }
 
 #if DEBUG
-                if let debug, let _ = debug.triggers, let origin = source.origin {
-                    let label = debug.name ?? "\(String(describing: Self.self)).observeModifications(\(debugFileLocation(fileID, line)))"
+                if let (label, printerBox) = debugState, let origin = source.origin {
                     let modelName = String(describing: type(of: origin.anyModel))
-                    let printerBox = PrinterBox(debug.effectivePrinter)
-
-                    // Resolve the property description lazily (already post-lock here).
                     let propDesc = source.propertyDescription?()
                     let subject: String
                     if let prop = propDesc {
@@ -423,12 +428,15 @@ private extension ModelNode {
         // Set up debug observation once (only on first access, when cache entry doesn't yet exist).
         // We do this before the external willAccess so that the debug collector can intercept
         // property reads inside produce() during the first update() call.
-        // When debug == [] (the default), memoizeDebugSetup returns nils for zero overhead.
-        let debugLabel = debug?.name ?? "\(String(describing: M.self))[memoize: \"\(key.base)\"]"
-        let (debugPrint, debugPreviousValue, debugCollectorBox) = memoizeDebugSetup(
-            options: debug,
-            label: debugLabel
-        ) as ((@Sendable (T, T?) -> Void)?, LockIsolated<T?>?, LockIsolated<DebugAccessCollector?>?)
+        // debugLabel and memoizeDebugSetup are only evaluated when debug is non-nil so that
+        // String(describing: M.self) — which is slow — is never paid in the common no-debug path.
+        let (debugPrint, debugPreviousValue, debugCollectorBox): ((@Sendable (T, T?) -> Void)?, LockIsolated<T?>?, LockIsolated<DebugAccessCollector?>?)
+        if let debug {
+            let debugLabel = debug.name ?? "\(context.typeDescription)[memoize: \"\(key.base)\"]"
+            (debugPrint, debugPreviousValue, debugCollectorBox) = memoizeDebugSetup(options: debug, label: debugLabel)
+        } else {
+            (debugPrint, debugPreviousValue, debugCollectorBox) = (nil, nil, nil)
+        }
 #endif
 
         // External tracking: notify observers that this property is being accessed.
