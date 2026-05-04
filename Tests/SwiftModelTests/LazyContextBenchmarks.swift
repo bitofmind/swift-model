@@ -1,6 +1,8 @@
 import Testing
 import Foundation
+#if canImport(os)
 import os
+#endif
 @testable import SwiftModel
 
 /// Benchmarks comparing eager vs lazy child context creation for large arrays.
@@ -35,6 +37,7 @@ struct LazyContextBenchmarks {
     // The os_signpost intervals are emitted to subsystem "com.swiftmodel.benchmark",
     // category "LazyContext" — use that filter in Instruments' Signpost instrument.
 
+    #if canImport(os)
     @Test func profileEagerAnchor_loop() {
         let signposter = OSSignposter(subsystem: "com.swiftmodel.benchmark", category: "LazyContext")
         let id = signposter.makeSignpostID()
@@ -60,6 +63,7 @@ struct LazyContextBenchmarks {
         signposter.endInterval("LazyAnchor", state)
         print("📊 Profile loop lazy (100×2000): \(durationMs(duration))ms total (\(durationMs(duration / 100)) ms/iter)")
     }
+    #endif
 
     // MARK: - Anchor time: 100 posts
 
