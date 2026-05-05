@@ -173,7 +173,18 @@ extension TestAccess {
                                 // Using only `last` (which reflects the current live state) and comparing
                                 // against the captured value is safe and sufficient: if the IDs match,
                                 // the model has settled.
-                                let a = last[keyPath: access.path]
+                                //
+                                // Use forceDirectAccess so nested model reads go through the frozen
+                                // snapshot state rather than the live context. Without this, keypaths
+                                // that traverse a child @Model property route through the live child
+                                // context, firing willAccessDirect which (a) calls TestAccess.willAccess
+                                // producing spurious Access entries, and (b) acquires the parent context
+                                // lock inside the child context lock — a lock-ordering inversion that
+                                // can deadlock on Linux when a concurrent background task holds the
+                                // parent lock while reading the same child property.
+                                let a = threadLocals.withValue(true, at: \.forceDirectAccess) {
+                                    last[keyPath: access.path]
+                                }
                                 return result && (diff(access.capturedValue(), a) == nil)
                             }
                         }
