@@ -317,7 +317,11 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
 
     mutating func visit<T: ModelContainer>(path: WritableKeyPath<Value, T>) {
         if containerPath == \.self, elementPath == \.self {
-            value[keyPath: path].withContextAdded(context: context, containerPath: path as! WritableKeyPath<M, T>, elementPath: \.self, includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
+            // When containerPath == \.self && elementPath == \.self, Value == M at runtime.
+            // Use unsafeBitCast rather than as! — cursor-backed key paths can trigger a
+            // SIGSEGV in swift_retain during swift_dynamicCast metadata verification.
+            let mPath = unsafeBitCast(path, to: WritableKeyPath<M, T>.self)
+            value[keyPath: path].withContextAdded(context: context, containerPath: mPath, elementPath: \.self, includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
         } else {
             value[keyPath: path].withContextAdded(context: context, containerPath: containerPath, elementPath: elementPath.appending(path: path), includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
         }
