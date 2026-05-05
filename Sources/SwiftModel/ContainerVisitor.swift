@@ -50,14 +50,33 @@ public extension ContainerVisitor {
     /// Use this in generic `ModelContainer` implementations (such as `Array` or `Dictionary`)
     /// where the element type is a type parameter. The visitor dynamically checks whether the
     /// value is a `Model`, a `ModelContainer`, or a plain value and dispatches accordingly.
+    ///
+    /// When the element conforms to `Model` or `ModelContainer` statically, the more-constrained
+    /// overloads below are preferred by Swift's overload resolution and dispatch correctly without
+    /// any runtime overhead or type casting.
     mutating func visitDynamically<T>(with value: T, at path: WritableKeyPath<V.State, T>) {
         if let model = value as? any Model, !(value is OptionalModel) {
-            visit(model: model, path: path)
+            _visitModel(model, path: path)
         } else if let container = value as? any ModelContainer {
-            visit(container: container, path: path)
+            _visitContainer(container, path: path)
         } else {
             modelVisitor.visit(path: path)
         }
+    }
+
+    /// Overload selected when `T: Model` is known statically — dispatches to the `T: Model`
+    /// `modelVisitor.visit` overload without any runtime overhead or type casting.
+    mutating func visitDynamically<T: Model>(with value: T, at path: WritableKeyPath<V.State, T>) {
+        modelVisitor.visit(path: path)
+    }
+
+    /// Overload selected when `T: ModelContainer` is known statically (and T is not a Model) —
+    /// dispatches to the `T: ModelContainer` `modelVisitor.visit` overload without any runtime
+    /// overhead or type casting. Marked disfavored so the `T: Model` overload wins when T
+    /// satisfies both constraints.
+    @_disfavoredOverload
+    mutating func visitDynamically<T: ModelContainer>(with value: T, at path: WritableKeyPath<V.State, T>) {
+        modelVisitor.visit(path: path)
     }
 }
 
@@ -406,12 +425,22 @@ private extension ContainerVisitor where V.State: Model {
 }
 
 private extension ContainerVisitor {
-    mutating func visit<M: Model, T>(model: M, path: WritableKeyPath<V.State, T>) {
-        modelVisitor.visit(path: path as! WritableKeyPath<V.State, M>)
+    /// Dispatches to `modelVisitor.visit<T: Model>(path:)` for a model value whose concrete type
+    /// `M` was recovered at runtime. Uses `unsafeBitCast` to reinterpret the key path's static
+    /// type from `WritableKeyPath<V.State, T>` to `WritableKeyPath<V.State, M>` — safe because
+    /// the key path object IS a `WritableKeyPath<V.State, M>` at runtime (cursor-backed key paths
+    /// store the getter/setter closures, not type metadata, so the actual traversal is unaffected).
+    /// Avoids `as!` which triggers Swift's runtime type metadata comparison and can crash (SIGSEGV
+    /// in `swift_retain`) when generic key path metadata is not yet fully instantiated in CI.
+    mutating func _visitModel<M: Model, T>(_ model: M, path: WritableKeyPath<V.State, T>) {
+        let typedPath = unsafeBitCast(path, to: WritableKeyPath<V.State, M>.self)
+        modelVisitor.visit(path: typedPath)
     }
 
-    mutating func visit<M: ModelContainer, T>(container: M, path: WritableKeyPath<V.State, T>) {
-        modelVisitor.visit(path: path as! WritableKeyPath<V.State, M>)
+    /// Same as `_visitModel` but for `ModelContainer` values.
+    mutating func _visitContainer<C: ModelContainer, T>(_ container: C, path: WritableKeyPath<V.State, T>) {
+        let typedPath = unsafeBitCast(path, to: WritableKeyPath<V.State, C>.self)
+        modelVisitor.visit(path: typedPath)
     }
 }
 
