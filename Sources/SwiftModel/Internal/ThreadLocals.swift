@@ -73,6 +73,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// path within one transaction can be coalesced into a single `valueUpdates` entry.
     /// Zero means the write occurred outside any transaction.
     var currentTransactionID: UInt = 0
+    var pendingStack = _PendingStackBox()
 
     fileprivate init() {}
 

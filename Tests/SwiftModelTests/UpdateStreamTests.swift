@@ -91,9 +91,13 @@ struct UpdateStreamTests {
     // of UpdatePath settings. The withObservationTracking variant adds no coverage — it only enables
     // the OT registrar, which queues extra async mainCallQueue notifications on Linux and causes
     // spurious exhaustivity failures. This test is only meaningful with .accessCollector.
+    // settle() drains all initial forEach callbacks (initial: true) before asserting, which prevents
+    // a race on Linux where the settle check sees the values mid-flight and never converges.
     @Test(arguments: [UpdatePath.accessCollector])
     func testChangeOfChildWhereChildIsUpdated(updatePath: UpdatePath) async throws {
         let model = updatePath.withOptions { ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).withAnchor() }
+
+        await settle()
 
         await expect {
             model.child.count == 2

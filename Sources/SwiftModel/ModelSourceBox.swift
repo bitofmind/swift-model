@@ -303,7 +303,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
     /// **First/Only property**: clears stale `latest` from a previous construction,
     /// then stores the value on the thread-local stack. Prevents cross-construction bleed.
     public static func _threadLocalStoreFirst<V>(_ path: WritableKeyPath<M._ModelState, V>, _ value: V) {
-        _pendingStackStorage.latest = nil
+        threadLocals.pendingStack.latest = nil
         _PendingStack.store(path, value)
     }
 
@@ -311,7 +311,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
     /// writes directly to the already-created Reference.state. Otherwise stores on the
     /// thread-local stack (phase-1 init accessor path).
     public static func _threadLocalStoreOrLatest<V>(_ path: WritableKeyPath<M._ModelState, V>, _ value: V) {
-        if let ref = _pendingStackStorage.latest as? Context<M>.Reference {
+        if let ref = threadLocals.pendingStack.latest as? Context<M>.Reference {
             // Keep old value alive past the write so its deinit cannot fire while
             // ref.state is exclusively held, preventing Swift exclusivity violations.
             withExtendedLifetime(ref.state[keyPath: path]) {
@@ -330,7 +330,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
         let pending = _PendingStack.popOrCreate(M._ModelState.self)
         let state = factory(pending)
         let ref = Context<M>.Reference(modelID: pending.pendingID, state: state)
-        _pendingStackStorage.latest = ref
+        threadLocals.pendingStack.latest = ref
         return _ModelSourceBox(reference: ref)
     }
 
@@ -859,7 +859,7 @@ enum _PendingStack {
     /// Stores a value in the top-of-stack pending storage for this `State` type.
     /// Auto-creates if no matching storage exists yet.
     static func store<State, V>(_ path: WritableKeyPath<State, V>, _ value: V) {
-        let box = _pendingStackStorage
+        let box = threadLocals.pendingStack
         if let top = box.last as? PendingStorage<State> {
             top.store(path, value)
         } else {
@@ -872,7 +872,7 @@ enum _PendingStack {
     /// Pops the top pending storage for this `State` type, or creates an empty one
     /// if the stack is empty (all properties used their defaults).
     static func popOrCreate<State>(_: State.Type) -> PendingStorage<State> {
-        let box = _pendingStackStorage
+        let box = threadLocals.pendingStack
         if box.isEmpty {
             return PendingStorage<State>()
         }
@@ -889,17 +889,7 @@ enum _PendingStack {
     }
 }
 
-/// Thread-local storage for the pending stack.
-private var _pendingStackStorage: _PendingStackBox {
-    if let ptr = pthread_getspecific(_pendingStackKey) {
-        return Unmanaged<_PendingStackBox>.fromOpaque(ptr).takeUnretainedValue()
-    }
-    let box = _PendingStackBox()
-    pthread_setspecific(_pendingStackKey, Unmanaged.passRetained(box).toOpaque())
-    return box
-}
-
-private final class _PendingStackBox: @unchecked Sendable {
+final class _PendingStackBox: @unchecked Sendable {
     var stack: [AnyObject] = []
     /// Set by `_threadLocalStoreAndPop` after the last init accessor pops the pending storage.
     /// Allows phase-2 setter calls (user-written inits) to route to the same Reference.
@@ -911,19 +901,3 @@ private final class _PendingStackBox: @unchecked Sendable {
     func append(_ obj: AnyObject) { stack.append(obj) }
     @discardableResult func removeLast() -> AnyObject { stack.removeLast() }
 }
-
-private let _pendingStackKey: pthread_key_t = {
-    var key: pthread_key_t = 0
-    #if os(Linux) || os(Android)
-    let cleanup: @convention(c) (UnsafeMutableRawPointer?) -> Void = { ptr in
-        guard let ptr else { return }
-        Unmanaged<_PendingStackBox>.fromOpaque(ptr).release()
-    }
-    #else
-    let cleanup: @convention(c) (UnsafeMutableRawPointer) -> Void = { ptr in
-        Unmanaged<_PendingStackBox>.fromOpaque(ptr).release()
-    }
-    #endif
-    pthread_key_create(&key, cleanup)
-    return key
-}()
