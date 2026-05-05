@@ -1206,13 +1206,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     // MARK: - MutableCollection variants (no ModelContainer constraint)
     //
     // These mirror the existing ModelContainer-constrained overloads but work with any
-    // MutableCollection whose elements are Model & Identifiable. The `elementPath` in
-    // ModelRef uses \C.self (identity key path on the collection type) as a sentinel —
-    // the outer `containerPath` dict key already distinguishes collections, so only `id`
-    // needs to disambiguate elements within a collection.
+    // MutableCollection whose elements are Model & Identifiable. ModelRef uses only `id`
+    // (ModelID, globally unique) as the registry key — the outer `containerPath` dict key
+    // already distinguishes collections, so `id` alone disambiguates elements within a bucket.
 
     /// Creates or retrieves the child context for a `MutableCollection` element,
-    /// using `ModelRef(elementPath: \C.self, id: childModel.id)` as the registry key.
+    /// using `ModelRef(id: childModel.id)` as the registry key.
     func childContextForCollection<C: MutableCollection, Child: Model>(
         containerPath: WritableKeyPath<M, C>,
         childModel: Child
@@ -1339,18 +1338,16 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     // These handle MutableCollection properties whose element type is `ModelContainer & Identifiable`
     // but the collection itself is NOT ModelContainer (e.g. IdentifiedArray<@ModelContainer enum>).
     // Child model contexts are stored under `children[collectionPath]` using
-    // `ModelRef(elementPath: \C.self, id: childModel.id)` as the registry key — the same
-    // sentinel strategy used by `childContextForCollection`. Model IDs (UUIDs) are globally unique,
+    // `ModelRef(id: childModel.id)` as the registry key. Model IDs (UUIDs) are globally unique,
     // so no cursor key path is needed, eliminating the 3 heap allocations that cursor construction
     // would otherwise require before every registry lookup.
 
     /// Creates or retrieves the child context for a `Model` child inside a `ModelContainer`
     /// element of a `MutableCollection` that is not itself `ModelContainer`.
     ///
-    /// Uses `ModelRef(elementPath: \C.self, id: childModel.id)` as the registry key — the same
-    /// sentinel strategy as `childContextForCollection`. Model IDs (UUIDs) are globally unique,
-    /// so no cursor key path is needed to disambiguate elements. This eliminates the 3 cursor
-    /// allocations that would otherwise be required before every registry lookup.
+    /// Uses `ModelRef(id: childModel.id)` as the registry key. Model IDs (UUIDs) are globally
+    /// unique, so no cursor key path is needed to disambiguate elements. This eliminates the 3
+    /// cursor allocations that would otherwise be required before every registry lookup.
     func childContextForContainerCollectionModel<C: MutableCollection, Child: Model>(
         collectionPath: WritableKeyPath<M, C>,
         childModel: Child

@@ -318,8 +318,24 @@ class AnyContext: @unchecked Sendable {
     }
 
     struct ModelRef: Hashable {
+        /// The element's path within its parent container.
+        ///
+        /// Also used for equality and hash — but via `elementPath.hashValue`, NOT `AnyKeyPath.==`.
+        /// Calling `AnyKeyPath.==` on cursor-backed paths crashes (`swift_retain` SIGSEGV) when
+        /// generic type metadata is not fully initialized (observed on Linux CI). Key path hashes
+        /// are computed without retaining, so they are safe. The theoretical hash-collision risk is
+        /// negligible: cursor IDs are strings or typed IDs, making cross-position collisions
+        /// virtually impossible in practice.
         var elementPath: AnyKeyPath
         var id: AnyHashable
+
+        static func == (lhs: ModelRef, rhs: ModelRef) -> Bool {
+            lhs.id == rhs.id && lhs.elementPath.hashValue == rhs.elementPath.hashValue
+        }
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(id)
+            hasher.combine(elementPath.hashValue)
+        }
     }
 
     // MARK: - Parents observation hooks

@@ -318,9 +318,8 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
     mutating func visit<T: ModelContainer>(path: WritableKeyPath<Value, T>) {
         if containerPath == \.self, elementPath == \.self {
             // When containerPath == \.self && elementPath == \.self, Value == M at runtime.
-            // Use unsafeBitCast rather than as! — cursor-backed key paths can trigger a
-            // SIGSEGV in swift_retain during swift_dynamicCast metadata verification.
-            let mPath = unsafeBitCast(path, to: WritableKeyPath<M, T>.self)
+            // Use unsafeDowncast to reinterpret the static type without triggering swift_dynamicCast.
+            let mPath = unsafeDowncast(path, to: WritableKeyPath<M, T>.self)
             value[keyPath: path].withContextAdded(context: context, containerPath: mPath, elementPath: \.self, includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
         } else {
             value[keyPath: path].withContextAdded(context: context, containerPath: containerPath, elementPath: elementPath.appending(path: path), includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
@@ -460,8 +459,8 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
 /// that does not itself conform to `ModelContainer`.
 ///
 /// Stores child contexts under `children[collectionPath]` using
-/// `ModelRef(elementPath: \C.self, id: childModel.id)` as the registry key — the same sentinel
-/// strategy as `childContextForCollection`. No cursor is needed for `visit<Child: Model>`.
+/// `ModelRef(id: childModel.id)` as the registry key — the same strategy as
+/// `childContextForCollection`. No cursor is needed for `visit<Child: Model>`.
 ///
 /// A `ContainerCursor` is built lazily (stored in `_cursorPath`) only when
 /// `visit<U: ModelContainer>` is called — the uncommon path of nested `ModelContainer` inside

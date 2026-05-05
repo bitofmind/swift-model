@@ -426,20 +426,18 @@ private extension ContainerVisitor where V.State: Model {
 
 private extension ContainerVisitor {
     /// Dispatches to `modelVisitor.visit<T: Model>(path:)` for a model value whose concrete type
-    /// `M` was recovered at runtime. Uses `unsafeBitCast` to reinterpret the key path's static
+    /// `M` was recovered at runtime. Uses `unsafeDowncast` to reinterpret the key path's static
     /// type from `WritableKeyPath<V.State, T>` to `WritableKeyPath<V.State, M>` — safe because
-    /// the key path object IS a `WritableKeyPath<V.State, M>` at runtime (cursor-backed key paths
-    /// store the getter/setter closures, not type metadata, so the actual traversal is unaffected).
-    /// Avoids `as!` which triggers Swift's runtime type metadata comparison and can crash (SIGSEGV
-    /// in `swift_retain`) when generic key path metadata is not yet fully instantiated in CI.
+    /// the key path object IS a `WritableKeyPath<V.State, M>` at runtime (the dynamic type check
+    /// in `visitDynamically` already confirmed M before this call).
     mutating func _visitModel<M: Model, T>(_ model: M, path: WritableKeyPath<V.State, T>) {
-        let typedPath = unsafeBitCast(path, to: WritableKeyPath<V.State, M>.self)
+        let typedPath = unsafeDowncast(path, to: WritableKeyPath<V.State, M>.self)
         modelVisitor.visit(path: typedPath)
     }
 
     /// Same as `_visitModel` but for `ModelContainer` values.
     mutating func _visitContainer<C: ModelContainer, T>(_ container: C, path: WritableKeyPath<V.State, T>) {
-        let typedPath = unsafeBitCast(path, to: WritableKeyPath<V.State, C>.self)
+        let typedPath = unsafeDowncast(path, to: WritableKeyPath<V.State, C>.self)
         modelVisitor.visit(path: typedPath)
     }
 }
