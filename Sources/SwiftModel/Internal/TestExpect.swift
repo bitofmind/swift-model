@@ -120,6 +120,14 @@ extension TestAccess {
                         // same time deadlocks (lock-ordering inversion). The new conditions
                         // below also read exhaustivity/valueUpdates (shared state), so we
                         // capture those under the same brief lock.
+                        // When passedAccesses is empty (e.g. settle() with no predicates),
+                        // the reduce below returns true without ever reading `last`.
+                        // Skip frozenCopy entirely: `snap._source.reference` is the SAME
+                        // Reference as the live model (class storage shared by value copies),
+                        // so frozenCopy reads _stateHolder outside the hierarchy lock while
+                        // background tasks write to it inside their lock — a data race that
+                        // can crash under heavy parallel test execution.
+                        guard !passedAccesses.isEmpty else { return true }
                         let (snap, capturedExhaustivity, capturedValueUpdates) = lock { (lastState, exhaustivity, valueUpdates) }
                         let last = snap.frozenCopy
                         return threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
