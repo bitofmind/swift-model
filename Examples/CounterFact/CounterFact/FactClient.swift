@@ -1,11 +1,11 @@
 import Foundation
 import Dependencies
 
-struct FactClient {
+nonisolated struct FactClient {
     var fetch: @Sendable (Int) async throws -> String
 }
 
-extension FactClient: DependencyKey {
+nonisolated extension FactClient: DependencyKey {
     static let liveValue = FactClient(
         fetch: { number in
             struct Response: Decodable { let fact: String }
@@ -17,7 +17,7 @@ extension FactClient: DependencyKey {
 }
 
 extension DependencyValues {
-    var factClient: FactClient {
+    nonisolated var factClient: FactClient {
         get { self[FactClient.self] }
         set { self[FactClient.self] = newValue }
     }

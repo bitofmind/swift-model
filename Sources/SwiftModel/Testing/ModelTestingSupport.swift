@@ -47,7 +47,7 @@ package protocol _AnyModelTestScope: AnyObject, Sendable {
 // MARK: - Task-local test scope
 
 package enum _ModelTestingLocals {
-    /// Set by `_ModelTestingTrait.provideScope` for the duration of the test body.
+    /// Set by `ModelTestingTrait.provideScope` for the duration of the test body.
     /// `withAnchor()` reads this to detect whether a `.modelTesting` test scope is active.
     @TaskLocal package static var scope: (any _AnyModelTestScope)? = nil
 }

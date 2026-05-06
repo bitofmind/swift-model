@@ -243,104 +243,6 @@ public func require<T>(
     )
 }
 
-// MARK: - Deprecated overloads
-
-/// - Deprecated: Use `settle { }` instead.
-@available(*, deprecated, renamed: "settle")
-public struct ExpectMode: Sendable {
-    let isSettling: Bool
-    public static let settling = ExpectMode(isSettling: true)
-}
-
-@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
-public func expect(
-    timeoutNanoseconds timeout: UInt64,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column,
-    @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result
-) async {
-    await expect(fileID: fileID, filePath: filePath, line: line, column: column, builder)
-}
-
-@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
-@_disfavoredOverload
-public func expect(
-    _ predicate: @escaping @Sendable @autoclosure () -> Bool,
-    timeoutNanoseconds timeout: UInt64,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column
-) async {
-    await expect(predicate(), fileID: fileID, filePath: filePath, line: line, column: column)
-}
-
-@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
-public func expect(
-    _ predicate: TestPredicate,
-    timeoutNanoseconds timeout: UInt64,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column
-) async {
-    await expect(predicate, fileID: fileID, filePath: filePath, line: line, column: column)
-}
-
-@available(*, deprecated, message: "Use settle { } instead of expect(.settling) { }.")
-public func expect(
-    _ mode: ExpectMode,
-    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column,
-    @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result
-) async {
-    await settle(fileID: fileID, filePath: filePath, line: line, column: column, builder)
-}
-
-@available(*, deprecated, message: "Use settle(_:) instead of expect(.settling, predicate).")
-@_disfavoredOverload
-public func expect(
-    _ mode: ExpectMode,
-    _ predicate: @escaping @Sendable @autoclosure () -> Bool,
-    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column
-) async {
-    await settle(predicate(), fileID: fileID, filePath: filePath, line: line, column: column)
-}
-
-@available(*, deprecated, message: "Use settle(_:) instead of expect(.settling, predicate).")
-public func expect(
-    _ mode: ExpectMode,
-    _ predicate: TestPredicate,
-    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column
-) async {
-    await settle(predicate, fileID: fileID, filePath: filePath, line: line, column: column)
-}
-
-@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
-public func require<T>(
-    _ expression: @escaping @Sendable @autoclosure () -> T?,
-    timeoutNanoseconds timeout: UInt64,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column
-) async throws -> T {
-    try await require(expression(), fileID: fileID, filePath: filePath, line: line, column: column)
-}
-
 /// Runs `body` with exhaustivity set by the given modifier for the active `.modelTesting` scope.
 ///
 /// Any calls to `expect { }` inside `body` will use the modified exhaustivity. When `body`
@@ -541,10 +443,6 @@ public struct ModelTestingTrait: Sendable {
     }
 }
 
-/// Backward-compatible typealias — removes the need for callers to update any explicit type references.
-@available(*, deprecated, renamed: "ModelTestingTrait")
-public typealias _ModelTestingTrait = ModelTestingTrait
-
 #if swift(>=6.1)
 extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
     public var isRecursive: Bool { true }
@@ -582,7 +480,7 @@ extension ModelTestingTrait: TestTrait, SuiteTrait {
     public func prepare(for test: Test) async throws {
         // On Swift 6.0 TestScoping.provideScope is not available.
         // The trait is registered but cannot wrap the test body.
-        // Users should use andTester() for exhaustion checking on Swift 6.0.
+        // Users should use withModelTesting { } for exhaustion checking on Swift 6.0.
     }
 }
 #endif
@@ -592,7 +490,7 @@ extension Trait where Self == ModelTestingTrait {
     ///
     /// When applied to a `@Test` or `@Suite`, calling `withAnchor()` inside the test body
     /// automatically connects the model to the testing infrastructure. Use the global
-    /// `expect { }` function instead of `tester.assert { }`:
+    /// `expect { }` function for exhaustive assertions:
     ///
     /// ```swift
     /// @Test(.modelTesting) func example() async {
@@ -627,7 +525,7 @@ extension Trait where Self == ModelTestingTrait {
     ///
     /// When applied to a `@Test` or `@Suite`, calling `withAnchor()` inside the test body
     /// automatically connects the model to the testing infrastructure. Use the global
-    /// `expect { }` function instead of `tester.assert { }`:
+    /// `expect { }` function for exhaustive assertions:
     ///
     /// ```swift
     /// @Test(.modelTesting) func example() async {

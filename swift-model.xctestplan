@@ -20,6 +20,18 @@
       },
       "target" : {
         "containerPath" : "container:",
+        "identifier" : "SwiftModelMainActorTests",
+        "name" : "SwiftModelMainActorTests"
+      }
+    },
+    {
+      "skippedTags" : {
+        "tags" : [
+          ".benchmark"
+        ]
+      },
+      "target" : {
+        "containerPath" : "container:",
         "identifier" : "SwiftModelMacroTests",
         "name" : "SwiftModelMacroTests"
       }

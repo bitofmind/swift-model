@@ -209,9 +209,11 @@ public struct PreferenceKeys: Sendable {
 public struct PreferenceValues: Sendable {
     // Optional: nil when the node is unanchored. Reads return defaultValue, writes are no-ops.
     let context: AnyContext?
+    let access: ModelAccess?
 
-    init(context: AnyContext?) {
+    init(context: AnyContext?, access: ModelAccess?) {
         self.context = context
+        self.access = access
     }
 
     /// Reads the aggregated preference value (self + all descendants) or writes this node's contribution.
@@ -222,7 +224,7 @@ public struct PreferenceValues: Sendable {
         }
         nonmutating set {
             guard let context else { return }
-            context[preference: storage] = newValue
+            usingActiveAccess(access) { context[preference: storage] = newValue }
         }
     }
 
@@ -237,7 +239,7 @@ public struct PreferenceValues: Sendable {
 
 extension AnyContext {
     var preference: PreferenceValues {
-        PreferenceValues(context: self)
+        PreferenceValues(context: self, access: nil)
     }
 
     /// Read/write a single node's preference contribution.

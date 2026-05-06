@@ -2,6 +2,24 @@
 import PackageDescription
 import CompilerPluginSupport
 
+#if swift(>=6.2)
+let defaultIsolationTargets: [Target] = [
+    .testTarget(
+        name: "SwiftModelMainActorTests",
+        dependencies: [
+            "SwiftModel",
+            .product(name: "Dependencies", package: "swift-dependencies"),
+            .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
+        ],
+        swiftSettings: [
+            .unsafeFlags(["-default-isolation", "MainActor"])
+        ]
+    )
+]
+#else
+let defaultIsolationTargets: [Target] = []
+#endif
+
 let package = Package(
     name: "swift-model",
     platforms: [.macOS(.v11), .iOS(.v14), .tvOS(.v14), .watchOS(.v6), .macCatalyst(.v13)],
@@ -24,7 +42,7 @@ let package = Package(
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.6.0"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.6"),
         .package(url: "https://github.com/apple/swift-collections", from: "1.1.0"),
-        .package(url: "https://github.com/pointfreeco/swift-identified-collections", from: "1.1.0"),
+        .package(url: "https://github.com/pointfreeco/swift-identified-collections", from: "1.1.0"), // Used by SwiftModelBenchmarks only
         .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.9.0"),
         .package(url: "https://github.com/pointfreeco/swift-clocks", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),
@@ -34,7 +52,6 @@ let package = Package(
             "SwiftModelMacros",
             .product(name: "Dependencies", package: "swift-dependencies"),
             .product(name: "CustomDump", package: "swift-custom-dump"),
-            .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
             .product(name: "OrderedCollections", package: "swift-collections"),
             .product(name: "IssueReporting", package: "xctest-dynamic-overlay"),
         ]),
@@ -47,6 +64,7 @@ let package = Package(
                 .product(name: "Clocks", package: "swift-clocks"),
                 .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
+                .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
             ]
         ),
         .macro(
@@ -55,6 +73,14 @@ let package = Package(
                 .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
                 .product(name: "SwiftCompilerPlugin", package: "swift-syntax")
             ]
+        ),
+        .executableTarget(
+            name: "SwiftModelBenchmarks",
+            dependencies: [
+                "SwiftModel",
+                .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
+            ],
+            path: "Sources/SwiftModelBenchmarks"
         ),
         .testTarget(
             name: "SwiftModelMacroTests",
@@ -69,6 +95,6 @@ let package = Package(
                 .product(name: "MacroTesting", package: "swift-macro-testing", condition: .when(platforms: [.macOS, .linux])),
             ]
         ),
-    ],
+    ] + defaultIsolationTargets,
     swiftLanguageModes: [.v6]
 )

@@ -35,8 +35,7 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
 
     public nonisolated mutating func update() {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *),
-            wrappedValue.context?.hasObservationRegistrar == true,
-            wrappedValue is Observable {
+            wrappedValue.context?.hasObservationRegistrar == true {
             return
         }
 
@@ -80,37 +79,6 @@ public extension Binding {
     }
 }
 
-/// A view that presents a model with observation enabled, passing it to a content closure.
-///
-/// > This view is deprecated. Use ``ModelScope`` instead — it covers all use cases
-/// > without requiring an explicit model parameter and no longer ties the scope to a single model type.
-@available(*, deprecated, message: "Use ModelScope instead.")
-public struct UsingModel<M: Model, Content: View>: View {
-    @ObservedModel var model: M
-    var content: (Binding<M>) -> Content
-
-    public init(_ model: M, @ViewBuilder content: @escaping (M) -> Content) {
-        self.model = model
-        self.content = {
-            content($0.wrappedValue)
-        }
-    }
-
-    public init(_ model: ObservedModel<M>, @ViewBuilder content: @escaping (Binding<M>) -> Content) {
-        self.model = model.wrappedValue
-        self.content = content
-    }
-
-    public init(_ model: Binding<M>, @ViewBuilder content: @escaping (Binding<M>) -> Content) {
-        self.model = model.wrappedValue
-        self.content = content
-    }
-
-    public var body: some View {
-        content($model.binding)
-    }
-}
-
 /// A view that scopes observation to its content, preventing unnecessary
 /// re-renders of the containing view.
 ///
@@ -145,24 +113,6 @@ public struct UsingModel<M: Model, Content: View>: View {
 /// ```swift
 /// ModelScope {
 ///     if segment.isHovering || editor.isExternalPaneActive { ... }
-/// }
-/// ```
-///
-/// ## Migrating from `UsingModel`
-///
-/// `UsingModel` is deprecated. `ModelScope` covers all its use cases without
-/// requiring an explicit model parameter — the content closure captures models
-/// from the enclosing scope:
-///
-/// ```swift
-/// // Before (deprecated):
-/// UsingModel(segment) { segment in
-///     if segment.isHovering { ... }
-/// }
-///
-/// // After:
-/// ModelScope {
-///     if segment.isHovering { ... }
 /// }
 /// ```
 ///
@@ -207,7 +157,7 @@ private final class Observer<M: Model>: @unchecked Sendable {
     // Protected by ViewAccess's lock
     weak var context: Context<M>?
     weak var viewAccess: ViewAccess?
-    var accesses: [PartialKeyPath<M>: () -> Void] = [:]
+    var accesses: [PartialKeyPath<M._ModelState>: () -> Void] = [:]
 
     init(context: Context<M>, viewAccess: ViewAccess) {
         self.context = context
@@ -239,12 +189,12 @@ private final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendab
         }
     }
 
-    override func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
-        guard let context = model.context, !ModelAccess.isInModelTaskContext else {
+    override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
+        guard !ModelAccess.isInModelTaskContext else {
             return nil
         }
 
-        let id = model.modelID
+        let id = context.anyModelID
 
         if context.isDestructed {
             lock {

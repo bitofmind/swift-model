@@ -78,14 +78,36 @@ extension Equatable {
     }
 }
 
+// MARK: - Property name cache
+
+/// Cache key: (model type, keypath). Both are structural — independent of instance values.
+private struct PropertyNameCacheKey: Hashable, @unchecked Sendable {
+    let typeID: ObjectIdentifier
+    let path: AnyKeyPath
+}
+
+private let _propertyNameCacheLock = NSLock()
+nonisolated(unsafe) private var _propertyNameCache: [PropertyNameCacheKey: String] = [:]
+
 func propertyName<M: Model, State>(from model: M, path: WritableKeyPath<M, State>) -> String? {
-    // includeChildrenInMirror makes @Model expose its stored properties to Mirror,
-    // which is suppressed by default. Without it, children is always empty → "UNKNOWN".
+    let key = PropertyNameCacheKey(typeID: ObjectIdentifier(M.self), path: path)
+
+    // Fast path: return cached name without re-running Mirror or visitIndex.
+    _propertyNameCacheLock.lock()
+    let cached = _propertyNameCache[key]
+    _propertyNameCacheLock.unlock()
+    if let cached { return cached }
+
+    // Slow path (first call per (M, path)): enumerate Mirror children and find the index
+    // via visitIndex. includeChildrenInMirror makes @Model expose its stored properties
+    // to Mirror, which is suppressed by default. Without it, children is always empty.
     let names = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
         Mirror(reflecting: model.withAccess(nil)).children.map(\.label)
     }
-    guard let index = model.visitIndex(of: path), names.count > index else { return nil }
-    return names[index]
+    guard let index = model.visitIndex(of: path), names.count > index,
+          let name = names[index] else { return nil }
+    _propertyNameCacheLock.withLock { _propertyNameCache[key] = name }
+    return name
 }
 
 extension ModelContainer {

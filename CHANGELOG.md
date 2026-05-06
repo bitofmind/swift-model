@@ -4,6 +4,89 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [1.0.0] — `@Model` Layout Redesign, Performance Overhaul + API Cleanup
+
+### Changed
+
+- **`@Model` generated code restructured** — tracked `var` properties are now stored in a nested `_State` struct inside the macro expansion rather than as individual backing fields directly on the value type. The model struct itself stores only `_$modelAccess` (8 bytes) and `_$modelSource` (8 bytes).
+
+- **`@Model` no longer synthesises an `Observable` conformance** — the generated `extension MyModel: Observation.Observable { … }` block is removed. Observation tracking for SwiftUI and `TestAccess` is handled internally through typed key paths without requiring `Observable` conformance. Explicit `Observable` conformance on `@Model` types is now redundant.
+
+- **`ContainerVisitor<State>` → `ContainerVisitor<V: ModelVisitor>`** — the generic parameter is now the concrete visitor type rather than the raw state type. `@ModelContainer`-generated `visit(with:)` bodies are updated automatically. Any hand-written `visit(with:)` that spells out `ContainerVisitor<…>` by type-parameter name must be updated; call sites of `visitStatically` / `visitDynamically` are otherwise unchanged.
+
+- **Custom `@Model` inits must use `self.property = value`** — the init-accessor storage layout has no underscore-prefixed backing fields. The old `_property = value` pattern no longer compiles; all properties in user-written initialisers must be assigned through `self.property =`.
+
+### Added
+
+- **`MutableCollection` of `Model` or `ModelContainer` elements handled automatically** — any `var` property whose type is a `MutableCollection` with `Model & Identifiable & Sendable` elements (e.g. a custom sorted-array type) is now traversed and activated by the framework without requiring an explicit `ModelContainer` conformance on the collection type. The same applies to collections of `ModelContainer & Identifiable` elements.
+
+- **Benchmark target** — new `SwiftModelBenchmarks` executable target (`scripts/benchmark`) covers activation, property reads/writes, hierarchy update, event dispatch, and `reduceHierarchy`. Used to track and validate performance improvements.
+
+### Performance
+
+- **`@Model` struct size is now 16 bytes + `let` fields** — tracked `var` properties live in a `_State` struct inside the reference-counted context and no longer contribute to the value-type size. Only `let` properties remain as direct stored fields.
+
+- **Lazy child context creation** — `Context<M>` instances for child models are allocated only on first access. Models with many rarely-reached children pay no upfront cost.
+
+- **Cached key-path → registrar path mapping** — per-property `ObservationRegistrar` key paths are cached after first use, eliminating a per-read heap allocation that dominated property-read cost (~1,910 ns → ~730 ns, ~2.5× faster reads).
+
+- **Shared observation registrar** — all models rooted at the same anchor share a single `RegistrarBox`, reducing per-model allocation and `withObservationTracking` overhead.
+
+- **Reduced lock contention** — `AnyContext.parentsLock` decouples the parents-path lock from the main context lock, reducing contention in read-heavy hierarchies.
+
+- **Cursor-based `ModelContainer` updates** — `ContainerCursor` is now a `struct`; `shouldSkipElement` lets the traversal short-circuit unchanged children, avoiding unnecessary context-lookup work on large stable collections.
+
+- **Lazy dependency capture** — child contexts that have no dependency overrides no longer copy the parent's dependency stack, saving allocations in the common case.
+
+- **Faster `reduceHierarchy` and event dispatch** — internal iteration no longer boxes each step through an existential; ~30–40% faster for wide hierarchies.
+
+### Added
+
+- **Swift 6.2 `defaultIsolation: MainActor` support** — `@Model`-annotated types now compile and behave correctly in modules that use Xcode 26's default project setting `defaultIsolation: MainActor`. All conformance extensions (`Model`, `Sendable`, `Identifiable`, `CustomReflectable`, `CustomStringConvertible`) and all framework-facing member declarations (`visit(with:)`, `_State`, `_makeState`, `_modelState`, `_modelStateKeyPath`, `_$modelContext`, `_context`, `_updateContext`) are now generated with explicit `nonisolated`. This is a no-op in modules without a default isolation; it is required so that SwiftModel's non-`@MainActor` internals can access model state without compile errors when the user module injects `@MainActor` as the default. See `Docs/Dependencies.md` for the companion patterns needed on dependency types and plain domain structs in such modules.
+
+- **`SwiftModelMainActorTests` test target** — new conditional target (Swift 6.2+, `#if swift(>=6.2)`) that validates the full `@Model` feature set under `defaultIsolation: MainActor` module isolation: tracked properties, `@ModelDependency`, `node.task`, optional child models, and arrays of child models.
+
+### Fixed
+
+- **Dep context instance mismatch** — when a `@Model` dependency (dep context) resolves another dependency via `node[Dep.self]`, `nearestDependencyContext` now starts its search from the parent rather than the dep context itself. This ensures the root's explicit `withAnchor { $0[Dep.self] = … }` override wins over the dep model's own `testValue` dep defaults, regardless of dep-loop ordering. Previously, non-deterministic dictionary iteration could cause the dep context to find its own dep instance (D1) while root writes went to a different instance (D2), resulting in `Observed { … }` streams that never fired.
+
+- **Stored-child read-modify-write dep pollution** — when a stored child's `withDependencies` closure performed a read-modify-write on an inherited dep model (e.g. `$0.envProp.state = "childDefault"`), the mutation bypassed `ModelDependencies.subscript` and mutated the shared `Reference` in place, contaminating the parent's `dependencyModels` entry. The parent's dep loop then hit the `_PendingDepKey` cache (same `modelID`) and reused the child's dep context, causing the parent to see the child's overridden value instead of the anchor's explicit two-step override. Fix: dep model entries are snapshotted via `initialDependencyCopy` before `withContextAdded` runs. If the snapshot's `_stateVersion` differs after `withContextAdded`, the clone (correct pre-RMW state, independent `modelID`) is used for the parent's dep context instead.
+
+- **Swift exclusivity violation when replaced property deinits read sibling properties** — in three call paths (`Context._modify`, `_threadLocalStoreOrLatest`, `Reference.clear`), the old property value could be destroyed while `Reference.state` was still exclusively held. If the value's `deinit` (e.g. a stored closure) read any model property on the same model, it triggered a fatal "Simultaneous accesses" exclusivity violation. Fixed by pinning the old value alive until after exclusive access ends (`defer { _fixLifetime(oldValue) }` / `withExtendedLifetime`).
+
+- **Crash at construction and teardown for models with class-reference-containing properties** — `Reference._genesisState` was previously initialised via `_zeroInit()` (all-zero bytes). For property types whose value representation uses a class reference (e.g. `SwiftUI.ScrollPosition`, any struct with a `class` field), all-zero memory is not a valid Swift value; accessing or retaining it crashes. Fixed by initialising `_genesisState` to `state` (the model's actual initial value) in `Reference.init`. `Reference.clear()` now stores genesis into `state` instead of calling `_zeroInit()`, ensuring all reads on a cleared reference return valid values.
+
+- **`@Model` macro: duplicate conformance extensions** — when a user declared `CustomStringConvertible` on their `@Model` type (in the inheritance clause or a separate extension), the macro would still emit an `extension MyType: CustomStringConvertible, CustomDebugStringConvertible { … }` block. The compiler rejected duplicate conformances. Fixed by checking the real compiler's `protocols` parameter (which only lists unsatisfied conformances) instead of inspecting the inheritance clause; `CustomStringConvertible` and `CustomDebugStringConvertible` are now synthesised independently so a user-provided `description` suppresses only the description extension, not `debugDescription`.
+
+### Removed
+
+All APIs that were deprecated in prior releases have been removed:
+
+- **`UsingModel`** — use `ModelScope { … }` instead, capturing models from the enclosing scope.
+- **`observeAnyModification()`** — use `observeModifications()` for identical behaviour; the new API adds scope, kind, and predicate filtering.
+- **`model.andTester(exhaustivity:withDependencies:)`** — use `model.withAnchor()` inside `@Test(.modelTesting)` instead.
+- **`tester.assert { }` / `tester.assert(_:)` / `tester.unwrap(_:)`** — use the global `expect { }` and `require(_:)` functions instead.
+- **`TestProbe.install()`** — probes auto-register on creation and on every call.
+- **`expect(timeoutNanoseconds:)` / `require(_:timeoutNanoseconds:)`** — timeout is no longer configurable; remove the `timeoutNanoseconds` parameter.
+- **`ExpectMode` / `expect(.settling) { }`** — use `settle { }` instead.
+- **`_ModelTestingTrait`** typealias — use `ModelTestingTrait` directly.
+- **`node.context`** — use `node.local` or `node.environment` depending on the desired propagation.
+- **`node.removeContext(_:)`** — use `node.removeLocal(_:)` or `node.removeEnvironment(_:)`.
+- **`ContextKeys` / `ContextValues`** — use `LocalKeys` / `LocalStorage` or `EnvironmentKeys` / `EnvironmentStorage`.
+- **`node.transaction(_:) rethrows`** — transactions do not roll back on error; compute values outside the transaction, then apply them in a non-throwing `transaction { }` closure.
+- **`model.andAnchor(function:andDependencies:)`** — use `model.returningAnchor(withDependencies:)` instead.
+- **`model._printChanges(name:to:)`** — use `model.debug()` instead.
+- **`model._withPrintChanges(name:to:)`** — use `model.withDebug()` instead.
+
+### Tests
+
+- **Memory layout regression tests** — `MemoryTests` verifies that `_ModelSourceBox` is 8 bytes, `_ModelAccessBox` is 8 bytes, and a zero-field `@Model` struct is 16 bytes total.
+- **Init accessor sequencing tests** — `ModelInitAccessorTests` covers init-accessor ordering, zero-init fallbacks, nested models, property-default capture sequencing, and custom inits with child-model collections (regression guard for the `self.property` requirement).
+- **Lazy context field tests** — `LazyContextFieldTests` verifies that lazy backing stores (`cancellations`, `memoizeCache`, `contextStorage`, `preferenceStorage`, `observationRegistrar`) remain `nil` until first use.
+- **Benchmark harness** — `LazyContextBenchmarks` provides a repeatable in-process benchmark for CI performance regression detection.
+
+---
+
 ## [0.15.0] — observeModifications() with Scope, Kind, and Predicate Filtering
 
 ### Added
@@ -302,7 +385,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - `_printChanges()` / `_withPrintChanges()` — debug-build state change printing.
 - Example apps: `CounterFact`, `Standups`, `TodoList`.
 
-[Unreleased]: https://github.com/bitofmind/swift-model/compare/0.14.0...HEAD
+[Unreleased]: https://github.com/bitofmind/swift-model/compare/1.0.0...HEAD
+[1.0.0]: https://github.com/bitofmind/swift-model/compare/0.14.0...1.0.0
 [0.14.0]: https://github.com/bitofmind/swift-model/compare/0.13.1...0.14.0
 [0.13.1]: https://github.com/bitofmind/swift-model/compare/0.13.0...0.13.1
 [0.13.0]: https://github.com/bitofmind/swift-model/compare/0.12.0...0.13.0

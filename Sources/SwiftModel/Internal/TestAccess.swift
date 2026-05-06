@@ -147,6 +147,21 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     // Same as dependencyMetadataUpdates but for preference storage writes on dependency models.
     private var dependencyPreferenceUpdates: [DependencyMetadataKey: ValueUpdate] = [:]
 
+    // Per-(context, path) write-ordering counters. Keyed by the same DependencyMetadataKey
+    // used for dependency storage so we re-use the existing struct.
+    //
+    // Each didModify call captures `context.modificationCount` (already post-incremented
+    // before invokeDidModifyDirect is called) as `mySeqNum`. The post-lock closure then
+    // checks — under the TestAccess lock — whether a later modification (higher seqNum) has
+    // already written for this (context, path) pair. If so, the earlier closure's write is
+    // discarded, preventing a stale value from permanently corrupting `lastState`.
+    //
+    // This is the fix for the following race with 10 concurrent `count += 1` calls:
+    //   T1 modifies count to 1 (seqNum=1), releases lock, closure reads count=1 (before T10).
+    //   T10 modifies count to 10 (seqNum=10), closure writes lastState.count=10.
+    //   T1's closure acquires TestAccess lock after T10 → seqNum=1 < lastWritten=10 → rejected.
+    private var lastWriteSeqNums: [DependencyMetadataKey: Int] = [:]
+
     var events: [Event] = []
     var probes: [TestProbe] = []
     let fileAndLine: FileAndLine
@@ -160,10 +175,10 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
 
     // Activation task counter (Phase 3): tracks tasks created inside onActivate() that
     // have not yet begun executing their body. Reaches 0 when all such tasks have entered.
-    private var _activationTasksInFlight: Int = 0
+    var _activationTasksInFlight: Int = 0
 
     // General task counter (Phase 5): tracks all currently-running tasks in the hierarchy.
-    private var _activeTaskCount: Int = 0
+    var _activeTaskCount: Int = 0
 
 
     // Captures a single state transition: how to apply it to a Root snapshot, and how to
@@ -193,7 +208,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         var context: AnyContext
     }
 
-    init(model: Root, dependencies: (inout ModelDependencies) -> Void, fileAndLine: FileAndLine) {
+    init(model: Root, dependencies: @escaping (inout ModelDependencies) -> Void, fileAndLine: FileAndLine) {
         expectedState = model.frozenCopy
         lastState = model.frozenCopy
         self.fileAndLine = fileAndLine
@@ -201,13 +216,14 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
 
         super.init(useWeakReference: true)
 
-        context.readModel.modelContext.access = self
-        context.modifyModel.modelContext.access = self
         // Register as lifecycle delegate before activation so tasks created in
         // onActivate() are counted from the first task creation.
         context.taskLifecycleDelegate = self
         usingAccess(self) {
-            context.model.activate()
+            // Call onActivate() directly on the context rather than traversing via activate()
+            // on context.model. Context.onActivate() uses allChildren directly and invokes
+            // pendingActivation for the model's own onActivate() with correct let values.
+            _ = context.onActivate()
         }
         // Re-initialize snapshots from the activated model.
         //
@@ -224,11 +240,12 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         //     (element captured at cursor-creation time, value == 0) instead of the current
         //     value (e.g. 99) — diff is always non-nil → loop retries until the 30 s hard cap.
         //
-        // Re-initializing from context.readModel.frozenCopy gives both snapshots the same
+        // Re-initializing from model.frozenCopy gives both snapshots the same
         // ModelIDs that live cursors will use, so cursor lookups find and update elements
-        // correctly.
+        // correctly. `model` has .pending source with _linkedReference = context.reference,
+        // so shallowCopy reads the live state (with activated ModelIDs) from the reference.
         let activatedSnapshot = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-            context.readModel.frozenCopy
+            model.frozenCopy
         }
         lastState = activatedSnapshot
         expectedState = activatedSnapshot
@@ -250,8 +267,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     //
     // For dependency model context storage (no root-relative path exists), a dummy Access is
     // returned that carries a cleanup closure to clear dependencyMetadataUpdates.
-    override func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
-        guard let path = path as? WritableKeyPath<M, Value> else { return nil }
+    override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
+        guard let path = path as? WritableKeyPath<M._ModelState, Value> else { return nil }
 
         // Capture the modification area and storage name at the point of access (thread-locals
         // are set here but may be cleared by the time the returned closure is invoked).
@@ -261,21 +278,30 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // propertyName(from:path:) returns nil for synthetic subscript paths, so we prefer this.
         let capturedStorageName = threadLocals.storageName
 
-        // rootPaths resolves the chain of WritableKeyPaths from Root down to this model.
-        // It is nil only if the model has been detached from the hierarchy.
-        let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
-        guard let rootPaths else {
-            if let assertContext {
-                assertContext.modelsNoLongerPartOfTester.append(model.typeDescription)
-            } else {
-                fail("Model \(model.typeDescription) is no longer part of this tester", at: fileAndLine)
-            }
-            return nil
-        }
+        // rootPaths resolves the chain of WritableKeyPaths from Root down to this context.
+        // Returns nil (empty after compactMap) only for dependency contexts not in the
+        // main hierarchy — handled separately by the dependency storage branch below.
+        let rootPaths = context.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
+        let modelName = context.typeDescription
 
         guard let assertContext else { return nil }
 
-        let fullPaths = rootPaths.map { $0.appending(path: path) }
+        // Compose Root→M path with M._modelState→Value path to get Root→Value path.
+        // Guard: _EmptyModelState models (no tracked vars) have _modelStateKeyPath defaulting to
+        // fatalError() — the macro only generates it when tracked vars exist. Calling it on an
+        // empty-state model (e.g. one that uses context storage but has no var properties) would
+        // crash. Treat those models as if rootPaths is empty so storage/preference accesses fall
+        // through to the dependency-storage early-return below.
+        let mStatePath: WritableKeyPath<M, Value>?
+        let fullPaths: [WritableKeyPath<Root, Value>]
+        if M._ModelState.self == _EmptyModelState.self {
+            mStatePath = nil
+            fullPaths = []
+        } else {
+            let ms = M._modelStateKeyPath.appending(path: path)
+            mStatePath = ms
+            fullPaths = rootPaths.map { $0.appending(path: ms) }
+        }
 
         // Build the display name for failure messages: "context.isDarkMode" / "preference.totalCount"
         // or plain "propertyName" for regular @Model state properties.
@@ -287,11 +313,11 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             resolvedStorageName = nil  // falls back to propertyName(from:path:) below
         }
 
-        // Dependency model context/preference storage: no root-relative path exists (the model
+        // Dependency model context/preference storage: no root-relative path exists (the context
         // lives in dependencyContexts, not children). Return a dummy Access whose additionalCleanup
         // clears the corresponding dependency updates entry when asserted.
-        if fullPaths.isEmpty, (capturedArea == .local || capturedArea == .environment || capturedArea == .preference), let modelContext = model.context {
-            let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
+        if fullPaths.isEmpty, (capturedArea == .local || capturedArea == .environment || capturedArea == .preference) {
+            let key = DependencyMetadataKey(contextID: ObjectIdentifier(context), path: path)
             let area = capturedArea
             return { [weak self] in
                 guard let self else { return }
@@ -304,11 +330,23 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         }
                     }
                 }
-                let capturedValue = frozenCopy(modelContext[path])
+                // Use _modelSeed directly (.live source) to read the current value and property name.
+                // .live source reads from _stateHolder without triggering willAccessDirect, so
+                // there is no infinite recursion risk. Storage paths have fatalError() getters;
+                // use thread-local pre-computed values set by willAccessStorage/willAccessPreferenceValue.
+                let capturedValue: Value
+                if area == .preference, let pre = threadLocals.precomputedPreferenceValue, let typed = pre as? Value {
+                    capturedValue = frozenCopy(typed)
+                } else if let pre = threadLocals.precomputedStorageValue, let typed = pre as? Value {
+                    capturedValue = frozenCopy(typed)
+                } else {
+                    capturedValue = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+                }
+                let capturedPropertyName = resolvedStorageName ?? mStatePath.flatMap { propertyName(from: context._modelSeed, path: $0) }
                 assertContext.accesses.append(.init(
                     path: \Root.self,
-                    modelName: model.typeDescription,
-                    propertyName: resolvedStorageName ?? propertyName(from: model, path: path),
+                    modelName: modelName,
+                    propertyName: capturedPropertyName,
                     value: { String(customDumping: capturedValue) },
                     capturedValue: { capturedValue },
                     apply: { _ in },
@@ -375,9 +413,13 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             let value: Value
             // For preference paths, use the pre-computed aggregated value if available.
             // willAccessPreferenceValue sets threadLocals.precomputedPreferenceValue before
-            // invoking this closure so we don't re-read via model.context![path] — which
+            // invoking this closure so we don't re-read via context[path] — which
             // re-enters preferenceValue under a lock and causes lock-ordering deadlocks.
+            // For context/preference storage paths, use precomputedStorageValue since
+            // the _metadata/_preference stub subscripts have fatalError() getters.
             if isPreference, let precomputed = threadLocals.precomputedPreferenceValue, let typed = precomputed as? Value {
+                value = frozenCopy(typed)
+            } else if isContextOrPreferenceStorage, let precomputed = threadLocals.precomputedStorageValue, let typed = precomputed as? Value {
                 value = frozenCopy(typed)
             } else if overrideConsumed != nil, let typed = overrideConsumed as? Value {
                 // Transitions mode: use the same override value that was yielded to the predicate.
@@ -385,13 +427,16 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                 // succeeds when T is an Optional type (producing .some(nil)).
                 value = typed
             } else {
-                value = frozenCopy(model.context![path])
+                // Use _modelSeed directly (.live source): reads from _stateHolder without
+                // triggering willAccessDirect, so there is no infinite recursion risk.
+                value = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
             }
+            let resolvedPropertyName = resolvedStorageName ?? mStatePath.flatMap { propertyName(from: context._modelSeed, path: $0) }
             for fullPath in fullPaths {
                 assertContext.accesses.append(.init(
                     path: fullPath,
-                    modelName: model.typeDescription,
-                    propertyName: resolvedStorageName ?? propertyName(from: model, path: path),
+                    modelName: modelName,
+                    propertyName: resolvedPropertyName,
                     value: { String(customDumping: value) },
                     capturedValue: { value },
                     apply: { $0[keyPath: fullPath] = value },
@@ -424,8 +469,8 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     //   – onAnyModification's withModificationActiveCount holds parent.lock and then iterates
     //     children, acquiring child.lock (parent → child order).
     // Running the closure after lock.unlock() in Context._modify/transaction breaks the cycle.
-    override func didModify<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
-        guard let path = path as? WritableKeyPath<M, Value> else { return nil }
+    override func didModify<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
+        guard let path = path as? WritableKeyPath<M._ModelState, Value> else { return nil }
 
         // Capture thread-locals here (at call time, while still inside the model lock scope).
         // They may change on other threads by the time the returned closure is invoked.
@@ -438,28 +483,64 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // to the same path within a single transaction into one valueUpdates entry.
         // Zero means outside any transaction — never coalesce.
         let capturedTxID: UInt = threadLocals.postTransactions != nil ? threadLocals.currentTransactionID : 0
+        // Capture thread-locals for storage value reading (set by willAccessStorage/didModifyStorage
+        // before invoking this callback). The _metadata/_preference stub subscripts have fatalError()
+        // getters; this pre-computed value is used instead.
+        let precomputedStorage: Any? = threadLocals.precomputedStorageValue
+        let precomputedPreference: Any? = threadLocals.precomputedPreferenceValue
+
+        // Capture a monotonically-increasing sequence number for this modification.
+        // AnyContext.didModify() (which increments _modificationCount) is called immediately
+        // before invokeDidModifyDirect, so modificationCount already reflects this write.
+        // The post-lock closure uses mySeqNum — under the TestAccess lock — to reject stale
+        // writes: if a LATER modification (higher seqNum) has already written lastState for
+        // this (context, path) pair, this earlier closure's write is silently discarded.
+        //
+        // NOTE: rootPaths CANNOT be captured here — see the deadlock comment above.
+        // NOTE: context.modificationCount acquires context.lock (NSRecursiveLock); safe here
+        //       because NSRecursiveLock supports re-entrant acquisition on the same thread.
+        let mySeqNum = context.modificationCount
+        let contextPathKey = DependencyMetadataKey(contextID: ObjectIdentifier(context), path: path)
 
         return { [weak self] in
             guard let self else { return }
 
             // rootPaths is computed here, OUTSIDE the model lock, to avoid the deadlock
             // described above. The model hierarchy is stable at this point (no lock needed
-            // to safely read the parent-child structure for an active model).
-            let rootPaths = model.context?.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
-            guard let rootPaths else {
-                fatalError()
-            }
+            // to safely read the parent-child structure for an active context).
+            let rootPaths = context.rootPaths.compactMap { $0 as? WritableKeyPath<Root, M> }
 
-            let fullPaths = rootPaths.map { $0.appending(path: path) }
+            // Compose Root→M path with M._modelState→Value path to get Root→Value path.
+            // Guard: _EmptyModelState models have _modelStateKeyPath defaulting to fatalError();
+            // treat them as if rootPaths is empty (same storage early-return path as below).
+            let mStatePath: WritableKeyPath<M, Value>?
+            let fullPaths: [WritableKeyPath<Root, Value>]
+            if M._ModelState.self == _EmptyModelState.self {
+                mStatePath = nil
+                fullPaths = []
+            } else {
+                let ms = M._modelStateKeyPath.appending(path: path)
+                mStatePath = ms
+                fullPaths = rootPaths.map { $0.appending(path: ms) }
+            }
 
             // Dependency model context/preference storage: no root-relative path exists. Track the
             // update separately so checkExhaustion can report it if not asserted.
-            if fullPaths.isEmpty, (area == .local || area == .environment || area == .preference), let modelContext = model.context {
-                let key = DependencyMetadataKey(contextID: ObjectIdentifier(modelContext), path: path)
-                let name = storageName ?? propertyName(from: model, path: path)
+            if fullPaths.isEmpty, (area == .local || area == .environment || area == .preference) {
+                let key = DependencyMetadataKey(contextID: ObjectIdentifier(context), path: path)
+                let name = storageName ?? mStatePath.flatMap { propertyName(from: context._modelSeed, path: $0) }
                 let prefix = area == .preference ? "preference" : area == .environment ? "environment" : "local"
-                let value = frozenCopy(modelContext[path])
+                let value: Value
+                if area == .preference, let pre = precomputedPreference, let typed = pre as? Value {
+                    value = frozenCopy(typed)
+                } else if let pre = precomputedStorage, let typed = pre as? Value {
+                    value = frozenCopy(typed)
+                } else {
+                    value = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+                }
                 self.lock {
+                    guard (self.lastWriteSeqNums[key] ?? 0) < mySeqNum else { return }
+                    self.lastWriteSeqNums[key] = mySeqNum
                     let update = ValueUpdate(
                         apply: { _ in },  // dependency storage not in Root snapshot
                         debugInfo: { "\(String(describing: M.self)).\(prefix).\(name ?? "UNKNOWN") == \(String(customDumping: value))" },
@@ -480,12 +561,25 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             // would produce false failures. We still update `lastState` so the settlement
             // check (isEqualIncludingIds) works correctly when the test reads a private
             // property via @testable import.
-            let isPrivate = self.isPrivatePath(path, in: model)
+            //
+            // fullPaths is non-empty here, which means mStatePath is non-nil (empty-state
+            // models always produce empty fullPaths and are handled by the early return above).
+            guard let mStatePath else { return }
+            let isPrivate = self.isPrivatePath(mStatePath, in: context._modelSeed)
 
-            let name = storageName ?? propertyName(from: model, path: path)
+            let name = storageName ?? propertyName(from: context._modelSeed, path: mStatePath)
             let prefix: String? = area == .preference ? "preference" : area == .local ? "local" : area == .environment ? "environment" : nil
-            let value = frozenCopy(model.context![path])
+            let value: Value
+            if area == .preference, let pre = precomputedPreference, let typed = pre as? Value {
+                value = frozenCopy(typed)
+            } else if area == .local || area == .environment, let pre = precomputedStorage, let typed = pre as? Value {
+                value = frozenCopy(typed)
+            } else {
+                value = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+            }
             self.lock {
+                guard (self.lastWriteSeqNums[contextPathKey] ?? 0) < mySeqNum else { return }
+                self.lastWriteSeqNums[contextPathKey] = mySeqNum
                 for fullPath in fullPaths {
                     // Private properties are not tracked for exhaustivity: tests cannot observe
                     // them from outside the declaring type, so requiring assertions would produce
@@ -493,7 +587,14 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     // (isEqualIncludingIds) works correctly when a test reads a private
                     // property via @testable import.
                     if isPrivate {
-                        self.lastState[keyPath: fullPath] = value
+                        // Storage/preference keypaths have fatalError() getters; Swift's WritableKeyPath
+                        // write ABI calls the getter first (synthesized _modify). Skip the write —
+                        // the value lives in contextStorage, not in the _ModelState snapshot.
+                        if area != .local && area != .environment && area != .preference {
+                            threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+                                self.lastState[keyPath: fullPath] = value
+                            }
+                        }
                         continue
                     }
 
@@ -516,6 +617,12 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                               let lastTo = lastEntry.toDescription {
                         // Subsequent write: "from" is the previous entry's "to"
                         capturedFrom = lastTo
+                    } else if area == .local || area == .environment || area == .preference {
+                        // Storage/preference paths: values live in AnyContext.contextStorage, not in
+                        // the _ModelState struct. The _metadata/_preference getter stubs call fatalError(),
+                        // so reading lastState[keyPath: fullPath] would crash. Skip the "from" capture —
+                        // the message will show "== newValue" instead of "oldValue → newValue".
+                        capturedFrom = nil
                     } else {
                         // First write to this path since last assert: capture lastState.
                         // We use lastState rather than expectedState because deep paths through
@@ -538,8 +645,12 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         }
                     }
 
+                    // Storage/preference keypaths have fatalError() getters; Swift's WritableKeyPath
+                    // write ABI calls the getter first. Use a no-op apply — the value lives in
+                    // contextStorage, not in the _ModelState snapshot used by isEqualIncludingIds.
+                    let isStoragePath = area == .local || area == .environment || area == .preference
                     let entry = ValueUpdate(
-                        apply: { $0[keyPath: fullPath] = value },
+                        apply: isStoragePath ? { _ in } : { $0[keyPath: fullPath] = value },
                         debugInfo: {
                             let prop = prefix.map { "\($0).\(name ?? "UNKNOWN")" } ?? (name ?? "UNKNOWN")
                             let label = "\(String(describing: M.self)).\(prop)"
@@ -561,7 +672,14 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         self.valueUpdates[fullPath, default: []].append(entry)
                     }
 
-                    self.lastState[keyPath: fullPath] = value
+                    // Storage/preference keypaths have fatalError() getters; Swift's WritableKeyPath
+                    // write ABI calls the getter first (synthesized _modify). Skip the write —
+                    // the value lives in contextStorage, not in the _ModelState snapshot.
+                    if !isStoragePath {
+                        threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+                            self.lastState[keyPath: fullPath] = value
+                        }
+                    }
                 }
             }
         }
@@ -587,854 +705,36 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         }
     }
 
-    func expect(settleResetting: _ExhaustivityBits? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
-        await expect(timeoutNanoseconds: 1_000_000_000, settleResetting: settleResetting, at: fileAndLine, predicates: predicates, enableExhaustionTest: enableExhaustionTest)
-    }
-
-    func expect(timeoutNanoseconds timeout: UInt64, settleResetting: _ExhaustivityBits? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
-        let cal = await calibrate(timeout: timeout)
-        let scaledTimeout = cal.scaledTimeout
-        let yieldRoundNs = cal.yieldRoundNs
-        let hardCap = cal.hardCap
-        let context = TesterAssertContext(events: { self.lock { self.events } }, fileAndLine: fileAndLine)
-
-        await TesterAssertContextBase.$assertContext.withValue(context) {
-
-            let start = cal.start
-            var lastProgressTime = start  // reset whenever a state modification arrives
-            var retryCount = 0
-            var failures: [TesterAssertContext.Failure] = []
-            var passedAccesses: [TesterAssertContext.Access] = []
-            while true {
-                // Defensive: clear any stale transition override that might linger on this
-                // pthread thread from a previous iteration. The willAccess callback normally
-                // clears it, but skipped-callback paths (e.g. destructed model branch in
-                // Context._read) can leave it set. Clearing here ensures each predicate
-                // evaluation starts from a known-clean state.
-                threadLocals.transitionOverrideValue = nil
-
-                failures = []
-                passedAccesses = []
-
-                context.eventsSent.removeAll()
-                context.probes.removeAll()
-
-                // Step 1: Evaluate all predicates. Reading properties inside a predicate
-                // fires willAccess → appends Access entries to context.accesses.
-                for predicate in predicates {
-                    context.predicate = predicate
-                    
-                    context.accesses.removeAll(keepingCapacity: true)
-                    context.eventsNotSent.removeAll(keepingCapacity: true)
-                    context.modelsNoLongerPartOfTester.removeAll(keepingCapacity: true)
-
-                    let passed = predicate.predicate()
-                    let accesses = context.accesses
-                    if passed {
-                        passedAccesses += accesses
-                    } else {
-                        failures.append(.init(
-                            predicate: predicate,
-                            accesses: accesses,
-                            events: context.eventsNotSent,
-                            modelsNoLongerPartOfTester: context.modelsNoLongerPartOfTester,
-                            probes: context.probes
-                        ))
-
-                        break
-                    }
-                }
-
-                if failures.isEmpty {
-                    // Step 2: All predicates passed. Verify that the predicate's read values
-                    // match lastState (the live model). This guards against the predicate
-                    // passing transiently while a backgroundCall batch is still committing
-                    // changes (IDs would diverge because frozenCopy includes generation IDs).
-                    //
-                    // In transitions mode, accesses that read from the FIFO queue (historical
-                    // values) are skipped here — they don't correspond to live model values
-                    // and comparing them against lastState would always fail.
-                    //
-                    // frozenCopy walks Optional<M> children which calls _swift_getKeyPath to
-                    // create dynamic ContainerCursor key paths. _swift_getKeyPath needs the Swift
-                    // runtime lock — calling it while holding NSRecursiveLock deadlocks when the
-                    // runtime lock is contended. Compute frozenCopy outside the lock; expectedState
-                    // and lastState are value-type copies so this is safe.
-                    // isApplyingSnapshot suppresses willAccessPreference/willAccessStorage callbacks
-                    // and re-entrant observation triggered by releasing live child models during
-                    // the transform.
-                    // Read lastState under the lock (brief), then compute frozenCopy and
-                    // evaluate key paths OUTSIDE the lock. Evaluating container cursor key
-                    // paths (e.g. items[0].value) can call _swift_getKeyPath which acquires
-                    // the Swift runtime lock. Holding TestAccess lock while needing the
-                    // runtime lock deadlocks when another thread holds the runtime lock and
-                    // needs TestAccess lock (lock-ordering inversion). Since `last` is a
-                    // local frozen copy and `passedAccesses` is a local array, no lock is
-                    // needed for the comparison itself.
-                    let isEqualIncludingIds = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-                        let last = lock { lastState }.frozenCopy
-                        return threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
-                            return passedAccesses.reduce(true) { result, access in
-                                // Context/preference storage values live in AnyContext.contextStorage,
-                                // not in the @Model struct fields. Writing them back to a frozen copy
-                                // (which has no live context) is a silent no-op, so the round-trip
-                                // read would return defaultValue instead of the asserted value —
-                                // making isEqualIncludingIds always false and causing a hang.
-                                // The predicate already verified these values on the live model,
-                                // so we skip the frozen-copy equality check for them.
-                                if access.skipEqualityCheck { return result }
-                                // Skip container-level model accesses. When a model property (e.g.
-                                // TestHelper.summary of type SummaryFeature) is accessed, its full
-                                // struct value is captured including the generation counter. But the
-                                // generation counter advances on every child write, so comparing the
-                                // whole struct causes a false "not settled yet" when the child property
-                                // we actually asserted has already settled. Child-level accesses
-                                // (e.g. SummaryFeature.destination) are always recorded alongside the
-                                // parent, and they check the actual leaf value with IDs — sufficient
-                                // to detect genuine backgroundCall in-flight conditions.
-                                if access.isModelTypeValue { return result }
-                                // Skip ModelContainer-typed values (Optional<M>, @ModelContainer enums).
-                                // These use ContainerCursor key paths whose getter does `get($0)!`.
-                                // ContainerCursor paths are safe to traverse only on the live model
-                                // hierarchy — reading them on a frozenCopy snapshot crashes because
-                                // frozenCopy transforms model identity and the cursor no longer matches.
-                                // Leaf accesses recorded within the container are checked independently.
-                                if access.isContainerTypeValue { return result }
-                                // Transitions mode: skip settlement check for accesses that read
-                                // from the FIFO queue. Their captured value is historical (the
-                                // front-of-queue value) and will not match lastState (the live value).
-                                if self.exhaustivity.contains(.transitions) && self.valueUpdates[access.path] != nil { return result }
-                                // Compare the predicate-time captured value against lastState directly.
-                                // Using only `last` (which reflects the current live state) and comparing
-                                // against the captured value is safe and sufficient: if the IDs match,
-                                // the model has settled.
-                                let a = last[keyPath: access.path]
-                                return result && (diff(access.capturedValue(), a) == nil)
-                            }
-                        }
-                    }
-
-                    // Predicate passed but IDs don't match yet: there is a pending
-                    // backgroundCall batch in flight. Wait for items currently queued to
-                    // drain (FIFO sentinel), then retry. We use waitForCurrentItems rather
-                    // than waitUntilIdle so we don't block on other tests' work under 100x load.
-                    // If the timeout has elapsed even here, fall through to the failure path so
-                    // the assert doesn't spin forever when isEqualIncludingIds is permanently false.
-                    if !isEqualIncludingIds {
-                        if start.distance(to: monotonicNanoseconds()) > hardCap {
-                            // Hard cap hit: the model has been continuously producing changes
-                            // and IDs never converged. Report as failure.
-                            fail("State did not settle: model IDs kept diverging after the predicate passed. This may indicate a backgroundCallQueue loop or an unresolvable ID mismatch.", at: fileAndLine)
-                            return
-                        }
-                        await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
-                        await yieldToScheduler()
-                        // Count as progress — backgroundCall draining counts as activity.
-                        lastProgressTime = monotonicNanoseconds()
-                        continue
-                    }
-
-                    if isEqualIncludingIds {
-                        // Settling mode: after the predicate passes and IDs converge,
-                        // wait for all activation tasks to enter their body, then run
-                        // one idle cycle to catch trailing mutations (e.g. forEach first
-                        // fires). Finally, reset selected exhaustivity categories so
-                        // subsequent expect {} calls only see changes made after settling.
-                        if let resetting = settleResetting {
-                            let settled = await waitUntilSettled(calibration: cal, at: fileAndLine)
-                            if !settled { return }
-
-                            // Reset selected exhaustivity categories.
-                            lock {
-                                if resetting.contains(.state) {
-                                    expectedState = lastState
-                                    valueUpdates.removeAll()
-                                }
-                                if resetting.contains(.local) {
-                                    dependencyMetadataUpdates.removeAll()
-                                }
-                                if resetting.contains(.environment) || resetting.contains(.preference) {
-                                    dependencyPreferenceUpdates.removeAll()
-                                }
-                                if resetting.contains(.events) {
-                                    events.removeAll()
-                                }
-                                if resetting.contains(.probes) {
-                                    for probe in probes {
-                                        probe.resetValues()
-                                    }
-                                }
-                            }
-                            return
-                        }
-
-                        // Step 3: Model has settled. Mark all asserted paths as handled,
-                        // advance expectedState, and run the exhaustion check.
-                        //
-                        // Capture valueUpdates inside the same lock that clears it.
-                        // checkExhaustion would otherwise re-read valueUpdates under a
-                        // separate lock acquisition, creating a race window where a concurrent
-                        // thread running an activeAccessCallback can write a new entry between
-                        // the clearing block's unlock and checkExhaustion's lock — producing
-                        // a spurious "State not exhausted" failure.
-                        var capturedValueUpdates: [PartialKeyPath<Root>: [ValueUpdate]]? = nil
-                        lock {
-                            // Sync expectedState to lastState for structural consistency.
-                            // Individual consumed.apply(&expectedState) is unsafe because deep
-                            // paths through container types (Optional<Child>, array elements)
-                            // use cursor keypaths whose setters force-unwrap — expectedState may
-                            // have a nil/stale container. Assigning lastState directly keeps all
-                            // container structures and IDs in sync. Remaining FIFO entries in
-                            // valueUpdates are caught by Layer 3 of the exhaustion check.
-                            expectedState = lastState
-
-                            let isTransitions = exhaustivity.contains(.transitions)
-                            for access in passedAccesses {
-                                if valueUpdates[access.path] != nil {
-                                    if isTransitions {
-                                        // Transitions mode: pop only the front (oldest unasserted) entry.
-                                        // Subsequent writes remain for the next assertion to consume.
-                                        valueUpdates[access.path]!.removeFirst()
-                                        if valueUpdates[access.path]!.isEmpty {
-                                            valueUpdates[access.path] = nil
-                                        }
-                                    } else {
-                                        // Non-transitions mode (last-write-wins): clear all entries.
-                                        // The assertion consumed the final value; intermediate writes
-                                        // do not need to be individually asserted.
-                                        valueUpdates[access.path] = nil
-                                    }
-                                }
-                                // For dependency context storage, run the additional cleanup (clears
-                                // dependencyMetadataUpdates for this storage key+context).
-                                access.additionalCleanup?()
-                            }
-
-                            for index in context.eventsSent.reversed() { events.remove(at: index) }
-
-                            for (probe, value) in context.probes {
-                                probe.consume(value)
-                            }
-
-                            // Capture valueUpdates after clearing so checkExhaustion uses
-                            // this consistent snapshot rather than re-reading under a new lock.
-                            capturedValueUpdates = valueUpdates
-                        }
-
-                        if enableExhaustionTest && !exhaustivity.contains(.transitions) {
-                            // Step 4: Check that no other state changed without being
-                            // asserted. Diffs expectedState against lastState.
-                            // IMPORTANT: Must be called outside the lock. checkExhaustion calls
-                            // diffMessage/customDump which triggers customMirror on @Model types,
-                            // which reads @ModelTracked properties, which calls willAccess, which
-                            // acquires context.rootPaths — also guarded by the same lock. If we
-                            // are suspended via an async withValue and resume on a different thread,
-                            // the NSRecursiveLock is not re-entrant across threads and deadlocks.
-                            checkExhaustion(at: fileAndLine, includeUpdates: true, capturedUpdates: capturedValueUpdates)
-                        }
-
-                        return
-                    }
-                }
-
-                // Step 5 (timeout): Report failures.
-                // IMPORTANT: All reporting (diffMessage, customDump, fail) happens outside the lock.
-                // diffMessage/customDump triggers customMirror on @Model types, which reads
-                // @ModelTracked properties, which calls willAccess → rootPaths → tries to acquire
-                // this same lock from the continuation's thread — deadlock if already held.
-                //
-                // Activity-relative timeout: fail only when the model has made no progress for
-                // `scaledTimeout` (no state changes), or when the absolute hard cap fires.
-                let now = monotonicNanoseconds()
-                if lastProgressTime.distance(to: now) > scaledTimeout || start.distance(to: now) > hardCap {
-                    // Build all failure messages outside the lock so that diffMessage/customDump
-                    // cannot re-enter it via willAccess → rootPaths.
-                    var reports: [[(String, FileAndLine)]] = []
-                    for failure in failures {
-                        var messages: [(String, FileAndLine)] = []
-                        if let (lhs, rhs) = failure.predicate.values() {
-                            let propertyNames = failure.accesses.compactMap { access in
-                                access.propertyName.map { "\(access.modelName).\($0)" }
-                            }.joined(separator: ", ")
-
-                            let title = "Expectation not met: \(propertyNames)"
-                            let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                                diffMessage(expected: rhs, actual: lhs, title: title)
-                            }
-                            messages.append((message ?? title, failure.predicate.fileAndLine))
-                        } else {
-                            for access in failure.accesses {
-                                let pred = access.propertyName.map {
-                                    "\(access.modelName).\($0) == \(access.value())"
-                                } ?? access.value()
-                                messages.append(("Expectation not met: \(pred)", failure.predicate.fileAndLine))
-                            }
-                        }
-
-                        for event in failure.events {
-                            messages.append(("Expected event not sent: \(String(customDumping: event.event)) from \(event.context.typeDescription)", failure.predicate.fileAndLine))
-                        }
-
-                        for modelName in failure.modelsNoLongerPartOfTester {
-                            messages.append(("Model \(modelName) is no longer part of this tester", fileAndLine))
-                        }
-
-                        for (probe, value) in failure.probes {
-                            let preTitle = "Expected probe not called" + (probe.name.map { " \"\($0)\":" } ?? ":")
-                            let title = value is NoArgs ? preTitle :
-                                """
-                                \(preTitle)
-                                    \(String(customDumping: value))
-                                """
-
-                            if probe.isEmpty {
-                                messages.append((
-                                    """
-                                    \(title)
-
-                                    No available probe values
-                                    """, fileAndLine))
-                            } else if probe.count == 1, let message = threadLocals.withValue(true, at: \.includeChildrenInMirror, perform: { diffMessage(expected: value, actual: probe.values[0], title: "Probe does not match") }) {
-                                messages.append((message, fileAndLine))
-                            } else {
-                                messages.append((
-                                    """
-                                    \(title)
-
-                                    \(probe.count) Available probe values to assert:
-                                        \(probe.values.map { String(customDumping: $0) }.joined(separator: "\n    "))
-                                    """, fileAndLine))
-                            }
-                        }
-
-                        if failure.accesses.isEmpty, failure.events.isEmpty, failure.modelsNoLongerPartOfTester.isEmpty, failure.probes.isEmpty {
-                            messages.append(("Assertion failed", failure.predicate.fileAndLine))
-                        }
-                        reports.append(messages)
-                    }
-
-                    // Now apply state mutations under the lock (no diffMessage/customDump here).
-                    lock {
-                        // Sync expectedState for structural consistency (see Step 3 comment).
-                        expectedState = lastState
-
-                        for access in passedAccesses {
-                            // Pop front entry from FIFO queue if present.
-                            if valueUpdates[access.path] != nil {
-                                valueUpdates[access.path]!.removeFirst()
-                                if valueUpdates[access.path]!.isEmpty {
-                                    valueUpdates[access.path] = nil
-                                }
-                            }
-                            access.additionalCleanup?()
-                        }
-
-                        for index in context.eventsSent.reversed() { events.remove(at: index) }
-
-                        for (probe, value) in context.probes {
-                            probe.consume(value)
-                        }
-                    }
-
-                    // Emit failure reports outside the lock.
-                    for messages in reports {
-                        for (message, location) in messages {
-                            fail(message, at: location)
-                        }
-                    }
-
-
-                    if enableExhaustionTest {
-                        checkExhaustion(at: fileAndLine, includeUpdates: false)
-                    }
-                    return
-                }
-
-                // Step 6: Wait for the next modification event before re-checking.
-                // Pass the remaining no-progress budget as the wait timeout (how long to sleep
-                // if no modification arrives). The hard cap is checked at Step 5 next iteration.
-                let elapsed = lastProgressTime.distance(to: monotonicNanoseconds())
-                let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
-                retryCount += 1
-
-                let didProgress = await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: yieldRoundNs, retryCount: retryCount)
-                if didProgress { lastProgressTime = monotonicNanoseconds() }
-            }
-
-            // Step 5 (timeout): Report failures.
-            // IMPORTANT: All reporting (diffMessage, customDump, fail) happens outside the lock.
-            // diffMessage/customDump triggers customMirror on @Model types, which reads
-            // @ModelTracked properties, which calls willAccess → rootPaths → tries to acquire
-            // this same lock from the continuation's thread — deadlock if already held.
-            // Build all failure messages outside the lock so that diffMessage/customDump
-            // cannot re-enter it via willAccess → rootPaths.
-            var reports: [[(String, FileAndLine)]] = []
-            for failure in failures {
-                var messages: [(String, FileAndLine)] = []
-                if let (lhs, rhs) = failure.predicate.values() {
-                    let propertyNames = failure.accesses.compactMap { access in
-                        access.propertyName.map { "\(access.modelName).\($0)" }
-                    }.joined(separator: ", ")
-
-                    let title = "Expectation not met: \(propertyNames)"
-                    let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                        diffMessage(expected: rhs, actual: lhs, title: title)
-                    }
-                    messages.append((message ?? title, failure.predicate.fileAndLine))
-                } else {
-                    for access in failure.accesses {
-                        let pred = access.propertyName.map {
-                            "\(access.modelName).\($0) == \(access.value())"
-                        } ?? access.value()
-                        messages.append(("Expectation not met: \(pred)", failure.predicate.fileAndLine))
-                    }
-                }
-
-                for event in failure.events {
-                    messages.append(("Expected event not sent: \(String(customDumping: event.event)) from \(event.context.typeDescription)", failure.predicate.fileAndLine))
-                }
-
-                for modelName in failure.modelsNoLongerPartOfTester {
-                    messages.append(("Model \(modelName) is no longer part of this tester", fileAndLine))
-                }
-
-                for (probe, value) in failure.probes {
-                    let preTitle = "Expected probe not called" + (probe.name.map { "\"\($0)\":" } ?? ":")
-                    let title = value is NoArgs ? preTitle :
-                        """
-                        \(preTitle)
-                            \(String(customDumping: value))
-                        """
-
-                    if probe.isEmpty {
-                        messages.append((
-                            """
-                            \(title)
-
-                            No available probe values
-                            """, fileAndLine))
-                    } else if probe.count == 1, let message = threadLocals.withValue(true, at: \.includeChildrenInMirror, perform: { diffMessage(expected: value, actual: probe.values[0], title: "Probe does not match") }) {
-                        messages.append((message, fileAndLine))
-                    } else {
-                        messages.append((
-                            """
-                            \(title)
-
-                            \(probe.count) Available probe values to assert:
-                                \(probe.values.map { String(customDumping: $0) }.joined(separator: "\n\t"))
-                            """, fileAndLine))
-                    }
-                }
-
-                if failure.accesses.isEmpty, failure.events.isEmpty, failure.modelsNoLongerPartOfTester.isEmpty, failure.probes.isEmpty {
-                    messages.append(("Expectation not met", failure.predicate.fileAndLine))
-                }
-                reports.append(messages)
-            }
-
-            // Now apply state mutations under the lock (no diffMessage/customDump here).
-            lock {
-                // Sync expectedState for structural consistency (see Step 3 comment).
-                expectedState = lastState
-
-                for access in passedAccesses {
-                    // Pop front entry from FIFO queue if present.
-                    if valueUpdates[access.path] != nil {
-                        valueUpdates[access.path]!.removeFirst()
-                        if valueUpdates[access.path]!.isEmpty {
-                            valueUpdates[access.path] = nil
-                        }
-                    }
-                    access.additionalCleanup?()
-                }
-
-                for index in context.eventsSent.reversed() { events.remove(at: index) }
-
-                for (probe, value) in context.probes {
-                    probe.consume(value)
-                }
-            }
-
-            // Emit failure reports outside the lock.
-            for messages in reports {
-                for (message, location) in messages {
-                    fail(message, at: location)
-                }
-            }
-
-            if enableExhaustionTest {
-                checkExhaustion(at: fileAndLine, includeUpdates: false)
-            }
-        }
-    }
-
-    /// Polls `expression` until it returns a non-nil value, then returns the unwrapped result.
-    /// Uses the same activity-relative idle detection as `expect`: the timeout resets on every
-    /// model state change, so a healthy model never hits it. The hard cap is the absolute
-    /// safety net (default 5 s, overridable via `TestAccessOverrides.hardCapNanoseconds`).
-    func require<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
-        let cal = await calibrate()
-        let scaledTimeout = cal.scaledTimeout
-        let yieldRoundNs = cal.yieldRoundNs
-        let hardCap = cal.hardCap
-        let start = cal.start
-        var lastProgressTime = start
-        var retryCount = 0
-
-        while true {
-            if let value = expression() {
-                // Expression is non-nil. Drive the same settled-state stability check as expect.
-                let predicate = AssertBuilder.Predicate(predicate: { expression() != nil }, fileAndLine: fileAndLine)
-                await expect(timeoutNanoseconds: nanosPerSecond, at: fileAndLine, predicates: [predicate], enableExhaustionTest: false)
-                return value
-            }
-
-            let now = monotonicNanoseconds()
-            if lastProgressTime.distance(to: now) > scaledTimeout || start.distance(to: now) > hardCap {
-                fail("Failed to unwrap value of type \(T.self)", at: fileAndLine)
-                throw UnwrapError()
-            }
-
-            let elapsed = start.distance(to: now)
-            let remaining = elapsed < hardCap ? hardCap - UInt64(elapsed) : 0
-            let didProgress = await waitForModification(
-                timeoutNanoseconds: min(remaining, yieldRoundNs),
-                yieldRoundNs: yieldRoundNs,
-                retryCount: retryCount
-            )
-            if didProgress { lastProgressTime = monotonicNanoseconds() }
-            retryCount += 1
-        }
-    }
-
-    /// Suspends briefly so the async pipeline can settle, then returns so the outer
-    /// assert loop can re-check its predicate.
-    ///
-    /// Uses an escalation strategy based on `retryCount` to balance two competing needs:
-    ///
-    /// - **Fast conditions** (e.g. a model property set by a cancellation handler):
-    ///   The value is written directly to `lastState` synchronously. A short kernel
-    ///   timer is sufficient — no need to wait for `backgroundCall` at all.
-    ///
-    /// - **Async conditions** (memoized properties, `Observed` streams):
-    ///   Both go through `backgroundCall` — memoize's performUpdate and Observed stream
-    ///   updates all use the same per-test task-local queue. A FIFO sentinel via
-    ///   `waitForCurrentItems` ensures the update has run before re-checking.
-    ///
-    /// Escalation by retry count:
-    ///   0-1: Short kernel timer (1ms) — fast path for already-settled conditions.
-    ///   2+:  Use `waitForCurrentItems(deadline:)` then `waitUntilIdle()`. Ensures
-    ///        the drain loop has run so stream consumers have had a scheduler turn.
-    ///
-    /// All waiting is done via `onAnyModification` callbacks and timers (kernel-level on
-    /// platforms with `libdispatch`, `Task.sleep` on WASM). `Task.yield()` alone is not used
-    /// for the timer because on a saturated cooperative pool it can suspend for minutes.
-    ///
-    /// Returns `true` if a state modification was observed during the wait (progress was made).
-    @discardableResult
-    package func waitForModification(timeoutNanoseconds remaining: UInt64, yieldRoundNs: UInt64, retryCount: Int = 0) async -> Bool {
-        guard remaining > 0 else { return false }
-
-        let bgQueue = backgroundCall
-
-        // A continuation slot shared between the onAnyModification callback and the
-        // DispatchQueue timer. Protected by LockIsolated so exactly one of them resumes
-        // the continuation (the first one sets slot to nil, preventing a double-resume).
-        let contSlot = LockIsolated<CheckedContinuation<Void, Never>?>(nil)
-        let didModify = LockIsolated(false)
-
-        // Resumes the continuation exactly once. Called from the onAnyModification
-        // callback (on the model-writing thread) and from the DispatchQueue timer.
-        let signal: @Sendable () -> Void = {
-            didModify.setValue(true)
-            contSlot.withValue { slot in
-                slot?.resume()
-                slot = nil
-            }
-        }
-
-        // Register BEFORE any queue drain so modifications during drain are captured.
-        let cancelModification = context.onAnyModification { _ in signal }
-        defer { cancelModification() }
-
-        // For retryCount >= 2 with pending queue items, drain the queue first.
-        // Any modifications that arrive during the drain are captured via signal().
-        if retryCount >= 2 && !bgQueue.isIdle {
-            // FIFO sentinel: suspend until all items currently in the queue have been
-            // processed. When it fires, any pending performUpdate has already run.
-            //
-            // Deadline: use the full remaining timeout. By retry 2, fast conditions
-            // (e.g. testCancelInFlight) have already passed on earlier retries, so we
-            // know this is a genuinely async condition.
-            let deadline = monotonicNanoseconds() + remaining
-            await bgQueue.waitForCurrentItems(deadline: deadline)
-            // waitUntilIdle() ensures the drain loop has fully settled so stream
-            // consumers have had a scheduling opportunity before we re-check.
-            if !bgQueue.isIdle {
-                await bgQueue.waitUntilIdle(deadline: deadline)
-            }
-            // If a modification was signalled during the drain, return now without
-            // starting another kernel timer.
-            if didModify.value { return true }
-        }
-
-        // Wait for either a modification signal or a kernel timer (whichever fires first).
-        // Timer delay:
-        // - Early retries (0-1): 1ms — fast path for already-satisfied conditions.
-        // - Later retries (2+): yieldRoundNs — avoids busy-spinning while waiting for
-        //   an async modification (e.g. forEach callback writing canUndo/canRedo).
-        if !didModify.value {
-            let delayNs: UInt64 = retryCount < 2 ? 1_000_000 : yieldRoundNs
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                let alreadyModified = contSlot.withValue { slot -> Bool in
-                    if didModify.value { return true }
-                    slot = cont
-                    return false
-                }
-                if alreadyModified {
-                    cont.resume()
-                    return
-                }
-                // Timer to wake the continuation after delayNs.
-                scheduleAfter(nanoseconds: delayNs) {
-                    contSlot.withValue { slot in
-                        slot?.resume()
-                        slot = nil
-                    }
-                }
-            }
-        }
-
-        return didModify.value
-    }
-
-    // MARK: - TaskLifecycleDelegate
-
-    func activationTaskCreated() {
-        lock { _activationTasksInFlight += 1 }
-    }
-
-    func activationTaskEntered() {
-        lock { _activationTasksInFlight -= 1 }
-    }
-
-    func taskCreated() {
-        lock { _activeTaskCount += 1 }
-    }
-
-    func taskCompleted() {
-        lock { _activeTaskCount -= 1 }
-    }
-
-    /// True when all tasks born from `onActivate()` have begun executing their body.
-    var activationTasksInFlight: Int {
-        lock { _activationTasksInFlight }
-    }
-
-    /// True when no tasks are currently running anywhere in the hierarchy.
-    var isCompletelyIdle: Bool {
-        lock { _activeTaskCount == 0 }
-    }
-
-    /// Builds a diagnostic string for settle() timeout failures.
-    private func settleTimeoutDiagnostics() -> String {
-        var lines: [String] = []
-        let taskInfos = context.activeTasks
-        for info in taskInfos {
-            for (taskName, fl) in info.tasks {
-                lines.append("  \(info.modelName): \"\(taskName)\" @ \(fl.fileID):\(fl.line)")
-            }
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    // MARK: - Shared calibration and settling
-
-    /// Measures scheduler latency and computes adaptive timeouts.
-    ///
-    /// The calibration yield measures how long a `yieldToScheduler()` takes under current
-    /// system load, then scales all timeouts proportionally. This makes the wait loops
-    /// robust under both light (single test) and heavy (100× parallel) conditions.
-    ///
-    /// - Parameter timeout: Base timeout for predicate waiting (default 1 s). Short explicit
-    ///   timeouts (e.g. from output snapshot tests) are preserved as-is.
     // Last scheduler-latency measurement (nanoseconds). Updated by calibrate().
     // Shared safely: calibrate() is only called from the test task (never from model
     // tasks), so writes are sequential within one TestAccess instance.
     // Default: 1ms — a reasonable assumption before the first measurement.
-    private var _lastYieldLatencyNs: UInt64 = 1_000_000
+    var _lastYieldLatencyNs: UInt64 = 1_000_000
 
-    package func calibrate(timeout: UInt64 = nanosPerSecond) async -> WaitCalibration {
-        let calibrationStart = monotonicNanoseconds()
-        await yieldToScheduler()
-        let yieldLatencyNs = monotonicNanoseconds() - calibrationStart
-        lock { _lastYieldLatencyNs = yieldLatencyNs }
-        return makeCalibration(yieldLatencyNs: yieldLatencyNs, timeout: timeout)
-    }
-
-    /// Builds a `WaitCalibration` from the most recently measured scheduler latency,
-    /// without performing a new GCD hop. Intended for end-of-test cleanup paths that
-    /// are called by hundreds of parallel tests simultaneously — a fresh GCD hop from
-    /// each would saturate the global queue and add seconds of overhead to every test.
-    package func calibrateWithCachedLatency(timeout: UInt64 = nanosPerSecond) -> WaitCalibration {
-        let yieldLatencyNs = lock { _lastYieldLatencyNs }
-        return makeCalibration(yieldLatencyNs: yieldLatencyNs, timeout: timeout)
-    }
-
-    private func makeCalibration(yieldLatencyNs: UInt64, timeout: UInt64) -> WaitCalibration {
-        let scaledTimeout = timeout >= nanosPerSecond
-            ? min(10 * nanosPerSecond, max(timeout, yieldLatencyNs * 100))
-            : timeout
-        let yieldRoundNs = max(1_000_000, min(500_000_000, yieldLatencyNs))
-        let hardCap = TestAccessOverrides.hardCapNanoseconds
-            ?? min(30 * nanosPerSecond, max(5 * nanosPerSecond, scaledTimeout * 10))
-        return WaitCalibration(
-            yieldLatencyNs: yieldLatencyNs,
-            yieldRoundNs: yieldRoundNs,
-            scaledTimeout: scaledTimeout,
-            hardCap: hardCap,
-            start: monotonicNanoseconds()
-        )
-    }
-
-    /// Waits for the model hierarchy to become idle using adaptive calibration.
-    ///
-    /// Phase 1: Wait for all `onActivate()`-born tasks to begin executing their body.
-    /// Phase 2: Idle cycle — wait until `modificationCount` stabilizes across a full
-    /// scheduling round with no active tasks running.
-    ///
-    /// Used by `expect`'s settle path and by end-of-test `checkExhaustion`.
-    /// Returns `true` on success, `false` if the hard cap was hit.
-    /// - Parameter reportTimeout: When `true` (default), reports a test failure if the
-    ///   hard cap is hit. Pass `false` from `checkExhaustion` where the subsequent
-    ///   exhaustivity check handles failure reporting through proper exhaustivity bits.
-    @discardableResult
-    package func waitUntilSettled(calibration cal: WaitCalibration, reportTimeout: Bool = true, at fileAndLine: FileAndLine) async -> Bool {
-        // Phase 1: Wait for all activation tasks to enter their body.
-        // In practice this completes almost immediately because activationTaskEntered()
-        // fires at the start of the task body.
-        //
-        // Skip when called from checkExhaustion (reportTimeout: false): activation tasks
-        // that haven't started yet have already been cancelled by cancelAllRecursively()
-        // and removed from Cancellations.registered / activeTasks. Waiting for them to
-        // start under 500+ parallel test load can take 30 s (cooperative pool saturation
-        // causes 30,000 × 1ms iterations). The subsequent checkExhaustion(checkTasks:)
-        // call won't see them — safe to skip.
-        if reportTimeout {
-            while activationTasksInFlight > 0 {
-                await waitForModification(timeoutNanoseconds: cal.scaledTimeout, yieldRoundNs: cal.yieldRoundNs, retryCount: 0)
-                if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
-                    let taskInfo = settleTimeoutDiagnostics()
-                    fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
-                    return false
+    /// Resets exhaustivity categories within the lock. Called from settle(resetting:) settle paths in expect().
+    func _applyResetting(_ bits: _ExhaustivityBits) {
+        lock {
+            if bits.contains(.state) {
+                expectedState = lastState
+                valueUpdates.removeAll()
+            }
+            if bits.contains(.local) {
+                dependencyMetadataUpdates.removeAll()
+            }
+            if bits.contains(.environment) || bits.contains(.preference) {
+                dependencyPreferenceUpdates.removeAll()
+            }
+            if bits.contains(.events) {
+                events.removeAll()
+            }
+            if bits.contains(.probes) {
+                for probe in probes {
+                    probe.resetValues()
                 }
             }
         }
-
-        // Phase 2: Idle cycle — wait until one full scheduling round passes
-        // with no state changes. Uses modificationCount on the root context as
-        // a version number.
-        var lastChangeVersion = context.modificationCount
-        // Tracks whether we already confirmed _activeTaskCount == 0 with a stable
-        // modificationCount in the previous outer-loop iteration.
-        //
-        // The race we guard against: a just-completed task dispatches its final model
-        // mutation to backgroundCall AND decrements _activeTaskCount in the same
-        // cooperative-pool turn. The next check sees _activeTaskCount == 0 and a stable
-        // modificationCount (backgroundCall hasn't committed the mutation yet), and
-        // would break prematurely — baseline captures the pre-mutation value.
-        //
-        // Fix: require two consecutive outer-loop iterations that both see
-        // _activeTaskCount == 0 with no modificationCount change. The
-        // waitForCurrentItems at the START of the NEXT iteration (line 1332) naturally
-        // drains the pending mutation, so modificationCount changes and we loop once
-        // more to re-confirm. No extra drain is added; the existing loop structure
-        // handles it. For observation-heavy models this adds at most two cheap
-        // no-op iterations rather than triggering cascading observation re-fires.
-        var sawZeroActiveTasks = false
-        while true {
-            await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
-            await yieldToScheduler()
-
-            // Re-check activation tasks: backgroundCall drain or yieldToScheduler
-            // may have triggered child model activations (e.g. SearchResultItem
-            // activated when results is set), creating new tasks that haven't entered
-            // their body yet. Wait for them before evaluating idle state.
-            // Skipped when called from checkExhaustion (reportTimeout: false) for the
-            // same reason as Phase 1: cancelled tasks that haven't started yet are safe
-            // to ignore (removed from activeTasks by cancelAllRecursively).
-            if reportTimeout {
-                while activationTasksInFlight > 0 {
-                    await waitForModification(timeoutNanoseconds: cal.scaledTimeout, yieldRoundNs: cal.yieldRoundNs, retryCount: 0)
-                    if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
-                        let taskInfo = settleTimeoutDiagnostics()
-                        fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
-                        return false
-                    }
-                }
-            }
-
-            let currentVersion = context.modificationCount
-            if currentVersion == lastChangeVersion {
-                if lock({ _activeTaskCount }) == 0 {
-                    if sawZeroActiveTasks {
-                        break // confirmed: two consecutive checks with no active tasks and no changes
-                    }
-                    sawZeroActiveTasks = true
-                    continue // loop once more; waitForCurrentItems at top drains any pending mutations
-                }
-                sawZeroActiveTasks = false
-                // Tasks are still running but no state changed yet. Use a GCD-backed
-                // timer (waitForModification) rather than Task.yield() loops. Under
-                // 500+ parallel tests the cooperative pool is saturated — each
-                // Task.yield() can take 1-2s, so 20 yields × 1.5s = 30s = hardCap.
-                // waitForModification uses a DispatchQueue timer and an
-                // onAnyModification callback, so it wakes immediately on any write
-                // regardless of cooperative pool pressure.
-                //
-                // Patience is context-dependent:
-                //
-                // reportTimeout: true  (active test — tasks are still running and may write)
-                //   max(yieldRoundNs × 3, 300ms): scales with load. Under saturation
-                //   (yieldRoundNs ~500ms) a completing task may need 1–2 cooperative pool
-                //   turns (~500ms–1s) before it can write; 1.5s ensures we don't break
-                //   out before the write arrives.
-                //
-                // reportTimeout: false (checkExhaustion cleanup — tasks are cancelled)
-                //   min(yieldRoundNs × 30, 300ms): always ≤ 300ms. Cancelled tasks won't
-                //   write again; we only need to detect observation loops. The outer
-                //   yieldToScheduler() loop then gives cancelled tasks cooperative-pool
-                //   turns to exit and decrement _activeTaskCount without the 1.5s
-                //   per-test overhead that accumulates across 500+ parallel tests.
-                let patience = reportTimeout
-                    ? max(cal.yieldRoundNs * 3, 300_000_000)
-                    : min(cal.yieldRoundNs * 30, 300_000_000)
-                await waitForModification(timeoutNanoseconds: patience, yieldRoundNs: patience, retryCount: 2)
-                if context.modificationCount == currentVersion {
-                    break // No progress — remaining tasks are observation loops or cancelled tasks
-                }
-                lastChangeVersion = context.modificationCount
-                sawZeroActiveTasks = false
-            } else {
-                lastChangeVersion = currentVersion
-                sawZeroActiveTasks = false
-            }
-            if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
-                if reportTimeout {
-                    let taskInfo = settleTimeoutDiagnostics()
-                    fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
-                }
-                return false
-            }
-        }
-
-        return true
     }
 
-    // Checks that no state changed without being asserted (exhaustion check).
-    //
-    // At the end, resets expectedState = lastState so the next assert starts from a
-    // clean baseline.
     func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false, capturedUpdates: [PartialKeyPath<Root>: [ValueUpdate]]? = nil) {
         if checkTasks {
             for info in context.activeTasks {

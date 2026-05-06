@@ -34,14 +34,29 @@ public struct ModelContextUpdate<M: Model>: Sendable {
 }
 
 public struct ModelContext<M: Model> {
-    var source: Source = .reference(.init(modelID: .generate()))
-    var _access: ModelAccess.Reference?
+    /// The access reference — holds a `ModelAccess` (or its weak wrapper) for observation.
+    /// Public so macro-generated `_updateContext` (in user modules) can read/write it.
+    public var _access: _ModelAccessBox
+
+    /// The unified source of truth for state, identity, and context reference.
+    /// Public so macro-generated `_updateContext` (in user modules) can read/write it.
+    public var _source: _ModelSourceBox<M>
+
+    public init() {
+        _access = _ModelAccessBox()
+        _source = _ModelSourceBox(reference: .init(modelID: .generate(), state: _zeroInit()))
+    }
+
+    /// Public so macro-generated computed `_$modelContext` (in user modules) can construct it.
+    public init(_access: _ModelAccessBox, _source: _ModelSourceBox<M>) {
+        self._access = _access
+        self._source = _source
+    }
 
     var access: ModelAccess? {
-        get { _access?.access ?? ModelAccess.current }
+        get { _access._reference?.access ?? ModelAccess.current }
         set {
-            _access = newValue?.reference
-            reference?.updateAccess(newValue)
+            _access._reference = newValue?.reference
         }
     }
 
@@ -54,25 +69,13 @@ public struct ModelContext<M: Model> {
     var activeAccess: ModelAccess? {
         ModelAccess.active ?? access
     }
-
-    enum Source {
-        case reference(Context<M>.Reference)
-        case frozenCopy(id: ModelID)
-        case lastSeen(id: ModelID)
-    }
-
-    public init() {}
 }
 
 extension ModelContext: @unchecked Sendable {}
 
 extension ModelContext: Hashable {
     public static func == (lhs: ModelContext<M>, rhs: ModelContext<M>) -> Bool {
-        return switch (lhs.source, rhs.source) {
-        case let (.reference(lhs), .reference(rhs)): lhs === rhs
-        case let (.frozenCopy(lhs), .frozenCopy(rhs)): lhs == rhs
-        default: false
-        }
+        lhs._source.reference === rhs._source.reference
     }
 
     public func hash(into hasher: inout Hasher) { }
@@ -108,152 +111,6 @@ public extension ModelContext {
 }
 
 public extension ModelContext {
-    @_disfavoredOverload
-    subscript<T>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
-        _read {
-            yield self[model, path, nil]
-        }
-        nonmutating _modify {
-            yield &self[model, path, nil]
-        }
-    }
-
-    @_disfavoredOverload
-    subscript<T: Equatable>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
-        _read {
-            yield self[model, path, nil]
-        }
-        nonmutating _modify {
-            yield &self[model, path, ==]
-        }
-    }
-
-    @_disfavoredOverload
-    subscript<each T: Equatable>(model model: M, path path: WritableKeyPath<M, (repeat each T)>&Sendable) -> (repeat each T) {
-        get {
-           self[model, path, nil]
-        }
-        nonmutating _modify {
-            yield &self[model, path, isSame]
-        }
-    }
-
-    subscript<T: Model>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
-        _read {
-            yield self[model, path, nil].withAccessIfPropagateToChildren(access)
-        }
-
-        nonmutating set {
-            guard let context = modifyContext else {
-                if let initial {
-                    guard newValue.isInitial else {
-                        reportIssue("It is not allowed to add an already anchored or frozen model, instead create a new instance.")
-                        return
-                    }
-
-                    initial[fallback: model][keyPath: path] = newValue
-                }
-
-                return
-            }
-
-            guard context[path].context !== newValue.context else {
-                return
-            }
-
-            guard newValue.isInitial || newValue.context != nil else {
-                reportIssue("It is not allowed to add a frozen model, instead create a new instance or add an already anchored model.")
-                return
-            }
-
-            var callbacks: [() -> Void] = []
-            transaction(with: model, at: path) { child in
-                var newChild = newValue
-                if let childContext = context[path].context {
-                    context.removeChild(childContext, at: \M.self, callbacks: &callbacks)
-                }
-                context.updateContext(for: &newChild, at: path)
-
-                child = newChild
-            } isSame: {
-                $0.modelID == $1.modelID
-            }
-
-            for callback in callbacks {
-                callback()
-            }
-
-            if let access, access.shouldPropagateToChildren {
-                usingAccess(access) {
-                    _ = context[path].context?.onActivate()
-                }
-            } else {
-                _ = context[path].context?.onActivate()
-            }
-        }
-    }
-
-    subscript<T: ModelContainer>(model model: M, path path: WritableKeyPath<M, T>&Sendable) -> T {
-        _read {
-            if let deepAccess {
-                yield self[model, path, nil].withDeepAccess(deepAccess)
-            } else {
-                yield self[model, path, nil]
-            }
-        }
-        nonmutating set {
-            guard let context = modifyContext else {
-                if let initial {
-                    guard newValue.isAllInitial else {
-                        reportIssue("It is not allowed to add an already anchored or frozen model, instead create a new instance.")
-                        return
-                    }
-
-                    initial[fallback: model][keyPath: path] = newValue
-                }
-
-                return
-            }
-
-            var postLockCallbacks: [() -> Void] = []
-            transaction(with: model, at: path) { container in
-                var newContainer = newValue
-
-                var didReplaceModelWithDestructedOrFrozenCopy = false
-                let oldContexts = threadLocals.withValue({
-                    didReplaceModelWithDestructedOrFrozenCopy = true
-                }, at: \.didReplaceModelWithDestructedOrFrozenCopy) {
-                    context.updateContext(for: &newContainer, at: path)
-                }
-
-                if didReplaceModelWithDestructedOrFrozenCopy {
-                    reportIssue("It is not allowed to add a destructed nor frozen model.")
-                    return
-                }
-
-                container = newContainer
-
-                for oldContext in oldContexts {
-                    context.removeChild(oldContext, at: path, callbacks: &postLockCallbacks)
-                }
-            } isSame: {
-                containerIsSame($0, $1)
-            }
-
-            for callback in postLockCallbacks {
-                callback()
-            }
-
-            if let access, access.shouldPropagateToChildren {
-                usingAccess(access) {
-                    context[path].activate()
-                }
-            } else {
-                context[path].activate()
-            }
-        }
-    }
-
     func dependency<D: Model&DependencyKey>() -> D where D.Value == D {
         (_dependency() as D).withAccessIfPropagateToChildren(access)
     }
@@ -266,6 +123,7 @@ public extension ModelContext {
     func dependency<D>(for keyPath: KeyPath<DependencyValues, D> & Sendable) -> D {
         ModelNode(_$modelContext: self)[dynamicMember: keyPath]
     }
+
 }
 
 func containerIsSame<T: ModelContainer>(_ lhs: T, _ rhs: T) -> Bool {
@@ -292,7 +150,7 @@ func optionalIsSame<T: _Optional>(_ lhs: T, _ rhs: Any) -> Bool {
 
     case (nil, _?), (_?, nil):
         return false
-        
+
     case let (left?, right?):
         return modelIsSame(left, right)
     }

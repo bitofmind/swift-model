@@ -1,0 +1,30 @@
+#!/bin/bash
+# Run SwiftModelBenchmarks in release mode.
+#
+# Usage:
+#   scripts/benchmark          # single pass, print timings
+#   scripts/benchmark --loop   # loop forever for Instruments / xctrace profiling
+#
+# To profile with Time Profiler:
+#   swift build -c release --product SwiftModelBenchmarks
+#   xcrun xctrace record \
+#     --template 'Time Profiler' \
+#     --launch -- .build/release/SwiftModelBenchmarks --loop
+#
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+# Testing.framework is bundled with Xcode and not in the default dyld search
+# path when running from the CLI. Add the macOS platform dev frameworks dir.
+XCODE_DEV="$(xcode-select -p)"
+TESTING_RPATH="${XCODE_DEV}/Platforms/MacOSX.platform/Developer/Library/Frameworks"
+
+echo "Building release binary..."
+swift build -c release --product SwiftModelBenchmarks 2>&1 \
+  | grep -v "^warning:" || true
+
+echo ""
+DYLD_FRAMEWORK_PATH="$TESTING_RPATH" \
+  .build/release/SwiftModelBenchmarks "$@"

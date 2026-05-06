@@ -10,268 +10,6 @@ private let _isTrackingUndoStorage = ContextStorage<Bool>(defaultValue: false, i
 /// the ObjectIdentifier address-reuse bug that occurs with global static dictionaries.
 private let _undoCoalescerStorage = ContextStorage<UndoCoalescer?>(defaultValue: nil, isSystemStorage: true)
 
-// MARK: - UndoAvailability
-
-/// The combined undo/redo availability state emitted by an ``UndoBackend``.
-public struct UndoAvailability: Sendable, Equatable {
-    public var canUndo: Bool
-    public var canRedo: Bool
-
-    public init(canUndo: Bool = false, canRedo: Bool = false) {
-        self.canUndo = canUndo
-        self.canRedo = canRedo
-    }
-}
-
-// MARK: - ModelUndoEntry
-
-/// A single undoable action produced by ``ModelNode/trackUndo(_:)``/``ModelNode/trackUndo()``.
-///
-/// An entry encapsulates both how to *apply* a state restoration and how to
-/// *capture* the reverse action (for redo when undoing, or undo when redoing).
-/// ``UndoBackend`` implementations store and replay entries without needing
-/// any knowledge of SwiftModel internals.
-public struct ModelUndoEntry: Sendable {
-    /// Restores the model to the state this entry represents.
-    public let apply: @Sendable () -> Void
-
-    /// Returns an entry representing the *current* live model state.
-    ///
-    /// Call this **before** ``apply`` to capture a reverse action. The returned
-    /// entry's ``apply`` will restore the state that existed before this entry
-    /// was applied.
-    public let captureReverse: @Sendable () -> ModelUndoEntry
-}
-
-// MARK: - UndoBackend protocol
-
-/// A backend that stores and replays ``ModelUndoEntry`` values for undo/redo.
-///
-/// Implement this protocol to provide a custom undo system. Two implementations
-/// are included:
-/// - ``ModelUndoStack``: An in-memory stack you drive directly.
-/// - ``UndoManagerBackend``: Bridges to a Foundation `UndoManager`.
-///
-/// Set the backend on the ``ModelUndoSystem`` dependency before anchoring:
-///
-/// ```swift
-/// let stack = ModelUndoStack()
-/// let model = MyModel().withAnchor {
-///     $0.undoSystem.backend = stack
-/// }
-/// ```
-public protocol UndoBackend: Sendable {
-    /// A stream that yields the current availability immediately and on every change.
-    var availability: AsyncStream<UndoAvailability> { get }
-
-    /// Called when a tracked property changes. Store the entry for later replay.
-    func push(_ entry: ModelUndoEntry)
-
-    /// Pop the most recent undo entry and apply it, pushing its reverse onto the redo stack.
-    func undo()
-
-    /// Pop the most recent redo entry and apply it, pushing its reverse onto the undo stack.
-    func redo()
-}
-
-// MARK: - _SyncAvailabilityObservable
-
-/// Internal protocol adopted by ``ModelUndoStack`` to deliver availability updates
-/// synchronously — without going through the Swift cooperative thread pool.
-///
-/// ``ModelUndoSystem/onActivate()`` checks for this conformance and, when present,
-/// registers a sync observer instead of using `node.forEach(backend.availability)`.
-/// This avoids async scheduling latency and ensures `canUndo`/`canRedo` are always
-/// current immediately after `undo()`/`redo()` returns.
-private protocol _SyncAvailabilityObservable: Sendable {
-    /// Registers `callback` to be called synchronously (on the calling thread) whenever
-    /// undo availability changes. `callback` is also called once immediately with the
-    /// current state before `_addSyncObserver` returns.
-    ///
-    /// Returns a cancel closure. Call it to unregister the observer.
-    func _addSyncObserver(_ callback: @escaping @Sendable (UndoAvailability) -> Void) -> @Sendable () -> Void
-}
-
-// MARK: - ModelUndoStack
-
-/// An in-memory ``UndoBackend`` with a simple push/undo/redo stack.
-///
-/// ```swift
-/// let stack = ModelUndoStack()
-/// let model = MyModel().withAnchor {
-///     $0.undoSystem.backend = stack
-/// }
-///
-/// stack.undo()
-/// stack.redo()
-/// print(stack.canUndo, stack.canRedo)
-/// ```
-public final class ModelUndoStack: UndoBackend, @unchecked Sendable {
-    private let lock = NSLock()
-    private var undoEntries: [ModelUndoEntry] = []
-    private var redoEntries: [ModelUndoEntry] = []
-    private var continuations: [Int: AsyncStream<UndoAvailability>.Continuation] = [:]
-    private var syncObservers: [Int: @Sendable (UndoAvailability) -> Void] = [:]
-    private var nextKey = 0
-
-    public init() {}
-
-    /// The current undo availability (synchronous read for tests and direct use).
-    public var canUndo: Bool { lock { !undoEntries.isEmpty } }
-    /// The current redo availability (synchronous read for tests and direct use).
-    public var canRedo: Bool { lock { !redoEntries.isEmpty } }
-
-    public var availability: AsyncStream<UndoAvailability> {
-        let key = lock { defer { nextKey += 1 }; return nextKey }
-        return AsyncStream { [weak self] cont in
-            guard let self else { cont.finish(); return }
-            self.lock { self.continuations[key] = cont }
-            cont.yield(UndoAvailability(canUndo: self.canUndo, canRedo: self.canRedo))
-            cont.onTermination = { [weak self] _ in
-                self?.lock { _ = self?.continuations.removeValue(forKey: key) }
-            }
-        }.removeDuplicates().eraseToStream()
-    }
-
-    public func push(_ entry: ModelUndoEntry) {
-        let (wasEmpty, hadRedo) = lock {
-            let was = undoEntries.isEmpty
-            let had = !redoEntries.isEmpty
-            undoEntries.append(entry)
-            redoEntries.removeAll()
-            return (was, had)
-        }
-        if wasEmpty || hadRedo { notifyAll() }
-    }
-
-    public func undo() {
-        guard let entry = lock({ undoEntries.popLast() }) else { return }
-        let reverse = entry.captureReverse()
-        entry.apply()
-        lock { redoEntries.append(reverse) }
-        notifyAll()
-    }
-
-    public func redo() {
-        guard let entry = lock({ redoEntries.popLast() }) else { return }
-        let reverse = entry.captureReverse()
-        entry.apply()
-        lock { undoEntries.append(reverse) }
-        notifyAll()
-    }
-
-    private func notifyAll() {
-        let avail = UndoAvailability(canUndo: canUndo, canRedo: canRedo)
-        // Call sync observers first — they update canUndo/canRedo on the model immediately,
-        // without any cooperative-pool scheduling. Copy the dict outside the lock so that
-        // observers are free to call undo()/redo()/push() without deadlocking.
-        let syncs = lock { syncObservers }
-        for observer in syncs.values { observer(avail) }
-        let conts = lock { continuations }
-        for cont in conts.values { cont.yield(avail) }
-    }
-}
-
-extension ModelUndoStack: _SyncAvailabilityObservable {
-    fileprivate func _addSyncObserver(_ callback: @escaping @Sendable (UndoAvailability) -> Void) -> @Sendable () -> Void {
-        // Register the observer and capture the current availability atomically under the lock,
-        // then deliver the initial state synchronously outside the lock.
-        let (key, initialAvail): (Int, UndoAvailability) = lock {
-            let k = nextKey
-            nextKey += 1
-            syncObservers[k] = callback
-            return (k, UndoAvailability(canUndo: !undoEntries.isEmpty, canRedo: !redoEntries.isEmpty))
-        }
-        callback(initialAvail)
-        return { [weak self] in
-            self?.lock { _ = self?.syncObservers.removeValue(forKey: key) }
-        }
-    }
-}
-
-// MARK: - ModelUndoSystem (@Model dependency)
-
-/// The undo/redo dependency injected into the model hierarchy.
-///
-/// Set a ``backend`` before anchoring the model to enable undo/redo.
-/// ``canUndo`` and ``canRedo`` are observable model properties that update
-/// reactively as the backend's stack changes.
-///
-/// ```swift
-/// let stack = ModelUndoStack()
-/// let model = MyModel().withAnchor {
-///     $0.undoSystem.backend = stack
-/// }
-/// ```
-///
-/// In your model, call ``ModelNode/trackUndo(_:)`` from `onActivate` to
-/// register which properties participate in undo:
-///
-/// ```swift
-/// func onActivate() {
-///     node.trackUndo(\.title, \.items)
-/// }
-/// ```
-///
-/// Access from views via `model.node.undoSystem`:
-///
-/// ```swift
-/// Button("Undo") { model.node.undoSystem.undo() }
-///     .disabled(!model.node.undoSystem.canUndo)
-/// ```
-@Model public struct ModelUndoSystem {
-    /// The backend that stores undo/redo entries.
-    ///
-    /// Set this before anchoring. Changes after activation are not observed;
-    /// use ``UndoManagerBackend`` for system UndoManager integration.
-    @_ModelIgnored public var backend: (any UndoBackend)? = nil
-
-    /// Whether there is at least one undoable action available.
-    public var canUndo = false
-    /// Whether there is at least one redoable action available.
-    public var canRedo = false
-
-    public init() {}
-
-    /// Undo the most recent tracked change.
-    public func undo() { backend?.undo() }
-    /// Redo the most recently undone change.
-    public func redo() { backend?.redo() }
-
-    public func onActivate() {
-        guard let backend else { return }
-        if let syncBackend = backend as? any _SyncAvailabilityObservable {
-            // Fast path: update canUndo/canRedo synchronously on the calling thread,
-            // ensuring they are always current immediately after undo()/redo() returns.
-            let cancel = syncBackend._addSyncObserver { [self] avail in
-                canUndo = avail.canUndo
-                canRedo = avail.canRedo
-            }
-            node.onCancel(perform: cancel)
-        } else {
-            // Fallback for custom UndoBackend implementations that don't conform to
-            // _SyncAvailabilityObservable: use the async stream path.
-            node.forEach(backend.availability) { [self] avail in
-                canUndo = avail.canUndo
-                canRedo = avail.canRedo
-            }
-        }
-    }
-}
-
-extension ModelUndoSystem: DependencyKey {
-    public static var liveValue: ModelUndoSystem { ModelUndoSystem() }
-    public static var testValue: ModelUndoSystem { ModelUndoSystem() }
-}
-
-extension DependencyValues {
-    /// The undo system used by ``ModelNode/trackUndo(_:)`` to record undoable changes.
-    public var undoSystem: ModelUndoSystem {
-        get { self[ModelUndoSystem.self] }
-        set { self[ModelUndoSystem.self] = newValue }
-    }
-}
-
 // MARK: - ModelNode.trackUndo
 
 public extension ModelNode {
@@ -302,7 +40,7 @@ public extension ModelNode {
 
         context[_isTrackingUndoStorage] = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, only: nil)
-        context.model.visit(with: &visitor, includeSelf: false)
+        context._modelSeed.visit(with: &visitor, includeSelf: false)
     }
 
     /// Registers one or more writable key paths for undo/redo tracking.
@@ -351,7 +89,7 @@ public extension ModelNode {
 
         context[_isTrackingUndoStorage] = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, only: trackedBackingPaths)
-        context.model.visit(with: &visitor, includeSelf: false)
+        context._modelSeed.visit(with: &visitor, includeSelf: false)
     }
 
     /// Registers all tracked properties **except** the listed ones for undo/redo tracking.
@@ -385,7 +123,7 @@ public extension ModelNode {
 
         context[_isTrackingUndoStorage] = true
         var visitor = InstallUndoVisitor(context: context, backend: backend, modelContext: _$modelContext, excluding: excludedBackingPaths)
-        context.model.visit(with: &visitor, includeSelf: false)
+        context._modelSeed.visit(with: &visitor, includeSelf: false)
     }
 }
 
@@ -397,19 +135,19 @@ public extension ModelNode {
 /// - `only == nil, excluding == nil`:  install for all fields (zero-arg `trackUndo()`)
 /// - `only != nil`:                    install only for fields whose backing path is in `only`
 /// - `excluding != nil`:               install for all fields except those in `excluding`
-private struct InstallUndoVisitor<M: Model>: ModelVisitor {
+private struct InstallUndoVisitor<M: Model>: ModelVisitor, _ModelStateVisitor {
     typealias State = M
 
     let context: Context<M>
     let backend: any UndoBackend
     let modelContext: ModelContext<M>
-    // When non-nil, only these backing paths are installed.
-    nonisolated(unsafe) let only: Set<PartialKeyPath<M>>?
-    // When non-nil, skip these backing paths (all-except variant).
-    nonisolated(unsafe) let excluding: Set<PartialKeyPath<M>>?
+    // When non-nil, only these backing state paths are installed.
+    nonisolated(unsafe) let only: Set<PartialKeyPath<M._ModelState>>?
+    // When non-nil, skip these backing state paths (all-except variant).
+    nonisolated(unsafe) let excluding: Set<PartialKeyPath<M._ModelState>>?
 
     init(context: Context<M>, backend: any UndoBackend, modelContext: ModelContext<M>,
-         only: Set<PartialKeyPath<M>>?) {
+         only: Set<PartialKeyPath<M._ModelState>>?) {
         self.context = context
         self.backend = backend
         self.modelContext = modelContext
@@ -418,7 +156,7 @@ private struct InstallUndoVisitor<M: Model>: ModelVisitor {
     }
 
     init(context: Context<M>, backend: any UndoBackend, modelContext: ModelContext<M>,
-         excluding: Set<PartialKeyPath<M>>) {
+         excluding: Set<PartialKeyPath<M._ModelState>>) {
         self.context = context
         self.backend = backend
         self.modelContext = modelContext
@@ -426,32 +164,22 @@ private struct InstallUndoVisitor<M: Model>: ModelVisitor {
         self.excluding = excluding
     }
 
-    private func shouldInstall(path: PartialKeyPath<M>) -> Bool {
-        if let only { return only.contains(path) }
-        if let excluding { return !excluding.contains(path) }
+    private func shouldInstall(statePath: PartialKeyPath<M._ModelState>) -> Bool {
+        if let only { return only.contains(statePath) }
+        if let excluding { return !excluding.contains(statePath) }
         return true
     }
 
-    mutating func visit<T>(path: WritableKeyPath<M, T>) {
-        guard shouldInstall(path: path) else { return }
-        // T is not constrained to Sendable by the ModelVisitor protocol, but @Model properties
-        // are always Sendable in practice. We use unsafeBitCast (same pattern as RestoreVisitor)
-        // to satisfy the Swift concurrency checker.
-        installPropertyUndoUnchecked(for: path, context: context, backend: backend, modelContext: modelContext)
-    }
-
-    // Model and ModelContainer fields are stored as a whole value (snapshot of the full
-    // field). Writing them back goes through the normal context assignment path which
-    // handles child-context re-creation automatically. We use initialCopy (not frozenCopy)
-    // so that restored values can be re-anchored by the context assignment path.
-    mutating func visit<T: Model & Sendable>(path: WritableKeyPath<M, T>) {
-        guard shouldInstall(path: path) else { return }
-        installPropertyUndoUnchecked(for: path, context: context, backend: backend, modelContext: modelContext, useInitialCopy: true)
-    }
-
-    mutating func visit<T: ModelContainer & Sendable>(path: WritableKeyPath<M, T>) {
-        guard shouldInstall(path: path) else { return }
-        installPropertyUndoUnchecked(for: path, context: context, backend: backend, modelContext: modelContext, useInitialCopy: true)
+    mutating func _visitStatePath<N: Model, T>(_ statePath: WritableKeyPath<N._ModelState, T>, forState _: N.Type) {
+        // ContainerVisitor always calls with N == M (V.State == the model this visitor was
+        // created for), so the unsafeBitCast from WritableKeyPath<N._ModelState, T> to
+        // WritableKeyPath<M._ModelState, T> is safe.
+        let typedPath = unsafeDowncast(statePath, to: WritableKeyPath<M._ModelState, T>.self)
+        guard shouldInstall(statePath: typedPath) else { return }
+        // Model/ModelContainer-typed properties need initialCopy so restored values can be
+        // re-anchored by the context assignment path (frozenCopy would be rejected by the setter).
+        let useInitialCopy = T.self is any Model.Type || T.self is any ModelContainer.Type
+        installPropertyUndoUnchecked(statePath: typedPath, context: context, backend: backend, modelContext: modelContext, useInitialCopy: useInitialCopy)
     }
 }
 
@@ -468,7 +196,7 @@ private struct InstallUndoVisitor<M: Model>: ModelVisitor {
 /// 2. The coalescer merges all property changes that occur within one transaction
 ///    into a single ``ModelUndoEntry`` pushed to the backend.
 private func installPropertyUndoUnchecked<M: Model, T>(
-    for path: WritableKeyPath<M, T>,
+    statePath: WritableKeyPath<M._ModelState, T>,
     context: Context<M>,
     backend: any UndoBackend,
     modelContext: ModelContext<M>,
@@ -477,7 +205,7 @@ private func installPropertyUndoUnchecked<M: Model, T>(
     // All @Model stored properties are Sendable in practice (the macro enforces this).
     // We use nonisolated(unsafe) / unsafeBitCast to satisfy the Swift concurrency checker
     // without adding a T: Sendable constraint that the ModelVisitor protocol cannot provide.
-    let sendablePath = unsafeBitCast(path, to: (WritableKeyPath<M, T> & Sendable).self)
+    let sendableStatePath = unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self)
 
     // One coalescer is shared across all properties registered for the same context/backend.
     let coalescer = UndoCoalescer.forContext(context, backend: backend)
@@ -487,20 +215,24 @@ private func installPropertyUndoUnchecked<M: Model, T>(
     // For Model/ModelContainer typed properties we use initialCopy (not frozenCopy) so that
     // restored values can be re-anchored by the context assignment path. Frozen copies are
     // rejected by the setter ("It is not allowed to add a destructed nor frozen model.").
-    let baseline = UnsafeSendableBox(snapshotValue(context.model[keyPath: path], useInitialCopy: useInitialCopy))
+    let baseline = UnsafeSendableBox(snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: statePath], useInitialCopy: useInitialCopy))
+    // Compose M-level path for Model/ModelContainer restore (triggers updateContext for re-anchoring).
+    let mPath = M._modelStateKeyPath.appending(path: statePath) as WritableKeyPath<M, T>
+    let sendableMPath = unsafeBitCast(mPath, to: (WritableKeyPath<M, T> & Sendable).self)
 
-    let cancel = context.onModify(for: sendablePath) { hasEnded, _ in
+    let cancel = context.onModify(for: sendableStatePath) { hasEnded, _ in
         guard !hasEnded else { return nil }
         guard !threadLocals.isRestoringState else { return nil }
 
         let oldValue = baseline.value
-        let newValue = snapshotValue(context.model[keyPath: sendablePath], useInitialCopy: useInitialCopy)
-
+        let newValue = snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: sendableStatePath], useInitialCopy: useInitialCopy)
         guard !areEqual(oldValue, newValue) else { return nil }
 
         // Builds a closure that writes `value` back into the live model.
-        // Uses modelContext.transaction(with:at:) which ends the inout access before
-        // postLockCallbacks run — safe to call from within another callback chain.
+        // For scalar properties: uses context.stateTransaction directly (fires notifications with
+        // the correct M._ModelState path so modifyCallbacksStore lookups succeed).
+        // For Model/ModelContainer properties: uses modelContext.transaction(with:at:statePath:)
+        // to trigger the full write path including updateContext for child re-anchoring.
         //
         // We run the transaction under `usingAccess(rootAccess)` where `rootAccess` is the
         // ModelAccess registered on the root model (e.g. TestAccess in tests). Without this,
@@ -511,14 +243,22 @@ private func installPropertyUndoUnchecked<M: Model, T>(
             return {
                 // Skip if the model has been destructed (e.g. item removed from parent array).
                 guard context.lifetime == .active else { return }
-                // Propagate the root access (e.g. TestAccess) so that didModify notifications
-                // fire correctly during restore. The root context's readModel._$modelContext
-                // holds the registered ModelAccess; child contexts have _access = nil.
-                let rootAccess = context.rootParent.anyModelAccess
+                // Propagate the root TestAccess (if any) so that didModify notifications
+                // fire correctly during restore. TestAccess is registered as the root
+                // context's taskLifecycleDelegate; child contexts have no TestAccess.
+                let rootAccess = context.rootParent.taskLifecycleDelegate as? ModelAccess
                 usingAccess(rootAccess) {
                     threadLocals.withValue(true, at: \.isRestoringState) {
-                        if let ctx = ModelNode(_$modelContext: modelContext)._context {
-                            modelContext.transaction(with: ctx.model, at: sendablePath, modify: { $0 = v }, isSame: nil)
+                        if useInitialCopy {
+                            // Model/ModelContainer: go through the full write path so that
+                            // updateContext fires and child contexts are properly re-anchored.
+                            if let ctx = ModelNode(_$modelContext: modelContext)._context {
+                                modelContext.transaction(with: ctx.model, at: sendableMPath, statePath: sendableStatePath, modify: { $0 = v }, isSame: nil)
+                            }
+                        } else {
+                            // Scalar: write directly via stateTransaction to avoid the _isLive
+                            // bypass and ensure modifyCallbacksStore callbacks fire.
+                            context.stateTransaction(at: sendableStatePath, isSame: nil, accessBox: .init(), modify: { $0 = v })
                         }
                     }
                 }
@@ -534,7 +274,7 @@ private func installPropertyUndoUnchecked<M: Model, T>(
                 // Context is gone — return a no-op restore.
                 return {}
             }
-            let currentValue = snapshotValue(context.model[keyPath: sendablePath], useInitialCopy: useInitialCopy)
+            let currentValue = snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: sendableStatePath], useInitialCopy: useInitialCopy)
             return makeRestore(value: currentValue)
         }
 
@@ -710,14 +450,14 @@ private func areEqual<T>(_ lhs: T, _ rhs: T) -> Bool {
 /// generated by the `@Model` macro. Must be installed via `usingActiveAccess` while
 /// reading from the LIVE model — frozen copies bypass `Context` and never fire `willAccess`.
 final class BackingPathCollector<M: Model>: ModelAccess, @unchecked Sendable {
-    private(set) var paths: Set<PartialKeyPath<M>> = []
+    private(set) var paths: Set<PartialKeyPath<M._ModelState>> = []
 
     init() {
         super.init(useWeakReference: false)
     }
 
-    override func willAccess<N: Model, T>(_ model: N, at path: KeyPath<N, T> & Sendable) -> (() -> Void)? {
-        if let typedPath = path as? PartialKeyPath<M> {
+    override func willAccess<N: Model, T>(from context: Context<N>, at path: KeyPath<N._ModelState, T> & Sendable) -> (() -> Void)? {
+        if let typedPath = path as? PartialKeyPath<M._ModelState> {
             paths.insert(typedPath)
         }
         return nil

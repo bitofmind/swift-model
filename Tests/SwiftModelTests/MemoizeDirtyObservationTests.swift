@@ -369,17 +369,18 @@ struct MemoizeDirtyObservationTests {
                 super.init(useWeakReference: false)
             }
             
-            override func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
-                guard let context = model.context else { return nil }
-                
+            override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
                 // Register onModify callback (this is what ViewAccess does for SwiftUI)
                 cancellable = context.onModify(for: path) { [weak self] finished, _ in
                     guard let self else { return {} }
                     if !finished {
                         self.updateCount.withValue { $0 += 1 }
                         // Re-read value (like SwiftUI would)
-                        if let typedPath = path as? KeyPath<DirtyTrackingModel, Int> {
-                            let newValue = self.model[keyPath: typedPath]
+                        if context is Context<DirtyTrackingModel> {
+                            // The memoize keypath has value type AnyHashableSendable (not Int),
+                            // and its getter calls fatalError() — it exists only for keypath
+                            // construction. Read the computed value directly instead.
+                            let newValue = self.model.computed
                             self.observedValues.withValue { $0.append(newValue) }
                         }
                     }

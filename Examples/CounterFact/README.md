@@ -63,6 +63,10 @@ withDependencies {
 } operation: { ... }
 ```
 
+### Swift concurrency isolation
+
+This target is built with `defaultIsolation: MainActor` (`OTHER_SWIFT_FLAGS = -default-isolation MainActor`), which matches what Xcode 26 sets on new projects. The dependency type `FactClient` is therefore declared `nonisolated struct` so its stored property accessors remain accessible from any context — see [`Docs/Dependencies.md`](../../Docs/Dependencies.md) for the full pattern.
+
 ## App structure
 
 | Model | Responsibility |

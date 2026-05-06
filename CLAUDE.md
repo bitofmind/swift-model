@@ -41,10 +41,10 @@ The project uses Swift 6 (`swiftLanguageModes: [.v6]`). All code must be strict-
 ## Key architectural concepts
 
 - **`@Model`** macro: Applied to a struct. Generates `@Observable`-compatible storage, `ModelContainer` conformance, and property access tracking.
-- **`ModelAnchor`** / **`withAnchor()`**: Activates a model hierarchy and keeps it alive. `withAnchor()` stores the anchor on `ModelAccess.retainedObject`; `andAnchor()` returns it separately for explicit lifetime control.
+- **`ModelAnchor`** / **`withAnchor()`**: Activates a model hierarchy and keeps it alive. `withAnchor()` stores the anchor on `ModelAccess.retainedObject`; `returningAnchor()` returns it separately for explicit lifetime control.
 - **`Context`**: Internal reference type that backs each live model instance. Holds the lock, dependency overrides, child contexts, and task lifetime.
 - **`ModelAccess`**: Base class for all observation/access strategies (SwiftUI's `@Observable`, test access, etc.).
-- **`ModelTester`**: Test harness. Wraps a model with `TestAccess` and exhaustively tracks state changes, events, tasks, and probe calls. Create via `model.andTester(options:)` (internal, requires `@testable import`) or use `withAnchor()` inside `@Test(.modelTesting)` (public API).
+- **`ModelTester`**: Test harness. Wraps a model with `TestAccess` and exhaustively tracks state changes, events, tasks, and probe calls. Created via `ModelTester(model, ...)` (requires `@testable import`) or anchored via `withAnchor()` inside `@Test(.modelTesting)` (public API).
 - **`ModelOption`**: **Internal** `OptionSet` (not public API). Used only in tests via `@testable import` to enable specific behaviours like `disableObservationRegistrar` or `disableMemoizeCoalescing`.
 ## Platform guards
 
@@ -89,11 +89,11 @@ struct MyTests {
 - Per-suite exhaustivity: `@Suite(.modelTesting(exhaustivity: .off))` when individual tests use `#expect` directly (bypasses exhaustivity). Opt specific tests back in with `@Test(.modelTesting(exhaustivity: .preference))`.
 - Tests that exercise both observation mechanisms use `options: [.disableObservationRegistrar]` inside `withAnchor(options:)`.
 
-### `andTester` — only for specific cases
+### `ModelTester` directly — only for specific cases
 
-`andTester(options:)` (requires `@testable import SwiftModel`) is reserved for two scenarios:
+Direct use of `ModelTester(model, ...)` (requires `@testable import SwiftModel`) is reserved for two scenarios:
 
-1. **Post-deallocation verification**: Tests that need the model to actually be released to observe lifecycle behavior — teardown logs (`"d:tag"`), `onCancel` callbacks, stream termination. `@Suite(.modelTesting)` holds a strong reference for the full test duration, preventing deallocation. Use the `waitUntilRemoved` pattern:
+1. **Post-deallocation verification**: Tests that need the model to actually be released to observe lifecycle behavior — teardown logs (`"d:tag"`), `onCancel` callbacks, stream termination. `@Suite(.modelTesting)` holds a strong reference for the full test duration, preventing deallocation. Use the `waitUntilRemoved` pattern with `withAnchor()`:
 
    ```swift
    // Do NOT put this in @Suite(.modelTesting) — it would hold the context alive.
@@ -101,10 +101,9 @@ struct MyTests {
        @Test func testTeardown() async {
            let testResult = TestResult()
            await waitUntilRemoved {
-               let (model, _) = MyModel().andTester(options: [], withDependencies: {
+               MyModel().withAnchor {
                    $0.testResult = testResult
-               })
-               return model
+               }
            }
            // Assert post-deallocation behavior
            #expect(testResult.value.contains("d:tag"))

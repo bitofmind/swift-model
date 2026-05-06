@@ -1,5 +1,4 @@
 import Foundation
-import IdentifiedCollections
 
 /// A protocol for types that hold `@Model`-typed children and expose them for hierarchy traversal.
 ///
@@ -15,14 +14,15 @@ import IdentifiedCollections
 /// }
 /// ```
 ///
-/// `Optional<M>`, `Array<M>`, `IdentifiedArray<M>`, and `Dictionary<Key, M>` already conform
-/// for any `ModelContainer`-conforming element type `M`.
+/// `Optional<M>`, `Array<M>`, and `Dictionary<Key, M>` already conform for any
+/// `ModelContainer`-conforming element type `M`. Any `MutableCollection` whose element type
+/// is `Model & Identifiable` is handled automatically — no explicit conformance needed.
 public protocol ModelContainer: Sendable {
-    func visit(with visitor: inout ContainerVisitor<Self>)
+    func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>)
 }
 
 extension Optional: ModelContainer where Wrapped: ModelContainer {
-    public func visit(with visitor: inout ContainerVisitor<Self>) {
+    public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
         guard let value = self else { return }
 
         visitor.visitDynamically(with: value, at: path(value: value) {
@@ -37,10 +37,18 @@ extension Optional: ModelContainer where Wrapped: ModelContainer {
 extension Array: ModelContainer where Element: ModelContainer & Identifiable { }
 
 public extension MutableCollection where Self: ModelContainer, Element: Identifiable&Sendable, Index: Sendable, Element.ID: Sendable {
-    func visit(with visitor: inout ContainerVisitor<Self>) {
+    func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
         for index in indices {
             let element = self[index]
             let id = threadLocals.withValue(true, at: \.forceDirectAccess) { element.id }
+            let anyID = AnyHashable(id)
+
+            // Fast path: if the element is already registered and up-to-date, skip all cursor
+            // construction (3 heap allocations: ContainerCursor + 2 @escaping closures).
+            // Only applies to direct Model elements; nested ModelContainers fall through.
+            if let model = element as? any Model, !(element is OptionalModel),
+               visitor.shouldSkipElement(element: model, id: anyID) { continue }
+
             let path = path(id: id) { collection in
                 if index >= collection.startIndex && index < collection.endIndex {
                     let element = collection[index]
@@ -71,30 +79,25 @@ public extension MutableCollection where Self: ModelContainer, Element: Identifi
     }
 }
 
-extension IdentifiedArray: ModelContainer where Element: ModelContainer {
-    public func visit(with visitor: inout ContainerVisitor<Self>) where ID: Sendable {
-        for id in ids {
-            let path = path(id: id) { collection in
-                collection[id: id]!
-            } set: { collection, value in
-                collection[id: id] = value
-            }
-
-            visitor.visitDynamically(with: self[id: id]!, at: path)
-        }
-    }
-}
-
 extension Dictionary: ModelContainer where Value: ModelContainer {
-    public func visit(with visitor: inout ContainerVisitor<Self>) where Key: Sendable {
+    public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) where Key: Sendable {
         for key in keys {
+            let element = self[key]!
+            let anyID = AnyHashable(key)
+
+            // Fast path: if the element is already registered and up-to-date, skip all cursor
+            // construction (3 heap allocations: ContainerCursor + 2 @escaping closures).
+            // Only applies to direct Model elements; nested ModelContainers fall through.
+            if let model = element as? any Model, !(element is OptionalModel),
+               visitor.shouldSkipElement(element: model, id: anyID) { continue }
+
             let path = path(id: key) { collection in
                 collection[key]!
             } set: { collection, value in
                 collection[key] = value
             }
 
-            visitor.visitDynamically(with: self[key]!, at: path)
+            visitor.visitDynamically(with: element, at: path)
         }
     }
 }
@@ -217,13 +220,20 @@ public extension ModelContainer {
         return \Self.[cursor: cursor]
     }
 
-    func path<Value: Sendable>(caseName: String, value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
-        let cursor = ContainerCursor(id: caseName, get: { get($0) ?? value }, set: set)
+    func path<Value>(caseName: String, value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
+        nonisolated(unsafe) let fallback = value
+        let cursor = ContainerCursor(id: caseName, get: {
+            // Return the captured fallback value when the container state no longer matches
+            // (e.g. snapshot reads, frozenCopy traversals on stale hierarchy copies).
+            get($0) ?? fallback
+        }, set: set)
         return \Self.[cursor: cursor]
     }
 
     func path<Value: Identifiable&Sendable>(caseName: String, value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
-        let cursor = ContainerCursor(id: CaseAndID(caseName: caseName, id: value.id), get: { get($0) ?? value }, set: set)
+        let cursor = ContainerCursor(id: CaseAndID(caseName: caseName, id: value.id), get: {
+            get($0) ?? value
+        }, set: set)
         return \Self.[cursor: cursor]
     }
 
@@ -232,8 +242,11 @@ public extension ModelContainer {
     /// Use this overload inside a `@ModelContainer` `visit` implementation when there is no
     /// explicit `ID` to key on — for example, for an `Optional` whose element is not `Identifiable`.
     /// The cursor is created from the runtime identity of `value`.
-    func path<Value: Sendable>(value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
-        let cursor = ContainerCursor(id: anyHashable(from: value), get: { get($0) ?? value }, set: set)
+    func path<Value>(value: Value, get: @escaping @Sendable (Self) -> Value?, set: @escaping @Sendable (inout Self, Value) -> Void) -> WritableKeyPath<Self, Value> {
+        nonisolated(unsafe) let fallback = value
+        let cursor = ContainerCursor(id: anyHashable(from: value), get: {
+            get($0) ?? fallback
+        }, set: set)
         return \Self.[cursor: cursor]
     }
 }
