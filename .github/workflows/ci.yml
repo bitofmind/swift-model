@@ -21,7 +21,7 @@ jobs:
           xcode-version: latest
       - name: Build and test
         # Run in parallel to exercise concurrent behaviour and catch races.
-        run: swift test --parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks
+        run: swift test --parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks --skip LazyContextBenchmarks
 
   linux:
     name: Linux
@@ -41,7 +41,7 @@ jobs:
       - name: Build and test
         # Run tests serially (--no-parallel) to avoid cooperative thread-pool saturation
         # on the 2-vCPU Linux runner. Parallel race-condition coverage is provided by macOS.
-        run: swift test --no-parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks
+        run: swift test --no-parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks --skip LazyContextBenchmarks
 
   android:
     name: Android (aarch64)
