@@ -185,7 +185,11 @@ extension TestAccess {
                                 let a = threadLocals.withValue(true, at: \.forceDirectAccess) {
                                     last[keyPath: access.path]
                                 }
-                                return result && (diff(access.capturedValue(), a) == nil)
+                                let matched = diff(access.capturedValue(), a) == nil
+                                if !matched {
+                                    reportIssue("isEqualIncludingIds mismatch: property=\(access.propertyName ?? "<unknown>") captured=\(String(customDumping: access.capturedValue())) last=\(String(customDumping: a))")
+                                }
+                                return result && matched
                             }
                         }
                     }
