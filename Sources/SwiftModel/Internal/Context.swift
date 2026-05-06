@@ -223,14 +223,27 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         guard keepLastSeen else {
             // No last-seen needed: zero state to break retain cycles, but defer until after the
             // callbacks array has run so that onCancel closures can still read model state.
+            // Hold AnyContext.lock during the state swap (lock order: AnyContext.lock → Reference.lock,
+            // same order used by destruct() above) to prevent a concurrent Context.subscript._read
+            // from racing on reference.state. Release old state after both locks drop so that
+            // deinits triggered by state release can re-enter the lock without exclusivity violations.
             let ref = reference
-            callbacks.append { ref.clear() }
+            let contextLock = self.lock
+            callbacks.append {
+                contextLock.lock()
+                let stateToRelease = ref.clear()
+                contextLock.unlock()
+                _fixLifetime(stateToRelease)
+            }
             return
         }
 
         Task {
             try? await Task.sleep(nanoseconds: 1_000_000*UInt64(lastSeenTimeToLive*1000))
-            reference.clear()
+            // Same fix as the non-TTL path: hold AnyContext.lock while swapping state so that
+            // concurrent property reads (which also hold this lock) cannot race on reference.state.
+            let stateToRelease = lock { reference.clear() }
+            _fixLifetime(stateToRelease)
         }
     }
 
@@ -1629,12 +1642,15 @@ extension Context {
         /// (called from Context.deinit). Clearing `_context` here would make `ModelNode.isDestructed`
         /// return `true` before `onCancel` callbacks fire, causing dependency lookups to fall
         /// through to the live default instead of the test override.
-        func clear() {
-            // Return old state from the lock so its contents are destroyed AFTER the lock
-            // releases. Deinits triggered by state destruction (e.g. onDeinit callbacks
-            // reading model properties via Context.subscript.read) would cause Swift
-            // exclusivity violations if reference.state were still exclusively held.
-            let stateToRelease: M._ModelState = lock {
+        ///
+        /// Must be called while the caller holds the AnyContext lock (lock order:
+        /// AnyContext.lock → Reference.lock). This prevents a concurrent `Context.subscript._read`
+        /// (which holds AnyContext.lock) from racing on `reference.state` while we swap it.
+        /// Returns the old state for deferred release after both locks are dropped — deinits
+        /// triggered by the release may re-enter AnyContext.lock, so they must not run while
+        /// either lock is held.
+        func clear() -> M._ModelState {
+            lock {
                 _stateCleared = true
                 let old = state
                 if _hasGenesis {
@@ -1642,7 +1658,6 @@ extension Context {
                 }
                 return old
             }
-            _fixLifetime(stateToRelease)
         }
 
         /// Atomically claims this Reference for a new Context, or creates a fresh
