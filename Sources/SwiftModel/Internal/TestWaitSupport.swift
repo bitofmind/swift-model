@@ -212,30 +212,21 @@ extension TestAccess {
     ///   exhaustivity check handles failure reporting through proper exhaustivity bits.
     @discardableResult
     package func waitUntilSettled(calibration cal: WaitCalibration, reportTimeout: Bool = true, at fileAndLine: FileAndLine) async -> Bool {
-        // Phase 1: Wait for all activation tasks to enter their body.
-        // In practice this completes almost immediately because activationTaskEntered()
-        // fires at the start of the task body.
+        // Idle cycle — wait until one full scheduling round passes with no state
+        // changes. Uses modificationCount on the root context as a version number.
         //
-        // Skip when called from checkExhaustion (reportTimeout: false): activation tasks
-        // that haven't started yet have already been cancelled by cancelAllRecursively()
-        // and removed from Cancellations.registered / activeTasks. Waiting for them to
-        // start under 500+ parallel test load can take 30 s (cooperative pool saturation
-        // causes 30,000 × 1ms iterations). The subsequent checkExhaustion(checkTasks:)
-        // call won't see them — safe to skip.
-        if reportTimeout {
-            while activationTasksInFlight > 0 {
-                await waitForModification(timeoutNanoseconds: cal.scaledTimeout, yieldRoundNs: cal.yieldRoundNs, retryCount: 0)
-                if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
-                    let taskInfo = settleTimeoutDiagnostics()
-                    fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
-                    return false
-                }
-            }
-        }
-
-        // Phase 2: Idle cycle — wait until one full scheduling round passes
-        // with no state changes. Uses modificationCount on the root context as
-        // a version number.
+        // Activation tasks do NOT need a separate "wait for tasks to start" phase
+        // because taskCreated() is called at creation (before the task body runs),
+        // incrementing _activeTaskCount. So _activeTaskCount == 0 already implies
+        // all activation tasks have completed — a stronger guarantee than merely
+        // waiting for them to enter their body.
+        //
+        // Previously, a Phase 1 "wait for activationTasksInFlight == 0" existed
+        // using 1 ms polls. Under 500+ parallel tests, 757 tests × 10,000 polls/test
+        // = 7.57 M cooperative-pool resumes/second competed directly with activation
+        // tasks for pool threads — a self-reinforcing loop where polls starved the
+        // tasks, causing them to wait 10+ seconds, extending tests from milliseconds
+        // to 12 seconds. Removing Phase 1 eliminates that pool pressure.
         var lastChangeVersion = context.modificationCount
         // Tracks whether we already confirmed _activeTaskCount == 0 with a stable
         // modificationCount in the previous outer-loop iteration.
@@ -248,7 +239,7 @@ extension TestAccess {
         //
         // Fix: require two consecutive outer-loop iterations that both see
         // _activeTaskCount == 0 with no modificationCount change. The
-        // waitForCurrentItems at the START of the NEXT iteration (line 1332) naturally
+        // waitForCurrentItems at the START of the NEXT iteration naturally
         // drains the pending mutation, so modificationCount changes and we loop once
         // more to re-confirm. No extra drain is added; the existing loop structure
         // handles it. For observation-heavy models this adds at most two cheap
@@ -257,24 +248,6 @@ extension TestAccess {
         while true {
             await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
             await yieldToScheduler()
-
-            // Re-check activation tasks: backgroundCall drain or yieldToScheduler
-            // may have triggered child model activations (e.g. SearchResultItem
-            // activated when results is set), creating new tasks that haven't entered
-            // their body yet. Wait for them before evaluating idle state.
-            // Skipped when called from checkExhaustion (reportTimeout: false) for the
-            // same reason as Phase 1: cancelled tasks that haven't started yet are safe
-            // to ignore (removed from activeTasks by cancelAllRecursively).
-            if reportTimeout {
-                while activationTasksInFlight > 0 {
-                    await waitForModification(timeoutNanoseconds: cal.scaledTimeout, yieldRoundNs: cal.yieldRoundNs, retryCount: 0)
-                    if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
-                        let taskInfo = settleTimeoutDiagnostics()
-                        fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
-                        return false
-                    }
-                }
-            }
 
             let currentVersion = context.modificationCount
             if currentVersion == lastChangeVersion {
