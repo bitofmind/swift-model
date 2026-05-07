@@ -201,6 +201,23 @@ extension TestAccess {
                         if start.distance(to: monotonicNanoseconds()) > hardCap {
                             // Hard cap hit: the model has been continuously producing changes
                             // and IDs never converged. Report as failure.
+                            // Diagnostic: identify which access path is causing the mismatch.
+                            let (diagSnap, diagExhaustivity, diagValueUpdates) = lock { (lastState, exhaustivity, valueUpdates) }
+                            let diagLast = threadLocals.withValue(true, at: \.isApplyingSnapshot) { diagSnap.frozenCopy }
+                            for access in passedAccesses {
+                                if access.skipEqualityCheck { continue }
+                                if access.isModelTypeValue { continue }
+                                if access.isContainerTypeValue { continue }
+                                if diagExhaustivity.contains(.transitions) && diagValueUpdates[access.path] != nil { continue }
+                                if let currentCount = diagValueUpdates[access.path]?.count,
+                                   currentCount > (prePredicateUpdateCounts[access.path] ?? 0) { continue }
+                                let a = threadLocals.withValue(true, at: \.forceDirectAccess) {
+                                    diagLast[keyPath: access.path]
+                                }
+                                if diff(access.capturedValue(), a) != nil {
+                                    reportIssue("isEqualIncludingIds diagnostic — path: \(access.path), captured: \(access.capturedValue()), lastState: \(a)", fileID: fileAndLine.fileID, filePath: fileAndLine.filePath, line: fileAndLine.line, column: fileAndLine.column)
+                                }
+                            }
                             fail("State did not settle: model IDs kept diverging after the predicate passed. This may indicate a backgroundCallQueue loop or an unresolvable ID mismatch.", at: fileAndLine)
                             return
                         }
