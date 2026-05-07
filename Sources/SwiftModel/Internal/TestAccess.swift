@@ -580,7 +580,7 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             self.lock {
                 guard (self.lastWriteSeqNums[contextPathKey] ?? 0) < mySeqNum else { return }
                 self.lastWriteSeqNums[contextPathKey] = mySeqNum
-                for fullPath in fullPaths {
+                for (rootPath, fullPath) in zip(rootPaths, fullPaths) {
                     // Private properties are not tracked for exhaustivity: tests cannot observe
                     // them from outside the declaring type, so requiring assertions would produce
                     // false failures. We still update lastState so the settlement check
@@ -591,9 +591,9 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                         // write ABI calls the getter first (synthesized _modify). Skip the write —
                         // the value lives in contextStorage, not in the _ModelState snapshot.
                         if area != .local && area != .environment && area != .preference {
-                            threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-                                self.lastState[keyPath: fullPath] = value
-                            }
+                            // Write directly to the frozen Reference's state, bypassing the composed
+                            // WritableKeyPath + nonmutating-setter chain that silently no-ops on Linux.
+                            self.lastState[keyPath: rootPath]._context._$modelContext._source._writeToFrozenState(path, value)
                         }
                         continue
                     }
@@ -676,9 +676,9 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     // write ABI calls the getter first (synthesized _modify). Skip the write —
                     // the value lives in contextStorage, not in the _ModelState snapshot.
                     if !isStoragePath {
-                        threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-                            self.lastState[keyPath: fullPath] = value
-                        }
+                        // Write directly to the frozen Reference's state, bypassing the composed
+                        // WritableKeyPath + nonmutating-setter chain that silently no-ops on Linux.
+                        self.lastState[keyPath: rootPath]._context._$modelContext._source._writeToFrozenState(path, value)
                     }
                 }
             }

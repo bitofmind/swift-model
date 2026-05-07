@@ -289,6 +289,14 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
         }
     }
 
+    /// Writes `value` directly to `reference.state[keyPath: path]` for frozen-copy sources.
+    /// Called by TestAccess.didModify to update `lastState` without going through composed
+    /// WritableKeyPath + nonmutating-setter chains, which can silently no-op on Linux.
+    public func _writeToFrozenState<T>(_ path: WritableKeyPath<M._ModelState, T>, _ value: T) {
+        guard reference.lifetime == .frozenCopy else { return }
+        reference.state[keyPath: path] = value
+    }
+
     /// Stores a value into the Reference's `state` directly (if pre-anchor and unlinked).
     /// Used by willSet/didSet `nonmutating set` to short-circuit writes before anchoring.
     @discardableResult

@@ -186,9 +186,6 @@ extension TestAccess {
                                     last[keyPath: access.path]
                                 }
                                 let matched = diff(access.capturedValue(), a) == nil
-                                if !matched {
-                                    reportIssue("isEqualIncludingIds mismatch: property=\(access.propertyName ?? "<unknown>") captured=\(String(customDumping: access.capturedValue())) last=\(String(customDumping: a))")
-                                }
                                 return result && matched
                             }
                         }
