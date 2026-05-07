@@ -1323,7 +1323,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             let element = collection[index]
 
             guard !element.lifetime.isDestructedOrFrozenCopy else {
-                threadLocals.didReplaceModelWithDestructedOrFrozenCopy()
+                threadLocals.didReplaceModelWithDestructedOrFrozenCopy = true
                 continue
             }
             if let childRef = element.modelContext.reference, childRef.hasLazyContextCreator { continue }

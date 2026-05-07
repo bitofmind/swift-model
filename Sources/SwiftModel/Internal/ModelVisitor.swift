@@ -132,16 +132,25 @@ struct ModelTransformerVisitor<Root, Child, Transformer: ModelTransformer>: Mode
     mutating func visitCollection<C: MutableCollection>(path: WritableKeyPath<Child, C>)
         where C: Sendable, C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
         let fullPath = self.path.appending(path: path)
-        for index in root[keyPath: fullPath].indices {
-            root[keyPath: fullPath][index] = root[keyPath: fullPath][index].transformModel(with: transformer)
+        // Read once into a local copy, transform every element there, then write back
+        // once. This eliminates the TOCTOU window: the original code re-read
+        // root[fullPath] on every loop iteration through the live Context, so a
+        // concurrent removal between the .indices read and the element write would
+        // shrink the array and crash with "index out of range".
+        var collection = root[keyPath: fullPath]
+        for i in collection.indices {
+            collection[i] = collection[i].transformModel(with: transformer)
         }
+        root[keyPath: fullPath] = collection
     }
 
     mutating func visitContainerCollection<C: MutableCollection>(path: WritableKeyPath<Child, C>)
         where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
         let fullPath = self.path.appending(path: path)
-        for index in root[keyPath: fullPath].indices {
-            let element = root[keyPath: fullPath][index]
+        // Snapshot before iterating for the same reason as visitCollection above.
+        let snapshot = root[keyPath: fullPath]
+        for index in snapshot.indices {
+            let element = snapshot[index]
             let id = element.id
             let cursor = ContainerCursor(id: id,
                 get: { (col: C) in col.first(where: { $0.id == id }) ?? element },
@@ -243,7 +252,7 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
         // For the top-level model being anchored (isSelf): allow even if destructed — this is the
         // re-anchoring case (e.g. undo restoring a deleted item, or static testValue across tests).
         if !isSelf && childModel.lifetime.isDestructedOrFrozenCopy {
-            threadLocals.didReplaceModelWithDestructedOrFrozenCopy()
+            threadLocals.didReplaceModelWithDestructedOrFrozenCopy = true
             return
         }
 
@@ -389,7 +398,7 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
             let element = value[keyPath: path][index]
 
             guard !element.lifetime.isDestructedOrFrozenCopy else {
-                threadLocals.didReplaceModelWithDestructedOrFrozenCopy()
+                threadLocals.didReplaceModelWithDestructedOrFrozenCopy = true
                 continue
             }
             if let childRef = element.modelContext.reference, childRef.hasLazyContextCreator {
@@ -496,7 +505,7 @@ struct AnchorVisitorForContainerElement<M: Model, C: MutableCollection, T: Model
         let childModel = value[keyPath: path]
 
         if childModel.lifetime.isDestructedOrFrozenCopy {
-            threadLocals.didReplaceModelWithDestructedOrFrozenCopy()
+            threadLocals.didReplaceModelWithDestructedOrFrozenCopy = true
             return
         }
         if let childRef = childModel.modelContext.reference, childRef.hasLazyContextCreator { return }

@@ -652,12 +652,11 @@ extension _ModelSourceBox {
             collectionIsSame($0, $1)
         }, accessBox: accessBox, modify: { collection in
             var newCollection = newValue
-            var didReplaceModelWithDestructedOrFrozenCopy = false
-            let oldContexts = threadLocals.withValue({
-                didReplaceModelWithDestructedOrFrozenCopy = true
-            }, at: \.didReplaceModelWithDestructedOrFrozenCopy) {
-                context.updateContextForCollection(for: &newCollection, at: modelPath)
-            }
+            let prevDidReplace = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
+            threadLocals.didReplaceModelWithDestructedOrFrozenCopy = false
+            let oldContexts = context.updateContextForCollection(for: &newCollection, at: modelPath)
+            let didReplaceModelWithDestructedOrFrozenCopy = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
+            threadLocals.didReplaceModelWithDestructedOrFrozenCopy = prevDidReplace
 
             if didReplaceModelWithDestructedOrFrozenCopy {
                 reportIssue("It is not allowed to add a destructed nor frozen model.")
@@ -738,12 +737,11 @@ extension _ModelSourceBox {
             return zip(lhs, rhs).allSatisfy { $0.id == $1.id }
         }, accessBox: accessBox, modify: { collection in
             var newCollection = newValue
-            var didReplaceModelWithDestructedOrFrozenCopy = false
-            let oldContexts = threadLocals.withValue({
-                didReplaceModelWithDestructedOrFrozenCopy = true
-            }, at: \.didReplaceModelWithDestructedOrFrozenCopy) {
-                context.updateContextForContainerCollection(for: &newCollection, at: modelPath)
-            }
+            let prevDidReplace = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
+            threadLocals.didReplaceModelWithDestructedOrFrozenCopy = false
+            let oldContexts = context.updateContextForContainerCollection(for: &newCollection, at: modelPath)
+            let didReplaceModelWithDestructedOrFrozenCopy = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
+            threadLocals.didReplaceModelWithDestructedOrFrozenCopy = prevDidReplace
 
             if didReplaceModelWithDestructedOrFrozenCopy {
                 reportIssue("It is not allowed to add a destructed nor frozen model.")
@@ -818,12 +816,11 @@ extension _ModelSourceBox {
                 }
 
                 var newContainer = newValue
-                var didReplaceModelWithDestructedOrFrozenCopy = false
-                let oldContexts = threadLocals.withValue({
-                    didReplaceModelWithDestructedOrFrozenCopy = true
-                }, at: \.didReplaceModelWithDestructedOrFrozenCopy) {
-                    context.updateContext(for: &newContainer, at: modelPath)
-                }
+                let prevDidReplace = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
+                threadLocals.didReplaceModelWithDestructedOrFrozenCopy = false
+                let oldContexts = context.updateContext(for: &newContainer, at: modelPath)
+                let didReplaceModelWithDestructedOrFrozenCopy = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
+                threadLocals.didReplaceModelWithDestructedOrFrozenCopy = prevDidReplace
 
                 if didReplaceModelWithDestructedOrFrozenCopy {
                     reportIssue("It is not allowed to add a destructed nor frozen model.")
