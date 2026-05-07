@@ -88,108 +88,50 @@ extension TestAccess {
 
                 if failures.isEmpty {
                     // Step 2: All predicates passed. Verify that the predicate's read values
-                    // match lastState (the live model). This guards against the predicate
-                    // passing transiently while a backgroundCall batch is still committing
-                    // changes (IDs would diverge because frozenCopy includes generation IDs).
+                    // match lastState. This guards against the predicate passing transiently
+                    // while a backgroundCall batch is still committing changes.
                     //
-                    // In transitions mode, accesses that read from the FIFO queue (historical
-                    // values) are skipped here — they don't correspond to live model values
-                    // and comparing them against lastState would always fail.
+                    // Read values from lastState directly under the TestAccess lock.
+                    // _writeToFrozenState also holds this lock when writing to lastState's
+                    // reference.state, so reads and writes are mutually exclusive — no race.
                     //
-                    // frozenCopy walks Optional<M> children which calls _swift_getKeyPath to
-                    // create dynamic ContainerCursor key paths. _swift_getKeyPath needs the Swift
-                    // runtime lock — calling it while holding NSRecursiveLock deadlocks when the
-                    // runtime lock is contended. Compute frozenCopy outside the lock; expectedState
-                    // and lastState are value-type copies so this is safe.
-                    // isApplyingSnapshot suppresses willAccessPreference/willAccessStorage callbacks
-                    // and re-entrant observation triggered by releasing live child models during
-                    // the transform.
-                    // Read lastState under the lock (brief), then compute frozenCopy and
-                    // evaluate key paths OUTSIDE the lock. Evaluating container cursor key
-                    // paths (e.g. items[0].value) can call _swift_getKeyPath which acquires
-                    // the Swift runtime lock. Holding TestAccess lock while needing the
-                    // runtime lock deadlocks when another thread holds the runtime lock and
-                    // needs TestAccess lock (lock-ordering inversion). Since `last` is a
-                    // local frozen copy and `passedAccesses` is a local array, no lock is
-                    // needed for the comparison itself.
-                    let isEqualIncludingIds = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-                        // Snapshot all shared state under a single brief lock, then call
-                        // frozenCopy and run the reduce entirely OUTSIDE the lock.
-                        // frozenCopy walks Optional<M> children via _swift_getKeyPath which
-                        // acquires the Swift runtime lock — holding the TestAccess lock at the
-                        // same time deadlocks (lock-ordering inversion). The new conditions
-                        // below also read exhaustivity/valueUpdates (shared state), so we
-                        // capture those under the same brief lock.
-                        // When passedAccesses is empty (e.g. settle() with no predicates),
-                        // the reduce below returns true without ever reading `last`.
-                        // Skip frozenCopy entirely: `snap._source.reference` is the SAME
-                        // Reference as the live model (class storage shared by value copies),
-                        // so frozenCopy reads _stateHolder outside the hierarchy lock while
-                        // background tasks write to it inside their lock — a data race that
-                        // can crash under heavy parallel test execution.
+                    // Previously used snap.frozenCopy OUTSIDE the lock, but frozenCopy reads
+                    // snap.reference.state — the SAME class object _writeToFrozenState writes.
+                    // This was a data race: on CI under heavy load, frozenCopy could see a
+                    // stale value (e.g. [] instead of [nil]) while the write was in flight,
+                    // causing isEqualIncludingIds to return false indefinitely until the
+                    // 10-second hard cap was hit.
+                    //
+                    // Container cursor key paths (isContainerTypeValue) are SKIPPED, so we
+                    // never evaluate them here. Non-container value paths (e.g. [Int?]) read
+                    // via reference.state[keyPath:] — no _swift_getKeyPath, no runtime-lock
+                    // contention, safe to evaluate while holding the TestAccess lock.
+                    //
+                    // isApplyingSnapshot suppresses willAccessDirect (early-returns before any
+                    // _swift_getKeyPath call). forceDirectAccess bypasses live-context routing
+                    // and reads reference.state directly. Both are needed for frozen copies.
+                    let isEqualIncludingIds: Bool = {
                         guard !passedAccesses.isEmpty else { return true }
-                        let (snap, capturedExhaustivity, capturedValueUpdates) = lock { (lastState, exhaustivity, valueUpdates) }
-                        let last = snap.frozenCopy
-                        return threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
-                            return passedAccesses.reduce(true) { result, access in
-                                // Context/preference storage values live in AnyContext.contextStorage,
-                                // not in the @Model struct fields. Writing them back to a frozen copy
-                                // (which has no live context) is a silent no-op, so the round-trip
-                                // read would return defaultValue instead of the asserted value —
-                                // making isEqualIncludingIds always false and causing a hang.
-                                // The predicate already verified these values on the live model,
-                                // so we skip the frozen-copy equality check for them.
-                                if access.skipEqualityCheck { return result }
-                                // Skip container-level model accesses. When a model property (e.g.
-                                // TestHelper.summary of type SummaryFeature) is accessed, its full
-                                // struct value is captured including the generation counter. But the
-                                // generation counter advances on every child write, so comparing the
-                                // whole struct causes a false "not settled yet" when the child property
-                                // we actually asserted has already settled. Child-level accesses
-                                // (e.g. SummaryFeature.destination) are always recorded alongside the
-                                // parent, and they check the actual leaf value with IDs — sufficient
-                                // to detect genuine backgroundCall in-flight conditions.
-                                if access.isModelTypeValue { return result }
-                                // Skip ModelContainer-typed values (Optional<M>, @ModelContainer enums).
-                                // These use ContainerCursor key paths whose getter does `get($0)!`.
-                                // ContainerCursor paths are safe to traverse only on the live model
-                                // hierarchy — reading them on a frozenCopy snapshot crashes because
-                                // frozenCopy transforms model identity and the cursor no longer matches.
-                                // Leaf accesses recorded within the container are checked independently.
-                                if access.isContainerTypeValue { return result }
-                                // Transitions mode: skip settlement check for accesses that read
-                                // from the FIFO queue. Their captured value is historical (the
-                                // front-of-queue value) and will not match lastState (the live value).
-                                if capturedExhaustivity.contains(.transitions) && capturedValueUpdates[access.path] != nil { return result }
-                                // Skip accesses whose path was WRITTEN during predicate
-                                // evaluation (e.g. `accessCount += 1` inside a computed getter).
-                                // capturedValue captures the pre-write value, but lastState
-                                // reflects the post-write value, so they'd always diverge.
-                                // Only skip paths that gained NEW entries during this predicate
-                                // cycle — paths written before the predicate still need checking.
-                                if let currentCount = capturedValueUpdates[access.path]?.count,
-                                   currentCount > (prePredicateUpdateCounts[access.path] ?? 0) { return result }
-                                // Compare the predicate-time captured value against lastState directly.
-                                // Using only `last` (which reflects the current live state) and comparing
-                                // against the captured value is safe and sufficient: if the IDs match,
-                                // the model has settled.
-                                //
-                                // Use forceDirectAccess so nested model reads go through the frozen
-                                // snapshot state rather than the live context. Without this, keypaths
-                                // that traverse a child @Model property route through the live child
-                                // context, firing willAccessDirect which (a) calls TestAccess.willAccess
-                                // producing spurious Access entries, and (b) acquires the parent context
-                                // lock inside the child context lock — a lock-ordering inversion that
-                                // can deadlock on Linux when a concurrent background task holds the
-                                // parent lock while reading the same child property.
-                                let a = threadLocals.withValue(true, at: \.forceDirectAccess) {
-                                    last[keyPath: access.path]
+                        return lock {
+                            threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+                                threadLocals.withValue(true, at: \.forceDirectAccess) {
+                                    threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
+                                        passedAccesses.reduce(true) { result, access in
+                                            if access.skipEqualityCheck { return result }
+                                            if access.isModelTypeValue { return result }
+                                            if access.isContainerTypeValue { return result }
+                                            if exhaustivity.contains(.transitions) && valueUpdates[access.path] != nil { return result }
+                                            if let currentCount = valueUpdates[access.path]?.count,
+                                               currentCount > (prePredicateUpdateCounts[access.path] ?? 0) { return result }
+                                            let a = lastState[keyPath: access.path]
+                                            let d = diff(access.capturedValue(), a)
+                                            return result && d == nil
+                                        }
+                                    }
                                 }
-                                let matched = diff(access.capturedValue(), a) == nil
-                                return result && matched
                             }
                         }
-                    }
+                    }()
 
                     // Predicate passed but IDs don't match yet: there is a pending
                     // backgroundCall batch in flight. Wait for items currently queued to
@@ -199,25 +141,6 @@ extension TestAccess {
                     // the assert doesn't spin forever when isEqualIncludingIds is permanently false.
                     if !isEqualIncludingIds {
                         if start.distance(to: monotonicNanoseconds()) > hardCap {
-                            // Hard cap hit: the model has been continuously producing changes
-                            // and IDs never converged. Report as failure.
-                            // Diagnostic: identify which access path is causing the mismatch.
-                            let (diagSnap, diagExhaustivity, diagValueUpdates) = lock { (lastState, exhaustivity, valueUpdates) }
-                            let diagLast = threadLocals.withValue(true, at: \.isApplyingSnapshot) { diagSnap.frozenCopy }
-                            for access in passedAccesses {
-                                if access.skipEqualityCheck { continue }
-                                if access.isModelTypeValue { continue }
-                                if access.isContainerTypeValue { continue }
-                                if diagExhaustivity.contains(.transitions) && diagValueUpdates[access.path] != nil { continue }
-                                if let currentCount = diagValueUpdates[access.path]?.count,
-                                   currentCount > (prePredicateUpdateCounts[access.path] ?? 0) { continue }
-                                let a = threadLocals.withValue(true, at: \.forceDirectAccess) {
-                                    diagLast[keyPath: access.path]
-                                }
-                                if diff(access.capturedValue(), a) != nil {
-                                    reportIssue("isEqualIncludingIds diagnostic — path: \(access.path), captured: \(access.capturedValue()), lastState: \(a)", fileID: fileAndLine.fileID, filePath: fileAndLine.filePath, line: fileAndLine.line, column: fileAndLine.column)
-                                }
-                            }
                             fail("State did not settle: model IDs kept diverging after the predicate passed. This may indicate a backgroundCallQueue loop or an unresolvable ID mismatch.", at: fileAndLine)
                             return
                         }

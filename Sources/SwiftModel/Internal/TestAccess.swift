@@ -244,11 +244,31 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         // ModelIDs that live cursors will use, so cursor lookups find and update elements
         // correctly. `model` has .pending source with _linkedReference = context.reference,
         // so shallowCopy reads the live state (with activated ModelIDs) from the reference.
-        let activatedSnapshot = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-            model.frozenCopy
+        //
+        // IMPORTANT: Wrap the activated-snapshot creation and lastState assignment inside the
+        // TestAccess lock. Between onActivate() and here, async tasks (e.g. forEach with
+        // initial: true) may already be running on other threads, writing to the live model
+        // state and calling _writeToFrozenState, which targets self.lastState.reference (R1 —
+        // the pre-activation frozen copy from line 213). Without the lock, there is a race:
+        //
+        //   Thread B:  writes live state → _writeToFrozenState targets R1
+        //   Thread A:  model.frozenCopy → creates R2 → lastState = R2  (R1's writes lost)
+        //
+        // With the lock, exactly one of two interleavings occurs:
+        //   (a) Thread B wins the lock first: _writeToFrozenState writes to R1, releases lock.
+        //       Thread A acquires lock; model.frozenCopy reads the UPDATED live state (the
+        //       TestAccess lock release→acquire provides the required happens-before barrier,
+        //       making Thread B's context write visible). R2 captures the correct value. ✓
+        //   (b) Thread A wins the lock first: model.frozenCopy reads current live state → R2.
+        //       lastState = R2. Thread A releases lock. Thread B acquires lock; reads
+        //       self.lastState = R2; _writeToFrozenState writes to R2. ✓
+        lock {
+            let activatedSnapshot = threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+                model.frozenCopy
+            }
+            lastState = activatedSnapshot
+            expectedState = activatedSnapshot
         }
-        lastState = activatedSnapshot
-        expectedState = activatedSnapshot
     }
 
     // Propagate this TestAccess to all child/dependency contexts so their property
