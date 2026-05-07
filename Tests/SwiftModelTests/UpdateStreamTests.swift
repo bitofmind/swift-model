@@ -113,7 +113,9 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test
+    // exhaustivity: .off — concurrent transactions produce intermediate child/childCounts values
+    // that are not individually asserted. settle() drains all pending Observed callbacks.
+    @Test(.modelTesting(exhaustivity: .off))
     func testChangeOfChildConcurrency() async throws {
         let model = ValuesModel(child: ChildModel(count: 0), initial: false, recursive: false).withAnchor()
 
@@ -132,9 +134,7 @@ struct UpdateStreamTests {
             }
         }.value
 
-        // Give time for background observation callbacks to process
-        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-        
+        await settle()
         await expect {
             model.child.count == range.count
             model.childCounts.count > 0
