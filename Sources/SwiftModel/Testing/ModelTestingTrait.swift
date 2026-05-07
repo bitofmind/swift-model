@@ -410,13 +410,8 @@ private func _withModelTestingImpl(
         try await _ModelTestingLocals.$scope.withValue(pending) {
             try await body()
         }
-        // After the body completes, run exhaustion checks and wait for all background
-        // teardown work (onCancel callbacks, stream finalizations) to finish so that
-        // post-scope assertions see the final state. Both run inside the task-local
-        // scope so any backgroundCall work from onRemoval() uses the per-test queue.
         if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
             await concrete.checkExhaustion(at: fl)
-            await concrete.waitForTeardown()
         }
     }
 }

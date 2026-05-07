@@ -129,7 +129,20 @@ extension TestAccess {
                         // can crash under heavy parallel test execution.
                         guard !passedAccesses.isEmpty else { return true }
                         let (snap, capturedExhaustivity, capturedValueUpdates) = lock { (lastState, exhaustivity, valueUpdates) }
+                        // Hold the model hierarchy lock while building the frozen copy.
+                        // frozenCopy reads ref.state (the live _stateHolder) for each model
+                        // in the tree via makeFrozen, without any lock. Concurrent
+                        // forEach/onChange task writes hold this same lock, so acquiring it
+                        // here serializes the snapshot and prevents torn reads of multi-word
+                        // _State structs whose class-reference fields are being updated.
+                        // The TestAccess lock was released by the `lock { }` above, so there
+                        // is no inversion: the forEach write path is context.lock →
+                        // TestAccess.lock, and we hold neither when we enter here.
+                        // All child contexts share the root's NSRecursiveLock, so one
+                        // acquisition protects the whole hierarchy.
+                        self.context.lock.lock()
                         let last = snap.frozenCopy
+                        self.context.lock.unlock()
                         return threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
                             return passedAccesses.reduce(true) { result, access in
                                 // Context/preference storage values live in AnyContext.contextStorage,

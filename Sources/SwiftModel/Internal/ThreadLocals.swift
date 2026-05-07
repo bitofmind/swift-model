@@ -3,7 +3,7 @@ import Foundation
 final class ThreadLocals: @unchecked Sendable {
     var postTransactions: [(inout [() -> Void]) -> Void]? = nil
     var forceDirectAccess = false
-    var didReplaceModelWithDestructedOrFrozenCopy: () -> Void = {}
+    var didReplaceModelWithDestructedOrFrozenCopy = false
     var includeImplicitIDInMirror = false
     var includeChildrenInMirror = false
     /// When non-nil, `ModelContext.mirror(of:children:)` operates in shallow snapshot mode.
@@ -76,6 +76,16 @@ final class ThreadLocals: @unchecked Sendable {
     var pendingStack = _PendingStackBox()
 
     fileprivate init() {}
+
+    deinit {
+        // Defensively clear the pending stack on thread exit. GCD threads can be
+        // recycled many times across tests before the OS terminates them; any stale
+        // pre-anchor Reference left in `latest` is released here explicitly rather
+        // than as part of the implicit _PendingStackBox field release. `stack` is
+        // also cleared to drain any incomplete model-init entries.
+        pendingStack.latest = nil
+        pendingStack.stack.removeAll()
+    }
 
     func withValue<Value, T>(_ value: Value, at path: ReferenceWritableKeyPath<ThreadLocals, Value>, perform: () throws -> T) rethrows -> T {
         let prevValue = self[keyPath: path]
