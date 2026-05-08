@@ -286,6 +286,15 @@ extension TestAccess {
                     : min(cal.yieldRoundNs * 30, 300_000_000)
                 await waitForModification(timeoutNanoseconds: patience, yieldRoundNs: patience, retryCount: 2)
                 if context.modificationCount == currentVersion {
+                    // Don't break while activation tasks are still queued but haven't
+                    // entered their body yet. Under heavy parallel-test load the cooperative
+                    // pool may not have serviced them within the patience window; the next
+                    // yieldToScheduler() will give them a turn.
+                    //
+                    // Only applies to reportTimeout:true (active test body settle()).
+                    // For reportTimeout:false (checkExhaustion), tasks are cancelled and
+                    // won't write state — allow the break so cleanup doesn't stall.
+                    guard !reportTimeout || activationTasksInFlight == 0 else { continue }
                     break // No progress — remaining tasks are observation loops or cancelled tasks
                 }
                 lastChangeVersion = context.modificationCount
