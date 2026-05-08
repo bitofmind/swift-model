@@ -51,6 +51,7 @@ extension Model {
 
 final class ModelSetupAccess<M: Model>: ModelAccess, @unchecked Sendable {
     var dependencies: [(inout ModelDependencies) -> Void] = []
+    var setupClosures: [(M) -> Void] = []
     var activations: [(M) -> Void] = []
 
     var allDependencies: ((inout ModelDependencies) -> Void)? {

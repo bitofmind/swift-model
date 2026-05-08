@@ -409,6 +409,26 @@ func onActivate() {
 }
 ```
 
+### Pre-activation configuration with `withSetup`
+
+`withSetup` lets you configure a model *before* its `onActivate()` runs. Use it to set `node.environment` or `node.local` keys that `onActivate()` reads — for example, a mode flag that controls which observers are registered.
+
+In production this is rarely needed — a parent model sets environment keys on its node before a child activates, so children inherit them at the right time. But when a model is used as a root in tests (anchored directly via `withAnchor` with no parent), `withSetup` is the only hook that runs early enough for `onActivate()` to see the value.
+
+```swift
+let model = MyModel()
+    .withSetup { $0.node.environment.isEditorMode = true }
+    .withAnchor { $0.clock = ImmediateClock() }
+await settle()
+// isEditorMode was true inside onActivate() — any conditional setup there ran correctly
+```
+
+The context is fully initialised when the closure runs — `node`, tasks, and environment/local storage are all accessible. `onActivate()` has not yet been called, so any state your own `onActivate()` sets up is not yet in place.
+
+The closure is called only when the model is anchored. If the model is never anchored, the closure is never called.
+
+Multiple `withSetup` calls are additive — closures run in declaration order, all before `onActivate()`.
+
 ### Customising Activation with `withActivation`
 
 `withActivation` lets you attach extra setup that runs after `onActivate()`, without modifying the model itself. Unlike setting properties in the initialiser, `withActivation` runs after the model is live — so you can start tasks, register observers, and call `node.forEach`, all tied to the model's lifetime.

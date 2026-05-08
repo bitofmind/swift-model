@@ -4,6 +4,14 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **`withSetup`** — new modifier that runs a closure just before `onActivate()`. Use it to set `node.environment` or `node.local` keys that `onActivate()` reads (e.g. mode flags that guard which observers are registered). Unlike `withActivation`, which runs *after* `onActivate()`, `withSetup` closures run *before* it, so the model's own activation logic can see the configured values. The closure is called only when the model is anchored; if the model is never anchored, it is never called. Multiple `withSetup` calls are additive and run in declaration order.
+
+---
+
 ## [1.0.0] — `@Model` Layout Redesign, Performance Overhaul + API Cleanup
 
 ### Changed

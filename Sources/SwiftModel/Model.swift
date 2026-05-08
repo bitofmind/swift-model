@@ -160,6 +160,33 @@ public extension Model {
         }
     }
 
+    /// Configure the model just before its `onActivate()` runs.
+    ///
+    /// The closure is called with the live model instance immediately before `onActivate()`.
+    /// Use it to set `node.environment` or `node.local` keys that `onActivate()` reads — for
+    /// example to enable a mode flag that controls which observers are registered:
+    ///
+    /// ```swift
+    /// let model = MyModel()
+    ///     .withSetup { $0.node.environment.isEditorMode = true }
+    ///     .withAnchor()
+    /// ```
+    ///
+    /// The closure is called only when the model is anchored. If the model is never anchored
+    /// (e.g. a plain value held without `.withAnchor()`), the closure is never called.
+    ///
+    /// The context is fully initialised when the closure runs — `node`, tasks, and
+    /// environment/local storage are all accessible. `onActivate()` has not yet been called,
+    /// so any state your own `onActivate()` sets up is not yet in place.
+    ///
+    /// Multiple `withSetup` calls are additive — closures run in declaration order,
+    /// all before `onActivate()`.
+    func withSetup(_ setup: @escaping (Self) -> Void, function: String = #function) -> Self {
+        withSetupAccess(modify: {
+            $0.setupClosures.append(setup)
+        }, function: function)
+    }
+
     /// Attach an activation closure to this model without modifying its source.
     ///
     /// The closure is called with the model instance immediately after `onActivate()` runs.

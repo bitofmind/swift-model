@@ -49,6 +49,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         var localModel = model.initialCopy
 
         let modelSetup = model.modelSetup
+        let setupClosures = modelSetup?.setupClosures ?? []
         self.activations = modelSetup?.activations ?? []
         // The Reference is the one already in the model (shared by all pre-anchor copies).
         // `initialCopy` may transform `.reference` → `.pending` (for undo restore captures), so
@@ -129,12 +130,16 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // Transition to .reference source so node._context is non-nil inside onActivate().
         // Access is set at call time (mirrors the original `model` computed property).
         // Cleared after first call so the model doesn't outlive activation.
+        let capturedSetups = setupClosures
         let capturedActivations = activations
         let capturedReference = reference
-        pendingActivation = { [localModel, capturedActivations, capturedReference] in
+        pendingActivation = { [localModel, capturedSetups, capturedActivations, capturedReference] in
             var m = localModel
             m.modelContext.setReference(capturedReference)
             m.modelContext.access = ModelAccess.active ?? ModelAccess.current
+            for setup in capturedSetups {
+                setup(m)
+            }
             AnyCancellable.$contexts.withValue(AnyCancellable.contexts + [CancellableKey(key: ContextCancellationKey.onActivate)]) {
                 m.onActivate()
             }
