@@ -663,6 +663,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     subscript<T>(statePath statePath: WritableKeyPath<M._ModelState, T>, observeCallback callback: (() -> Void)?) -> T {
         _read {
             lock.lock()
+            // Materialize the value into a local before yielding so that the dynamic
+            // exclusivity borrow on `reference.state` ends here rather than persisting
+            // through the yield suspension.  Without this, a subsequent _modify on any
+            // other property of the same model (same reference.state address) would
+            // trigger a simultaneous-access trap even in single-threaded code.
+            let _value: T
             if unprotectedIsDestructed {
                 threadLocals.transitionOverrideValue = nil
                 if reference._stateCleared {
@@ -673,15 +679,16 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                     if !reference._hasGenesis {
                         reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
                     }
-                    yield reference.state[keyPath: statePath]
+                    _value = reference.state[keyPath: statePath]
                 } else {
-                    yield reference.state[keyPath: statePath]
+                    _value = reference.state[keyPath: statePath]
                 }
             } else if threadLocals.transitionOverrideValue != nil, let override = threadLocals.transitionOverrideValue as? T {
-                yield override
+                _value = override
             } else {
-                yield reference.state[keyPath: statePath]
+                _value = reference.state[keyPath: statePath]
             }
+            yield _value
             callback?()
             lock.unlock()
         }

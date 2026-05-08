@@ -20,6 +20,12 @@ private extension PreferenceKeys {
 // MARK: - Models
 
 @Model
+private struct ExclusivityModel {
+    var source: Int = 42
+    var target: Int = 0
+}
+
+@Model
 private struct ConcurrentLeaf {
     var value: Int = 0
 }
@@ -313,6 +319,32 @@ struct ConcurrencyTests {
             let v = container.leaves[0].isContained
             #expect(v == true || v == false) // just checking it doesn't crash
         }
+    }
+
+    // MARK: - Context._read exclusivity: read one property then write another
+
+    /// Regression test for a simultaneous-access crash caused by the `Context._read` coroutine.
+    ///
+    /// Before the fix in Context.swift, `yield reference.state[keyPath: statePath]` held a
+    /// dynamic exclusivity READ borrow on `reference.state` (a class stored property) for the
+    /// CALLER'S entire access lifetime — not just until the value was copied out.  Because all
+    /// properties of the same `@Model` type share the same `reference.state` heap address, any
+    /// `_modify` on a different property of the same model while that borrow was still active
+    /// triggered Swift's law-of-exclusivity trap:
+    ///   "Thread 1: Simultaneous accesses to 0x…, but modification requires exclusive access."
+    ///
+    /// Fix: materialize `let _value = reference.state[keyPath: statePath]` before `yield _value`,
+    /// ending the borrow on `reference.state` before the coroutine suspends.
+    @Test func readPropertyThenWriteAnotherPropertyOnSameModel() {
+        let model = ExclusivityModel().withAnchor()
+        // Read `source` (Context._read borrow on reference.state) then write `target`
+        // (Context._modify — exclusive on the same reference.state).  Before the fix the
+        // _read borrow persisted into the write and caused a simultaneous-access trap.
+        for _ in 0..<100 {
+            let value = model.source   // _read: borrow on reference.state
+            model.target = value + 1  // _modify: exclusive access on reference.state
+        }
+        #expect(model.target == 43)
     }
 
     // MARK: - contextStorage: remove concurrent with reads
