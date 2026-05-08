@@ -193,6 +193,32 @@ SwiftModel supports sharing with the following implications:
 - An event sent from a shared model will be coalesced and receivers will only see a single event (even though it was sent from all its locations in the model hierarchy).
 - Similarly a shared model will only receive sent events at most once.
 
+`node.isUniquelyReferenced` is `true` when a model has exactly one owner in the hierarchy and `false` when it is shared across multiple parents. It participates in the observation system like any model property, so you can react to changes using `onChange(of:)`, `Observed`, `memoize`, or SwiftUI bindings:
+
+```swift
+@Model struct DocumentModel {
+    var isEditable = false
+
+    func onActivate() {
+        node.onChange(of: node.isUniquelyReferenced) { _, isExclusive in
+            isEditable = isExclusive
+        }
+    }
+}
+```
+
+You can also read it directly, combine it in computed properties, or use it as a `task(id:)` restart trigger:
+
+```swift
+// Restart a task whenever ownership changes
+node.task(id: node.isUniquelyReferenced) { isExclusive in
+    mode = isExclusive ? .editing : .readOnly
+}
+
+// Compose with other observations
+node.memoize { isUniquelyReferenced ? "Exclusive" : "Shared — read only" }
+```
+
 ## Debugging
 
 See **[Debugging](Debugging.md)** for `withDebug()`, diff styles, trigger tracing, and `DebugOptions` for `memoize` and `Observed`.

@@ -1,89 +1,10 @@
 [← Back to README](../README.md)
 
-## Traversing the Hierarchy
+## Environment, Local Storage, and Preferences
 
-SwiftModel maintains full knowledge of the parent-child relationships between all models in your application. The `node.reduceHierarchy` and `node.mapHierarchy` helpers expose this information so you can query or aggregate data across any portion of the hierarchy.
+Environment and preferences let models share data across the hierarchy without explicit parent-to-child passing. **Environment** flows downward (like SwiftUI's `@Environment`); **preferences** flow upward (like SwiftUI's `PreferenceKey`). **Local storage** is private to a single node.
 
-### ModelRelation
-
-Both helpers accept a `ModelRelation` option set that controls which models are visited:
-
-| Relation | Description |
-|---|---|
-| `.self` | Only the model itself |
-| `.parent` | Direct parents (one hop up) |
-| `.ancestors` | All ancestors recursively (parents, grandparents, …) |
-| `.children` | Direct children (one hop down) |
-| `.descendants` | All descendants recursively |
-| `.dependencies` | Also include dependency models at each visited node |
-
-Relations can be combined freely: `[.self, .descendants]` visits the model and its entire subtree.
-
-### mapHierarchy
-
-`mapHierarchy` applies a transform closure to each visited model and collects the non-nil results into an array:
-
-```swift
-// Find the nearest ancestor AppModel
-let appModel = node.mapHierarchy(for: .ancestors) { $0 as? AppModel }.first
-
-// Collect all descendant models of a specific type
-let counters = node.mapHierarchy(for: [.self, .descendants]) { $0 as? CounterModel }
-```
-
-### reduceHierarchy
-
-`reduceHierarchy` is the general form. It lets you fold results into an accumulator, which is useful when building up non-array results:
-
-```swift
-// Sum all counts across the descendant subtree
-let total = node.reduceHierarchy(
-    for: [.self, .descendants],
-    transform: { ($0 as? CounterModel)?.count },
-    into: 0
-) { $0 += $1 }
-```
-
-### Observation with Hierarchy Traversal
-
-Combining `Observed` with `mapHierarchy` or `reduceHierarchy` creates a stream that automatically tracks *both* property changes and structural changes across an entire subtree. This is a uniquely powerful pattern that most architectures cannot express without manual subscriptions.
-
-```swift
-func onActivate() {
-    // Re-evaluates when count changes on any CounterModel in the hierarchy,
-    // AND when counters are added or removed.
-    node.forEach(Observed { node.mapHierarchy(for: [.self, .descendants]) { ($0 as? CounterModel)?.count } }) { counts in
-        total = counts.reduce(0, +)
-    }
-}
-```
-
-The stream re-evaluates in two situations:
-- **Property change**: any `count` on any visited `CounterModel` changes
-- **Structural change**: a child model is added or removed from the hierarchy
-
-A practical real-world example — a document model that tracks whether any sub-editor has unsaved changes:
-
-```swift
-@Model struct DocumentModel {
-    var editors: [EditorModel] = []
-    var hasUnsavedChanges = false
-
-    func onActivate() {
-        node.forEach(Observed { node.mapHierarchy(for: [.self, .descendants]) { ($0 as? EditorModel)?.isDirty } }) { dirtyFlags in
-            hasUnsavedChanges = dirtyFlags.contains(true)
-        }
-    }
-}
-```
-
-When a new `EditorModel` is added to `editors`, the stream immediately includes its `isDirty` property in the tracking set — no manual subscription needed.
-
-## Context and Preferences
-
-Context and preferences let models share data across the model hierarchy without explicit parent-to-child passing. **Context** flows downward (like SwiftUI's `@Environment`); **preferences** flow upward (like SwiftUI's `PreferenceKey`).
-
-Both systems are declared by extending a namespace type with computed properties. Context storage comes in two flavours: **local** (node-private, not inherited) via `node.local`, and **environment** (top-down propagation, like SwiftUI's `@Environment`) via `node.environment`. Preferences are accessed via `node.preference`.
+Both systems are declared by extending a namespace type with computed properties.
 
 ### Local storage — node-private
 
@@ -217,3 +138,82 @@ var showsUnsavedIndicator: Bool {
     node.preference.hasUnsavedChanges
 }
 ```
+
+## Traversing the Hierarchy
+
+SwiftModel maintains full knowledge of the parent-child relationships between all models in your application. The `node.reduceHierarchy` and `node.mapHierarchy` helpers expose this information so you can query or aggregate data across any portion of the hierarchy.
+
+### ModelRelation
+
+Both helpers accept a `ModelRelation` option set that controls which models are visited:
+
+| Relation | Description |
+|---|---|
+| `.self` | Only the model itself |
+| `.parent` | Direct parents (one hop up) |
+| `.ancestors` | All ancestors recursively (parents, grandparents, …) |
+| `.children` | Direct children (one hop down) |
+| `.descendants` | All descendants recursively |
+| `.dependencies` | Also include dependency models at each visited node |
+
+Relations can be combined freely: `[.self, .descendants]` visits the model and its entire subtree.
+
+### mapHierarchy
+
+`mapHierarchy` applies a transform closure to each visited model and collects the non-nil results into an array:
+
+```swift
+// Find the nearest ancestor AppModel
+let appModel = node.mapHierarchy(for: .ancestors) { $0 as? AppModel }.first
+
+// Collect all descendant models of a specific type
+let counters = node.mapHierarchy(for: [.self, .descendants]) { $0 as? CounterModel }
+```
+
+### reduceHierarchy
+
+`reduceHierarchy` is the general form. It lets you fold results into an accumulator, which is useful when building up non-array results:
+
+```swift
+// Sum all counts across the descendant subtree
+let total = node.reduceHierarchy(
+    for: [.self, .descendants],
+    transform: { ($0 as? CounterModel)?.count },
+    into: 0
+) { $0 += $1 }
+```
+
+### Observation with Hierarchy Traversal
+
+Combining `Observed` with `mapHierarchy` or `reduceHierarchy` creates a stream that automatically tracks *both* property changes and structural changes across an entire subtree. This is a uniquely powerful pattern that most architectures cannot express without manual subscriptions.
+
+```swift
+func onActivate() {
+    // Re-evaluates when count changes on any CounterModel in the hierarchy,
+    // AND when counters are added or removed.
+    node.forEach(Observed { node.mapHierarchy(for: [.self, .descendants]) { ($0 as? CounterModel)?.count } }) { counts in
+        total = counts.reduce(0, +)
+    }
+}
+```
+
+The stream re-evaluates in two situations:
+- **Property change**: any `count` on any visited `CounterModel` changes
+- **Structural change**: a child model is added or removed from the hierarchy
+
+A practical real-world example — a document model that tracks whether any sub-editor has unsaved changes:
+
+```swift
+@Model struct DocumentModel {
+    var editors: [EditorModel] = []
+    var hasUnsavedChanges = false
+
+    func onActivate() {
+        node.forEach(Observed { node.mapHierarchy(for: [.self, .descendants]) { ($0 as? EditorModel)?.isDirty } }) { dirtyFlags in
+            hasUnsavedChanges = dirtyFlags.contains(true)
+        }
+    }
+}
+```
+
+When a new `EditorModel` is added to `editors`, the stream immediately includes its `isDirty` property in the tracking set — no manual subscription needed.

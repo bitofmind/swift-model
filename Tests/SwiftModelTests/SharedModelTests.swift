@@ -134,8 +134,8 @@ private struct Child: Equatable {
             node.testResult.add("c\(id)")
         }
 
-        node.forEach(node.uniquelyReferenced()) {
-            print("uniquelyReferenced", id, $0)
+        node.onChange(of: node.isUniquelyReferenced) { _, isUnique in
+            print("isUniquelyReferenced", id, isUnique)
         }
     }
 }

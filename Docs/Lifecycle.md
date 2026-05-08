@@ -54,7 +54,7 @@ The `catch:` closure is called on the same context as the task body, so writing 
 
 For `node.task`, `catch:` is only required when the operation can throw — the non-throwing overload has no `catch:` parameter at all. If the task's body is non-throwing and you want to silently ignore errors from a specific branch, catch them inside the closure.
 
-For `node.forEach`, omitting `catch:` is safe for non-throwing sequences. If the sequence or operation can throw and you omit `catch:`, SwiftModel calls `reportIssue` at the `forEach` call site — this fails the test in test mode and triggers an `assertionFailure` in debug builds. Per-element errors with `abortIfOperationThrows: false` (the default) are always silently swallowed; only sequence-level throws and `abortIfOperationThrows: true` errors trigger the report.
+For `node.forEach`, omitting `catch:` is safe for non-throwing sequences. If the sequence or operation can throw and you omit `catch:`, SwiftModel calls `reportIssue` at the `forEach` call site — this fails the test in test mode and raises a runtime warning in Xcode's issue navigator in debug builds. Per-element errors with `abortIfOperationThrows: false` (the default) are always silently swallowed; only sequence-level throws and `abortIfOperationThrows: true` errors trigger the report.
 
 For fire-and-forget work where errors are genuinely ignorable (analytics pings, prefetch), pass an explicit empty `catch:` to document the intent:
 
@@ -173,13 +173,15 @@ SwiftModel provides `node.memoize()` for creating cached computed properties tha
   var items: [Item] = []
 
   var processedData: [ProcessedItem] {
-    node.memoize(for: "processedData") {
+    node.memoize {
       // Expensive computation only runs when items changes
       items.map { processItem($0) }
     }
   }
 }
 ```
+
+The key is synthesised automatically from the call site. Pass an explicit `for:` string only when you need stable identity across refactors or when the same closure is registered conditionally from multiple call sites.
 
 Memoize automatically:
 - **Caches the result** of the computation
@@ -192,7 +194,7 @@ For `Equatable` types, you can enable deduplication to prevent unnecessary recom
 
 ```swift
 var normalized: String {
-  node.memoize(for: "normalized") {
+  node.memoize {
     name.lowercased().trimmingCharacters(in: .whitespaces)
   }
 }

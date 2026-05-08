@@ -62,6 +62,8 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 All APIs that were deprecated in prior releases have been removed:
 
+- **`node.uniquelyReferenced() -> AsyncStream<Bool>`** — use `node.isUniquelyReferenced` instead. The property participates in the full observation system (`Observed { node.isUniquelyReferenced }`, `node.onChange(of: node.isUniquelyReferenced)`, `node.memoize`, SwiftUI views) and fires only on parent-relationship changes rather than on every modification in the hierarchy.
+
 - **`UsingModel`** — use `ModelScope { … }` instead, capturing models from the enclosing scope.
 - **`observeAnyModification()`** — use `observeModifications()` for identical behaviour; the new API adds scope, kind, and predicate filtering.
 - **`model.andTester(exhaustivity:withDependencies:)`** — use `model.withAnchor()` inside `@Test(.modelTesting)` instead.

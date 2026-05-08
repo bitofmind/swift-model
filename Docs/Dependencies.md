@@ -2,38 +2,49 @@
 
 ## Dependencies
 
-For improved control of a model's dependencies to outside systems, such as backend services, SwiftModel has a system where a model can access its dependencies without needing to know how they were configured or set up. This is very similar to how SwiftUI's environment is working.
+Models access external services — network clients, persistence, clocks — through a typed dependency system similar to SwiftUI's `@Environment`. Dependencies are resolved at the model's position in the hierarchy, making them trivial to override per-test, per-preview, or per-model-subtree.
 
-> This has been popularized by the [swift-dependency](https://github.com/pointfreeco/swift-dependencies) package which SwiftModel integrates with.
+> SwiftModel integrates with [swift-dependencies](https://github.com/pointfreeco/swift-dependencies) by Point-Free, which means the growing ecosystem of community-built dependency wrappers conforms out of the box.
 
-You define a dependency type by conforming it to DependencyKey where you provide a default value:
+### Defining a dependency
+
+Conform your dependency type to `DependencyKey` to provide a live default, then extend `DependencyValues` for convenient keypath access:
 
 ```swift
 import Dependencies
 
 struct FactClient {
-  var fetch: @Sendable (Int) async throws -> String
+    var fetch: @Sendable (Int) async throws -> String
 }
 
 extension FactClient: DependencyKey {
-  static let liveValue = FactClient(
-    fetch: { number in
-      let (data, _) = try await URLSession.shared.data(from: URL(string: "http://numbersapi.com/\(number)")!)
-        return String(decoding: data, as: UTF8.self)
-      }
-   )
+    static let liveValue = FactClient(
+        fetch: { number in
+            let (data, _) = try await URLSession.shared.data(from: URL(string: "http://numbersapi.com/\(number)")!)
+            return String(decoding: data, as: UTF8.self)
+        }
+    )
+}
+
+extension DependencyValues {
+    var factClient: FactClient {
+        get { self[FactClient.self] }
+        set { self[FactClient.self] = newValue }
+    }
 }
 ```
 
-A model accesses its dependencies via its `node`.
+Access the dependency via `node`:
 
 ```swift
-let fact = try await node[FactClient.self].fetch(count)
+let fact = try await node.factClient.fetch(count)
 ```
 
 > `node` is the model implementor's interface to the SwiftModel runtime. It provides access to dependencies, async tasks, events, cancellations, memoization, and hierarchy queries. It is intended to be used from within a model's own implementation — in `onActivate()`, in methods, and in extensions — not by external consumers of the model.
 
-There is also a convenience macro for dependencies:
+### Declaring dependencies on a model
+
+For dependencies that should be visible at the struct level — for example, when you want the dependency to appear in the memberwise initialiser — use `@ModelDependency`:
 
 ```swift
 @Model struct CounterModel {
@@ -41,7 +52,7 @@ There is also a convenience macro for dependencies:
 }
 ```
 
-`@ModelDependency` uses the property's declared type to identify the dependency (via `DependencyKey`). If you want to look up a dependency by key path instead — mirroring SwiftUI's `@Environment(\.keyPath)` syntax — you can pass a key path argument:
+When the property type is a protocol or abstract type with no `DependencyKey` conformance of its own, pass a keypath argument to identify it via `DependencyValues`:
 
 ```swift
 @Model struct TimerModel {
@@ -49,85 +60,7 @@ There is also a convenience macro for dependencies:
 }
 ```
 
-This is useful when the property type is a protocol or other abstract type that has no `DependencyKey` conformance of its own, or simply to make the link to `DependencyValues` explicit and visible at the declaration site. For most cases though, accessing dependencies directly through `node` (e.g. `node.continuousClock`) tends to be more convenient since it doesn't require a dedicated property declaration.
-
-### DependencyValues
-
-By also extending `DependencyValues` you will get more convenient access to commonly used dependencies:
-
-```
-extension DependencyValues {
-  var factClient: FactClient {
-    get { self[FactClient.self] }
-    set { self[FactClient.self] = newValue }
-  }
-}
-```
-
-```swift
-let fact = try await node.factClient.fetch(count)
-```
-
-### Swift 6.2 — `defaultIsolation: MainActor`
-
-Xcode 26 creates new projects with `defaultIsolation: MainActor`, which makes every declaration in the module `@MainActor`-isolated by default. SwiftModel itself is designed to be `nonisolated` — its internals access model state through a lock, not through actor isolation — so this setting creates a mismatch that needs a few targeted annotations to resolve.
-
-> **`nonisolated` vs `Sendable`** — these solve different problems. `Sendable` says "this value is safe to pass across isolation boundaries." `nonisolated` says "this declaration does not run on `@MainActor`." Under `defaultIsolation: MainActor`, the problem is that property accessors and protocol conformances get `@MainActor` injected, so the code runs on the wrong executor — not that data is being shared unsafely. Adding `Sendable` to a type that already has `@MainActor`-isolated accessors does not fix the errors.
-
-Three patterns cover the cases that arise:
-
-**1. Plain domain structs accessed from other modules (e.g. test targets)**
-
-Under `defaultIsolation: MainActor`, every stored-property getter becomes `@MainActor`-isolated — even on `let` properties. Test targets compiled without the setting are `nonisolated` and cannot read those properties.
-
-```swift
-// Breaks cross-module access — name/owner getters are @MainActor
-struct Repo: Sendable {
-    let name: String
-    let owner: String
-}
-
-// Fix: opts the synthesised accessors out of the module default
-nonisolated struct Repo: Sendable {
-    let name: String
-    let owner: String
-}
-```
-
-**2. Dependency struct with mutable properties**
-
-Same issue: `var fetch` gets a `@MainActor` setter, breaking the `withAnchor { $0.factClient.fetch = … }` call from any `nonisolated` context.
-
-```swift
-nonisolated struct FactClient {
-    var fetch: @Sendable (Int) async throws -> String
-}
-```
-
-**3. `DependencyKey` conformance and `DependencyValues` accessor**
-
-A plain `extension FactClient: DependencyKey` under `defaultIsolation: MainActor` produces a `@MainActor`-isolated conformance. SwiftModel's non-`@MainActor` internals call `liveValue` when resolving dependencies; a `@MainActor`-isolated conformance can't satisfy that call from a `nonisolated` context.
-
-```swift
-nonisolated extension FactClient: DependencyKey {
-    static let liveValue = FactClient(...)
-}
-
-extension DependencyValues {
-    nonisolated var factClient: FactClient {
-        get { self[FactClient.self] }
-        set { self[FactClient.self] = newValue }
-    }
-}
-```
-
-Any private helper types used inside `liveValue` closures (e.g. `Decodable` structs for JSON parsing) need the same treatment if they appear in a `nonisolated` context:
-
-```swift
-private nonisolated struct SearchResponse: Decodable { ... }
-```
-
-> **Note:** You don't need `defaultIsolation: MainActor` in a SwiftModel module for safety. State mutations are protected by SwiftModel's internal lock regardless of actor isolation — no `@MainActor` hop is required. If you keep the setting (e.g. because Xcode 26 added it automatically), the patterns above are all that's needed.
+For most cases, `node.factClient` and `node.continuousClock` are simpler — no property declaration needed.
 
 ### Overriding Dependencies
 
@@ -228,3 +161,35 @@ let services = node.mapHierarchy(for: [.self, .descendants, .dependencies]) {
     $0 as? AnalyticsService
 }
 ```
+
+### Swift 6.2 — `defaultIsolation: MainActor`
+
+Xcode 26 creates new projects with `defaultIsolation: MainActor`, isolating every declaration by default. SwiftModel uses a lock, not actor isolation, so a few targeted `nonisolated` annotations are needed where the setting would otherwise inject `@MainActor`:
+
+**Domain structs and dependency types:**
+
+```swift
+// Without nonisolated, let/var accessors become @MainActor-isolated,
+// breaking cross-module access from nonisolated test targets.
+nonisolated struct Repo: Sendable { let name: String; let owner: String }
+nonisolated struct FactClient { var fetch: @Sendable (Int) async throws -> String }
+```
+
+**`DependencyKey` conformance and `DependencyValues` accessor:**
+
+```swift
+nonisolated extension FactClient: DependencyKey {
+    static let liveValue = FactClient(...)
+}
+
+extension DependencyValues {
+    nonisolated var factClient: FactClient {
+        get { self[FactClient.self] }
+        set { self[FactClient.self] = newValue }
+    }
+}
+```
+
+Any private helper types inside `liveValue` closures that appear in a `nonisolated` context (e.g. `Decodable` structs for JSON parsing) need the same treatment.
+
+> You don't need `defaultIsolation: MainActor` in a SwiftModel module for safety — model state is protected by SwiftModel's internal lock regardless of actor isolation. If Xcode 26 added it automatically, the patterns above are all that's needed.

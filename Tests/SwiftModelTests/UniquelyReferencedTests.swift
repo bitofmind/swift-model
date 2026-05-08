@@ -31,7 +31,7 @@ struct UniquelyReferencedTests {
         }
     }
 
-    // MARK: - uniquelyReferenced() stream
+    // MARK: - isUniquelyReferenced (observed)
 
     /// The stream emits `true` initially when there is only one owner.
     @Test func testUniquelyReferencedStreamEmitsTrueInitially() async {
@@ -127,14 +127,14 @@ struct UniquelyReferencedTests {
     var secondary: ChildModel? = nil
 }
 
-/// A host that tracks `uniquelyReferenced()` emissions from its child into `testResult`.
+/// A host that tracks `isUniquelyReferenced` changes on its child into `testResult`.
 @Model private struct WatchedChildHost {
     var primary: ChildModel = ChildModel()
     var secondary: ChildModel? = nil
     var unrelated: Int = 0
 
     func onActivate() {
-        node.forEach(primary.node.uniquelyReferenced()) { isUnique in
+        node.onChange(of: primary.node.isUniquelyReferenced) { _, isUnique in
             node.testResult.add("unique:\(isUnique)")
         }
     }

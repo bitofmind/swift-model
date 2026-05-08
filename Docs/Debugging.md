@@ -55,16 +55,19 @@ let cancel = model.debug()
 cancel.cancel()
 ```
 
-For `memoize` and `Observed`, the `debug:` parameter is `DebugOptions?` — omit it (or pass `nil`) to disable debug output, or pass a `DebugOptions` value to enable it:
+For `memoize`, `Observed`, and `observeModifications()`, the `debug:` parameter is `DebugOptions?` — omit it (or pass `nil`) to disable debug output, or pass a `DebugOptions` value to enable it:
 
 ```swift
 // Print the new value (no diff) whenever a memoized result changes
-node.memoize(for: "sorted", debug: .init(changes: .value)) { items.sorted() }
+node.memoize(debug: .init(changes: .value)) { items.sorted() }
 
 // Print which dependency triggered an Observed update (old → new value)
 node.forEach(Observed(debug: .triggers(.withValue)) { model.count }) { value in ... }
+
+// Print a line for each observeModifications() emission, showing the trigger source
+node.forEach(observeModifications(debug: .triggers())) { _ in autosave() }
 ```
 
 > Debug output is only active in `DEBUG` builds.
 
-**Targeted debug in practice** — the [TodoList](../Examples/TodoList) example uses `Observed(debug:)` inside `onActivate()` to trace only `items.count` and `completedCount`, avoiding noise from unrelated property changes (e.g., `newItemTitle` keystrokes). The [Search](../Examples/Search) example demonstrates `withDebug()` at the app level alongside `cancelPrevious: true` on `forEach` to show cancel-in-flight behaviour.
+**Targeted debug in practice** — the [TodoList](../Examples/TodoList) example uses `Observed(debug:)` inside `onActivate()` to trace only `items.count` and `completedCount`, avoiding noise from unrelated property changes (e.g., `newItemTitle` keystrokes). The [Search](../Examples/Search) example demonstrates `withDebug()` at the app level alongside `cancelPrevious: true` on `forEach` to show cancel-in-flight behaviour. `observeModifications(debug: .triggers())` is useful for diagnosing unexpected autosave or dirty-tracking triggers.

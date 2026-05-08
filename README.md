@@ -24,7 +24,7 @@ Composable models for SwiftUI — struct-based, automatic async lifetime, exhaus
 }
 ```
 
-- **No retain cycles, ever.** Structs can't capture `self` — the compiler makes retain cycles impossible, not just unlikely.
+- **No retain cycles.** Closures that capture `self` capture a struct value with a weak context reference — the cycle that requires `[weak self]` in `@Observable` classes can't form.
 - **Lifetime-tied tasks.** `node.task` and `node.forEach` are cancelled when the model is removed. No stored `Task`, no `deinit`, no manual cleanup.
 - **Exhaustive tests.** Any state change you didn't assert is a test failure. Refactor freely — tests check *what changed*, not *how you got there*.
 - **Dependency injection anywhere.** Override per model, per hierarchy level, or per test — with a trailing closure at the call site.
@@ -181,9 +181,7 @@ Rename a method or split an async effect — the test keeps passing as long as t
 
 **[Models and composition](Docs/Models.md)** — `@Model` macro, child models, optional and collection composition, `@ModelContainer` for navigation enums and reusable wrappers.
 
-**[Async lifetime](Docs/Lifecycle.md)** — `node.task`, `node.task(id:)` for restart-on-change, `node.onChange(of:)` for old/new value transitions, `node.forEach`, reactive streams with `Observed`, `onActivate`, `withActivation` for composable behaviour injection, `observeAnyModification`, transactions, and cancellation groups.
-
-**[Undo and redo](Docs/Undo.md)** — `node.trackUndo()` with selective key-path tracking, `UndoManager` integration, and observable `canUndo` / `canRedo`.
+**[Async lifetime](Docs/Lifecycle.md)** — `node.task`, `node.task(id:)` for restart-on-change, `node.onChange(of:)` for old/new value transitions, `node.forEach`, reactive streams with `Observed`, `onActivate`, `withActivation` for composable behaviour injection, `observeModifications`, transactions, and cancellation groups.
 
 **[Dependency injection](Docs/Dependencies.md)** — `@ModelDependency`, per-model and per-hierarchy overrides, preview values, and test overrides at the anchor site.
 
@@ -191,11 +189,13 @@ Rename a method or split an async effect — the test keeps passing as long as t
 
 **[Events](Docs/Events.md)** — typed events that travel up or down the model hierarchy. Composable with model-scoped `Event` types.
 
-**[Hierarchy and preferences](Docs/HierarchyAndPreferences.md)** — `mapHierarchy` for tree queries, bottom-up preference aggregation, top-down environment propagation, and local node storage.
-
 **[Testing](Docs/Testing.md)** — `expect { }`, `settle()`, `require()`, `TestProbe`, exhaustivity control per category, time-control with `TestClock`, and `withModelTesting` for non-trait contexts.
 
-**[Debugging](Docs/Debugging.md)** — `withDebug()`, diff styles, trigger tracing, and `DebugOptions` for `memoize` and `Observed`.
+**[Debugging](Docs/Debugging.md)** — `withDebug()`, diff styles, trigger tracing, and `DebugOptions` for `memoize`, `Observed`, and `observeModifications`.
+
+**[Hierarchy and preferences](Docs/HierarchyAndPreferences.md)** — top-down environment propagation, bottom-up preference aggregation, local node storage, and `mapHierarchy` for tree queries.
+
+**[Undo and redo](Docs/Undo.md)** — `node.trackUndo()` with selective key-path tracking, `UndoManager` integration, and observable `canUndo` / `canRedo`.
 
 ## Examples
 
@@ -211,17 +211,19 @@ Clone the repo and open any example in Xcode to run it immediately.
 
 ## What SwiftModel Is Not
 
-**Not a UI framework.** SwiftModel sits entirely in the model layer. Views are plain SwiftUI.
+**Not a UI framework.** SwiftModel lives in the model layer — views are plain SwiftUI. No custom containers, no prescribed navigation wrappers. Existing SwiftUI knowledge applies directly.
 
-**Not an opinion on file structure.** One model per file or many — organise however suits your team.
+**Not a whole-app commitment.** Add `@Model` to one struct and wire up one view. The rest of your codebase is unchanged. Adopt incrementally; there is no forced rewrite.
 
-**Not a Combine replacement.** SwiftModel uses `async`/`await` throughout. Combine is supported via `node.onReceive(_:)` for projects that need it, but is not required.
+**Not a Combine replacement.** SwiftModel uses `async`/`await` throughout. If your project uses Combine, `node.onReceive(_:)` lets you subscribe to any publisher for the model's lifetime — but Combine is never required.
 
-**Not magic.** The `@Model` macro is a code generator. Expand it in Xcode (`Editor → Expand Macro`) to see exactly what it produces. No runtime swizzling, no reflection.
+**Not magic.** `@Model` is a code generator. In Xcode, `Editor → Expand Macro` shows exactly what it produces. No runtime swizzling, no reflection, no hidden dispatch.
 
 ## Acknowledgements
 
-SwiftModel uses [swift-dependencies](https://github.com/pointfreeco/swift-dependencies) by [Point-Free](https://www.pointfree.co) for its dependency injection system. The ideas around exhaustive testing and structured async effects were directly inspired by [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture) — SwiftModel takes a different approach, but Point-Free's work on the problem space has been invaluable.
+SwiftModel builds on several open-source libraries from [Point-Free](https://www.pointfree.co). [swift-dependencies](https://github.com/pointfreeco/swift-dependencies) powers the dependency injection system — an earlier version of SwiftModel shipped its own simpler container, but integrating with swift-dependencies means you can use the growing ecosystem of community-built dependency wrappers directly. [swift-custom-dump](https://github.com/pointfreeco/swift-custom-dump) provides the structured diffs in test failure messages and debug output. And `reportIssue` (from [xctest-dynamic-overlay](https://github.com/pointfreeco/xctest-dynamic-overlay)) is how SwiftModel surfaces runtime warnings in tests and in Xcode's issue navigator.
+
+The ideas around exhaustive testing and structured async effects were directly inspired by [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture) — SwiftModel takes a different approach, but Point-Free's work on the problem space has been invaluable.
 
 ---
 
