@@ -291,10 +291,14 @@ extension TestAccess {
                     // pool may not have serviced them within the patience window; the next
                     // yieldToScheduler() will give them a turn.
                     //
-                    // Only applies to reportTimeout:true (active test body settle()).
-                    // For reportTimeout:false (checkExhaustion), tasks are cancelled and
-                    // won't write state — allow the break so cleanup doesn't stall.
-                    guard !reportTimeout || activationTasksInFlight == 0 else { continue }
+                    // Three conditions that allow breaking out:
+                    // 1. !reportTimeout (checkExhaustion): tasks are cancelled, break immediately.
+                    // 2. activationTasksInFlight == 0: all tasks started, break normally.
+                    // 3. elapsed >= hardCap: deadline exceeded — break so the hardCap check
+                    //    below can call fail() and return false. Without this, a saturated
+                    //    cooperative pool can keep activationTasksInFlight > 0 indefinitely,
+                    //    causing a process-level hang that outlasts the CI job timeout.
+                    guard !reportTimeout || activationTasksInFlight == 0 || cal.start.distance(to: monotonicNanoseconds()) >= cal.hardCap else { continue }
                     break // No progress — remaining tasks are observation loops or cancelled tasks
                 }
                 lastChangeVersion = context.modificationCount
