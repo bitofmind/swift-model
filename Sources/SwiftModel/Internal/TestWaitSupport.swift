@@ -245,6 +245,11 @@ extension TestAccess {
         // handles it. For observation-heavy models this adds at most two cheap
         // no-op iterations rather than triggering cascading observation re-fires.
         var sawZeroActiveTasks = false
+        // Counts consecutive patience windows where activationTasksInFlight > 0 but
+        // no modification was detected. Capped at 3 to prevent infinite loops under
+        // cooperative pool saturation (700+ parallel tests can starve onActivate tasks
+        // indefinitely). Reset to 0 whenever modificationCount changes (progress made).
+        var activationWaitCount = 0
         while true {
             await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
             await yieldToScheduler()
@@ -291,21 +296,25 @@ extension TestAccess {
                     // pool may not have serviced them within the patience window; the next
                     // yieldToScheduler() will give them a turn.
                     //
-                    // Three conditions that allow breaking out:
-                    // 1. !reportTimeout (checkExhaustion): tasks are cancelled, break immediately.
-                    // 2. activationTasksInFlight == 0: all tasks started, break normally.
-                    // 3. elapsed >= hardCap: deadline exceeded — break so the hardCap check
-                    //    below can call fail() and return false. Without this, a saturated
-                    //    cooperative pool can keep activationTasksInFlight > 0 indefinitely,
-                    //    causing a process-level hang that outlasts the CI job timeout.
-                    guard !reportTimeout || activationTasksInFlight == 0 || cal.start.distance(to: monotonicNanoseconds()) >= cal.hardCap else { continue }
+                    // Allow up to 3 consecutive patience windows (≤ 900ms) before giving up.
+                    // Using hardCap (5-30s) instead would make 100+ stuck tests take 17+
+                    // minutes under parallel load, hanging CI beyond the job timeout.
+                    if reportTimeout && activationTasksInFlight > 0 {
+                        activationWaitCount += 1
+                        if activationWaitCount <= 3 { continue }
+                        // 3+ patience windows elapsed with activationTasksInFlight > 0 —
+                        // cooperative pool is saturated and tasks cannot start. Fall through
+                        // to break; hardCap check below handles the overall timeout.
+                    }
                     break // No progress — remaining tasks are observation loops or cancelled tasks
                 }
                 lastChangeVersion = context.modificationCount
                 sawZeroActiveTasks = false
+                activationWaitCount = 0
             } else {
                 lastChangeVersion = currentVersion
                 sawZeroActiveTasks = false
+                activationWaitCount = 0
             }
             if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
                 if reportTimeout {
