@@ -320,9 +320,13 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
     /// thread-local stack (phase-1 init accessor path).
     public static func _threadLocalStoreOrLatest<V>(_ path: WritableKeyPath<M._ModelState, V>, _ value: V) {
         if let ref = threadLocals.pendingStack.latest as? Context<M>.Reference {
-            // Keep old value alive past the write so its deinit cannot fire while
-            // ref.state is exclusively held, preventing Swift exclusivity violations.
-            withExtendedLifetime(ref.state[keyPath: path]) {
+            // Keep the entire old state alive past the write so no class reference's
+            // deinit can fire while ref.state is exclusively held (prevents re-entrant
+            // exclusivity violations). Reading ref.state (whole-struct copy) instead of
+            // ref.state[keyPath: path] avoids the keypath trap that occurs when the field
+            // is a zero-initialized @Model value (_zeroInit() produces an invalid spare-bit
+            // pattern for _ModelSourceBox._mode, causing KeyPath._projectReadOnly to trap).
+            withExtendedLifetime(ref.state) {
                 ref.state[keyPath: path] = value
             }
         } else {
@@ -564,6 +568,29 @@ extension _ModelSourceBox {
 
     public subscript<T: Model>(write statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
         get { self[read: statePath, access: accessBox] }
+        nonmutating _modify {
+            guard let context = _modifyContext(accessBox: accessBox) else {
+                // Pre-anchor or live: yield directly into state storage, bypassing the getter.
+                // The getter reads reference.state[keyPath:] which traps on zero-initialized
+                // @Model fields — _zeroInit() produces a bit pattern that is invalid for the
+                // spare-bit _Mode enum in _ModelSourceBox, causing KeyPath._projectReadOnly to
+                // trap in _pop<RawKeyPathComponent.Header>. This happens when _$modelSource's
+                // default fires before the user assigns the property in a user-written init.
+                if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
+                    yield &reference.state[keyPath: statePath]
+                    reference._stateVersion &+= 1
+                } else {
+                    var value = self[read: statePath, access: accessBox]
+                    yield &value
+                }
+                return
+            }
+            // Anchored: read current value, yield, write back via setter to trigger proper
+            // child context management (old context removal, new context anchoring).
+            var value = self[read: statePath, access: accessBox]
+            yield &value
+            self[write: statePath, access: accessBox] = value
+        }
         nonmutating set {
             // Pre-anchor or live: store directly without anchoring semantics.
             // _modifyContext returns nil for this case and would silently drop the write.

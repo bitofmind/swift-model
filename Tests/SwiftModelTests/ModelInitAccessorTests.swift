@@ -57,6 +57,22 @@ private struct ParentModel {
     var label = "hello"
 }
 
+/// Regression: child @Model property with NO default value, assigned in a user-written init.
+/// Before the fix, the synthesised _modify of subscript<T:Model>(write:access:) read the
+/// zero-initialised child via keyPath, trapping in KeyPath._projectReadOnly / _pop<Header>.
+@Model
+private struct OuterWithNoDefaultChild {
+    var flag = false          // FIRST — has default
+    var child: SimpleCounterModel   // no default → zero-init until assigned in init body
+    var label = ""            // LAST — has default
+
+    init(startCount: Int) {
+        flag = true                           // pre-anchor write before child is set
+        child = SimpleCounterModel()          // ← was the crash site
+        child.count = startCount             // in-place modify of assigned child
+    }
+}
+
 /// Model with a `let` property and an `@_ModelIgnored` stored var.
 @Model
 private struct LetAndIgnoredModel {
@@ -224,6 +240,22 @@ struct ModelInitAccessorTests {
         m.counter.count = 5
         await expect { m.counter.count == 5 }
         await expect { m.label == "hello" }
+    }
+
+    /// Regression: assigning a @Model-typed var with no default in a user-written init
+    /// previously trapped in KeyPath._projectReadOnly when the synthesised _modify of
+    /// subscript<T:Model>(write:access:) tried to read the zero-initialised field.
+    @Test func childModelNoDefaultAssignedInInit() async {
+        let m = OuterWithNoDefaultChild(startCount: 7).withAnchor()
+        await expect { m.flag == true }
+        await expect { m.child.count == 7 }
+    }
+
+    @Test func childModelNoDefaultPreAnchorMutate() async {
+        var m = OuterWithNoDefaultChild(startCount: 3)
+        m.child.count = 99
+        let live = m.withAnchor()
+        await expect { live.child.count == 99 }
     }
 
     // MARK: let property and @_ModelIgnored
