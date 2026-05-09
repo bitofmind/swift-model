@@ -250,9 +250,23 @@ extension TestAccess {
         // cooperative pool saturation (700+ parallel tests can starve onActivate tasks
         // indefinitely). Reset to 0 whenever modificationCount changes (progress made).
         var activationWaitCount = 0
+        var lastDiagnosticsNs = cal.start
         while true {
             await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
             await yieldToScheduler()
+
+            // Emit a status line every 10 s so CI logs show whether the loop is
+            // making progress or truly stuck (helps diagnose cooperative-pool saturation).
+            let loopNow = monotonicNanoseconds()
+            if loopNow - lastDiagnosticsNs >= 10 * nanosPerSecond {
+                lastDiagnosticsNs = loopNow
+                let elapsedS = Double(loopNow - cal.start) / Double(nanosPerSecond)
+                let activeTasks = lock { _activeTaskCount }
+                let activationPending = activationTasksInFlight
+                print(String(format: "[waitUntilSettled] elapsed=%.1fs activeTasks=%d activationPending=%d activationWaitCount=%d bgIdle=%@ modCount=%d",
+                    elapsedS, activeTasks, activationPending, activationWaitCount,
+                    backgroundCall.isIdle ? "true" : "false", context.modificationCount))
+            }
 
             let currentVersion = context.modificationCount
             if currentVersion == lastChangeVersion {
