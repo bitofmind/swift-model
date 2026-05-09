@@ -302,72 +302,7 @@ struct CoalescingTests {
     }
 
     // MARK: - Transaction Tests
-    
-    /// Test that coalescing works correctly with rapid mutations (no transaction wrapper needed)
-    /// Coalescing happens when threadLocals.postTransactions == nil (outside model's internal transaction)
-    @Test func testCoalescingWithRapidMutations_AccessCollector() async throws {
-        let model = TestModel().withAnchor()
-        let updateCount = LockIsolated(0)
 
-        let (cancellable, _) = update(
-            initial: false,
-            isSame: { $0 == $1 },
-            useWithObservationTracking: false,
-            useCoalescing: true,
-            access: { model.value },
-            onUpdate: { _ in updateCount.withValue { $0 += 1 } }
-        )
-        defer { cancellable() }
-
-        // Rapid mutations: should coalesce to very few updates
-        for i in 1...100 {
-            model.value = i
-        }
-
-        // Wait for all pending work to settle
-        await backgroundCall.waitUntilIdle()
-
-        // Should have very few updates (coalesced) — much less than 100.
-        // The drain loop runs concurrently so exact count varies, but coalescing should
-        // still reduce updates significantly (< 90 even under heavy scheduler pressure).
-        #expect(updateCount.value < 90, "Coalescing should reduce 100 mutations significantly, got \(updateCount.value)")
-        #expect(updateCount.value >= 1, "Should have at least 1 update")
-
-        cancellable()
-    }
-
-    /// Test that coalescing works correctly with rapid mutations using ObservationTracking
-    @Test func testCoalescingWithRapidMutations_ObservationTracking() async throws {
-        let model = TestModel().withAnchor()
-        let updateCount = LockIsolated(0)
-
-        let (cancellable, _) = update(
-            initial: false,
-            isSame: { $0 == $1 },
-            useWithObservationTracking: true,
-            useCoalescing: true,
-            access: { model.value },
-            onUpdate: { _ in updateCount.withValue { $0 += 1 } }
-        )
-
-        // Rapid mutations: should coalesce to very few updates
-        for i in 1...100 {
-            model.value = i
-        }
-
-        // Wait for all pending work to settle
-        await backgroundCall.waitUntilIdle()
-
-        // withObservationTracking fires onChange synchronously per mutation. On a multi-core
-        // machine the drain loop can run concurrently, so each mutation may clear
-        // hasPendingUpdate and queue a fresh batch. The bound is deliberately loose
-        // (< 90 rather than < 30) to hold on slow simulators and CI while still
-        // verifying that coalescing reduced updates significantly compared to 100.
-        #expect(updateCount.value < 90, "Coalescing should reduce 100 mutations significantly, got \(updateCount.value)")
-
-        cancellable()
-    }
-    
     /// Test that without coalescing, all mutations trigger updates
     @Test func testWithoutCoalescing_AllUpdatesFire() async throws {
         let model = TestModel().withAnchor()

@@ -296,13 +296,7 @@ extension TestAccess {
                 let patience = reportTimeout
                     ? max(cal.yieldRoundNs * 3, 300_000_000)
                     : min(cal.yieldRoundNs * 30, 300_000_000)
-                let patienceMs = patience / 1_000_000
-                let activeTasks = lock { _activeTaskCount }
                 let activationPending = currentActivationInFlight
-                print(String(format: "[waitUntilSettled] patience window #%d: activeTasks=%d activationPending=%d patience=%dms bgIdle=%@ elapsed=%.2fs",
-                    activationWaitCount + 1, activeTasks, activationPending, patienceMs,
-                    backgroundCall.isIdle ? "true" : "false",
-                    Double(monotonicNanoseconds() - cal.start) / Double(nanosPerSecond)))
                 await waitForModification(timeoutNanoseconds: patience, yieldRoundNs: patience, retryCount: 2)
                 if context.modificationCount == currentVersion {
                     // Don't break while activation tasks are still queued but haven't
@@ -329,7 +323,6 @@ extension TestAccess {
                         // 3+ patience windows elapsed with activationTasksInFlight > 0 —
                         // cooperative pool is saturated and tasks cannot start. Fall through
                         // to break; hardCap check below handles the overall timeout.
-                        print("[waitUntilSettled] giving up after \(activationWaitCount) patience windows: activationPending still \(activationPending)")
                     }
                     break // No progress — remaining tasks are observation loops or cancelled tasks
                 }
