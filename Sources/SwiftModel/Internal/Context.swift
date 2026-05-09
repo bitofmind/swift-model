@@ -213,8 +213,16 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     override func onRemoval(callbacks: inout [() -> Void]) {
         super.onRemoval(callbacks: &callbacks)
-        let modifies = modifyCallbacks.values.flatMap({ $0.values })
-        modifyCallbacks.removeAll()
+        // Must acquire own lock explicitly. When a separately-anchored model is added as a
+        // child of another hierarchy, teardown runs under the PARENT's lock, which differs
+        // from self.lock. The memoize GCD callback acquires self.lock and reads modifyCallbacks
+        // concurrently — without this, the two threads race on modifyCallbacksStore.
+        // NSRecursiveLock makes this safe for the same-hierarchy case (re-entrant).
+        let modifies = lock {
+            let m = modifyCallbacks.values.flatMap({ $0.values })
+            modifyCallbacks.removeAll()
+            return m
+        }
 
         callbacks.append {
             for cont in modifies {
