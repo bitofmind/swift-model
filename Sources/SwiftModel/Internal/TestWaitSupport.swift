@@ -245,30 +245,23 @@ extension TestAccess {
         // handles it. For observation-heavy models this adds at most two cheap
         // no-op iterations rather than triggering cascading observation re-fires.
         var sawZeroActiveTasks = false
-        // Counts consecutive patience windows where activationTasksInFlight > 0 but
-        // no modification was detected. Capped at 3 to prevent infinite loops under
-        // cooperative pool saturation (700+ parallel tests can starve onActivate tasks
-        // indefinitely). Reset to 0 whenever modificationCount changes (progress made).
+        // Counts patience windows where activationTasksInFlight > 0 but no activation
+        // task made genuine progress (started its body). Capped at 3 to bail out when
+        // the cooperative pool is too saturated to schedule the tasks.
+        //
+        // Critically, this counter only resets when activationTasksInFlight DECREASES
+        // (a task actually entered its body), NOT on arbitrary modificationCount changes.
+        // Observation/memoize callbacks can write to the model (changing modificationCount)
+        // without any activation task starting — resetting on those changes turned the
+        // 3-window cap into a full hardCap wait (10-30 s × 200 tests / 3 cores = 9+ min).
         var activationWaitCount = 0
-        var lastDiagnosticsNs = cal.start
+        var lastActivationTasksInFlight = activationTasksInFlight
         while true {
             await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
             await yieldToScheduler()
 
-            // Emit a status line every 10 s so CI logs show whether the loop is
-            // making progress or truly stuck (helps diagnose cooperative-pool saturation).
-            let loopNow = monotonicNanoseconds()
-            if loopNow - lastDiagnosticsNs >= 10 * nanosPerSecond {
-                lastDiagnosticsNs = loopNow
-                let elapsedS = Double(loopNow - cal.start) / Double(nanosPerSecond)
-                let activeTasks = lock { _activeTaskCount }
-                let activationPending = activationTasksInFlight
-                print(String(format: "[waitUntilSettled] elapsed=%.1fs activeTasks=%d activationPending=%d activationWaitCount=%d bgIdle=%@ modCount=%d",
-                    elapsedS, activeTasks, activationPending, activationWaitCount,
-                    backgroundCall.isIdle ? "true" : "false", context.modificationCount))
-            }
-
             let currentVersion = context.modificationCount
+            let currentActivationInFlight = activationTasksInFlight
             if currentVersion == lastChangeVersion {
                 if lock({ _activeTaskCount }) == 0 {
                     if sawZeroActiveTasks {
@@ -303,6 +296,13 @@ extension TestAccess {
                 let patience = reportTimeout
                     ? max(cal.yieldRoundNs * 3, 300_000_000)
                     : min(cal.yieldRoundNs * 30, 300_000_000)
+                let patienceMs = patience / 1_000_000
+                let activeTasks = lock { _activeTaskCount }
+                let activationPending = currentActivationInFlight
+                print(String(format: "[waitUntilSettled] patience window #%d: activeTasks=%d activationPending=%d patience=%dms bgIdle=%@ elapsed=%.2fs",
+                    activationWaitCount + 1, activeTasks, activationPending, patienceMs,
+                    backgroundCall.isIdle ? "true" : "false",
+                    Double(monotonicNanoseconds() - cal.start) / Double(nanosPerSecond)))
                 await waitForModification(timeoutNanoseconds: patience, yieldRoundNs: patience, retryCount: 2)
                 if context.modificationCount == currentVersion {
                     // Don't break while activation tasks are still queued but haven't
@@ -311,24 +311,43 @@ extension TestAccess {
                     // yieldToScheduler() will give them a turn.
                     //
                     // Allow up to 3 consecutive patience windows (≤ 900ms) before giving up.
-                    // Using hardCap (5-30s) instead would make 100+ stuck tests take 17+
-                    // minutes under parallel load, hanging CI beyond the job timeout.
-                    if reportTimeout && activationTasksInFlight > 0 {
-                        activationWaitCount += 1
+                    // The counter increments here and only resets (below and in the else
+                    // branch) when activationTasksInFlight actually decreases — not on
+                    // arbitrary observation-loop modifications.
+                    if reportTimeout && activationPending > 0 {
+                        // Check if activation tasks made genuine progress since the
+                        // last reset (a task entered its body, reducing the in-flight count).
+                        let nowInFlight = activationTasksInFlight
+                        if nowInFlight < lastActivationTasksInFlight {
+                            // A task started — genuine progress; reset the counter.
+                            activationWaitCount = 0
+                            lastActivationTasksInFlight = nowInFlight
+                        } else {
+                            activationWaitCount += 1
+                        }
                         if activationWaitCount <= 3 { continue }
                         // 3+ patience windows elapsed with activationTasksInFlight > 0 —
                         // cooperative pool is saturated and tasks cannot start. Fall through
                         // to break; hardCap check below handles the overall timeout.
+                        print("[waitUntilSettled] giving up after \(activationWaitCount) patience windows: activationPending still \(activationPending)")
                     }
                     break // No progress — remaining tasks are observation loops or cancelled tasks
                 }
                 lastChangeVersion = context.modificationCount
+                // Reset activation counter only on genuine activation-task progress.
+                if activationTasksInFlight < lastActivationTasksInFlight {
+                    lastActivationTasksInFlight = activationTasksInFlight
+                    activationWaitCount = 0
+                }
                 sawZeroActiveTasks = false
-                activationWaitCount = 0
             } else {
                 lastChangeVersion = currentVersion
+                // Reset activation counter only on genuine activation-task progress.
+                if currentActivationInFlight < lastActivationTasksInFlight {
+                    lastActivationTasksInFlight = currentActivationInFlight
+                    activationWaitCount = 0
+                }
                 sawZeroActiveTasks = false
-                activationWaitCount = 0
             }
             if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
                 if reportTimeout {
