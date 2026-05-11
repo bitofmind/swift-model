@@ -1,6 +1,20 @@
 import SwiftModel
 import IdentifiedCollections
 import Foundation
+import Dependencies  // For `DependencyKey` / `DependencyValues` used by the dep-override benchmark.
+
+// A custom dep key used solely by the "anchor (with dependency override)" benchmark below.
+// Defined here rather than reusing `\.uuid` / `\.date` for clarity and to avoid any
+// ambiguity about which swift-dependencies traits are active.
+private enum BenchDepKey: DependencyKey {
+    static let liveValue: Int = 0
+}
+extension DependencyValues {
+    fileprivate var benchValue: Int {
+        get { self[BenchDepKey.self] }
+        set { self[BenchDepKey.self] = newValue }
+    }
+}
 
 // MARK: - 1. Activation / deactivation
 
@@ -217,9 +231,12 @@ func benchDependencyAccess() {
 
     let (counter, anchor) = BenchCounter().returningAnchor()
 
-    measure("node.uuid() access", iterations: 500_000) {
+    measure("node.dependency access", iterations: 500_000) {
         // Touch the dependency without retaining its output to avoid alloc overhead.
-        _ = counter.node.date.now
+        // Uses `BenchDepKey` (defined at top) so this is trait-independent — was
+        // `counter.node.date.now`, but `\.date` is Foundation-trait-gated in
+        // swift-dependencies and not available with `traits: ["Clocks"]`.
+        _ = counter.node.benchValue
     }
 
     withExtendedLifetime(anchor) {}
@@ -239,7 +256,10 @@ func benchAnchorDependencies() {
 
     measure("anchor (with dependency override)", iterations: 10_000) {
         let (_, anchor) = BenchCounter().returningAnchor {
-            $0.uuid = .incrementing
+            // Trait-independent dep override (see `BenchDepKey` at the top of this file).
+            // The specific key is irrelevant to what's being measured — we just need ONE
+            // override to take the with-overrides anchor path.
+            $0.benchValue = 42
         }
         withExtendedLifetime(anchor) {}
     }

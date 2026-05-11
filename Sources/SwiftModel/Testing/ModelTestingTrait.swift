@@ -1,4 +1,4 @@
-#if canImport(Testing) && compiler(>=6)
+#if canImport(Testing) && compiler(>=6) && !os(Android)
 import Testing
 import IssueReporting
 

@@ -28,16 +28,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
-      image: swift:6.2
+      image: swift:6.3.0
     steps:
       - uses: actions/checkout@v6
       - name: Cache Swift build artifacts
         uses: actions/cache@v5
         with:
           path: .build
-          key: ${{ runner.os }}-swift-6.2-${{ hashFiles('Package.resolved') }}
+          key: ${{ runner.os }}-swift-6.3-${{ hashFiles('Package.resolved') }}
           restore-keys: |
-            ${{ runner.os }}-swift-6.2-
+            ${{ runner.os }}-swift-6.3-
       - name: Build and test
         # Run tests serially (--no-parallel) to avoid cooperative thread-pool saturation
         # on the 2-vCPU Linux runner. Parallel race-condition coverage is provided by macOS.

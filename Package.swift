@@ -1,4 +1,15 @@
-// swift-tools-version:6.0
+// swift-tools-version:6.1
+// Bumped from 6.0 to 6.1 to use the `traits:` parameter on `.package(...)`. We override
+// swift-dependencies' default traits to `["Clocks", "Foundation"]` (turning off
+// `CombineSchedulers`, which we don't use and which pulls in an Android-incompatible
+// OpenCombine shim ≥ 1.1.0). The `traits:` parameter doesn't exist pre-6.1, hence
+// the bump.
+//
+// SE-0152 note: swift-dependencies ships `Package@swift-6.0.swift` (no traits) alongside
+// its `Package.swift` (tools-version 6.3, declares traits). SwiftPM selects the manifest
+// whose tools-version is the highest value ≤ the current compiler version. Any compiler
+// < 6.3 picks the 6.0 shadow and sees no traits, making our override a hard error.
+// CI therefore requires Swift 6.3+ on all platforms (see `.github/workflows/ci.yml`).
 import PackageDescription
 import CompilerPluginSupport
 
@@ -30,14 +41,27 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.9.0"),
-        // Pin below 1.1.0: that version introduced a trait-based OpenCombine shim that breaks
-        // Android cross-compilation (the trait is only auto-enabled based on the host OS, not
-        // the target). 1.0.x properly guards all Combine code with #if canImport(Combine).
-        // Package.resolved is not tracked in git, so this pin is required to prevent CI from
-        // resolving a newer version via swift-clocks's transitive dependency.
+        // Tracking pointfreeco/main until a release ≥ #406 is tagged — that PR introduces
+        // package traits for `Clocks`, `CombineSchedulers`, and `Foundation` (defaults: all on).
+        // We override to enable only `Clocks` so swift-dependencies' `URLSession.swift` and
+        // `CombineSchedulers` product are dropped from the `Dependencies` target. Saves
+        // ~16 MB of `libFoundationNetworking.so` for Android consumers.
+        // Switch back to `from: "X.Y.Z"` once tagged.
+        .package(url: "https://github.com/pointfreeco/swift-dependencies", branch: "main", traits: ["Clocks", "Foundation"]),
+        // Combine-schedulers stays in the resolution graph (swift-dependencies declares it
+        // unconditionally as a package-level dep) but is NOT linked into anything we use,
+        // because the `CombineSchedulers` trait is off above. The 1.0.0..<1.1.0 pin from
+        // before #406 is therefore no longer load-bearing for Android — keep it for now
+        // as belt-and-braces; safe to relax once the new wiring is verified on CI.
         .package(url: "https://github.com/pointfreeco/combine-schedulers", "1.0.0"..<"1.1.0"),
-        .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.3.3"),
+        // Fork branch with the `Networking` package trait gating the FoundationNetworking
+        // import and the two FoundationNetworking-typed CustomDump conformances
+        // (`NSURLRequest: CustomDumpRepresentable`, `URLRequest.NetworkServiceType:
+        // CustomDumpStringConvertible`). Default-on, we override to `traits: []` to skip
+        // them — saves ~16 MB `libFoundationNetworking.so` from Android cross-compile
+        // consumers' bridge `DT_NEEDED`. Switch back to the upstream
+        // `pointfreeco/swift-custom-dump` once the Networking trait is merged + tagged.
+        .package(url: "https://github.com/mansbernhardt/swift-custom-dump", branch: "android-support", traits: []),
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "600.0.0"),
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.6.0"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.6"),
@@ -79,6 +103,10 @@ let package = Package(
             dependencies: [
                 "SwiftModel",
                 .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
+                // `Dependencies` is needed by Benchmarks.swift to declare a custom
+                // `BenchDepKey: DependencyKey` for the trait-independent dep-override
+                // benchmark — see the comment block at the top of Benchmarks.swift.
+                .product(name: "Dependencies", package: "swift-dependencies"),
             ],
             path: "Sources/SwiftModelBenchmarks"
         ),
