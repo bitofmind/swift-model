@@ -145,7 +145,5 @@ GitHub Actions (`.github/workflows/ci.yml`):
 - **WASM**: `swift:6.3.0` container + WASM SDK.
 
 `swift-tools-version` is **6.1** — minimum required for the `traits:` parameter
-on `.package(...)` used to override `swift-dependencies`' default traits. Pre-6.1
-Swift toolchains can't read this manifest. Swift 6.3+ is required at runtime
-(SE-0152 manifest selection: swift-dependencies' `Package@swift-6.0.swift` shadow
-is picked by any toolchain < 6.3, and that shadow declares no traits).
+on `.package(...)`, used by the `swift-custom-dump` fork dependency. Pre-6.1
+Swift toolchains can't read this manifest.

@@ -1,15 +1,8 @@
 // swift-tools-version:6.1
-// Bumped from 6.0 to 6.1 to use the `traits:` parameter on `.package(...)`. We override
-// swift-dependencies' default traits to `["Clocks", "Foundation"]` (turning off
-// `CombineSchedulers`, which we don't use and which pulls in an Android-incompatible
-// OpenCombine shim ≥ 1.1.0). The `traits:` parameter doesn't exist pre-6.1, hence
-// the bump.
-//
-// SE-0152 note: swift-dependencies ships `Package@swift-6.0.swift` (no traits) alongside
-// its `Package.swift` (tools-version 6.3, declares traits). SwiftPM selects the manifest
-// whose tools-version is the highest value ≤ the current compiler version. Any compiler
-// < 6.3 picks the 6.0 shadow and sees no traits, making our override a hard error.
-// CI therefore requires Swift 6.3+ on all platforms (see `.github/workflows/ci.yml`).
+// Bumped from 6.0 to 6.1 for the `traits:` parameter on `.package(...)`, used by
+// swift-custom-dump below. swift-dependencies does NOT use traits here — it still ships
+// a `Package@swift-6.0.swift` shadow manifest that SE-0152 always selects over the
+// traits-aware `Package.swift`; any `traits:` override would be a hard error.
 import PackageDescription
 import CompilerPluginSupport
 
@@ -41,18 +34,16 @@ let package = Package(
         ),
     ],
     dependencies: [
-        // Tracking pointfreeco/main until a release ≥ #406 is tagged — that PR introduces
-        // package traits for `Clocks`, `CombineSchedulers`, and `Foundation` (defaults: all on).
-        // We override to enable only `Clocks` so swift-dependencies' `URLSession.swift` and
-        // `CombineSchedulers` product are dropped from the `Dependencies` target. Saves
-        // ~16 MB of `libFoundationNetworking.so` for Android consumers.
-        // Switch back to `from: "X.Y.Z"` once tagged.
-        .package(url: "https://github.com/pointfreeco/swift-dependencies", branch: "main", traits: ["Clocks", "Foundation"]),
-        // Combine-schedulers stays in the resolution graph (swift-dependencies declares it
-        // unconditionally as a package-level dep) but is NOT linked into anything we use,
-        // because the `CombineSchedulers` trait is off above. The 1.0.0..<1.1.0 pin from
-        // before #406 is therefore no longer load-bearing for Android — keep it for now
-        // as belt-and-braces; safe to relax once the new wiring is verified on CI.
+        // Tracking pointfreeco/main until a release ≥ PR #406 is tagged.
+        // traits: cannot be used here — swift-dependencies ships Package@swift-6.0.swift,
+        // which SE-0152 always selects over the traits-aware Package.swift, and SwiftPM
+        // hard-errors when a consumer tries to set traits on a package that declares none.
+        // When swift-dependencies removes the shadow manifests and cuts a release, switch
+        // back to `from: "X.Y.Z"` and add `traits: ["Clocks", "Foundation"]`.
+        .package(url: "https://github.com/pointfreeco/swift-dependencies", branch: "main"),
+        // Pin below 1.1.0: that version introduced a trait-based OpenCombine shim that
+        // auto-enables based on the host OS rather than the target, breaking Android
+        // cross-compilation. 1.0.x guards all Combine code with #if canImport(Combine).
         .package(url: "https://github.com/pointfreeco/combine-schedulers", "1.0.0"..<"1.1.0"),
         // Fork branch with the `Networking` package trait gating the FoundationNetworking
         // import and the two FoundationNetworking-typed CustomDump conformances
