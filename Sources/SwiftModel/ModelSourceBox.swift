@@ -515,7 +515,13 @@ extension _ModelSourceBox {
         nonmutating _modify {
             guard let context = _modifyContext(accessBox: accessBox) else {
                 if _isLive || (reference.context == nil && !reference.isSnapshot) {
-                    yield &reference.state[keyPath: statePath]
+                    // Local copy + write-back so the user's mutation expression doesn't run
+                    // while `reference.state` is exclusively borrowed. See the matching
+                    // comment on `Context.subscript[statePath:isSame:accessBox:]._modify`
+                    // for the full rationale.
+                    var value = reference.state[keyPath: statePath]
+                    yield &value
+                    reference.state[keyPath: statePath] = value
                     // Track pre-anchor state mutations so Context.init can detect dep model
                     // pollution: a child's RMW on an inherited dep increments _stateVersion,
                     // letting the dep loop substitute the pre-mutation snapshot for root.
@@ -536,7 +542,10 @@ extension _ModelSourceBox {
         nonmutating _modify {
             guard let context = _modifyContext(accessBox: accessBox) else {
                 if _isLive || (reference.context == nil && !reference.isSnapshot) {
-                    yield &reference.state[keyPath: statePath]
+                    // Local copy + write-back; see disfavoured generic overload for rationale.
+                    var value = reference.state[keyPath: statePath]
+                    yield &value
+                    reference.state[keyPath: statePath] = value
                     reference._stateVersion &+= 1
                 } else {
                     var value = self[dynamicMember: statePath]
@@ -554,7 +563,10 @@ extension _ModelSourceBox {
         nonmutating _modify {
             guard let context = _modifyContext(accessBox: accessBox) else {
                 if _isLive || (reference.context == nil && !reference.isSnapshot) {
-                    yield &reference.state[keyPath: statePath]
+                    // Local copy + write-back; see disfavoured generic overload for rationale.
+                    var value = reference.state[keyPath: statePath]
+                    yield &value
+                    reference.state[keyPath: statePath] = value
                     reference._stateVersion &+= 1
                 } else {
                     var value = self[dynamicMember: statePath]
@@ -576,6 +588,16 @@ extension _ModelSourceBox {
                 // spare-bit _Mode enum in _ModelSourceBox, causing KeyPath._projectReadOnly to
                 // trap in _pop<RawKeyPathComponent.Header>. This happens when _$modelSource's
                 // default fires before the user assigns the property in a user-written init.
+                //
+                // The local-copy + write-back pattern used by the non-Model write subscripts
+                // (and by `Context.subscript[statePath:isSame:accessBox:]._modify`) cannot be
+                // applied here: the initial `var value = reference.state[keyPath: …]` read
+                // would itself trap for the same zero-init reason. So this branch keeps the
+                // live yield. A compound write through a child `@Model` property during
+                // `init()` whose RHS reads `self` — e.g. `self.child.field = self.child.foo`
+                // — can therefore still trip Swift's exclusivity check. The fully-anchored
+                // path below uses the safe local-copy pattern, which is the common case after
+                // construction.
                 if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
                     yield &reference.state[keyPath: statePath]
                     reference._stateVersion &+= 1
@@ -586,7 +608,9 @@ extension _ModelSourceBox {
                 return
             }
             // Anchored: read current value, yield, write back via setter to trigger proper
-            // child context management (old context removal, new context anchoring).
+            // child context management (old context removal, new context anchoring). This
+            // path already uses the local-copy + write-back pattern, so it is safe against
+            // simultaneous-access traps from RHS expressions that read other model state.
             var value = self[read: statePath, access: accessBox]
             yield &value
             self[write: statePath, access: accessBox] = value

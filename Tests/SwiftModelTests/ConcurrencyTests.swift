@@ -26,6 +26,35 @@ private struct ExclusivityModel {
 }
 
 @Model
+private struct ExclusivityArrayModel {
+    var items: [Int] = []
+    var intValue: Int = 0
+}
+
+private struct ExclusivityResize: Sendable, Equatable {
+    var time: Int
+    var span: Int
+    var isResizingEnd: Bool
+}
+
+@Model
+private struct ExclusivityOptionalModel {
+    var activeResize: ExclusivityResize?
+    var previewDelta: Int = 0
+}
+
+@Model
+private struct ExclusivityChildLeaf {
+    var count: Int = 0
+}
+
+@Model
+private struct ExclusivityParentWithChild {
+    var child = ExclusivityChildLeaf()
+    var sibling: Int = 0
+}
+
+@Model
 private struct ConcurrentLeaf {
     var value: Int = 0
 }
@@ -345,6 +374,92 @@ struct ConcurrencyTests {
             model.target = value + 1  // _modify: exclusive access on reference.state
         }
         #expect(model.target == 43)
+    }
+
+    // MARK: - Context._modify exclusivity: nested reads/writes during the modify yield
+
+    /// Regression tests for the *modify-then-read* direction of the simultaneous-access
+    /// crash. Counterpart to `readPropertyThenWriteAnotherPropertyOnSameModel` above —
+    /// that test covered the case where a `_read`'s borrow leaked into a subsequent
+    /// `_modify`. These tests cover the opposite shape: a `_modify` accessor that
+    /// `yield`s a live `&reference.state[keyPath: …]` reference while user code
+    /// evaluates an RHS expression that itself reads or modifies any property of the
+    /// same `@Model` — tripping Swift's law of exclusivity with a fatal
+    /// "Simultaneous accesses to 0x…, but modification requires exclusive access" trap.
+    ///
+    /// Fix shape: the `_modify` accessors at `Context.subscript[statePath:isSame:accessBox:]`
+    /// and the non-`Model` write overloads of `_ModelSourceBox.subscript[write:access:]`
+    /// now use the same local-copy + write-back pattern that `stateTransaction` already
+    /// uses. The user's mutation expression runs against a local `var`, the borrow on
+    /// `reference.state` ends before the yield, and a single write-back store re-acquires
+    /// it briefly after the yield returns.
+
+    /// `model.x = model.y + 1` — the LHS opens a `_modify` on `x` and the RHS reads `y`
+    /// during the yield. Before the fix this trapped on the shared/exclusive overlap.
+    @Test func writePropertyReadsAnotherPropertyOnRHS() {
+        let model = ExclusivityModel().withAnchor()
+        model.source = 41
+        model.target = model.source + 1
+        #expect(model.target == 42)
+    }
+
+    /// `model.x = model.x + 1` — same property on both sides of the assignment.
+    /// The `_modify`'s RHS reads the property whose `_modify` is in flight.
+    @Test func selfUpdateAssignment() {
+        let model = ExclusivityModel().withAnchor()
+        model.target = 0
+        for _ in 0..<100 {
+            model.target = model.target + 1
+        }
+        #expect(model.target == 100)
+    }
+
+    /// Compound assignment operator on the same property: `model.x += model.x`.
+    /// `+=` lowers to a `_modify` whose closure reads the property a second time.
+    @Test func compoundAssignmentSameProperty() {
+        let model = ExclusivityModel().withAnchor()
+        model.target = 10
+        model.target += model.target
+        #expect(model.target == 20)
+    }
+
+    /// `model.items.append(model.intValue)` — the array's `_modify` yields while the
+    /// argument expression `model.intValue` performs a read on the same model.
+    @Test func collectionAppendReadsAnotherProperty() {
+        let model = ExclusivityArrayModel().withAnchor()
+        model.intValue = 7
+        model.items.append(model.intValue)
+        model.items.append(model.intValue)
+        #expect(model.items == [7, 7])
+    }
+
+    /// The exact crash shape reported by the Imagien editor:
+    /// `m.activeResize?.time = m.activeResize.map { … } ?? .zero`. The optional-chained
+    /// write opens a `_modify` on `activeResize` and the RHS `.map` reads it again.
+    @Test func optionalChainedWriteWithMapOnRHS() {
+        let model = ExclusivityOptionalModel().withAnchor()
+        model.activeResize = .init(time: 0, span: 100, isResizingEnd: true)
+        model.previewDelta = 5
+
+        model.activeResize?.time = model.activeResize.map { resize in
+            resize.isResizingEnd
+                ? resize.span + model.previewDelta
+                : 0 + model.previewDelta
+        } ?? -1
+
+        #expect(model.activeResize?.time == 105)
+    }
+
+    /// Compound write through a child `@Model` property whose RHS reads a sibling
+    /// scalar on the parent. The `_modify` is invoked on the child-Model field
+    /// (the anchored path in `_ModelSourceBox.subscript<T: Model>(write:access:)`),
+    /// which uses local-copy + write-back via the public setter — already
+    /// exclusivity-safe, but pinned by this test to guard against regression.
+    @Test func childModelCompoundWriteReadsSiblingOnRHS() {
+        let model = ExclusivityParentWithChild().withAnchor()
+        model.sibling = 9
+        model.child.count = model.sibling + 1
+        #expect(model.child.count == 10)
     }
 
     // MARK: - contextStorage: remove concurrent with reads

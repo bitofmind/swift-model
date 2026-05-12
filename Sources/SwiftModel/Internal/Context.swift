@@ -887,6 +887,18 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     /// Modifies a property directly on Reference._state using access box for observation.
+    ///
+    /// Yields a local copy and writes back after the user's mutation closure returns.
+    /// This is the same shape `stateTransaction` already uses, and the reason is the
+    /// same: yielding `&reference.state[keyPath: …]` directly would hold an *exclusive*
+    /// dynamic borrow on `reference.state` for the entire duration of the user's
+    /// mutation. While that borrow is held, any access on `reference.state` (read or
+    /// write, regardless of key path) from inside the user's expression — e.g.
+    /// `m.x = m.y + 1` or the optional-chained `m.x?.field = m.x.map { … }` pattern —
+    /// trips Swift's law of exclusivity with a fatal "Simultaneous accesses to 0x…,
+    /// but modification requires exclusive access" trap. Copying through a local
+    /// `var value` ends the borrow before the yield and re-acquires it briefly only
+    /// for the single write-back store after the yield returns.
     subscript<T>(statePath statePath: WritableKeyPath<M._ModelState, T>, isSame isSame: ((T, T) -> Bool)?, accessBox accessBox: _ModelAccessBox) -> T {
         _read { fatalError() }
         _modify {
@@ -896,20 +908,31 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                     if !reference._hasGenesis {
                         reportIssue("Modifying a fully destructed model with no last-seen snapshot.")
                     }
+                    // Already isolated from `reference.state`: writes to a cleared model
+                    // are intentionally dropped, so no write-back happens here.
                     var value: T = reference.state[keyPath: statePath]
                     yield &value
                 } else {
-                    yield &reference.state[keyPath: statePath]
+                    // Destructed-but-not-cleared: writes still take effect (matching the
+                    // previous live-yield behaviour) but no observers are notified.
+                    var value: T = reference.state[keyPath: statePath]
+                    let oldValue = value
+                    defer { _fixLifetime(oldValue) }
+                    yield &value
+                    reference.state[keyPath: statePath] = value
                 }
                 lock.unlock()
             } else {
-                let oldValue = reference.state[keyPath: statePath]
+                var value: T = reference.state[keyPath: statePath]
+                let oldValue = value
                 // Pin old value alive past the yield so its deinit cannot fire while
-                // reference.state is exclusively held, preventing Swift exclusivity violations.
+                // reference.state is briefly held during the write-back, preventing
+                // Swift exclusivity violations from a deinit that reads model state.
                 defer { _fixLifetime(oldValue) }
-                yield &reference.state[keyPath: statePath]
+                yield &value
+                reference.state[keyPath: statePath] = value
 
-                if let isSame, isSame(reference.state[keyPath: statePath], oldValue) {
+                if let isSame, isSame(value, oldValue) {
                     return lock.unlock()
                 }
 
