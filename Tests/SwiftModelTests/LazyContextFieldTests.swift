@@ -87,10 +87,11 @@ struct LazyContextFieldTests {
     }
 
     /// A first observation access on the main thread allocates the `main` registrar.
-    /// The `background` registrar also exists as a side-effect of allocating the
-    /// `RegistrarPair`, even though it isn't touched on this code path. Only Apple
-    /// platforms reach this branch — on non-Apple `useMainThreadObservation` is forced
-    /// off and the main-channel access is rerouted to `backgroundObservationRegistrar`.
+    /// Only Apple platforms reach this branch — on non-Apple (Linux/Android/WASM)
+    /// `useMainThreadObservation` is forced off and `willAccessDirect` reroutes a
+    /// main-thread access to `backgroundObservationRegistrar` instead. Compiled out
+    /// entirely on non-Apple to avoid a meaningless assertion there.
+    #if canImport(Darwin)
     @Test func observationRegistrarMainAllocatesOnFirstMainAccess() async {
         let model = LeafForLazyTests().withAnchor()
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
@@ -102,6 +103,7 @@ struct LazyContextFieldTests {
             #expect(model.context?.mainObservationRegistrarStore != nil)
         }
     }
+    #endif
 
     // MARK: - Cancellations lazy allocation
 
