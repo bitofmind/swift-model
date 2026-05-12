@@ -717,7 +717,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         guard useObservationRegistrar,
               !(threadLocals.isInsideAsyncPerformUpdate && ModelAccess.active != nil) else { return }
         let observer = _StateObserver<M._ModelState>()
-        if isOnMainThread {
+        if useMainThreadObservation, isOnMainThread {
             mainObservationRegistrarMakingIfNeeded.access(observer, keyPath: kp)
         } else {
             backgroundObservationRegistrarMakingIfNeeded.access(observer, keyPath: kp)
@@ -732,40 +732,29 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         guard useObservationRegistrar else { return }
         let observer = _StateObserver<M._ModelState>()
         let observerKP = kp
+        let useMain = useMainThreadObservation
+
+        // Fire background registrar synchronously on the mutating thread; optionally also
+        // fire the main registrar via `mainCallQueue` (which runs the closure inline when
+        // already on main, or enqueues onto `@MainActor` otherwise). Skipping the main work
+        // entirely when `useMain` is false avoids the @MainActor hop — required on platforms
+        // where @MainActor doesn't drain (Android), and a useful opt-out on Apple platforms
+        // when there is no SwiftUI/UIKit/AppKit consumer.
+        let notify: @Sendable () -> Void = { [self] in
+            self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+            self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+            if useMain, let mainReg = self.mainObservationRegistrar {
+                self.mainCallQueue {
+                    mainReg.willSet(observer, keyPath: observerKP)
+                    mainReg.didSet(observer, keyPath: observerKP)
+                }
+            }
+        }
+
         if threadLocals.pendingObservationNotifications != nil {
-            threadLocals.pendingObservationNotifications!.append {
-                if isOnMainThread {
-                    self.mainObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                    self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                    self.mainObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                    self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                } else {
-                    self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                    self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                    if let mainReg = self.mainObservationRegistrar {
-                        self.mainCallQueue {
-                            mainReg.willSet(observer, keyPath: observerKP)
-                            mainReg.didSet(observer, keyPath: observerKP)
-                        }
-                    }
-                }
-            }
+            threadLocals.pendingObservationNotifications!.append(notify)
         } else {
-            if isOnMainThread {
-                mainObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                mainObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
-            } else {
-                backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                if let mainReg = self.mainObservationRegistrar {
-                    self.mainCallQueue {
-                        mainReg.willSet(observer, keyPath: observerKP)
-                        mainReg.didSet(observer, keyPath: observerKP)
-                    }
-                }
-            }
+            notify()
         }
     }
 
@@ -796,7 +785,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = _cachedStateObserverKP(contextID: contextID, propID: propID) {
                 \_StateObserver<M._ModelState>[contextID: contextID, propID: propID]
             }
-            if isOnMainThread {
+            if useMainThreadObservation, isOnMainThread {
                 mainObservationRegistrarMakingIfNeeded.access(observer, keyPath: observerKP)
             } else {
                 backgroundObservationRegistrarMakingIfNeeded.access(observer, keyPath: observerKP)
@@ -827,49 +816,53 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 \_StateObserver<M._ModelState>[contextID: contextID, propID: propID]
             }
             let sendableStatePath: (WritableKeyPath<M._ModelState, T> & Sendable)? = activeAccess != nil ? unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self) : nil
+            let useMain = useMainThreadObservation
+
+            // Ordering rule for the main registrar:
+            //   - When already on the main thread, the strict `willSet → mutation → didSet`
+            //     order is preserved (matches the pre-dual-registrar behaviour and what
+            //     `withObservationTracking`'s `onChange` semantically expects).
+            //   - When off the main thread we have to bridge via `mainCallQueue`, which
+            //     `@MainActor`-enqueues async. The main registrar's `willSet/didSet` therefore
+            //     fire as a bundle *after* the mutation. Strict willSet-before-mutation isn't
+            //     reachable here without blocking the mutating thread.
+            // The background registrar always uses strict ordering (synchronous on the mutating
+            // thread).
+            let mainOnMain = useMain && isOnMainThread
+
             if threadLocals.pendingObservationNotifications != nil {
-                // Batched: defer registrar notifications, collect activeAccess callback immediately.
+                // Batched: the mutation has already happened by the time we drain the pending
+                // list, so strict willSet-before-mutation is unreachable for either registrar.
+                // Fire both as post-mutation bundles. Main goes through `mainCallQueue` which
+                // runs inline if we drain on main, otherwise enqueues onto `@MainActor`.
                 let callback = sendableStatePath.flatMap { [self] path in activeAccess?.didModify(from: self, at: path) }
                 threadLocals.pendingObservationNotifications!.append {
-                    // willSet
-                    if isOnMainThread {
-                        self.mainObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                        self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                    } else {
-                        self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                    }
-                    // didSet
-                    if isOnMainThread {
-                        self.mainObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                        self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                    } else {
-                        self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                        if let mainReg = self.mainObservationRegistrar {
-                            self.mainCallQueue {
-                                mainReg.willSet(observer, keyPath: observerKP)
-                                mainReg.didSet(observer, keyPath: observerKP)
-                            }
+                    self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                    self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                    if useMain, let mainReg = self.mainObservationRegistrar {
+                        self.mainCallQueue {
+                            mainReg.willSet(observer, keyPath: observerKP)
+                            mainReg.didSet(observer, keyPath: observerKP)
                         }
                     }
                 }
                 return callback
             } else {
-                // Not batched: willSet → activeAccess callback → didSet (via defer).
-                // willSet
-                if isOnMainThread {
+                // Non-batched: emit willSet eagerly so background — and main when already on
+                // main — see the strict pre-mutation notification. didSet fires in `defer`
+                // after the caller has performed the mutation.
+                backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                if mainOnMain {
                     mainObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                    backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                } else {
-                    backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
                 }
                 defer {
-                    // didSet
-                    if isOnMainThread {
-                        self.mainObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                        self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                    } else {
-                        self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                        if let mainReg = self.mainObservationRegistrar {
+                    self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                    if useMain, let mainReg = self.mainObservationRegistrar {
+                        if mainOnMain {
+                            // Synchronous on the mutating (main) thread: matches strict ordering.
+                            mainReg.didSet(observer, keyPath: observerKP)
+                        } else {
+                            // Off-main: bundle main `willSet/didSet` onto `@MainActor`.
                             self.mainCallQueue {
                                 mainReg.willSet(observer, keyPath: observerKP)
                                 mainReg.didSet(observer, keyPath: observerKP)
@@ -878,13 +871,15 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                     }
                 }
                 let callback = sendableStatePath.flatMap { [self] path in activeAccess?.didModify(from: self, at: path) }
-                mainCallQueue.drainIfOnMain()
+                if useMain {
+                    mainCallQueue.drainIfOnMain()
+                }
                 return callback
             }
         } else {
             let sendableStatePath2: (WritableKeyPath<M._ModelState, T> & Sendable)? = activeAccess != nil ? unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self) : nil
             let callback = sendableStatePath2.flatMap { [self] path in activeAccess?.didModify(from: self, at: path) }
-            if threadLocals.pendingObservationNotifications == nil {
+            if useMainThreadObservation, threadLocals.pendingObservationNotifications == nil {
                 mainCallQueue.drainIfOnMain()
             }
             return callback

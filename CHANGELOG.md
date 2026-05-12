@@ -6,10 +6,6 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
-### Added
-
-- **`withSetup`** — new modifier that runs a closure just before `onActivate()`. Use it to set `node.environment` or `node.local` keys that `onActivate()` reads (e.g. mode flags that guard which observers are registered). Unlike `withActivation`, which runs *after* `onActivate()`, `withSetup` closures run *before* it, so the model's own activation logic can see the configured values. The closure is called only when the model is anchored; if the model is never anchored, it is never called. Multiple `withSetup` calls are additive and run in declaration order.
-
 ---
 
 ## [1.0.0] — `@Model` Layout Redesign, Performance Overhaul + API Cleanup
@@ -48,11 +44,19 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 - **Faster `reduceHierarchy` and event dispatch** — internal iteration no longer boxes each step through an existential; ~30–40% faster for wide hierarchies.
 
+- **Lazy main-channel `ObservationRegistrar` allocation** — `RegistrarPair` now allocates its `background` registrar eagerly (every observation-enabled tree uses it) but the `main` registrar lazily on first main-channel use. Trees that never reach the main channel — every model tree on Linux/Android/WASM, plus opt-out trees on Apple — save one `ObservationRegistrar` (and its internal `Extent` heap object) per anchored hierarchy.
+
+- **`_withBatchedUpdates` skips `drainIfOnMain` on non-Apple** — the post-batch `mainCallQueue.drainIfOnMain()` call is now gated on `canImport(Darwin)`. On Linux/Android/WASM no main-thread work is ever enqueued, so the drain was pure overhead (a `Thread.isMainThread` syscall on every batched write).
+
 ### Added
 
 - **Swift 6.2 `defaultIsolation: MainActor` support** — `@Model`-annotated types now compile and behave correctly in modules that use Xcode 26's default project setting `defaultIsolation: MainActor`. All conformance extensions (`Model`, `Sendable`, `Identifiable`, `CustomReflectable`, `CustomStringConvertible`) and all framework-facing member declarations (`visit(with:)`, `_State`, `_makeState`, `_modelState`, `_modelStateKeyPath`, `_$modelContext`, `_context`, `_updateContext`) are now generated with explicit `nonisolated`. This is a no-op in modules without a default isolation; it is required so that SwiftModel's non-`@MainActor` internals can access model state without compile errors when the user module injects `@MainActor` as the default. See `Docs/Dependencies.md` for the companion patterns needed on dependency types and plain domain structs in such modules.
 
 - **`SwiftModelMainActorTests` test target** — new conditional target (Swift 6.2+, `#if swift(>=6.2)`) that validates the full `@Model` feature set under `defaultIsolation: MainActor` module isolation: tracked properties, `@ModelDependency`, `node.task`, optional child models, and arrays of child models.
+
+- **`withSetup`** — new modifier that runs a closure just before `onActivate()`. Use it to set `node.environment` or `node.local` keys that `onActivate()` reads (e.g. mode flags that guard which observers are registered). Unlike `withActivation`, which runs *after* `onActivate()`, `withSetup` closures run *before* it, so the model's own activation logic can see the configured values. The closure is called only when the model is anchored; if the model is never anchored, it is never called. Multiple `withSetup` calls are additive and run in declaration order.
+
+- **`ModelOption.disableMainThreadObservation`** (internal) — opt-out for the dual-`ObservationRegistrar` main-thread bridge. On Apple platforms, mutations from background threads queue the main registrar's `willSet`/`didSet` via `mainCallQueue { @MainActor in … }` so SwiftUI/UIKit/AppKit consumers stay safely on main. Setting this option skips the main channel entirely — useful when no `Observable` consumer exists (server-side macOS, CLI tools, KVO-based AppKit apps). Non-Apple platforms (Linux, Android, WASM) behave as if this is always set; see the corresponding "Fixed" entry.
 
 ### Fixed
 
@@ -65,6 +69,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 - **Crash at construction and teardown for models with class-reference-containing properties** — `Reference._genesisState` was previously initialised via `_zeroInit()` (all-zero bytes). For property types whose value representation uses a class reference (e.g. `SwiftUI.ScrollPosition`, any struct with a `class` field), all-zero memory is not a valid Swift value; accessing or retaining it crashes. Fixed by initialising `_genesisState` to `state` (the model's actual initial value) in `Reference.init`. `Reference.clear()` now stores genesis into `state` instead of calling `_zeroInit()`, ensuring all reads on a cleared reference return valid values.
 
 - **`@Model` macro: duplicate conformance extensions** — when a user declared `CustomStringConvertible` on their `@Model` type (in the inheritance clause or a separate extension), the macro would still emit an `extension MyType: CustomStringConvertible, CustomDebugStringConvertible { … }` block. The compiler rejected duplicate conformances. Fixed by checking the real compiler's `protocols` parameter (which only lists unsatisfied conformances) instead of inspecting the inheritance clause; `CustomStringConvertible` and `CustomDebugStringConvertible` are now synthesised independently so a user-provided `description` suppresses only the description extension, not `debugDescription`.
+
+- **Observation silently dropped on non-Apple platforms** — `Observed { … }` and similar consumers stopped firing on Linux, Android, and WASM whenever the read happened on the platform's main thread (e.g. inside `onActivate()` called from `withAnchor()` on Android's JNI-invoked main thread). SwiftModel was registering main-thread accesses against a separate `mainObservationRegistrar` whose `willSet`/`didSet` notifications are bridged through `mainCallQueue { @MainActor in … }` — and on Android the `@MainActor` task never executes because Android's UI thread runs Android's `Looper`, not libdispatch's main queue. Non-Apple platforms now route every access through `backgroundObservationRegistrar`, whose notifications fire synchronously on the mutating thread.
+
+- **`willSet`-before-mutation ordering preserved when already on the main thread** — when the dual-registrar split runs synchronously on the main thread, both registrars now fire `willSet` *before* the caller mutates and `didSet` *after*, matching `ObservationRegistrar`'s documented semantics and the pre-dual-registrar behaviour. When the mutation happens off the main thread, the main registrar's `willSet`/`didSet` continue to fire as a post-mutation bundle on `@MainActor` (the strict pre-mutation ordering isn't reachable without blocking the mutating thread). The background registrar always uses strict ordering on the mutating thread.
 
 ### Removed
 

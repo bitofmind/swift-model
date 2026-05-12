@@ -257,8 +257,6 @@ internal func update<T: Sendable>(
         // Box for performUpdate so observe()'s onChange closure can reference it
         let performUpdateBox = LockIsolated<(@Sendable () -> Void)?>(nil)
 
-
-
         // Shared change handler used by withObservationTracking.onChange.
         @Sendable func onObservedChange() {
             if hasBeenCancelled.value { return }

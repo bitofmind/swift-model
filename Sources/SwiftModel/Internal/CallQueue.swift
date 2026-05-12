@@ -374,7 +374,14 @@ func _withBatchedUpdates<T>(_ mainCallQueue: MainCallQueue = mainCall, _ body: (
         let pending = threadLocals.pendingObservationNotifications!
         threadLocals.pendingObservationNotifications = nil
         for notification in pending { notification() }
+        // Drain pending main-thread observation work. Non-Apple platforms never enqueue to
+        // `mainCallQueue` (every context has `useMainThreadObservation == false`), so the
+        // drain is pure overhead there — skip it. `drainIfOnMain` is otherwise a no-op when
+        // off the main thread or when the queue is empty, but eliding the call eliminates a
+        // redundant `Thread.isMainThread` syscall on Linux/Android/WASM.
+        #if canImport(Darwin)
         mainCallQueue.drainIfOnMain()
+        #endif
     }
     return try body()
 }

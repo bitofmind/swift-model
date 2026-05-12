@@ -457,6 +457,36 @@ struct UpdateStreamTests {
         #expect(model.snapshots.last?.count == 3)
     }
 
+    /// Regression scenario reported by an Android Swift 6.3 SDK user: when `Observed { ... }`
+    /// is constructed in `onActivate()` and the value is captured into a separate Task body
+    /// (instead of being constructed inline inside the Task body), subsequent mutations no
+    /// longer re-fire — only the initial value is delivered. The shape is identical to what
+    /// `node.forEach(Observed(...)) { ... }` does internally (the existing `node.forEach`
+    /// tests cover the same pattern, but this test pins the bare-`Task` form for parity with
+    /// the user's reproducer). Verifies every-mutation delivery on both observation paths.
+    @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
+    func testCapturedObservedFiresOnEveryMutation(updatePath: UpdatePath) async throws {
+        let model = updatePath.withOptions { CapturedObservedRegressionModel().withAnchor() }
+
+        // Initial fire for both: snapshots == [[0, 0]] each.
+        await expect {
+            model.capturedSnapshots == [[0, 0]]
+            model.inlineSnapshots == [[0, 0]]
+        }
+
+        model.children[0].count = 5
+        await expect {
+            model.capturedSnapshots == [[0, 0], [5, 0]]
+            model.inlineSnapshots == [[0, 0], [5, 0]]
+        }
+
+        model.children[1].count = 99
+        await expect {
+            model.capturedSnapshots == [[0, 0], [5, 0], [5, 99]]
+            model.inlineSnapshots == [[0, 0], [5, 0], [5, 99]]
+        }
+    }
+
     /// Observed { child } only fires when the child model is replaced (different identity);
     /// neither direct property changes nor descendant changes trigger re-evaluation.
     @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
@@ -503,6 +533,39 @@ struct UpdateStreamTests {
         model.active.count = 9
         try await Task.sleep(nanoseconds: 50_000_000)
         #expect(model.snapshots.count == 2, "Property change on new active should not trigger")
+    }
+}
+
+/// Pairs an "Observed constructed inline inside the Task body" subscription with an
+/// "Observed constructed in onActivate's scope and captured by a separate Task body"
+/// subscription so a test can assert they receive the same sequence of values.
+/// `removeDuplicates: false` keeps the comparison clean even if duplicate snapshots
+/// appear; the array shape (`[Int]`) is Equatable so the Equatable overload is used.
+@Model private struct CapturedObservedRegressionModel {
+    var children: [ChildModel] = [ChildModel(), ChildModel()]
+    var capturedSnapshots: [[Int]] = []
+    var inlineSnapshots: [[Int]] = []
+
+    func onActivate() {
+        // (B) Constructed in onActivate's scope, captured by a separate Task body.
+        //     Same shape as node.forEach(Observed(...)) { ... }.
+        let captured = Observed(initial: true, removeDuplicates: false) {
+            children.map(\.count)
+        }
+        node.task {
+            for await snapshot in captured {
+                capturedSnapshots.append(snapshot)
+            }
+        }
+
+        // (A) Constructed inline inside the Task body.
+        node.task {
+            for await snapshot in Observed(initial: true, removeDuplicates: false, {
+                children.map(\.count)
+            }) {
+                inlineSnapshots.append(snapshot)
+            }
+        }
     }
 }
 

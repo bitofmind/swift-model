@@ -45,4 +45,29 @@ struct ModelOption: OptionSet, Sendable {
     /// regardless of this option, so hierarchy APIs, dependency inheritance, and
     /// `onActivate()` are unaffected for non-collection children.
     internal static let lazyChildContexts = ModelOption(rawValue: 1 << 2)
+
+    /// Disable main-thread observation bridging.
+    ///
+    /// SwiftModel maintains a second `ObservationRegistrar` whose `willSet`/`didSet`
+    /// notifications fire on the main thread, separate from the regular background
+    /// registrar that fires on the mutating thread. This main-thread channel exists so
+    /// that UI frameworks that consume `Observable` from the main thread — SwiftUI,
+    /// UIKit, AppKit — receive their tracker callbacks safely, even when the model is
+    /// mutated from a background task.
+    ///
+    /// The main channel uses `Task { @MainActor in ... }` to deliver notifications.
+    /// Default behavior:
+    ///   - **Apple platforms** (`canImport(Darwin)`): enabled. `@MainActor` runs on the
+    ///     RunLoop-driven main thread, so notifications are delivered reliably.
+    ///   - **Non-Apple platforms** (Linux, Android, WASM): disabled automatically — no
+    ///     SwiftUI/UIKit/AppKit consumer exists, and on Android the platform's UI thread
+    ///     runs Android's `Looper`, not libdispatch's main queue, so `@MainActor` work
+    ///     never executes and main-channel notifications would be lost.
+    ///
+    /// Set this option on Apple platforms to skip the main-channel work when you know
+    /// SwiftUI/UIKit/AppKit isn't observing the model graph — server-side macOS, CLI
+    /// tools, AppKit apps using KVO instead of `@dynamicMemberLookup`, etc. Skipping
+    /// saves one observation fire per mutation plus the cooperative-pool hop into
+    /// `@MainActor`.
+    internal static let disableMainThreadObservation = ModelOption(rawValue: 1 << 3)
 }

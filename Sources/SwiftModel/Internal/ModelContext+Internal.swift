@@ -179,8 +179,14 @@ extension ModelContext {
         } else {
             callback = nil
         }
-        if threadLocals.pendingObservationNotifications == nil {
-            (self.context?.mainCallQueue ?? mainCall).drainIfOnMain()
+        // Only drain main-thread observation work if it's enabled for this context.
+        // When `useMainThreadObservation == false`, no main-thread notifications were ever
+        // enqueued — `drainIfOnMain` would no-op safely either way, but skipping the call
+        // makes the intent explicit and removes the `Thread.isMainThread` check on the
+        // hot path for non-Apple platforms.
+        if let context, context.useMainThreadObservation,
+           threadLocals.pendingObservationNotifications == nil {
+            context.mainCallQueue.drainIfOnMain()
         }
         return callback
     }

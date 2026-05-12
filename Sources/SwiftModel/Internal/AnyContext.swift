@@ -90,15 +90,34 @@ class AnyContext: @unchecked Sendable {
     }
     let useObservationRegistrar: Bool
 
+    /// Whether to bridge observation notifications through the main thread for SwiftUI/UIKit/AppKit.
+    /// See `ModelOption.disableMainThreadObservation` for the full rationale.
+    ///
+    /// - Apple platforms (`canImport(Darwin)`): enabled unless the user opts out via the option.
+    /// - Non-Apple (Linux/Android/WASM): always disabled. There is no `Observable`-consuming UI
+    ///   framework outside Apple, and on Android `@MainActor` work never executes (Android's
+    ///   `Looper` doesn't drain libdispatch's main queue), so any `mainObservationRegistrar`
+    ///   notification queued by `invokeDidModifyDirect`'s background path would be silently
+    ///   dropped — breaking `Observed { ... }` and similar consumers.
+    let useMainThreadObservation: Bool
+
     /// Pairs both observation registrars in one heap allocation.
     /// Created lazily (via `RegistrarBox`) at the root context and shared by all children
     /// in the tree, so that the whole hierarchy uses O(2) registrar instances instead of O(2N).
+    ///
+    /// The `background` registrar is allocated eagerly on first observation access (every
+    /// `@Model` with `useObservationRegistrar == true` reaches the background side).
+    /// The `main` registrar is allocated lazily on first main-channel use — contexts with
+    /// `useMainThreadObservation == false` (non-Apple, or opt-out on Apple) never touch it,
+    /// saving one `ObservationRegistrar` allocation (which itself heap-allocates an internal
+    /// `Extent`) per model tree on those platforms.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     final class RegistrarPair: @unchecked Sendable {
-        let main: ObservationRegistrar
         let background: ObservationRegistrar
+        /// Lazily-allocated main-channel registrar. Written once (nil → non-nil) under the
+        /// hierarchy lock. `nonisolated(unsafe)`: locking discipline enforced at call sites.
+        nonisolated(unsafe) var _main: ObservationRegistrar?
         init() {
-            main = ObservationRegistrar()
             background = ObservationRegistrar()
         }
     }
@@ -126,7 +145,7 @@ class AnyContext: @unchecked Sendable {
     /// Returns nil when observation is disabled or before the first observation access.
     var mainObservationRegistrarStore: Any? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            return (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?.main
+            return (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?._main
         }
         return nil
     }
@@ -545,6 +564,7 @@ class AnyContext: @unchecked Sendable {
         self.options = parent?.options ?? ModelOption.current
         self.mainCallQueue = parent?.mainCallQueue ?? MainCallQueue()
         self.useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
+        self.useMainThreadObservation = Self.shouldEnableMainThreadObservation(options: self.options)
 
         // Share a single RegistrarBox across the whole tree. The box is cheap to create (1 alloc);
         // the RegistrarPair inside is allocated lazily on first observation access.
@@ -573,11 +593,13 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    /// Returns the main registrar if the pair has already been allocated, or nil otherwise.
-    /// `_registrarBox` is a `let` constant — safe to read from any thread.
+    /// Returns the main registrar if the pair has already been allocated AND the main
+    /// channel has been created (lazy), or nil otherwise.
+    /// `_registrarBox` is a `let` constant; `_main` is `nonisolated(unsafe)` with single
+    /// nil→non-nil write under the hierarchy lock.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var mainObservationRegistrar: ObservationRegistrar? {
-        (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?.main
+        (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?._main
     }
 
     /// Returns the background registrar if the pair has already been allocated, or nil otherwise.
@@ -597,15 +619,36 @@ class AnyContext: @unchecked Sendable {
         useObservationRegistrar
     }
 
-    /// Returns the main registrar, allocating the `RegistrarPair` lazily on first call.
-    /// Only called when `useObservationRegistrar` is true, so `_registrarBox` is non-nil.
+    /// Computes whether main-thread observation bridging should be active for this context,
+    /// based on platform and the `ModelOption.disableMainThreadObservation` flag.
+    ///
+    /// Non-Apple platforms always disable it: there is no consumer of main-thread observation
+    /// (SwiftUI/UIKit/AppKit are Apple-only) and Android's `@MainActor` work never executes
+    /// because Android's UI thread is owned by Android's `Looper`, not libdispatch.
+    private static func shouldEnableMainThreadObservation(options: ModelOption) -> Bool {
+        #if canImport(Darwin)
+        return !options.contains(.disableMainThreadObservation)
+        #else
+        return false
+        #endif
+    }
+
+    /// Returns the main registrar, allocating the `RegistrarPair` and the `_main` channel
+    /// lazily on first call. Only called when `useObservationRegistrar` is true, so
+    /// `_registrarBox` is non-nil.
+    ///
+    /// Only invoked when `useMainThreadObservation == true` — contexts with the option
+    /// disabled (every context on non-Apple) never reach here, so the main-channel allocation
+    /// is paid only by trees that actually have a SwiftUI/UIKit/AppKit consumer.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var mainObservationRegistrarMakingIfNeeded: ObservationRegistrar {
         let box = _registrarBox as! RegistrarBox
-        if let pair = box._pair as? RegistrarPair { return pair.main }
+        if let pair = box._pair as? RegistrarPair, let main = pair._main { return main }
         return lock {
             if box._pair == nil { box._pair = RegistrarPair() }
-            return (box._pair as! RegistrarPair).main
+            let pair = box._pair as! RegistrarPair
+            if pair._main == nil { pair._main = ObservationRegistrar() }
+            return pair._main!
         }
     }
 
