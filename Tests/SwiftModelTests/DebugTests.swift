@@ -1203,6 +1203,88 @@ struct DebugTests {
         // output. The contract is "no attachDebug => no per-mutation emission".
     }
 
+    /// `.triggers(.withValue)` on a **preference** path. The preference's
+    /// `_ModelState[_preference:]` subscript has a `fatalError()` stub
+    /// getter — without `Context.willAccessPreferenceValue` pre-populating
+    /// `threadLocals.precomputedPreferenceValue` around the `willAccess`
+    /// invocation, the initial-value capture inside `ViewAccess.willAccess`
+    /// would crash. Same plumbing keeps `emitDebugTrigger` from crashing
+    /// when it reads `oldValue` / `newValue` for the trigger line.
+    ///
+    /// Reads on preference / context paths route through
+    /// `metadataModelContext().activeAccess`, which reads
+    /// `ModelAccess.active`/`ModelAccess.current` task-locals rather than the
+    /// stamped-access fallback. The `usingActiveAccess` wrap mirrors what
+    /// `@ObservedModel.update` effectively achieves for body-side reads on
+    /// SwiftUI's render path (the view body runs after the access is stamped
+    /// AND the read site has access "active" via the property wrapper's
+    /// invalidator machinery).
+    @Test(arguments: UpdatePath.allCases)
+    func observedModelDebug_triggersWithValue_preference(updatePath: UpdatePath) async throws {
+        try await assertOutputSnapshot(until: { $0.contains("View") }) { output in
+            let model = updatePath.withOptions { DebugContextModel().withAnchor() }
+            let access = ViewAccess()
+            let stamped = simulateObservedModelUpdate(model, access: access)
+            access.attachDebug(.init(triggers: .withValue, name: "View", printer: output))
+            usingActiveAccess(access) {
+                _ = stamped.node.preference.debugPreferenceScore
+            }
+            model.node.preference.debugPreferenceScore = 9
+        } result: {
+            """
+            View ← DebugContextModel.preference.debugPreferenceScore: 0 → 9
+
+            """
+        }
+    }
+
+    /// `.triggers(.withDiff)` variant for preferences — same crash-without-
+    /// precomputed-value risk, slightly different formatter path through
+    /// `emitDebugTrigger` (`String(customDumping:)` instead of `dumpForDebug`).
+    @Test(arguments: UpdatePath.allCases)
+    func observedModelDebug_triggersWithDiff_preference(updatePath: UpdatePath) async throws {
+        try await assertOutputSnapshot(until: { $0.contains("View") }) { output in
+            let model = updatePath.withOptions { DebugContextModel().withAnchor() }
+            let access = ViewAccess()
+            let stamped = simulateObservedModelUpdate(model, access: access)
+            access.attachDebug(.init(triggers: .withDiff, name: "View", printer: output))
+            usingActiveAccess(access) {
+                _ = stamped.node.preference.debugPreferenceScore
+            }
+            model.node.preference.debugPreferenceScore = 5
+        } result: {
+            """
+            View ← DebugContextModel.preference.debugPreferenceScore
+            - 0
+            + 5
+
+            """
+        }
+    }
+
+    /// `.triggers(.withValue)` on a **context-local** storage path. Same
+    /// stub-getter problem as the preference path — `[_metadata:]` has a
+    /// `fatalError()` getter. Verifies `Context.willAccessStorage` sets
+    /// `precomputedStorageValue` symmetrically and `ViewAccess` reads it.
+    @Test(arguments: UpdatePath.allCases)
+    func observedModelDebug_triggersWithValue_contextStorage(updatePath: UpdatePath) async throws {
+        try await assertOutputSnapshot(until: { $0.contains("View") }) { output in
+            let model = updatePath.withOptions { DebugContextModel().withAnchor() }
+            let access = ViewAccess()
+            let stamped = simulateObservedModelUpdate(model, access: access)
+            access.attachDebug(.init(triggers: .withValue, name: "View", printer: output))
+            usingActiveAccess(access) {
+                _ = stamped.node.local.debugContextCount
+            }
+            model.node.local.debugContextCount = 4
+        } result: {
+            """
+            View ← DebugContextModel.local.debugContextCount: 0 → 4
+
+            """
+        }
+    }
+
     /// A `DebugOptions` value whose `triggers` is `nil` (e.g. `changes`-only) is
     /// silently ignored by `$model.node.debug(...)`, since `changes` is not honoured
     /// (the model-tree diff is already covered by `node.debug(.changes)`).

@@ -101,6 +101,22 @@ final class ThreadLocals: @unchecked Sendable {
     /// first-access path also goes through `observe()` and isn't flagged.
     var isInsideMemoizeProduce = false
 
+    /// Sibling of `isInsideMemoizeProduce`, set during the *async* memoize
+    /// `observe()` path (registrar / `withObservationTracking` branch). Unlike
+    /// `isInsideMemoizeProduce`, this flag only suppresses the SwiftModel-side
+    /// `ViewAccess`/`TestAccess`/`DebugAccessCollector` dispatch — Apple's
+    /// `registrar.access(...)` calls upstream still run so memoize's own
+    /// `withObservationTracking` continues to capture the inner reads.
+    ///
+    /// Without this, every read inside the memoize body still fires through the
+    /// model value's stamped access (the `accessBox._reference?.access` branch
+    /// of `Context.willAccessDirect`, which `usingActiveAccess(nil)` does NOT
+    /// clear). On a debug-tracked view the parent's `ViewAccess` then registers
+    /// dependencies for whatever the memoize body touches and the trigger log
+    /// attributes those reads to the parent — the very leakage the memoize
+    /// is supposed to prevent.
+    var isInsideMemoizeObserve = false
+
     var pendingStack = _PendingStackBox()
 
     fileprivate init() {}

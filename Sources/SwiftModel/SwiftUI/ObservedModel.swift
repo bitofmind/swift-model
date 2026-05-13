@@ -41,6 +41,19 @@ import Observation
 public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
     @StateObject private var access = ViewAccess()
 
+    // Read in DEBUG inside `update()`. When the enclosing subtree has been
+    // marked via `.swiftModelDebugScope()`, this is `true` and we install
+    // `ViewAccess` even on the iOS 17+ registrar path so descendant reads
+    // are scoped to this view's access (which is what gives `$model.debug(...)`
+    // accurate attribution).
+    //
+    // SwiftUI calls `update()` on every nested `DynamicProperty` member before
+    // calling it on the wrapper itself, so by the time `update()` runs the env
+    // value reflects whatever the closest ancestor set.
+#if DEBUG
+    @Environment(\.swiftModelDebugActive) private var swiftModelDebugActive
+#endif
+
     public init(wrappedValue: M) {
         self.wrappedValue = wrappedValue
     }
@@ -82,11 +95,18 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
 
         MainActor.assumeIsolated {
 #if DEBUG
-            // Sticky-lazy gate: skip install on the registrar path until a
-            // body-side `$model.debug(...)` has flipped `debugRequested`. The
-            // priming render scheduled by `attachDebug` re-enters here with the
-            // flag set, at which point the access is installed for emission.
-            if usesObservationRegistrar && !access.debugRequested {
+            // Sticky-lazy gate: skip install on the registrar path until either
+            //   (a) a body-side `$model.debug(...)` has flipped `debugRequested`, or
+            //   (b) the enclosing subtree has been marked via
+            //       `.swiftModelDebugScope()` (env value `swiftModelDebugActive`).
+            //
+            // (b) is the "force-install" path that breaks debug attribution leaks
+            // — when an ancestor view has `$model.debug(...)` attached, its
+            // `ViewAccess` would otherwise see transitive reads from descendant
+            // views that skip their own `ViewAccess` install on iOS 17+. With
+            // env-active here, every descendant `@ObservedModel` installs its own
+            // access, re-stamping the model so reads register on the descendant.
+            if usesObservationRegistrar && !access.debugRequested && !swiftModelDebugActive {
                 return
             }
 #endif
@@ -281,6 +301,13 @@ public struct ModelScope<Content: View>: View {
     private let debug: DebugOptions?
     private let fileID: StaticString
     private let line: UInt
+
+    // See `@ObservedModel.swiftModelDebugActive` for rationale. When the
+    // enclosing subtree has been marked via `.swiftModelDebugScope()`, the
+    // scope installs `ViewAccess` even on iOS 17+ so descendant reads
+    // register on this scope's access (giving accurate `$model.debug(...)`
+    // attribution).
+    @Environment(\.swiftModelDebugActive) private var swiftModelDebugActive
 #endif
 
     public init(@ViewBuilder content: @escaping () -> Content) {
@@ -335,12 +362,6 @@ public struct ModelScope<Content: View>: View {
     }
 
     public var body: some View {
-#if DEBUG
-        let debugActive = (debug != nil)
-#else
-        let debugActive = false
-#endif
-
         let usesRegistrar: Bool
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
             usesRegistrar = true
@@ -365,16 +386,60 @@ public struct ModelScope<Content: View>: View {
         }
 #endif
 
-        // Install the access whenever it has work to do:
-        //   - iOS 16 path: always (access drives invalidation).
-        //   - iOS 17+ path: only when debug is attached (else `withObservationTracking`
-        //     handles it and our access is overhead with no benefit).
-        if !usesRegistrar || debugActive {
+        return _renderedContent(usesRegistrar: usesRegistrar)
+    }
+
+    // Split the install + env-propagation decision out of `body` so DEBUG can
+    // use `@ViewBuilder` (yielding a concrete `_ConditionalContent<…>`) while
+    // release returns the original `Content` directly. Previously a uniform
+    // `AnyView` wrap was used to unify the two compilation modes — release
+    // builds paid an `AnyView` cost for a DEBUG-only feature, breaking
+    // SwiftUI's structural-identity reuse for every `ModelScope` consumer.
+#if DEBUG
+    @ViewBuilder
+    private func _renderedContent(usesRegistrar: Bool) -> some View {
+        let debugActive = (debug != nil)
+        // Force-install also when the enclosing subtree has been marked
+        // `.swiftModelDebugScope()` — gives descendant attribution scoping
+        // even when this scope has no `debug` itself.
+        let forceInstall = swiftModelDebugActive
+        // `debugActive` always implies `shouldInstall`, so the
+        // `!shouldInstall && debugActive` cell is impossible — three real cases.
+        let shouldInstall = !usesRegistrar || debugActive || forceInstall
+
+        if debugActive {
+            // Has its own debug — install and propagate
+            // `\.swiftModelDebugActive` so every nested `@ObservedModel` /
+            // `ModelScope` also installs its own `ViewAccess`. The re-stamping
+            // chain is what prevents descendant reads from leaking onto this
+            // scope's `ViewAccess`.
+            usingActiveAccess(access) { content() }
+                .environment(\.swiftModelDebugActive, true)
+        } else if shouldInstall {
+            // iOS 16 (always installs) OR ancestor `.swiftModelDebugScope()`
+            // asked for force-install. Either way, no env propagation from
+            // here — either it's already set by the ancestor, or we're on
+            // the iOS 16 path where the env is irrelevant.
+            usingActiveAccess(access) { content() }
+        } else {
+            // iOS 17+, no debug on this scope, no ancestor force-install.
+            // SwiftUI's `withObservationTracking` drives invalidation and our
+            // access would be pure overhead. Zero-cost path.
+            content()
+        }
+    }
+#else
+    // Release: no debug surface, no env value to consult. iOS 16 installs,
+    // iOS 17+ doesn't — single branch, returns `Content` directly so the
+    // opaque `body` type stays structural (no `AnyView`).
+    private func _renderedContent(usesRegistrar: Bool) -> Content {
+        if !usesRegistrar {
             return usingActiveAccess(access) { content() }
         } else {
             return content()
         }
     }
+#endif
 }
 
 internal final class Observer<M: Model>: @unchecked Sendable {
@@ -561,6 +626,16 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
         }
 #endif
 
+        // Skip registration when this read is inside a memoize's async `observe()`
+        // body. The memoize's own dependency tracking runs upstream via Apple's
+        // `withObservationTracking` (in `ObservationTracking.observe()`); the
+        // calling view's `ViewAccess` must not also accumulate deps for whatever
+        // the memoize body internally touches — otherwise the memoize provides
+        // freshness dedup but not observation isolation, and the parent's
+        // `$model.debug(...)` attributes inner reads to the parent.
+        // See `ThreadLocals.isInsideMemoizeObserve`.
+        if threadLocals.isInsideMemoizeObserve { return nil }
+
         let id = context.anyModelID
 
         if context.isDestructed {
@@ -595,6 +670,15 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
             // `[_parentsObservationKey:]`) have `fatalError()` getters intended
             // for key-path construction only — evaluating them crashes. This
             // mirrors the `WritableKeyPath` filter used in `DebugAccessCollector`.
+            //
+            // The typed context-storage subscripts `[_metadata:]` and `[_preference:]`
+            // are *also* writable but ALSO have `fatalError()` getters — their value
+            // lives outside `_ModelState`. When the read came through
+            // `Context.willAccessStorage`, that callee has pre-set
+            // `threadLocals.precomputedStorageValue` exactly so the closure here can
+            // skip the keypath read. Use that value when present; only fall back to
+            // the keypath when it's a real `_ModelState` property.
+            //
             // Cost: one `String(customDumping:)` per accessed real property per
             // render, DEBUG-only.
             if path is WritableKeyPath<M._ModelState, Value> {
@@ -614,7 +698,19 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
                 let initialValue = threadLocals.withValue(true, at: \.isInsideDebugDump) {
                     usingActiveAccess(nil) {
                         threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                            let v = context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path]
+                            // Prefer the precomputed value when this `willAccess` was
+                            // dispatched from `Context.willAccessStorage` (sets
+                            // `precomputedStorageValue`) or `willAccessPreferenceValue`
+                            // (sets `precomputedPreferenceValue`) — it's the only way to
+                            // read the typed `[_metadata:]` / `[_preference:]` subscripts
+                            // without crashing on their `fatalError()` stub getters.
+                            let v: Value
+                            if let precomputed = (threadLocals.precomputedStorageValue
+                                                  ?? threadLocals.precomputedPreferenceValue) as? Value {
+                                v = precomputed
+                            } else {
+                                v = context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path]
+                            }
                             if case .withValue(let maxLines, let maxDepth) = self.debug?.triggers {
                                 return dumpForDebug(v, maxLines: maxLines, maxDepth: maxDepth)
                             }
@@ -739,7 +835,21 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
         // Synthetic paths (memoize/environment/preference/parents) have
         // `fatalError()` getters — never read their value. Fall back to the
         // header-only line for `.withValue` / `.withDiff` in that case.
+        //
+        // The typed context-storage subscripts (`[_metadata:]`, `[_preference:]`)
+        // are also writable-with-fatalError, but `Context.didModifyStorage`
+        // pre-sets `threadLocals.precomputedStorageValue` for exactly this read.
+        // Treat that as the canonical "current value" source — fall back to
+        // direct keypath read only for real `_ModelState` properties.
         let canReadValue = path is WritableKeyPath<M._ModelState, Value>
+        @Sendable func readValue() -> Value? {
+            if let precomputed = (threadLocals.precomputedStorageValue
+                                  ?? threadLocals.precomputedPreferenceValue) as? Value {
+                return precomputed
+            }
+            guard canReadValue else { return nil }
+            return context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path]
+        }
 
         // Format the per-format body for this trigger.
         let body: String
@@ -747,7 +857,7 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
         case .name:
             body = header
         case .withValue(let maxLines, let maxDepth):
-            guard canReadValue else {
+            guard let value = readValue() else {
                 debug.printer.write(header + accessStackSuffix(observer: observer, path: path))
                 return
             }
@@ -756,11 +866,7 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
             let newStr = threadLocals.withValue(true, at: \.isInsideDebugDump) {
                 usingActiveAccess(nil) {
                     threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                        dumpForDebug(
-                            context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path],
-                            maxLines: maxLines,
-                            maxDepth: maxDepth
-                        )
+                        dumpForDebug(value, maxLines: maxLines, maxDepth: maxDepth)
                     }
                 }
             }
@@ -777,7 +883,7 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
             lock { observer.debugLastValues[path] = newStr }
             body = "\(header): \(oldStr) → \(newStr)"
         case .withDiff(let style):
-            guard canReadValue else {
+            guard let value = readValue() else {
                 debug.printer.write(header + accessStackSuffix(observer: observer, path: path))
                 return
             }
@@ -786,7 +892,7 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
             let newStr = threadLocals.withValue(true, at: \.isInsideDebugDump) {
                 usingActiveAccess(nil) {
                     threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                        String(customDumping: context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+                        String(customDumping: value)
                     }
                 }
             }

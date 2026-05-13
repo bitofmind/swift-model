@@ -283,20 +283,35 @@ internal func update<T: Sendable>(
         }
 
         @Sendable func observe() -> T {
-            // `usingActiveAccess(nil)` shields any outer swift-model `ModelAccess`
-            // (a `ViewAccess` from `$model.debug`, a debug collector, a test access,
-            // etc.) from seeing reads inside `access()`. Mirrors what the
-            // `AccessCollector` branch below does via `usingActiveAccess(collector)`,
-            // so memoize's behaviour matches across the two paths.
+            // Two-pronged isolation for the memoize body against outer observers:
             //
-            // Apple's `withObservationTracking` uses its own `_AccessList` thread-local
-            // and is independent of swift-model's active-access — so the registrar-side
-            // reads still propagate to *that* (e.g. SwiftUI's body wrapper). The
-            // swift-model-side leak is closed; the Apple-side one cannot be suppressed
-            // from outside the framework's public API.
+            //   1. `usingActiveAccess(nil)` clears swift-model's `ModelAccess.$active`
+            //      task-local. That alone is **not enough** — `Context.willAccessDirect`
+            //      falls through to the model value's stamped access
+            //      (`accessBox._reference?.access`), which is set by `@ObservedModel.update`
+            //      at the calling view boundary. The stamped access path still fires
+            //      the outer `ViewAccess.willAccess` and accumulates deps on the
+            //      calling view.
+            //
+            //   2. `isInsideMemoizeObserve` short-circuits `ViewAccess.willAccess`
+            //      (and `TestAccess` / `DebugAccessCollector` via the same dispatch)
+            //      so the stamped-access fall-through becomes a no-op for the duration
+            //      of `access()`. Apple's `withObservationTracking` upstream still sees
+            //      every read (it uses its own task-local `_AccessList`, untouched by
+            //      either of the above), so memoize's own dependency tracking is intact.
+            //
+            // Together these close the swift-model side of the memoize observation
+            // barrier. The Apple side (nested `withObservationTracking` frames seeing
+            // each other's reads) cannot be suppressed from outside the public API —
+            // a parent SwiftUI body's `withObservationTracking` will still register the
+            // same reads via `registrar.access(...)` — so memoize on iOS 17+ guarantees
+            // *freshness dedup* but not full *observation isolation* against the
+            // SwiftUI re-render layer.
             let value = withObservationTracking {
                 usingActiveAccess(nil) {
-                    access()
+                    threadLocals.withValue(true, at: \.isInsideMemoizeObserve) {
+                        access()
+                    }
                 }
             } onChange: {
                 // Call didModify immediately when dependency changes (for dirty tracking).

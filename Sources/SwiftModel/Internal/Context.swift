@@ -332,11 +332,19 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_metadata: storage]
         let mc = metadataModelContext()
         let storageArea: _ExhaustivityBits = storage.propagation == .environment ? .environment : .local
-        // Pre-compute storage value for TestAccess (the _ModelState getter stubs have fatalError).
+        // Pre-compute storage value so any code that needs to read it (TestAccess's
+        // `didModify`, the debug initial-value capture in `ViewAccess.willAccess`) can
+        // do so without invoking the `_ModelStateType[_metadata:]` `fatalError()`
+        // stub getter. The same value is exposed both during the `willAccess` call
+        // and around the returned closure — symmetric with `didModifyStorage`'s
+        // behaviour, and the only way for `willAccess` to capture an `old` value for
+        // `.withValue` / `.withDiff` debug emissions on these synthetic paths.
         let storageValue: V = lock { (contextStorage[storage.key]?.value as? V) ?? storage.defaultValue }
         let closureOpt = threadLocals.withValue(storageArea, at: \.modificationArea) {
             threadLocals.withValue(storage.name, at: \.storageName) {
-                mc.activeAccess?.willAccess(from: self, at: typedPath)
+                threadLocals.withValue(storageValue as Any, at: \.precomputedStorageValue) {
+                    mc.activeAccess?.willAccess(from: self, at: typedPath)
+                }
             }
         }
         if let closure = closureOpt {
@@ -398,7 +406,20 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 lock { buildPostLockCallbacks(for: typedPath, kind: .environment) }
             }
             #endif
-            runPostLockCallbacks(postLockCallbacks)
+            // The post-lock callbacks themselves need the same context-storage thread-locals
+            // in scope: `ViewAccess.onModify`-registered closures (DEBUG) fire here and
+            // dispatch `emitDebugTrigger`, whose `readValue()` reads
+            // `precomputedStorageValue` and whose `debugPropertyName` reads
+            // `storageName` / `modificationArea` — the `_metadata[…]` getter stub
+            // `fatalError`s otherwise.
+            let runArea: _ExhaustivityBits = storage.propagation == .environment ? .environment : .local
+            threadLocals.withValue(runArea, at: \.modificationArea) {
+                threadLocals.withValue(storage.name, at: \.storageName) {
+                    threadLocals.withValue(newValue as Any, at: \.precomputedStorageValue) {
+                        runPostLockCallbacks(postLockCallbacks)
+                    }
+                }
+            }
         }
     }
 
@@ -435,9 +456,17 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         guard !threadLocals.isAccessingMetadataStorage else { return }
         let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_preference: storage]
         let mc = metadataModelContext()
+        // Set `precomputedPreferenceValue` both during the `willAccess` call and around
+        // its returned closure — symmetric with the `precomputedStorageValue` pattern in
+        // `willAccessStorage`. Required so any callee that needs the aggregated value
+        // (the debug initial-value capture in `ViewAccess.willAccess` for the typed
+        // `[_preference:]` path) can read it without invoking the `fatalError()` stub
+        // getter.
         let closureOpt = threadLocals.withValue(.preference, at: \.modificationArea) {
             threadLocals.withValue(storage.name, at: \.storageName) {
-                mc.activeAccess?.willAccess(from: self, at: typedPath)
+                threadLocals.withValue(value as Any, at: \.precomputedPreferenceValue) {
+                    mc.activeAccess?.willAccess(from: self, at: typedPath)
+                }
             }
         }
         if let closure = closureOpt {
@@ -499,7 +528,19 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 lock { buildPostLockCallbacks(for: typedPath, kind: .preferences) }
             }
             #endif
-            runPostLockCallbacks(postLockCallbacks)
+            // The post-lock callbacks themselves need the same preference thread-locals
+            // in scope: `ViewAccess.onModify`-registered closures (DEBUG) fire here and
+            // dispatch `emitDebugTrigger`, whose `readValue()` reads
+            // `precomputedPreferenceValue` and whose `debugPropertyName` reads
+            // `storageName` / `modificationArea` — the `_preference[…]` getter stub
+            // `fatalError`s otherwise.
+            threadLocals.withValue(.preference, at: \.modificationArea) {
+                threadLocals.withValue(storage.name, at: \.storageName) {
+                    threadLocals.withValue(newValue as Any, at: \.precomputedPreferenceValue) {
+                        runPostLockCallbacks(postLockCallbacks)
+                    }
+                }
+            }
 
             // Preferences are bottom-up: a child contribution change must invalidate ancestor observers.
             // Use notifyPreferenceChange (not didModifyPreference) so that only the untyped observation
@@ -805,6 +846,14 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 backgroundObservationRegistrarMakingIfNeeded.access(observer, keyPath: observerKP)
             }
         }
+
+        // Skip the swift-model side `activeAccess.willAccess` dispatch during a
+        // memoize's async `observe()` body. The registrar.access above keeps
+        // memoize's own `withObservationTracking` tracking intact; this check
+        // prevents the read from accumulating as a dep on the calling view's
+        // `ViewAccess` (the stamped-access fall-through that
+        // `usingActiveAccess(nil)` cannot clear). See `ThreadLocals.isInsideMemoizeObserve`.
+        if threadLocals.isInsideMemoizeObserve { return nil }
 
         guard let activeAccess else { return nil }
         let sendableStatePath = unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self)

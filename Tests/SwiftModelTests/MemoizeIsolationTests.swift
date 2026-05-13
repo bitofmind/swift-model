@@ -103,6 +103,65 @@ struct MemoizeIsolationTests {
         await settle(model.doubled == 10)
         #expect(model.computes.value >= 2)
     }
+
+    /// Stamped-access path — the scenario `@ObservedModel` actually drives in
+    /// production. `usingActiveAccess(recorder)` (used by the tests above) sets
+    /// only the task-local `ModelAccess.active`; `withAccess(recorder)` instead
+    /// stamps the access onto the model value's `accessBox._reference?.access`,
+    /// which `Context.willAccessDirect` consults as a fallback when no active
+    /// task-local is set. The `usingActiveAccess(nil)` wrap in `observe()`
+    /// clears only the task-local; the stamped reference still propagates and
+    /// would fire the outer access for every read inside `produce` — that's
+    /// the actual production leak `$model.debug(...)` on iOS 17+ hit when a
+    /// memoized property's body touched other tracked state.
+    ///
+    /// The `isInsideMemoizeObserve` thread-local short-circuits the swift-model
+    /// dispatch in `Context.willAccessDirect` regardless of which path the
+    /// active access came from, closing the stamped variant of the leak as
+    /// well.
+    @Test(arguments: UpdatePath.allCases)
+    func produceReadsAreShieldedFromStampedAccess(updatePath: UpdatePath) async {
+        let model = updatePath.withOptions { IsolationModel().withAnchor() }
+        let recorder = RecordingAccess()
+        // Stamp the recorder onto the model the same way `@ObservedModel.update`
+        // does. Subsequent reads through `stamped.doubled` route through the
+        // stamped reference — which is the path the `usingActiveAccess(nil)`
+        // wrap in `observe()` cannot clear.
+        let stamped = model.withAccess(recorder)
+
+        _ = stamped.doubled
+
+        let writableHits = recorder.recordedWritablePaths.value
+        #expect(
+            writableHits.isEmpty,
+            "Stamped access saw \(writableHits) — memoize leaked produce's reads via the stamped chain on \(updatePath)."
+        )
+    }
+
+    /// Same as the stamped-access test above but exercising the **dirty-recompute**
+    /// branch. Mirror of `dirtyRecomputeReadsAreShieldedFromOuterAccess` for the
+    /// `withAccess`-stamped path. Confirms `isInsideMemoizeProduce` (the
+    /// dirty-path sibling of `isInsideMemoizeObserve`) also closes the leak
+    /// when the stamped reference is the active-access source.
+    @Test(arguments: UpdatePath.allCases)
+    func dirtyRecomputeIsShieldedFromStampedAccess(updatePath: UpdatePath) async {
+        let model = updatePath.withOptions { IsolationModel().withAnchor() }
+        // Establish the cache (first access) — no recorder yet.
+        _ = model.doubled
+        // Mutate the dependency outside the stamped scope — marks dirty.
+        model.value = 5
+
+        let recorder = RecordingAccess()
+        let stamped = model.withAccess(recorder)
+
+        _ = stamped.doubled    // hits the dirty-recompute path under stamping
+
+        let writableHits = recorder.recordedWritablePaths.value
+        #expect(
+            writableHits.isEmpty,
+            "Stamped access saw \(writableHits) — dirty-recompute leaked produce's reads via the stamped chain on \(updatePath)."
+        )
+    }
 }
 
 /// A minimal `ModelAccess` subclass that records which `(Model, path)` pairs

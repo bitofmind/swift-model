@@ -160,6 +160,13 @@ extension ModelContext {
     /// ObservationRegistrar calls for _State paths are handled by `willAccessDirect` (in Context),
     /// and for synthetic paths (storage/preference/parents) by `willAccessSyntheticPath` (in Context).
     func willAccess<T>(at path: KeyPath<M._ModelState, T>&Sendable) -> (() -> Void)? {
+        // Suppress reads happening inside a memoize's async `observe()` body. The
+        // outer `withObservationTracking` in `ObservationTracking.observe()` already
+        // captures the deps for memoize's own re-evaluation; the calling view's
+        // `ViewAccess` (reached here via the stamped-access fall-through that
+        // `usingActiveAccess(nil)` cannot clear) must not accumulate them too.
+        // See `ThreadLocals.isInsideMemoizeObserve`.
+        if threadLocals.isInsideMemoizeObserve { return nil }
         guard let activeAccess, let context else { return nil }
         return activeAccess.willAccess(from: context, at: path)
     }
