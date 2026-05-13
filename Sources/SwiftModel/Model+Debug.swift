@@ -4,19 +4,19 @@ import Dependencies
 
 // MARK: - Public debug API
 
-public extension Model where Self: Sendable {
+public extension ModelNode where M: Sendable {
     // MARK: - debug
 
     /// Observes this model's entire state tree and prints debug information whenever anything changes.
     ///
-    /// The no-closure form observes `self` — all stored properties are tracked as dependencies.
+    /// The no-closure form observes the wrapped model — all stored properties are tracked as dependencies.
     ///
     /// ```swift
     /// func onActivate() {
     ///     node.debug()                                    // triggers + diff output (default)
-    ///     node.debug(.changes(.value))                   // print new value instead of diff
-    ///     node.debug(.init(name: "MyModel"))             // custom label
-    ///     node.debug(.triggers(.withValue))              // just show which properties changed
+    ///     node.debug(.changes(.value))                    // print new value instead of diff
+    ///     node.debug(.init(name: "MyModel"))              // custom label
+    ///     node.debug(.triggers(.withValue))               // just show which properties changed
     /// }
     /// ```
     ///
@@ -39,11 +39,16 @@ public extension Model where Self: Sendable {
         // When `.shallow` is active, child models are rendered opaque (just their type name)
         // so that changes deep inside a child don't produce a diff line.
         let isShallow = options.isShallow
-        @Sendable func snapshot(_ m: Self) -> String {
-            threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                guard isShallow else { return String(customDumping: m) }
-                return threadLocals.withValue(0 as Int?, at: \.shallowMirrorDepth) {
-                    String(customDumping: m)
+        // `isInsideDebugDump` suppresses re-entrant `willAccess` during the
+        // customDump walk so model fields read by the dump don't get registered
+        // as observed deps on any active `ViewAccess`. See `ThreadLocals.isInsideDebugDump`.
+        @Sendable func snapshot(_ m: M) -> String {
+            threadLocals.withValue(true, at: \.isInsideDebugDump) {
+                threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+                    guard isShallow else { return String(customDumping: m) }
+                    return threadLocals.withValue(0 as Int?, at: \.shallowMirrorDepth) {
+                        String(customDumping: m)
+                    }
                 }
             }
         }
@@ -70,10 +75,12 @@ public extension Model where Self: Sendable {
                        let d = snapshotLineDiff(prevSnap, newSnap, style: style) {
                         printerBox.write("\(label) value changed:\n\(d)")
                     }
-                case .value:
+                case .value(let maxLines, let maxDepth):
                     previous.setValue(snapshot(value))
-                    let valueDesc = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                        String(customDumping: value)
+                    let valueDesc = threadLocals.withValue(true, at: \.isInsideDebugDump) {
+                        threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+                            dumpForDebug(value, maxLines: maxLines, maxDepth: maxDepth)
+                        }
                     }
                     printerBox.write("\(label) = \(valueDesc)")
                 }

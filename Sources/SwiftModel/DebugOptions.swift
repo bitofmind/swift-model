@@ -32,6 +32,40 @@ public struct DebugOptions: Sendable {
     /// Output destination. Defaults to `print()` when `nil`.
     var printer: (any TextOutputStream & Sendable)?
 
+    /// Optional observer fired on each property access while debug is active.
+    /// Use for custom telemetry on access patterns, or `.firstAccessBreakpoint()`
+    /// to drop into LLDB at the moment a read registers. For the more common
+    /// "which read caused this trigger?" question, prefer ``captureAccessStack``,
+    /// which captures at access time but only emits when the property fires.
+    /// Ignored on debug entry points that observe mutations rather than reads.
+    var accessObserver: (any AccessObserver)?
+
+    /// Capture a call stack at `willAccess` registration for each tracked path
+    /// and append it to the trigger emission for that path. Set to the number
+    /// of frames to keep (e.g. `15`); `nil` (default) skips capture entirely.
+    ///
+    /// Unlike `accessObserver`, this is **silent for paths that are read but
+    /// never fire** — the stack is captured cheaply at access time (raw return
+    /// addresses, no symbolication), held alongside the access registration,
+    /// and symbolicated lazily inside the trigger emission only for paths that
+    /// actually invalidate the view. The result is one self-contained log
+    /// entry per real re-render that names the model, property, old/new value,
+    /// *and* the body that read it — instead of stack dumps for every
+    /// property a complex view happens to touch.
+    ///
+    /// Costs in DEBUG only: at access time, one `Thread.callStackReturnAddresses`
+    /// call (≈ tens of µs for ~30 frames) plus per-path storage of an
+    /// `[UnsafeRawPointer?]`. At trigger time, one `backtrace_symbols` call per
+    /// fired path. Free when this field is `nil`. No effect outside `DEBUG`.
+    ///
+    /// Honoured by every debug entry point that has a `willAccess` hook to capture
+    /// from: `$model.debug(_:)` (`@ObservedModel`), `ModelScope(debug:)`,
+    /// `Observed(debug:)`, `memoize(debug:)`, and `node.debug(_:_:)` (the closure
+    /// form). Ignored on `node.debug(_:)` (no-closure form) and
+    /// `observeModifications(debug:)`, which observe mutations rather than reads
+    /// and have no `willAccess` to attach to.
+    var captureAccessStack: Int?
+
     /// Creates a `DebugOptions` value.
     ///
     /// All parameters have sensible defaults so calling `.init()` produces full output —
@@ -43,18 +77,26 @@ public struct DebugOptions: Sendable {
     ///   - isShallow: When `true`, child model properties are not tracked as dependencies.
     ///   - name: Custom label. Defaults to the model's type name when `nil`.
     ///   - printer: Custom output stream. Defaults to `print()` when `nil`.
+    ///   - accessObserver: Optional read-side hook. See ``AccessObserver``.
+    ///   - captureAccessStack: Optional frame count for capturing the body's
+    ///     call stack at access time and stitching it onto fired trigger lines.
+    ///     See the field docs for details.
     public init(
         triggers: TriggerFormat? = .name,
         changes: ChangeFormat? = .diff(),
         isShallow: Bool = false,
         name: String? = nil,
-        printer: (any TextOutputStream & Sendable)? = nil
+        printer: (any TextOutputStream & Sendable)? = nil,
+        accessObserver: (any AccessObserver)? = nil,
+        captureAccessStack: Int? = nil
     ) {
         self.triggers = triggers
         self.changes = changes
         self.isShallow = isShallow
         self.name = name
         self.printer = printer
+        self.accessObserver = accessObserver
+        self.captureAccessStack = captureAccessStack
     }
 
     // MARK: - Shorthands
@@ -89,6 +131,22 @@ public struct DebugOptions: Sendable {
     var effectivePrinter: any TextOutputStream & Sendable {
         printer ?? PrintTextOutputStream()
     }
+
+    /// Returns a copy with `name` set to `defaultName` if and only if the receiver
+    /// has no `name` set. Every other field — including `accessObserver` and
+    /// `captureAccessStack` — is preserved.
+    ///
+    /// Used by the view-side `$model.debug(_:)` and `ModelScope(debug:)` auto-label
+    /// machinery. The previous "rebuild the struct field-by-field" approach silently
+    /// dropped any newly-added field that wasn't enumerated in the rebuild — this
+    /// helper is the single point of truth, so adding a new `DebugOptions` field
+    /// requires no follow-up edits in the view-side callers.
+    func withDefaultName(_ defaultName: @autoclosure () -> String) -> DebugOptions {
+        guard name == nil else { return self }
+        var copy = self
+        copy.name = defaultName()
+        return copy
+    }
 }
 
 /// Controls how a diff is displayed when comparing old and new values.
@@ -109,7 +167,22 @@ public enum TriggerFormat: Sendable {
     case name
 
     /// Print the property name and its old → new value: `"AppModel.filter: \"a\" → \"b\""`.
-    case withValue
+    ///
+    /// `maxLines` caps the rendered dump of each side at the given line count, appending
+    /// `"… (N more line[s])"` when truncated. The default of `20` protects logs from
+    /// blowing up on large value types (e.g. timeline structs with hundreds of nested
+    /// entries). Pass `Int.max` to disable line truncation.
+    ///
+    /// `maxDepth` is passed through to `customDump` — when set below `.max` the Mirror
+    /// walk short-circuits at the given depth and emits `…` for nested values beyond it.
+    /// This is the real CPU-saving knob for deep types; line truncation alone doesn't
+    /// avoid the underlying reflection cost. The default of `4` is symmetric with
+    /// `maxLines: 20` — both are bounded safety nets, opt out with `Int.max` if you
+    /// want the unbounded form. For typical `@Model` graphs, depth `4` shows the
+    /// model's top fields (`depth 1`), its nested child structs / array elements
+    /// (`depth 2-3`), and their leaf fields (`depth 4`) — enough signal to see
+    /// what changed without walking the entire tree.
+    case withValue(maxLines: Int = 20, maxDepth: Int = 4)
 
     /// Print a `−`/`+` diff of the dependency value with all model sub-properties expanded.
     ///
@@ -119,6 +192,8 @@ public enum TriggerFormat: Sendable {
 }
 
 public extension TriggerFormat {
+    /// Shorthand for `.withValue()` — uses the defaults `maxLines: 20`, `maxDepth: 4`.
+    static var withValue: Self { .withValue() }
     /// Shorthand for `.withDiff()` — uses the default `.compact` diff style.
     static var withDiff: Self { .withDiff() }
 }
@@ -129,12 +204,23 @@ public enum ChangeFormat: Sendable {
     case diff(DiffStyle = .compact)
 
     /// Show only the new value via `customDump`.
-    case value
+    ///
+    /// `maxLines` caps the rendered dump at the given line count, appending
+    /// `"… (N more line[s])"` when truncated. The default of `20` protects logs from
+    /// blowing up on large value types. Pass `Int.max` to disable line truncation.
+    ///
+    /// `maxDepth` is passed through to `customDump`; at depths beyond it the Mirror walk
+    /// short-circuits and emits `…`. This is the real CPU-saving knob. The default of
+    /// `4` is symmetric with `maxLines: 20` — both are bounded safety nets. Pass
+    /// `Int.max` for the unbounded form.
+    case value(maxLines: Int = 20, maxDepth: Int = 4)
 }
 
 public extension ChangeFormat {
     /// Shorthand for `.diff()` — uses the default `.compact` diff style.
     static var diff: Self { .diff() }
+    /// Shorthand for `.value()` — uses the defaults `maxLines: 20`, `maxDepth: 4`.
+    static var value: Self { .value() }
 }
 
 // MARK: - debugFileLocation

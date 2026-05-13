@@ -226,7 +226,7 @@ public extension Model {
     /// ```
     func withDebug(_ options: DebugOptions = .all) -> Self where Self: Sendable {
         withActivation {
-            $0.debug(options)
+            $0.node.debug(options)
         }
     }
 

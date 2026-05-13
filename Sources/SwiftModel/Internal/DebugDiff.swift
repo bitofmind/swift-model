@@ -164,6 +164,34 @@ private func collapsedLineDiff(_ rawDiff: String) -> String {
     return result.joined(separator: "\n")
 }
 
+// MARK: - Value rendering helpers
+
+/// Truncates a multi-line string to at most `maxLines` lines, appending a
+/// `"… (N more line[s])"` suffix when truncated. Pluralisation matches the
+/// dropped-line count so the marker reads naturally for `1` as well as `N`.
+///
+/// Used by `.withValue` / `.value` debug formats to bound otherwise-unbounded
+/// `customDump` output. Cheap — splits and rejoins lines; no Mirror walk.
+func truncateToMaxLines(_ s: String, maxLines: Int) -> String {
+    guard maxLines < .max else { return s }
+    let lines = s.components(separatedBy: "\n")
+    guard lines.count > maxLines else { return s }
+    let kept = lines.prefix(maxLines).joined(separator: "\n")
+    let dropped = lines.count - maxLines
+    let plural = dropped == 1 ? "line" : "lines"
+    return "\(kept)\n… (\(dropped) more \(plural))"
+}
+
+/// Renders `value` via `customDump(..., maxDepth:)` and post-truncates the
+/// resulting string to `maxLines`. Used by the `.withValue` and `.value` debug
+/// formats — see `TriggerFormat.withValue` / `ChangeFormat.value` for the
+/// rationale on the two knobs.
+func dumpForDebug<T>(_ value: T, maxLines: Int, maxDepth: Int) -> String {
+    var out = ""
+    customDump(value, to: &out, maxDepth: maxDepth)
+    return truncateToMaxLines(out, maxLines: maxLines)
+}
+
 // MARK: - memoizeDebugSetup
 
 /// Sets up debug observation for a `memoize` call.
@@ -191,16 +219,23 @@ func memoizeDebugSetup<T: Sendable>(
 
     let debugTriggerFormat = options.triggers
     let debugChangeFormat = options.changes
+    let debugAccessObserver = options.accessObserver
     let debugPrinterBox = PrinterBox(options.effectivePrinter)
     // Store lazy closures so that expensive operations (e.g. LCS diff) run in debugPrint,
     // outside the context lock, rather than blocking it during the onModify callback.
     let debugPendingTriggers = LockIsolated<[@Sendable () -> String]>([])
     let collectorBox = LockIsolated<DebugAccessCollector?>(nil)
 
-    if let fmt = debugTriggerFormat {
+    // The collector is needed whenever debug needs to observe accesses — either to
+    // register trigger callbacks, fire the user's `accessObserver`, or capture
+    // access stacks for trigger-time emission.
+    let wantsStackCapture = (options.captureAccessStack ?? 0) > 0
+    if debugTriggerFormat != nil || debugAccessObserver != nil || wantsStackCapture {
         let collector = DebugAccessCollector(
-            triggerFormat: fmt,
-            isShallow: options.isShallow
+            triggerFormat: debugTriggerFormat,
+            isShallow: options.isShallow,
+            accessObserver: debugAccessObserver,
+            captureAccessStack: options.captureAccessStack
         ) { lazy in
             debugPendingTriggers.withValue { $0.append(lazy) }
         }
@@ -242,8 +277,8 @@ func memoizeDebugSetup<T: Sendable>(
                     lines.append("\(label) value changed:")
                     lines.append(d)
                 }
-            case .value:
-                lines.append("\(label) = \(String(customDumping: value))")
+            case .value(let maxLines, let maxDepth):
+                lines.append("\(label) = \(dumpForDebug(value, maxLines: maxLines, maxDepth: maxDepth))")
             }
         }
 
@@ -275,29 +310,54 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
     /// Called when a tracked dependency changes. Receives a lazy closure that produces
     /// the human-readable description like `"AppModel.filter"` or `"AppModel.filter: 3 → 4"`.
     /// The closure is evaluated lazily in `wrappedOnUpdate`/`debugPrint` — outside the context
-    /// lock — so that expensive operations (e.g. LCS diff) don't block other threads.
+    /// lock — so that expensive operations (e.g. LCS diff, stack symbolication) don't block
+    /// other threads.
     let onTrigger: @Sendable (@Sendable @escaping () -> String) -> Void
 
-    /// Tracks live subscriptions keyed by (modelID, path).
-    /// The `String?` slot holds the last-seen value string for the `.withValue` trigger format.
-    let subscriptions = LockIsolated<[Key: (@Sendable () -> Void, String?)]>([:])
+    /// One entry per live subscription keyed by `(modelID, path)`.
+    /// - `cancellation`: cancels the `onModify` registration.
+    /// - `lastValueStr`: last-seen rendered value for `.withValue` / `.withDiff`. `nil` for `.name`.
+    /// - `accessStack`: raw return-address stack captured at first-access when
+    ///   `captureAccessStack > 0`; symbolicated lazily on trigger emission. Empty otherwise.
+    struct Subscription: Sendable {
+        var cancellation: @Sendable () -> Void
+        var lastValueStr: String?
+        /// Raw return addresses stored as bit-pattern `UInt`s so the stack is
+        /// trivially `Sendable` for capture in `@Sendable` `onTrigger` closures.
+        var accessStack: [UInt]
+    }
+    let subscriptions = LockIsolated<[Key: Subscription]>([:])
 
-    let triggerFormat: TriggerFormat
+    /// `nil` when the collector is installed solely to fire `accessObserver` — in that
+    /// case no `onModify` callbacks are registered and `onTrigger` is never called.
+    let triggerFormat: TriggerFormat?
     let isShallow: Bool
     /// When `isShallow` is true and this is non-nil, only properties on the root model
     /// (the one whose ID matches) are registered as trigger dependencies. Properties on
     /// child models are ignored so their changes don't produce trigger output.
     let rootModelID: ModelID?
+    /// Optional read-side hook. Fired on every `willAccess` (before the dedup check),
+    /// so observer implementations can rate-limit or filter as they choose.
+    let accessObserver: (any AccessObserver)?
+    /// When non-nil and `> 0`, captures the call stack at first-registration for each
+    /// tracked path and appends a `\n  read from: …` block to the trigger emission for
+    /// that path. Cheap at capture time (raw addresses); symbolication runs lazily in
+    /// each fired path's `onTrigger` closure.
+    let captureAccessStack: Int?
 
     init(
-        triggerFormat: TriggerFormat,
+        triggerFormat: TriggerFormat?,
         isShallow: Bool = false,
         rootModelID: ModelID? = nil,
+        accessObserver: (any AccessObserver)? = nil,
+        captureAccessStack: Int? = nil,
         onTrigger: @Sendable @escaping (@Sendable @escaping () -> String) -> Void
     ) {
         self.triggerFormat = triggerFormat
         self.isShallow = isShallow
         self.rootModelID = rootModelID
+        self.accessObserver = accessObserver
+        self.captureAccessStack = captureAccessStack
         self.onTrigger = onTrigger
         super.init(useWeakReference: false)
     }
@@ -308,7 +368,7 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
 
     func cancelAll() {
         let cancels = subscriptions.withValue { subs -> [@Sendable () -> Void] in
-            let cs = subs.values.map(\.0)
+            let cs = subs.values.map(\.cancellation)
             subs.removeAll()
             return cs
         }
@@ -322,6 +382,22 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         // `usingActiveAccess` installs this collector globally so `willAccess` fires for
         // every model; we filter here rather than relying on `shouldPropagateToChildren`.
         if isShallow, let rootModelID, context.anyModelID != rootModelID { return nil }
+
+        // Fire the user's `accessObserver` on every read. It runs outside our subscription
+        // lock so observers may freely perform expensive work (stack capture, breakpoint
+        // trap). `FirstAccessObserver` does its own per-key dedup, so spammy hot-path
+        // properties don't flood the hook.
+        if let accessObserver {
+            let modelType = String(describing: M.self)
+            let propName = debugPropertyName(
+                from: context._modelSeed,
+                path: M._modelStateKeyPath.appending(path: path)
+            ) ?? ""
+            accessObserver.observeAccess(modelType: modelType, path: propName)
+        }
+
+        // If we're only here to fire `accessObserver` (no trigger output requested), stop.
+        guard let triggerFormat else { return nil }
 
         let key = Key(id: context.anyModelID, path: path)
 
@@ -376,7 +452,7 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         let returnClosure: (() -> Void)?
 
         switch fmt {
-        case .withValue:
+        case .withValue(let maxLines, let maxDepth):
             if needsPrecomputedValue {
                 initialValueStr = nil
                 returnClosure = { [weak self] in
@@ -385,15 +461,16 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                         ? threadLocals.precomputedPreferenceValue
                         : threadLocals.precomputedStorageValue
                     if let val = precomputed as? T {
-                        let str = usingActiveAccess(nil) { String(customDumping: val) }
-                        self.subscriptions.withValue { $0[key]?.1 = str }
+                        let str = usingActiveAccess(nil) { dumpForDebug(val, maxLines: maxLines, maxDepth: maxDepth) }
+                        self.subscriptions.withValue { $0[key]?.lastValueStr = str }
                     }
                 }
             } else {
                 // usingActiveAccess(nil) suppresses the DebugAccessCollector during the keypath read.
                 // _modelSeed uses .live source; state property reads go directly to _stateHolder.
                 initialValueStr = usingActiveAccess(nil) {
-                    String(customDumping: context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+                    dumpForDebug(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path],
+                                 maxLines: maxLines, maxDepth: maxDepth)
                 }
                 returnClosure = nil
             }
@@ -408,7 +485,7 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                     if let val = precomputed as? T {
                         let frozen: T = usingActiveAccess(nil) { frozenCopy(val) }
                         let str = dumpWithChildren(frozen)
-                        self.subscriptions.withValue { $0[key]?.1 = str }
+                        self.subscriptions.withValue { $0[key]?.lastValueStr = str }
                     }
                 }
             } else {
@@ -425,15 +502,37 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
             returnClosure = nil
         }
 
+        // Snapshot the call stack at first registration when configured. Cheap —
+        // raw return addresses only (as `UInt` bit patterns), symbolicated lazily
+        // inside the per-trigger closures below so the cost is only paid for paths
+        // that actually fire.
+        let accessStack: [UInt]
+        if let depth = captureAccessStack, depth > 0 {
+            accessStack = Thread.callStackReturnAddresses
+                .prefix(depth)
+                .map { $0.uintValue }
+        } else {
+            accessStack = []
+        }
+
         let cancellation = context.onModify(for: path) { [weak self] finished, _ in
             guard !finished, let self else { return {} }
 
+            // Resolve the captured access stack for this path under the subscriptions
+            // lock. Symbolication happens lazily inside the `onTrigger` closure (outside
+            // any swift-model lock), so `wrappedOnUpdate` pays the cost only for paths
+            // that fire — and only the first time a given (path, image) pair is dumped.
+            let stackForPath: [UInt] = self.subscriptions.withValue {
+                $0[key]?.accessStack ?? []
+            }
+
             switch fmt {
             case .name:
-                // Lazy closure: trivial, just returns the pre-computed label.
-                self.onTrigger { baseLabel }
+                // Lazy closure: trivial, just returns the pre-computed label plus
+                // the access-stack suffix (empty when capture isn't configured).
+                self.onTrigger { baseLabel + collectorAccessStackSuffix(stackForPath) }
                 return nil
-            case .withValue:
+            case .withValue(let maxLines, let maxDepth):
                 // For storage/preference paths, read new value from precomputed thread-locals
                 // (set by Context.didModifyStorage/didModifyPreference for post-lock callbacks).
                 // For regular paths, read directly via keypath.
@@ -443,20 +542,23 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                         ? threadLocals.precomputedPreferenceValue
                         : threadLocals.precomputedStorageValue
                     newValueStr = (precomputed as? T).map { val in
-                        usingActiveAccess(nil) { String(customDumping: val) }
+                        usingActiveAccess(nil) { dumpForDebug(val, maxLines: maxLines, maxDepth: maxDepth) }
                     } ?? "?"
                 } else {
                     newValueStr = usingActiveAccess(nil) {
-                        String(customDumping: context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
+                        dumpForDebug(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path],
+                                     maxLines: maxLines, maxDepth: maxDepth)
                     }
                 }
                 // Atomically swap the stored value for old→new reporting.
                 let oldValueStr = self.subscriptions.withValue { subs -> String in
-                    let old = subs[key]?.1 ?? "?"
-                    subs[key]?.1 = newValueStr
+                    let old = subs[key]?.lastValueStr ?? "?"
+                    subs[key]?.lastValueStr = newValueStr
                     return old
                 }
-                self.onTrigger { "\(baseLabel): \(oldValueStr) → \(newValueStr)" }
+                self.onTrigger {
+                    "\(baseLabel): \(oldValueStr) → \(newValueStr)" + collectorAccessStackSuffix(stackForPath)
+                }
                 return nil
             case .withDiff(let style):
                 // Freeze the value under the lock so `dumpWithChildren` sees a consistent snapshot.
@@ -483,32 +585,53 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
                 let newValueStr = dumpWithChildren(newFrozen)
                 // Atomically swap old → new under the subscriptions lock (separate from context lock).
                 let oldValueStr = self.subscriptions.withValue { subs -> String in
-                    let old = subs[key]?.1 ?? "?"
-                    subs[key]?.1 = newValueStr
+                    let old = subs[key]?.lastValueStr ?? "?"
+                    subs[key]?.lastValueStr = newValueStr
                     return old
                 }
                 // onTrigger is called synchronously here (inside the context lock) so that
                 // pendingTriggers is populated before wrappedOnUpdate reads it.
                 self.onTrigger { [oldValueStr, newValueStr, baseLabel, style] in
+                    let body: String
                     if let diffStr = snapshotLineDiff(oldValueStr, newValueStr, style: style) {
                         // Indent the diff block under "dependency changed: label:".
                         let indented = diffStr.components(separatedBy: "\n")
                             .map { "  " + $0 }
                             .joined(separator: "\n")
-                        return "\(baseLabel):\n\(indented)"
+                        body = "\(baseLabel):\n\(indented)"
                     } else {
                         // Values appear identical after dump — fall back to just the label.
-                        return baseLabel
+                        body = baseLabel
                     }
+                    return body + collectorAccessStackSuffix(stackForPath)
                 }
                 return nil
             }
         }
 
-        subscriptions.withValue { $0[key] = (cancellation, initialValueStr) }
+        subscriptions.withValue {
+            $0[key] = Subscription(
+                cancellation: cancellation,
+                lastValueStr: initialValueStr,
+                accessStack: accessStack
+            )
+        }
         return returnClosure
     }
 
+}
+
+/// `"\n  read from:\n    <frame>\n    <frame>…"` suffix when `addrs` is non-empty,
+/// otherwise `""`. Symbolication is deferred to this helper so it runs lazily inside
+/// `onTrigger` closures (outside the context lock); the leading swift-model-internal
+/// frames are trimmed so the first visible frame is the user-code line that
+/// performed the read.
+@Sendable
+private func collectorAccessStackSuffix(_ addrs: [UInt]) -> String {
+    guard !addrs.isEmpty else { return "" }
+    let frames = trimSwiftModelInternalFrames(symbolicateAccessStack(addrs))
+    guard !frames.isEmpty else { return "" }
+    return "\n  read from:\n    " + frames.joined(separator: "\n    ")
 }
 
 /// Returns a human-readable property name for `path` on `model`, or nil for synthetic/subscript paths.
@@ -565,18 +688,25 @@ func debugObserve<T: Sendable>(
     let printerBox = PrinterBox(options.effectivePrinter)
     let triggerFormat = options.triggers
     let changeFormat = options.changes
+    let accessObserver = options.accessObserver
 
     // Collect lazy trigger closures fired by the DebugAccessCollector's onModify callbacks.
     // Using closures (rather than pre-computed strings) defers expensive work (e.g. LCS diff)
     // to wrappedOnUpdate, which runs outside the context lock.
     let pendingTriggers = LockIsolated<[@Sendable () -> String]>([])
 
+    // The collector is needed whenever debug needs to observe accesses — for trigger
+    // registration, to fire the user's `accessObserver`, or to capture access stacks
+    // that get appended to trigger emissions.
+    let wantsStackCapture = (options.captureAccessStack ?? 0) > 0
     let debugCollector: DebugAccessCollector?
-    if let fmt = triggerFormat {
+    if triggerFormat != nil || accessObserver != nil || wantsStackCapture {
         let collector = DebugAccessCollector(
-            triggerFormat: fmt,
+            triggerFormat: triggerFormat,
             isShallow: options.isShallow,
-            rootModelID: rootModelID
+            rootModelID: rootModelID,
+            accessObserver: accessObserver,
+            captureAccessStack: options.captureAccessStack
         ) { lazy in
             pendingTriggers.withValue { $0.append(lazy) }
         }
@@ -629,9 +759,9 @@ func debugObserve<T: Sendable>(
                         lines.append(d)
                     }
                 }
-            case .value:
+            case .value(let maxLines, let maxDepth):
                 previous.setValue(snapshot(value))
-                lines.append("\(label) = \(String(customDumping: value))")
+                lines.append("\(label) = \(dumpForDebug(value, maxLines: maxLines, maxDepth: maxDepth))")
             }
         }
 

@@ -202,6 +202,14 @@ private struct TodoItemRow: View {
     @State private var editDraft = ""
 
     var body: some View {
+        // Uncomment to log which property of the item invalidated this particular
+        // row — useful when diagnosing "why did this row re-render?". Lines look
+        // like `TodoItemRow ← TodoItem.title`. DEBUG-only, no release cost. The
+        // default label combines the model type with the call-site file:line;
+        // pass `.init(name: "TodoItemRow")` for a hand-picked view-side label.
+        //
+        //     $item.debug(.init(name: "TodoItemRow"))
+        //
         HStack {
             Image(systemName: item.isDone ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(item.isDone ? Color.accentColor : .secondary)

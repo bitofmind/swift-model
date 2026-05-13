@@ -73,6 +73,17 @@ final class ThreadLocals: @unchecked Sendable {
     /// path within one transaction can be coalesced into a single `valueUpdates` entry.
     /// Zero means the write occurred outside any transaction.
     var currentTransactionID: UInt = 0
+    /// `true` while a debug-side `customDump` is walking a model value (e.g. inside
+    /// `emitDebugTrigger`'s `dumpForDebug`, or the initial-value capture in
+    /// `ViewAccess.willAccess`). Read by `ViewAccess.willAccess` to skip BOTH
+    /// dependency registration *and* `captureAccessStack` capture for property reads
+    /// originating from the dump itself — otherwise every `.withValue` emit walks the
+    /// model tree, registers each traversed property as a tracked dep, and pollutes
+    /// the captured access-stack with the dump path (not user code). Scoped via
+    /// `threadLocals.withValue(true, at: \.isInsideDebugDump) { … }` at every dump
+    /// site that runs through stamped `ViewAccess`. Has no effect outside `#if DEBUG`.
+    var isInsideDebugDump = false
+
     var pendingStack = _PendingStackBox()
 
     fileprivate init() {}
