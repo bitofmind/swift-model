@@ -714,6 +714,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// SwiftUI / Observed {} observation without needing Model to conform to Observable.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     func willAccessSyntheticPath<T>(_ kp: KeyPath<_StateObserver<M._ModelState>, T>) {
+        // Skip everything while memoize's dirty-recompute is running `produce()` —
+        // its reads must not leak to whatever outer observation is currently active
+        // (SwiftUI body's `withObservationTracking`, a `ViewAccess` from
+        // `$model.debug`, etc.). See `ThreadLocals.isInsideMemoizeProduce`.
+        if threadLocals.isInsideMemoizeProduce { return }
         guard useObservationRegistrar,
               !(threadLocals.isInsideAsyncPerformUpdate && ModelAccess.active != nil) else { return }
         let observer = _StateObserver<M._ModelState>()
@@ -766,6 +771,15 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// Uses `_StateObserver` for registrar calls (no Model instance needed).
     /// Uses `_StateObserver` for registrar calls; delegates to `activeAccess.willAccess/didModify(from:at:)` for TestAccess.
     func willAccessDirect<T>(statePath: WritableKeyPath<M._ModelState, T>, accessBox: _ModelAccessBox) -> (() -> Void)? {
+        // Skip everything while memoize's dirty-recompute is running `produce()` —
+        // its reads must not leak to whatever outer observation is currently active
+        // (SwiftUI body's `withObservationTracking`, a `ViewAccess` from
+        // `$model.debug`, a debug collector, a `TestAccess`). Memoize's own
+        // dependency tracking is unaffected because the dirty branch doesn't
+        // re-track here — the async `performUpdate` does, via `observe()`, which
+        // is not flagged. See `ThreadLocals.isInsideMemoizeProduce`.
+        if threadLocals.isInsideMemoizeProduce { return nil }
+
         let cachedActive = ModelAccess.active
         let access = accessBox._reference?.access ?? ModelAccess.current
         let activeAccess = cachedActive ?? access

@@ -206,6 +206,32 @@ public extension ModelNode {
     /// Memoize is thread-safe and can be called from any thread. The cache is protected by locks
     /// to ensure consistency across concurrent access.
     ///
+    /// ## Observation Isolation
+    ///
+    /// `produce` runs with the active observation context shielded — so any outer
+    /// observer (a SwiftUI body's `withObservationTracking`, a `ViewAccess` from
+    /// `@ObservedModel` / `ModelScope` / `$model.debug`, a debug collector, a
+    /// `TestAccess`) only ever sees a dependency on the memoize *sentinel*
+    /// (`\Model[memoizeKey: …]`), not on the underlying properties read inside
+    /// `produce`. When a dependency changes the memoize recomputes, and the outer
+    /// observer is notified only if the new value differs (per the `isSame`
+    /// check on `Equatable` overloads).
+    ///
+    /// This isolation holds on **both** observation paths and **both** invocation
+    /// branches:
+    ///
+    /// - **AccessCollector path** (iOS 16 / `disableMemoizeCoalescing`): the
+    ///   cache-miss branch wraps `produce` in `usingActiveAccess(collector)`;
+    ///   the dirty-recompute branch uses the `isInsideMemoizeProduce` thread-
+    ///   local to suppress dispatch entirely.
+    /// - **withObservationTracking path** (iOS 17+ default): the cache-miss
+    ///   branch wraps `produce` in nested `withObservationTracking` +
+    ///   `usingActiveAccess(nil)`; the dirty-recompute branch uses the same
+    ///   `isInsideMemoizeProduce` flag, which our `Context.willAccessDirect`
+    ///   and `Context.willAccessSyntheticPath` dispatchers check before
+    ///   firing either swift-model's `ModelAccess.willAccess` or Apple's
+    ///   `registrar.access(...)`.
+    ///
     /// - Note: For `Equatable` types, use the overload that accepts `isSame` to avoid recomputing
     ///         when the value hasn't actually changed.
     func memoize<T: Sendable>(for key: some Hashable&Sendable, debug: DebugOptions? = nil, produce: @Sendable @escaping () -> T) -> T {
@@ -492,8 +518,26 @@ private extension ModelNode {
         if let entry = cachedEntry {
             // If dirty tracking enabled and cache WAS dirty, recompute and return fresh value
             if shouldRecompute {
-                // Compute fresh value (needed for immediate return)
-                let fresh: T = produce()
+                // Compute fresh value (needed for immediate return).
+                //
+                // Unlike `update()`'s `observe()` — which wraps its `access()` call in
+                // both `withObservationTracking` and `usingActiveAccess(nil)` — this
+                // synchronous recompute is reached only on the dirty-cache fast path
+                // and does NOT re-track. To prevent the inner reads from leaking to
+                // whatever outer observation is currently active (a SwiftUI body's
+                // `withObservationTracking`, a `ViewAccess` from `$model.debug`, etc.)
+                // we set `isInsideMemoizeProduce`, which `Context.willAccessDirect` /
+                // `willAccessSyntheticPath` read to skip BOTH the swift-model
+                // `ModelAccess` dispatch and Apple's `registrar.access(...)` for the
+                // duration of `produce()`.
+                //
+                // Memoize's own dependency tracking is unaffected: the AccessCollector
+                // path's onModify subscriptions stay live across recomputes, and the
+                // `withObservationTracking` path re-tracks via the async `performUpdate`
+                // (which calls `observe()` — not flagged).
+                let fresh: T = threadLocals.withValue(true, at: \.isInsideMemoizeProduce) {
+                    produce()
+                }
 
                 // For synchronous tracking (AccessCollector), update cache and notify
                 // This works because AccessCollector tracks via willAccess() callbacks

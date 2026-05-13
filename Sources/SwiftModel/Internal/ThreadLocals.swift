@@ -84,6 +84,23 @@ final class ThreadLocals: @unchecked Sendable {
     /// site that runs through stamped `ViewAccess`. Has no effect outside `#if DEBUG`.
     var isInsideDebugDump = false
 
+    /// `true` while memoize's **dirty-recompute** path is calling `produce()`
+    /// directly (not through `update()`'s `observe()` wrap). Read by
+    /// `Context.willAccessDirect` and `Context.willAccessSyntheticPath` to skip
+    /// BOTH the swift-model `ModelAccess.willAccess` dispatch and Apple's
+    /// `registrar.access(...)` — so reads inside the synchronous dirty recompute
+    /// don't leak to whatever outer observation is active (a SwiftUI body's
+    /// `withObservationTracking`, a `ViewAccess` from `$model.debug`, a debug
+    /// collector, etc.).
+    ///
+    /// Memoize's *own* dependency tracking is unaffected because the dirty-
+    /// recompute branch doesn't need to re-track: the AccessCollector path's
+    /// onModify subscriptions stay live across recomputes, and the
+    /// `withObservationTracking` path re-tracks via the async `performUpdate`
+    /// (which goes through `observe()`, not this flag). The cache-miss /
+    /// first-access path also goes through `observe()` and isn't flagged.
+    var isInsideMemoizeProduce = false
+
     var pendingStack = _PendingStackBox()
 
     fileprivate init() {}

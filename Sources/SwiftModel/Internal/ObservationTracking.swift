@@ -283,8 +283,21 @@ internal func update<T: Sendable>(
         }
 
         @Sendable func observe() -> T {
+            // `usingActiveAccess(nil)` shields any outer swift-model `ModelAccess`
+            // (a `ViewAccess` from `$model.debug`, a debug collector, a test access,
+            // etc.) from seeing reads inside `access()`. Mirrors what the
+            // `AccessCollector` branch below does via `usingActiveAccess(collector)`,
+            // so memoize's behaviour matches across the two paths.
+            //
+            // Apple's `withObservationTracking` uses its own `_AccessList` thread-local
+            // and is independent of swift-model's active-access — so the registrar-side
+            // reads still propagate to *that* (e.g. SwiftUI's body wrapper). The
+            // swift-model-side leak is closed; the Apple-side one cannot be suppressed
+            // from outside the framework's public API.
             let value = withObservationTracking {
-                access()
+                usingActiveAccess(nil) {
+                    access()
+                }
             } onChange: {
                 // Call didModify immediately when dependency changes (for dirty tracking).
                 // onChange fires on the withObservationTracking path, which is always asynchronous,
