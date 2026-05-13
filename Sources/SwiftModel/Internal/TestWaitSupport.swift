@@ -14,6 +14,28 @@ private func monotonicNanoseconds() -> UInt64 {
     #endif
 }
 
+// === Diagnostic: cross-test in-flight settle counter ===
+// Global gauge of how many `waitUntilSettled` invocations are simultaneously
+// in their wait loops. Each entry in this counter holds at least one Task
+// suspended on a `waitForCurrentItems` / `waitForModification` continuation.
+// Under saturation on the GHA macos-15-arm64 runner (3-core), the counter
+// climbing into the dozens correlates directly with `yieldRoundNs` hitting
+// the 500 ms ceiling clamp — exactly the wave we want to see in CI logs.
+private let _inFlightSettleCount = LockIsolated<Int>(0)
+
+private func _incrementInFlight() -> Int {
+    _inFlightSettleCount.withValue { count -> Int in
+        count += 1
+        return count
+    }
+}
+private func _decrementInFlight() -> Int {
+    _inFlightSettleCount.withValue { count -> Int in
+        count -= 1
+        return count
+    }
+}
+
 extension TestAccess {
     /// Suspends briefly so the async pipeline can settle, then returns so the outer
     /// assert loop can re-check its predicate.
@@ -156,6 +178,28 @@ extension TestAccess {
         return lines.joined(separator: "\n")
     }
 
+    /// Compact, single-line variant for inlining into per-loop diagnostics.
+    /// Returns `"ModelA.task1, ModelB.task2, +3 more"` style. Used by
+    /// `[SETTLE patience]` / `[SETTLE give-up]` to name what's actually
+    /// active when a settle is bottlenecked — without the multi-line
+    /// formatting of `settleTimeoutDiagnostics()` (which is for
+    /// hard-cap-timeout failures, where a multi-line dump is appropriate).
+    private func settleActiveTasksCompact(limit: Int = 3) -> String {
+        var names: [String] = []
+        let taskInfos = context.activeTasks
+        outer: for info in taskInfos {
+            for (taskName, _) in info.tasks {
+                names.append("\(info.modelName).\(taskName)")
+                if names.count >= limit + 1 { break outer }
+            }
+        }
+        if names.count > limit {
+            let overflow = names.count - limit
+            return "[\(names.prefix(limit).joined(separator: ", ")), +\(overflow) more]"
+        }
+        return "[\(names.joined(separator: ", "))]"
+    }
+
     // MARK: - Shared calibration and settling
 
     /// Measures scheduler latency and computes adaptive timeouts.
@@ -216,14 +260,18 @@ extension TestAccess {
         // Tags every settle call with its caller site so per-test settle activity can
         // be correlated with the failing test under --parallel. `mode` discriminates
         // expect/require (reportTimeout=true) from checkExhaustion cleanup (false) —
-        // the latter is what runs once per test in trait teardown.
-        print("[SETTLE start] \(fileAndLine.fileID):\(fileAndLine.line) mode=\(reportTimeout ? "expect" : "cleanup") hardCapNs=\(cal.hardCap) yieldRoundNs=\(cal.yieldRoundNs)")
+        // the latter is what runs once per test in trait teardown. `inFlight` is the
+        // global gauge of concurrent settles — watch this climb to identify
+        // saturation waves.
+        let inFlightAtStart = _incrementInFlight()
+        print("[SETTLE start] \(fileAndLine.fileID):\(fileAndLine.line) mode=\(reportTimeout ? "expect" : "cleanup") inFlight=\(inFlightAtStart) hardCapNs=\(cal.hardCap) yieldRoundNs=\(cal.yieldRoundNs)")
         var settleExitReason = "unknown"
         defer {
+            let inFlightAtEnd = _decrementInFlight()
             let elapsedS = Double(monotonicNanoseconds() - cal.start) / Double(nanosPerSecond)
-            print(String(format: "[SETTLE end] %@:%d mode=%@ reason=%@ elapsed=%.2fs",
+            print(String(format: "[SETTLE end] %@:%d mode=%@ reason=%@ elapsed=%.2fs inFlight=%d",
                 "\(fileAndLine.fileID)", fileAndLine.line,
-                reportTimeout ? "expect" : "cleanup", settleExitReason, elapsedS))
+                reportTimeout ? "expect" : "cleanup", settleExitReason, elapsedS, inFlightAtEnd))
         }
 
         // Idle cycle — wait until one full scheduling round passes with no state
@@ -279,17 +327,24 @@ extension TestAccess {
             // Fires only on settle calls that are running long enough to hit the 10 s
             // mark, which is exactly the cases we want to investigate. Normal sub-10 s
             // settles emit zero `[SETTLE loop]` lines — quiet by default.
+            //
+            // `mainIdle` reflects the process-global `mainCall` queue (a `MainCallQueue`
+            // singleton); `bgIdle` is the test-local `backgroundCall` (test-scoped via
+            // `_BackgroundCallLocals.$queue`). Seeing `mainIdle=false` here while
+            // `bgIdle=true` would point at main-actor work as the culprit.
             let loopNow = monotonicNanoseconds()
             if loopNow - lastDiagnosticsNs >= 10 * nanosPerSecond {
                 lastDiagnosticsNs = loopNow
                 let elapsedS = Double(loopNow - cal.start) / Double(nanosPerSecond)
                 let activeTasks = lock { _activeTaskCount }
                 let activationPending = activationTasksInFlight
-                print(String(format: "[SETTLE loop] %@:%d mode=%@ elapsed=%.1fs activeTasks=%d activationPending=%d activationWaitCount=%d bgIdle=%@ modCount=%d",
+                print(String(format: "[SETTLE loop] %@:%d mode=%@ elapsed=%.1fs activeTasks=%d activationPending=%d activationWaitCount=%d bgIdle=%@ mainIdle=%@ modCount=%d",
                     "\(fileAndLine.fileID)", fileAndLine.line,
                     reportTimeout ? "expect" : "cleanup",
                     elapsedS, activeTasks, activationPending, activationWaitCount,
-                    backgroundCall.isIdle ? "true" : "false", context.modificationCount))
+                    backgroundCall.isIdle ? "true" : "false",
+                    mainCall.isIdle ? "true" : "false",
+                    context.modificationCount))
             }
 
             let currentVersion = context.modificationCount
@@ -335,15 +390,21 @@ extension TestAccess {
                 // waiting up to patienceMs for any modification." Stacking these lines
                 // shows whether we're hitting the same patience window repeatedly (i.e.
                 // a stuck test) or many distinct tests are each spending a window or two
-                // (i.e. genuine load).
+                // (i.e. genuine load). `tasks=[…]` names the actual blockers — if the
+                // same task name shows up across many tests' patience lines, that's
+                // the culprit (e.g. an onChange/forEach task that's slow to yield
+                // under saturation).
                 let patienceMs = patience / 1_000_000
                 let activeTasksNow = lock { _activeTaskCount }
-                print(String(format: "[SETTLE patience] %@:%d mode=%@ window=#%d activeTasks=%d activationPending=%d patienceMs=%d bgIdle=%@ elapsed=%.2fs",
+                let activeTasksList = settleActiveTasksCompact()
+                print(String(format: "[SETTLE patience] %@:%d mode=%@ window=#%d activeTasks=%d activationPending=%d patienceMs=%d bgIdle=%@ mainIdle=%@ elapsed=%.2fs tasks=%@",
                     "\(fileAndLine.fileID)", fileAndLine.line,
                     reportTimeout ? "expect" : "cleanup",
                     activationWaitCount + 1, activeTasksNow, activationPending, patienceMs,
                     backgroundCall.isIdle ? "true" : "false",
-                    Double(monotonicNanoseconds() - cal.start) / Double(nanosPerSecond)))
+                    mainCall.isIdle ? "true" : "false",
+                    Double(monotonicNanoseconds() - cal.start) / Double(nanosPerSecond),
+                    activeTasksList))
                 await waitForModification(timeoutNanoseconds: patience, yieldRoundNs: patience, retryCount: 2)
                 if context.modificationCount == currentVersion {
                     // Don't break while activation tasks are still queued but haven't
@@ -371,13 +432,15 @@ extension TestAccess {
                         // cooperative pool is saturated and tasks cannot start. Fall through
                         // to break; hardCap check below handles the overall timeout.
                         // === Diagnostic: giving up under saturation ===
-                        print(String(format: "[SETTLE give-up] %@:%d mode=%@ windows=%d activationPending=%d activeTasks=%d elapsed=%.2fs",
+                        let giveUpTasks = settleActiveTasksCompact()
+                        print(String(format: "[SETTLE give-up] %@:%d mode=%@ windows=%d activationPending=%d activeTasks=%d elapsed=%.2fs tasks=%@",
                             "\(fileAndLine.fileID)", fileAndLine.line,
                             reportTimeout ? "expect" : "cleanup",
                             activationWaitCount,
                             activationPending,
                             lock { _activeTaskCount },
-                            Double(monotonicNanoseconds() - cal.start) / Double(nanosPerSecond)))
+                            Double(monotonicNanoseconds() - cal.start) / Double(nanosPerSecond),
+                            giveUpTasks))
                     }
                     settleExitReason = "no-progress-break"
                     break // No progress — remaining tasks are observation loops or cancelled tasks
