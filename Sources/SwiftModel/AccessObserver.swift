@@ -126,7 +126,13 @@ public extension AccessObserver where Self == FirstAccessObserver {
     /// ```
     static func firstAccessBreakpoint(limit: Int = 1) -> FirstAccessObserver {
         FirstAccessObserver(limit: limit) { _, _ in
-#if DEBUG
+            // WASI has no process-level signal model — `raise(3)` / `SIGTRAP`
+            // aren't surfaced by Swift's WASI libc overlay, and there's no
+            // debugger workflow that would catch a trap there anyway. The
+            // factory itself stays callable cross-platform so source written
+            // against `.firstAccessBreakpoint()` compiles everywhere; the
+            // action just no-ops on WASI.
+#if DEBUG && !os(WASI)
             raise(SIGTRAP)
 #endif
         }

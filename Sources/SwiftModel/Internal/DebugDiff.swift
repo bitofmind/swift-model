@@ -506,7 +506,14 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         // raw return addresses only (as `UInt` bit patterns), symbolicated lazily
         // inside the per-trigger closures below so the cost is only paid for paths
         // that actually fire.
+        //
+        // `Thread.callStackReturnAddresses` is unavailable on WASI (no threading
+        // model, Thread isn't part of swift-foundation's WASI slice). Falls back
+        // to an empty stack on that platform — the trigger line simply omits its
+        // `read from:` suffix there, matching the symbolication fallback in
+        // `AccessObserver.symbolicateAccessStack`.
         let accessStack: [UInt]
+#if !os(WASI)
         if let depth = captureAccessStack, depth > 0 {
             accessStack = Thread.callStackReturnAddresses
                 .prefix(depth)
@@ -514,6 +521,9 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         } else {
             accessStack = []
         }
+#else
+        accessStack = []
+#endif
 
         let cancellation = context.onModify(for: path) { [weak self] finished, _ in
             guard !finished, let self else { return {} }
