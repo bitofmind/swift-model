@@ -153,10 +153,12 @@ public extension AccessObserver where Self == FirstAccessObserver {
 /// hatch — `UInt` is `Sendable`, raw pointers are not.
 ///
 /// Returns an empty array if symbolication isn't available on this platform
-/// (e.g. WASM) or if the input is empty. The C `backtrace_symbols` allocation
-/// is freed before returning.
+/// (Linux, Android, WASM) or if the input is empty. Swift's `Glibc` overlay
+/// doesn't re-export `backtrace_symbols(3)`, Android's Bionic doesn't ship it,
+/// and WASM has no stack-symbolication API — so we only call it on Darwin.
+/// The C `backtrace_symbols` allocation is freed before returning.
 internal func symbolicateAccessStack(_ addrs: [UInt]) -> [String] {
-#if canImport(Darwin) || canImport(Glibc)
+#if canImport(Darwin)
     guard !addrs.isEmpty else { return [] }
     var ptrs: [UnsafeMutableRawPointer?] = addrs.map { UnsafeMutableRawPointer(bitPattern: $0) }
     return ptrs.withUnsafeMutableBufferPointer { (mutableBuf: inout UnsafeMutableBufferPointer<UnsafeMutableRawPointer?>) -> [String] in

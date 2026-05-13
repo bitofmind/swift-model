@@ -45,14 +45,35 @@ let package = Package(
         // auto-enables based on the host OS rather than the target, breaking Android
         // cross-compilation. 1.0.x guards all Combine code with #if canImport(Combine).
         .package(url: "https://github.com/pointfreeco/combine-schedulers", "1.0.0"..<"1.1.0"),
-        // Fork branch with the `Networking` package trait gating the FoundationNetworking
-        // import and the two FoundationNetworking-typed CustomDump conformances
-        // (`NSURLRequest: CustomDumpRepresentable`, `URLRequest.NetworkServiceType:
-        // CustomDumpStringConvertible`). Default-on, we override to `traits: []` to skip
-        // them — saves ~16 MB `libFoundationNetworking.so` from Android cross-compile
-        // consumers' bridge `DT_NEEDED`. Switch back to the upstream
-        // `pointfreeco/swift-custom-dump` once the Networking trait is merged + tagged.
-        .package(url: "https://github.com/mansbernhardt/swift-custom-dump", branch: "android-support", traits: []),
+        // Fork pinned at the revision that gates the FoundationNetworking import and the
+        // two FoundationNetworking-typed CustomDump conformances (`NSURLRequest:
+        // CustomDumpRepresentable`, `URLRequest.NetworkServiceType:
+        // CustomDumpStringConvertible`) behind a package trait. Default-on, we override
+        // to `traits: []` to skip them — saves ~16 MB `libFoundationNetworking.so` from
+        // Android cross-compile consumers' bridge `DT_NEEDED`.
+        //
+        // We pin to an explicit revision rather than `branch: "android-support"` because:
+        //   1. `swift-snapshot-testing` brings in `swift-custom-dump` via the upstream
+        //      URL without specifying traits. SwiftPM resolves the two URLs to a single
+        //      package identity (`swift-custom-dump`) and *unions* the requested traits
+        //      across consumers, so snapshot-testing's default-on `FoundationNetworking`
+        //      trait wins — our `traits: []` is effectively a no-op until the upstream
+        //      PR is merged + tagged.
+        //   2. With the trait effectively forced-on, the only thing keeping WASM (which
+        //      has no `URLRequest`) compiling was the `#if !os(WASI)` source guard. The
+        //      PR-review cycle on the fork's `android-support` branch dropped that guard
+        //      in favour of relying purely on the (unioned-on) trait gate. Newer
+        //      revisions therefore break WASM builds.
+        //
+        // d2cd96963deea88de9674d436a01c295944a3166 still has the `#if !os(WASI)` guard
+        // and predates the trait rename to `FoundationNetworking`. Bump when the upstream
+        // PR merges and the fork can be retired in favour of a tagged `pointfreeco/`
+        // release.
+        .package(
+            url: "https://github.com/mansbernhardt/swift-custom-dump",
+            revision: "d2cd96963deea88de9674d436a01c295944a3166",
+            traits: []
+        ),
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "600.0.0"),
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.6.0"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.6"),
