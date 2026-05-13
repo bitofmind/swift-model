@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import SwiftModel
 
@@ -71,6 +72,94 @@ private struct OuterWithNoDefaultChild {
         child = SimpleCounterModel()          // ← was the crash site
         child.count = startCount             // in-place modify of assigned child
     }
+}
+
+/// Same shape as `OuterWithNoDefaultChild`, but the no-default property is a plain
+/// (non-Model) Equatable struct. Reproduces the same KeyPath._projectReadOnly trap
+/// — the `subscript<T:Equatable>(write:access:)` overload (used for non-Model
+/// Equatable fields) has the same zero-init read pattern as the `T: Model` overload
+/// did before its fix.
+///
+/// Mirrors the production crash: `StreamEnvironmentModel.init(date:isPaused:)`
+/// where `self.streamPlaybackState = StreamPlaybackState(...)` traps in
+/// `_ModelSourceBox.subscript.modify` → `swift_readAtKeyPath` →
+/// `_pop<RawKeyPathComponent.Header>` because `streamPlaybackState` is zero-init
+/// until that line runs.
+private struct StreamPlaybackStateMock: Hashable, Sendable {
+    var startDate: Date
+    var pausedOffset: Double?
+    var streamOffsets: [String: Int] = [:]
+}
+
+/// Mirrors the production `StreamEnvironmentModel` shape that crashed:
+/// - The no-default property is **first** in declaration order.
+/// - The init body assigns *only* that one property; every other field is
+///   initialised via its declaration-site default.
+/// - The no-default property's type is a non-Model `Hashable`/`Sendable` struct
+///   that itself contains a `Dictionary`.
+///
+/// The combination matters: when the user's init assigns to the first-declared
+/// no-default property, Swift's init-accessor model treats that as the slot
+/// being initialised — but the synthesised `_modify` for the property fires
+/// against a `_ModelSourceBox` whose underlying `_State` storage is still
+/// zero-initialised. Reading `reference.state[keyPath: \._State.first]` via
+/// keypath traps in `_pop<RawKeyPathComponent.Header>` ("UnsafeRawBufferPointer
+/// with negative count"), exactly the production stack trace.
+@Model
+private struct OuterFirstNoDefaultEquatable {
+    var state: StreamPlaybackStateMock   // FIRST, no default
+    var hasStarted = false
+    var name: String = "MISSING"
+    var values: [String: Double] = [:]
+    var tags: Set<String> = []
+
+    init(date: Date, isPaused: Bool = false) {
+        // Exactly the production pattern — single assignment to the first
+        // no-default property, no pre-touch of any other field.
+        state = StreamPlaybackStateMock(startDate: date, pausedOffset: isPaused ? 0 : nil)
+    }
+}
+
+/// Same shape, but the no-default-property type is a plain (non-Equatable, non-Model)
+/// struct. Reproduces the same trap via the disfavoured generic
+/// `subscript<T>(write:access:)` overload.
+private struct OpaqueState: Sendable {
+    var startDate: Date
+    var pausedOffset: Double?
+}
+
+@Model
+private struct OuterFirstNoDefaultGeneric {
+    var state: OpaqueState   // FIRST, no default
+    var hasStarted = false
+    var name: String = "MISSING"
+
+    init(date: Date, isPaused: Bool = false) {
+        state = OpaqueState(startDate: date, pausedOffset: isPaused ? 0 : nil)
+    }
+}
+
+/// First-declared no-default property is a tuple — exercises the
+/// `subscript<each T: Equatable>(write:access:)` parameter-pack overload.
+@Model
+private struct OuterFirstNoDefaultTuple {
+    var pair: (Int, String)   // FIRST, no default
+    var flag = false
+    var label = ""
+
+    init(int: Int, string: String) {
+        pair = (int, string)
+    }
+}
+
+/// Type-alias wrapper that exposes `OuterFirstNoDefaultEquatable` through a
+/// static-let `liveValue`, mirroring the production
+/// `StreamEnvironmentModel: DependencyKey` shape that runs the model's `init`
+/// inside zero-init static storage. The crash trace in the production app
+/// went `liveValue.getter → one-time-init → init(date:isPaused:) → property
+/// _modify → _ModelSourceBox.subscript.modify → trap`.
+private enum LiveValueDependencyHost {
+    static let liveValue = OuterFirstNoDefaultEquatable(date: Date(timeIntervalSince1970: 100))
 }
 
 /// Model with a `let` property and an `@_ModelIgnored` stored var.
@@ -256,6 +345,64 @@ struct ModelInitAccessorTests {
         m.child.count = 99
         let live = m.withAnchor()
         await expect { live.child.count == 99 }
+    }
+
+    /// Production-crash reproducer: a non-Model `Equatable` property declared
+    /// **first** in declaration order with no default value, where the user's
+    /// init assigns only that property. Mirrors `StreamEnvironmentModel`'s
+    /// shape exactly. Before the fix this trapped in
+    /// `_ModelSourceBox.subscript.modify` → `swift_readAtKeyPath` →
+    /// `_pop<RawKeyPathComponent.Header>` with "UnsafeRawBufferPointer
+    /// with negative count" because the `subscript<T: Equatable>(write:)`
+    /// overload reads `reference.state[keyPath: statePath]` against
+    /// still-zero-initialised storage.
+    @Test func firstNoDefaultEquatableAssignedInInit() async {
+        let now = Date()
+        let m = OuterFirstNoDefaultEquatable(date: now).withAnchor()
+        await expect { m.state.startDate == now }
+        await expect { m.hasStarted == false }
+        await expect { m.name == "MISSING" }
+    }
+
+    /// Same shape, plus a subsequent `nonmutating` mutation through the
+    /// fully-anchored path — confirms both the init-time _modify *and* the
+    /// post-anchor _modify work for this property layout.
+    @Test func firstNoDefaultEquatableMutateAfterAnchor() async {
+        let m = OuterFirstNoDefaultEquatable(date: .distantPast).withAnchor()
+        m.state.pausedOffset = 99
+        await expect { m.state.pausedOffset == 99 }
+    }
+
+    /// Production-crash reproducer for the disfavoured generic
+    /// `subscript<T>(write:)` overload (chosen for non-Equatable, non-Model,
+    /// non-Container types).
+    @Test func firstNoDefaultGenericAssignedInInit() async {
+        let now = Date()
+        let m = OuterFirstNoDefaultGeneric(date: now).withAnchor()
+        await expect { m.state.startDate == now }
+        await expect { m.hasStarted == false }
+    }
+
+    /// Production-crash reproducer for the `subscript<each T: Equatable>(write:)`
+    /// parameter-pack overload (chosen for tuple-typed fields).
+    @Test func firstNoDefaultTupleAssignedInInit() async {
+        let m = OuterFirstNoDefaultTuple(int: 42, string: "ok").withAnchor()
+        await expect { m.pair.0 == 42 }
+        await expect { m.pair.1 == "ok" }
+        await expect { m.flag == false }
+    }
+
+    /// Production-flavoured reproducer that also wraps the model behind a
+    /// `DependencyKey.liveValue` static-let, matching the swift-dependencies
+    /// `CachedValues` initialisation that the crash trace went through —
+    /// static-let storage is zero-init, and the one-time init function runs
+    /// in that zero-init region before any field has been assigned.
+    @Test func firstNoDefaultEquatableViaLiveValueDependency() async {
+        // Access through the dependency keypath the way StreamsDemoModel did:
+        // it goes through swift-dependencies' CachedValues, hits the static
+        // `liveValue` initialiser, runs `StreamEnvironmentModel(date: .now)`.
+        let value = LiveValueDependencyHost.liveValue
+        #expect(value.state.startDate.timeIntervalSince1970 > 0)
     }
 
     // MARK: let property and @_ModelIgnored

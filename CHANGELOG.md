@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pre-anchor crash on first-property assignment with no default value** — extends the fix from the previous release (which covered child `@Model` properties) to non-Model property types. A `@Model` whose first-declared property had no default value and a non-Model type (plain struct, `Equatable` struct, tuple, etc.) could trap with `Fatal error: UnsafeRawBufferPointer with negative count` in `_pop<RawKeyPathComponent.Header>` when a user-written initialiser assigned the property before the model was anchored — typically surfacing through `swift-dependencies`'s static-`liveValue` initialisation. The pre-anchor `_modify` path in `_ModelSourceBox`'s three non-`Model` write subscripts (disfavoured generic, `T: Equatable`, and the parameter-pack overload) now yields directly into the backing key path instead of taking a local copy first, mirroring the `T: Model` overload. The local-copy pattern is still used when the model is `_isLive` (storage is fully initialised in that mode).
+
 ---
 
 ## [1.0.0] — `@Model` Layout Redesign, Performance Overhaul + API Cleanup

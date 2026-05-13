@@ -514,17 +514,29 @@ extension _ModelSourceBox {
         _read { fatalError("Use read subscript for reads") }
         nonmutating _modify {
             guard let context = _modifyContext(accessBox: accessBox) else {
-                if _isLive || (reference.context == nil && !reference.isSnapshot) {
-                    // Local copy + write-back so the user's mutation expression doesn't run
-                    // while `reference.state` is exclusively borrowed. See the matching
-                    // comment on `Context.subscript[statePath:isSame:accessBox:]._modify`
-                    // for the full rationale.
+                if _isLive {
+                    // Live (internal direct-access): storage is fully initialised.
+                    // Local-copy + write-back keeps the user's mutation expression
+                    // from running while `reference.state` is exclusively borrowed —
+                    // see `Context.subscript[statePath:isSame:accessBox:]._modify`.
                     var value = reference.state[keyPath: statePath]
                     yield &value
                     reference.state[keyPath: statePath] = value
-                    // Track pre-anchor state mutations so Context.init can detect dep model
-                    // pollution: a child's RMW on an inherited dep increments _stateVersion,
-                    // letting the dep loop substitute the pre-mutation snapshot for root.
+                    reference._stateVersion &+= 1
+                } else if reference.context == nil && !reference.isSnapshot {
+                    // Pre-anchor: storage MAY still be zero-init (a property with
+                    // no default value the user hasn't yet assigned in their init).
+                    // The local-copy pattern's initial `var value = reference.state[keyPath:]`
+                    // performs a `swift_readAtKeyPath` whose `_pop<RawKeyPathComponent.Header>`
+                    // traps with "UnsafeRawBufferPointer with negative count" against
+                    // certain zero-init bit patterns. Mirror the `T: Model` overload
+                    // and yield directly into the keypath instead — the keypath
+                    // setter doesn't take the same read path. Trade-off: a compound
+                    // pre-anchor write whose RHS reads `self` could trip Swift's
+                    // exclusivity check, but RMW during init is rare and the trap is
+                    // worse. Track pre-anchor mutations so `Context.init` can detect
+                    // dep model pollution.
+                    yield &reference.state[keyPath: statePath]
                     reference._stateVersion &+= 1
                 } else {
                     var value = self[dynamicMember: statePath]
@@ -541,11 +553,16 @@ extension _ModelSourceBox {
         _read { fatalError("Use read subscript for reads") }
         nonmutating _modify {
             guard let context = _modifyContext(accessBox: accessBox) else {
-                if _isLive || (reference.context == nil && !reference.isSnapshot) {
-                    // Local copy + write-back; see disfavoured generic overload for rationale.
+                if _isLive {
+                    // See disfavoured generic overload for rationale.
                     var value = reference.state[keyPath: statePath]
                     yield &value
                     reference.state[keyPath: statePath] = value
+                    reference._stateVersion &+= 1
+                } else if reference.context == nil && !reference.isSnapshot {
+                    // Pre-anchor: direct-yield to dodge the keypath read trap on
+                    // zero-init storage. See disfavoured generic overload.
+                    yield &reference.state[keyPath: statePath]
                     reference._stateVersion &+= 1
                 } else {
                     var value = self[dynamicMember: statePath]
@@ -562,11 +579,16 @@ extension _ModelSourceBox {
         get { fatalError("Use read subscript for reads") }
         nonmutating _modify {
             guard let context = _modifyContext(accessBox: accessBox) else {
-                if _isLive || (reference.context == nil && !reference.isSnapshot) {
-                    // Local copy + write-back; see disfavoured generic overload for rationale.
+                if _isLive {
+                    // See disfavoured generic overload for rationale.
                     var value = reference.state[keyPath: statePath]
                     yield &value
                     reference.state[keyPath: statePath] = value
+                    reference._stateVersion &+= 1
+                } else if reference.context == nil && !reference.isSnapshot {
+                    // Pre-anchor: direct-yield to dodge the keypath read trap on
+                    // zero-init storage. See disfavoured generic overload.
+                    yield &reference.state[keyPath: statePath]
                     reference._stateVersion &+= 1
                 } else {
                     var value = self[dynamicMember: statePath]
