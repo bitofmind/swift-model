@@ -449,23 +449,36 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
     ) async throws {
         // Compose with any enclosing scope's exhaustivity so nested traits stack correctly:
         // @Suite(.modelTesting(.removing(.events)))  → .full − .events
-        // @Test(.modelTesting(.removing(.tasks)))    → (.full − .events) − .tasks
+        // @Test(.modelTesting(.removing(.tasks))) → (.full − .events) − .tasks
         let parentExhaustivity = _ModelTestingLocals.scope?.exhaustivity ?? .full
         let resolvedExhaustivity = modifier.apply(to: parentExhaustivity)
         let pending = _PendingModelTestScope(exhaustivity: resolvedExhaustivity, dependencies: dependencies)
         // Give each test its own BackgroundCallQueue so parallel tests cannot observe
         // each other's in-flight Observed pipeline updates.
         let testQueue = BackgroundCallQueue()
+        // === Diagnostic: per-test trait lifecycle ===
+        // Lets us distinguish three failure modes when CI hangs:
+        //   1. test body never returns  → `body-end` missing for the hung test
+        //   2. checkExhaustion never returns → `exh-end` missing for the hung test
+        //   3. all tests cleanly emit `scope-end` but swift-testing still hangs →
+        //      problem is in swift-testing's run finalise, not our settle code
+        let testTag = test.name
+        print("[TRAIT body-start] test=\"\(testTag)\"")
         try await _BackgroundCallLocals.$queue.withValue(testQueue) {
             try await _ModelTestingLocals.$scope.withValue(pending) {
                 try await function()
             }
+            print("[TRAIT body-end] test=\"\(testTag)\"")
             // After the test body completes, run exhaustion check (still inside the
             // test-local queue scope so any teardown backgroundCall work uses testQueue).
             if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
                 await concrete.checkExhaustion(at: fl)
+                print("[TRAIT exh-end] test=\"\(testTag)\"")
+            } else {
+                print("[TRAIT no-exh] test=\"\(testTag)\" (no tester registered)")
             }
         }
+        print("[TRAIT scope-end] test=\"\(testTag)\"")
     }
 }
 #else

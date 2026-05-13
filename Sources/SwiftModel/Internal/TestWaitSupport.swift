@@ -212,6 +212,20 @@ extension TestAccess {
     ///   exhaustivity check handles failure reporting through proper exhaustivity bits.
     @discardableResult
     package func waitUntilSettled(calibration cal: WaitCalibration, reportTimeout: Bool = true, at fileAndLine: FileAndLine) async -> Bool {
+        // === Diagnostic: function entry ===
+        // Tags every settle call with its caller site so per-test settle activity can
+        // be correlated with the failing test under --parallel. `mode` discriminates
+        // expect/require (reportTimeout=true) from checkExhaustion cleanup (false) —
+        // the latter is what runs once per test in trait teardown.
+        print("[SETTLE start] \(fileAndLine.fileID):\(fileAndLine.line) mode=\(reportTimeout ? "expect" : "cleanup") hardCapNs=\(cal.hardCap) yieldRoundNs=\(cal.yieldRoundNs)")
+        var settleExitReason = "unknown"
+        defer {
+            let elapsedS = Double(monotonicNanoseconds() - cal.start) / Double(nanosPerSecond)
+            print(String(format: "[SETTLE end] %@:%d mode=%@ reason=%@ elapsed=%.2fs",
+                "\(fileAndLine.fileID)", fileAndLine.line,
+                reportTimeout ? "expect" : "cleanup", settleExitReason, elapsedS))
+        }
+
         // Idle cycle — wait until one full scheduling round passes with no state
         // changes. Uses modificationCount on the root context as a version number.
         //
@@ -256,15 +270,34 @@ extension TestAccess {
         // 3-window cap into a full hardCap wait (10-30 s × 200 tests / 3 cores = 9+ min).
         var activationWaitCount = 0
         var lastActivationTasksInFlight = activationTasksInFlight
+        var lastDiagnosticsNs = cal.start
         while true {
             await backgroundCall.waitForCurrentItems(deadline: cal.start + cal.hardCap)
             await yieldToScheduler()
+
+            // === Diagnostic: periodic loop status (every 10 s) ===
+            // Fires only on settle calls that are running long enough to hit the 10 s
+            // mark, which is exactly the cases we want to investigate. Normal sub-10 s
+            // settles emit zero `[SETTLE loop]` lines — quiet by default.
+            let loopNow = monotonicNanoseconds()
+            if loopNow - lastDiagnosticsNs >= 10 * nanosPerSecond {
+                lastDiagnosticsNs = loopNow
+                let elapsedS = Double(loopNow - cal.start) / Double(nanosPerSecond)
+                let activeTasks = lock { _activeTaskCount }
+                let activationPending = activationTasksInFlight
+                print(String(format: "[SETTLE loop] %@:%d mode=%@ elapsed=%.1fs activeTasks=%d activationPending=%d activationWaitCount=%d bgIdle=%@ modCount=%d",
+                    "\(fileAndLine.fileID)", fileAndLine.line,
+                    reportTimeout ? "expect" : "cleanup",
+                    elapsedS, activeTasks, activationPending, activationWaitCount,
+                    backgroundCall.isIdle ? "true" : "false", context.modificationCount))
+            }
 
             let currentVersion = context.modificationCount
             let currentActivationInFlight = activationTasksInFlight
             if currentVersion == lastChangeVersion {
                 if lock({ _activeTaskCount }) == 0 {
                     if sawZeroActiveTasks {
+                        settleExitReason = "idle-confirmed"
                         break // confirmed: two consecutive checks with no active tasks and no changes
                     }
                     sawZeroActiveTasks = true
@@ -297,6 +330,20 @@ extension TestAccess {
                     ? max(cal.yieldRoundNs * 3, 300_000_000)
                     : min(cal.yieldRoundNs * 30, 300_000_000)
                 let activationPending = currentActivationInFlight
+                // === Diagnostic: entering the patience window ===
+                // Each line tells us "a single test is stuck with N tasks still active,
+                // waiting up to patienceMs for any modification." Stacking these lines
+                // shows whether we're hitting the same patience window repeatedly (i.e.
+                // a stuck test) or many distinct tests are each spending a window or two
+                // (i.e. genuine load).
+                let patienceMs = patience / 1_000_000
+                let activeTasksNow = lock { _activeTaskCount }
+                print(String(format: "[SETTLE patience] %@:%d mode=%@ window=#%d activeTasks=%d activationPending=%d patienceMs=%d bgIdle=%@ elapsed=%.2fs",
+                    "\(fileAndLine.fileID)", fileAndLine.line,
+                    reportTimeout ? "expect" : "cleanup",
+                    activationWaitCount + 1, activeTasksNow, activationPending, patienceMs,
+                    backgroundCall.isIdle ? "true" : "false",
+                    Double(monotonicNanoseconds() - cal.start) / Double(nanosPerSecond)))
                 await waitForModification(timeoutNanoseconds: patience, yieldRoundNs: patience, retryCount: 2)
                 if context.modificationCount == currentVersion {
                     // Don't break while activation tasks are still queued but haven't
@@ -323,7 +370,16 @@ extension TestAccess {
                         // 3+ patience windows elapsed with activationTasksInFlight > 0 —
                         // cooperative pool is saturated and tasks cannot start. Fall through
                         // to break; hardCap check below handles the overall timeout.
+                        // === Diagnostic: giving up under saturation ===
+                        print(String(format: "[SETTLE give-up] %@:%d mode=%@ windows=%d activationPending=%d activeTasks=%d elapsed=%.2fs",
+                            "\(fileAndLine.fileID)", fileAndLine.line,
+                            reportTimeout ? "expect" : "cleanup",
+                            activationWaitCount,
+                            activationPending,
+                            lock { _activeTaskCount },
+                            Double(monotonicNanoseconds() - cal.start) / Double(nanosPerSecond)))
                     }
+                    settleExitReason = "no-progress-break"
                     break // No progress — remaining tasks are observation loops or cancelled tasks
                 }
                 lastChangeVersion = context.modificationCount
@@ -343,6 +399,7 @@ extension TestAccess {
                 sawZeroActiveTasks = false
             }
             if cal.start.distance(to: monotonicNanoseconds()) > cal.hardCap {
+                settleExitReason = reportTimeout ? "hardcap-timeout" : "hardcap-cleanup"
                 if reportTimeout {
                     let taskInfo = settleTimeoutDiagnostics()
                     fail("settle() timed out: model still has active tasks.\n\(taskInfo)", at: fileAndLine)
