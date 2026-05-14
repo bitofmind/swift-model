@@ -21,7 +21,18 @@ jobs:
           xcode-version: latest
       - name: Build and test
         # Run in parallel to exercise concurrent behaviour and catch races.
-        run: swift test --parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks --skip LazyContextBenchmarks
+        #
+        # `--num-workers 6` caps in-process parallelism at ~2× the runner's core
+        # count (macos-15-arm64 ships with 3 cores). Without this cap swift-test
+        # spawns a Task per @Test under a single `withDiscardingTaskGroup` and
+        # all ~700 tests contend for 3 cooperative-pool threads. The resulting
+        # queue depth (~233 per core) made `Task.yield()` round-trip 500 ms,
+        # which compounded into a ~12-min job runtime under our settle policy.
+        # Race coverage is unaffected: races are intra-test (a model's
+        # `node.task` / `forEach` / `onChange` racing the test body) and fire
+        # at any worker count ≥ 1. Cross-test parallelism only contributed
+        # speed, and saturation made that negative.
+        run: swift test --parallel --num-workers 6 --skip MemoizePerformanceTests --skip CoalescingBenchmarks --skip LazyContextBenchmarks
 
   linux:
     name: Linux

@@ -78,9 +78,11 @@ struct CoalescingTests {
             model.value = i
         }
         
-        // Wait for coalesced update to complete
-        try await waitUntil(lastValue.value == 5)
-        // Settle: drain loop runs concurrently and may produce one extra re-tracking call
+        // Drain any in-flight coalesced updates. `waitUntilIdle` is event-driven
+        // (signals via `onIdle` callback when the GCD drain task ends) — no polling,
+        // no fixed timeout, scales with backlog. Replaces the prior
+        // `waitUntil(predicate) + waitUntilIdle()` pair, whose 5 s polling cap can
+        // fire before drain completes under heavy parallel load.
         await backgroundCall.waitUntilIdle()
 
         // Should have 1 initial + 1 (or 2) coalesced updates. Exact count varies by scheduling.
@@ -116,8 +118,7 @@ struct CoalescingTests {
             model.value = i
         }
 
-        // Wait for batch 1 to settle (drain loop may add an extra re-tracking call)
-        try await waitUntil(updateCount.value >= 2)
+        // Event-driven drain wait (see `testWithCoalescing_AccessCollector` for rationale).
         await backgroundCall.waitUntilIdle()
 
         let countAfterBatch1 = updateCount.value
@@ -128,13 +129,11 @@ struct CoalescingTests {
             model.value = i
         }
 
-        // Wait for batch 2 to settle
-        try await waitUntil(updateCount.value > countAfterBatch1)
         await backgroundCall.waitUntilIdle()
 
         #expect(updateCount.value > countAfterBatch1, "Should have processed second batch separately")
     }
-    
+
     // MARK: - withObservationTracking Path Tests
     
     // Note: Cannot test "without coalescing" with withObservationTracking
@@ -172,9 +171,7 @@ struct CoalescingTests {
             model.value = i
         }
         
-        // Wait for coalesced update to complete
-        try await waitUntil(lastValue.value == 5)
-        // Settle: drain loop runs concurrently and may produce one extra re-tracking call
+        // Event-driven drain wait (see `testWithCoalescing_AccessCollector` for rationale).
         await backgroundCall.waitUntilIdle()
 
         // Should have 1 initial + 1 (or 2) coalesced updates. Exact count varies by scheduling.
@@ -210,8 +207,7 @@ struct CoalescingTests {
             model.value = i
         }
 
-        // Wait for batch 1 to settle (drain loop may add an extra re-tracking call)
-        try await waitUntil(updateCount.value >= 2)
+        // Event-driven drain wait (see `testWithCoalescing_AccessCollector` for rationale).
         await backgroundCall.waitUntilIdle()
 
         let countAfterBatch1 = updateCount.value
@@ -222,8 +218,6 @@ struct CoalescingTests {
             model.value = i
         }
 
-        // Wait for batch 2 to settle
-        try await waitUntil(updateCount.value > countAfterBatch1)
         await backgroundCall.waitUntilIdle()
 
         #expect(updateCount.value > countAfterBatch1, "Should have processed second batch separately")
@@ -254,10 +248,14 @@ struct CoalescingTests {
             model.value = i
         }
 
-        // Wait for the final value specifically: the drain loop runs concurrently, so an
-        // intermediate batch might deliver a non-final value. Waiting for value==10 ensures
-        // we verify freshness (the final, not a stale intermediate value).
-        try await waitUntil(observedValues.value.last == 10)
+        // Drain all coalesced updates via the event-driven `onIdle` callback.
+        // By the time this returns, every drain task has completed and the final
+        // one read `model.value = 10` (post-loop). The previous
+        // `waitUntil(predicate) + waitUntilIdle` pattern caused a 7+ min Linux CI
+        // hang because the 1 ms `Task.sleep` polling could wedge under
+        // `disableObservationRegistrar`'s alternate AccessCollector code path
+        // when the 5 s timeout coincided with `defer { cancellable() }`
+        // contending on the same context lock as a still-running GCD drain.
         await backgroundCall.waitUntilIdle()
 
         // Should have initial (0) and final (10) as the bookends.
@@ -291,8 +289,7 @@ struct CoalescingTests {
             model.value = i
         }
 
-        // Wait for the final value; coalescing may split into batches so count > 2 is allowed.
-        try await waitUntil(observedValues.value.last == 10)
+        // Event-driven drain wait (see `testCoalescingProvidesFreshValues_AccessCollector` for rationale).
         await backgroundCall.waitUntilIdle()
 
         let values = observedValues.value
@@ -370,11 +367,10 @@ struct CoalescingTests {
             modelCoalesce.value = i
         }
         
-        // Wait until non-coalescing model has processed all updates
-        try await waitUntil(countNoCoalesce.value >= 21)
-        
-        // Wait for coalescing to complete (should have at least 2 updates: initial + coalesced)
-        try await waitUntil(countCoalesce.value >= 2)
+        // Non-coalescing: all 21 updates fire synchronously inside the for loop above.
+        // Coalescing: drain queued via backgroundCall — wait via the event-driven onIdle
+        // callback rather than polling (avoids the 5 s waitUntil cap firing under load).
+        await backgroundCall.waitUntilIdle()
         
         let noCoalesceCount = countNoCoalesce.value
         let coalesceCount = countCoalesce.value
@@ -414,8 +410,7 @@ struct CoalescingTests {
             model.items[i].value += 1
         }
         
-        // Wait for coalesced update; drain loop may add an extra re-tracking call
-        try await waitUntil(updateCount.value >= 2)
+        // Event-driven drain wait (see `testWithCoalescing_AccessCollector` for rationale).
         await backgroundCall.waitUntilIdle()
 
         // With coalescing: 1 initial + at least 1 coalesced = >= 2
@@ -445,8 +440,7 @@ struct CoalescingTests {
             model.items[i].value += 1
         }
 
-        // Wait for coalesced update; drain loop may add an extra re-tracking call
-        try await waitUntil(updateCount.value >= 2)
+        // Event-driven drain wait (see `testWithCoalescing_AccessCollector` for rationale).
         await backgroundCall.waitUntilIdle()
 
         #expect(updateCount.value >= 2, "Should coalesce nested mutations into very few updates")
@@ -488,29 +482,27 @@ struct CoalescingTests {
         for i in 1...5 {
             model.valueA = i
         }
-        
-        // Wait for coalesced update - wait for the final value, not exact count
-        try await waitUntil(observedValues.value.last == 5)
-        
+
+        // Drain coalesced updates via the event-driven onIdle callback.
+        await backgroundCall.waitUntilIdle()
+
         #expect(updateCount.value >= 2, "Should have at least initial + 1 update")
         #expect(observedValues.value.last == 5, "Should see final valueA")
-        
+
         // Switch branch to valueB
         model.useFirstPath = false
-        
-        // Wait for branch switch update - wait for the value change
-        try await waitUntil(observedValues.value.last == 10)
-        
+
+        await backgroundCall.waitUntilIdle()
+
         #expect(updateCount.value >= 3, "Should have updates after branch switch")
         #expect(observedValues.value.last == 10, "Should now see valueB")
-        
+
         // Mutate valueB (now observed path) multiple times
         for i in 11...15 {
             model.valueB = i
         }
-        
-        // Wait for coalesced update - wait for final value
-        try await waitUntil(observedValues.value.last == 15)
+
+        await backgroundCall.waitUntilIdle()
         let countBeforeMutatingA = updateCount.value
         
         #expect(observedValues.value.last == 15, "Should see final valueB")
@@ -560,27 +552,26 @@ struct CoalescingTests {
         for i in 1...5 {
             model.valueA = i
         }
-        
-        // Wait for updates to complete (longer timeout for heavy load scenarios)
-        try await waitUntil(observedValues.value.last == 5, timeout: 5_000_000_000)
-        
+
+        // Drain coalesced updates via the event-driven onIdle callback.
+        await backgroundCall.waitUntilIdle()
+
         // Should see coalescing effect
         #expect(updateCount.value >= 2, "Should have at least initial + 1 coalesced update")
         #expect(observedValues.value.last == 5, "Should see final valueA")
-        
+
         let countAfterValueA = updateCount.value
-        
+
         // Switch branch
         model.useFirstPath = false
-        
-        // Wait for branch switch (longer timeout for heavy load scenarios)
-        try await waitUntil(observedValues.value.last == 10, timeout: 5_000_000_000)
-        
+
+        await backgroundCall.waitUntilIdle()
+
         #expect(updateCount.value > countAfterValueA, "Should update when switching branches")
         #expect(observedValues.value.last == 10, "Should now see valueB")
-        
+
         let countAfterSwitch = updateCount.value
-        
+
         // Mutate valueB multiple times inside a transaction.
         // withObservationTracking's onChange fires once per registration and
         // re-registers only inside performUpdate (a background task). On multi-core
@@ -594,8 +585,7 @@ struct CoalescingTests {
             }
         }
 
-        // Wait for updates to complete (longer timeout for heavy load scenarios)
-        try await waitUntil(observedValues.value.last == 15, timeout: 5_000_000_000)
+        await backgroundCall.waitUntilIdle()
         
         // Should see some updates but fewer than without coalescing
         #expect(updateCount.value > countAfterSwitch, "Should update for valueB changes")
