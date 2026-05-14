@@ -1,43 +1,31 @@
 #!/bin/bash
-# Run the SwiftModel test suite with bounded in-process parallelism.
+# Run the SwiftModel test suite. Local default is `--parallel` (unbounded,
+# matches swift-test's default) — well-provisioned machines absorb 700-way
+# in-process Task fan-out without issue, and the parallel mode is what
+# exercises cross-test scheduling diversity for race-detection purposes.
 #
 # Usage:
-#   scripts/test                          # single pass (mirrors CI flags exactly)
-#   scripts/test --filter <pattern>       # single pass, swift-test --filter forwarded
-#   scripts/test --loop 100               # 100 iterations for stability stress
-#   scripts/test --loop 100 --filter <p>  # combined; iteration count printed per round
+#   scripts/test                          # single pass, --parallel
+#   scripts/test --filter <pattern>       # single pass, --filter forwarded
+#   scripts/test --no-parallel            # single pass, serial (matches CI)
+#   scripts/test --loop 100               # 100 iterations stability stress
+#   scripts/test --loop 100 --no-parallel # mix-and-match
 #
-# Why the wrapper exists:
-#   `swift test --parallel` by default spawns one Task per @Test under a single
-#   `withDiscardingTaskGroup`, with no cap on concurrent tasks. For test suites
-#   of our size (~700 tests, all `async` with `node.task` / `forEach` /
-#   `onChange` child tasks that compete for cooperative-pool slots) the
-#   resulting queue depth saturates the pool — `Task.yield()` round-trip can
-#   exceed 500 ms, expect/settle patience windows accumulate, and the suite
-#   takes minutes instead of seconds.
+# All `--skip` flags from the macOS CI invocation are applied here too so
+# local matches CI's behaviour in terms of which tests are even run.
 #
-#   `--num-workers 6` caps in-process parallelism at ~2× the typical small-CI
-#   core count. Local development machines (8-14 perf cores) are slightly
-#   throttled by this — but consistency with CI matters more than the last
-#   few seconds, and stress-loop stability (the x100 case) benefits more from
-#   determinism than from raw parallelism.
-#
-#   Race coverage is unaffected. Races we care about are intra-test (a
-#   single model's `node.task` racing the test body or another task) and fire
-#   at any worker count ≥ 1.
-#
-# To match CI exactly (macOS job), set NUM_WORKERS=6.
-# To run unbounded parallel (the swift-test default — saturation prone but
-# occasionally useful for finding cross-test issues), set NUM_WORKERS=0
-# and the --num-workers flag is omitted.
+# CI runs `--no-parallel` on both macOS and Linux because their runners can't
+# keep up with our 700-way unbounded Task fan-out. The tests themselves are
+# parallel-safe — see the macOS-job comment in `.github/workflows/ci.yml` for
+# the full story.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-NUM_WORKERS="${NUM_WORKERS:-6}"
 LOOP_COUNT=1
 EXTRA_ARGS=()
+SAW_PARALLEL_FLAG=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,6 +37,11 @@ while [[ $# -gt 0 ]]; do
             LOOP_COUNT="${1#*=}"
             shift
             ;;
+        --parallel|--no-parallel)
+            SAW_PARALLEL_FLAG=1
+            EXTRA_ARGS+=("$1")
+            shift
+            ;;
         *)
             EXTRA_ARGS+=("$1")
             shift
@@ -56,10 +49,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Build the swift-test arg list. Matches the macOS CI job's flags.
-TEST_ARGS=(--parallel)
-if [[ "${NUM_WORKERS}" != "0" ]]; then
-    TEST_ARGS+=(--num-workers "${NUM_WORKERS}")
+# Default to --parallel locally if the caller didn't pick a mode. Match the
+# convention swift-test itself uses; the override `--no-parallel` reproduces CI.
+TEST_ARGS=()
+if [[ "${SAW_PARALLEL_FLAG}" -eq 0 ]]; then
+    TEST_ARGS+=(--parallel)
 fi
 TEST_ARGS+=(
     --skip MemoizePerformanceTests
@@ -72,21 +66,22 @@ if [[ "${LOOP_COUNT}" -eq 1 ]]; then
     exec swift test "${TEST_ARGS[@]}"
 fi
 
-# Stress-loop mode: run swift-test in a loop, fail fast on first failure.
-echo "Stress loop: ${LOOP_COUNT} iterations, --num-workers ${NUM_WORKERS}"
+# Stress-loop mode: run the suite N times, keep going on failure, summarise at the end.
+# Each iteration's stdout/stderr is redirected to /tmp; the path is printed on failure
+# so post-mortems on the failing run are easy.
+echo "Stress loop: ${LOOP_COUNT} iterations, args: ${TEST_ARGS[*]}"
 FAIL_COUNT=0
 for i in $(seq 1 "${LOOP_COUNT}"); do
     printf "Iteration %d/%d ... " "$i" "${LOOP_COUNT}"
     START="$(date +%s)"
-    if swift test "${TEST_ARGS[@]}" > /tmp/swift-model-stress-${i}.log 2>&1; then
+    if swift test "${TEST_ARGS[@]}" > "/tmp/swift-model-stress-${i}.log" 2>&1; then
         END="$(date +%s)"
         printf "ok (%ds)\n" "$((END - START))"
-        rm -f /tmp/swift-model-stress-${i}.log
+        rm -f "/tmp/swift-model-stress-${i}.log"
     else
         END="$(date +%s)"
         printf "FAILED (%ds) — log: /tmp/swift-model-stress-${i}.log\n" "$((END - START))"
         FAIL_COUNT=$((FAIL_COUNT + 1))
-        # Don't exit — keep going so we get failure rate.
     fi
 done
 

@@ -29,11 +29,10 @@ Examples/               # Standalone example apps (each embeds a copy of the lib
 # Build
 swift build
 
-# Run all tests — uses `scripts/test`, which mirrors macOS CI's flags exactly
-# (`--parallel --num-workers 6` plus the same `--skip` set). Capping parallelism
-# at 6 keeps cooperative-pool queue depth below the saturation threshold where
-# `Task.yield()` round-trip latency spikes to 500 ms; this is the difference
-# between sub-second `expect`/`settle` cycles and 1.5 s patience-window burns.
+# Run all tests — `scripts/test` defaults to `--parallel` (unbounded) plus the
+# `--skip` set used in CI. Use this locally where the machine has cores to
+# spare; it's also what stress-tests cross-test scheduling diversity for
+# race-finding purposes.
 scripts/test
 
 # Run a specific test (forwards `--filter` to swift-test).
@@ -43,13 +42,14 @@ scripts/test --filter SwiftModelTests.SomeTestName
 # verify test stability after touching observation/coalescing/settling code.
 scripts/test --loop 100
 
-# Override the worker cap (default 6, matches CI):
-NUM_WORKERS=12 scripts/test       # higher parallelism for fast local machines
-NUM_WORKERS=0  scripts/test       # unbounded (swift-test default; saturation-prone)
+# Reproduce CI's exact serial run (use when investigating a CI-only failure):
+scripts/test --no-parallel
 ```
 
-Direct `swift test` invocations bypass the worker cap and may be flaky under
-load on machines with few cores. Prefer `scripts/test`.
+CI runs `--no-parallel` on both macOS and Linux: the 3-core/2-core runners
+can't absorb 700-way in-process Task fan-out. The tests themselves are
+parallel-safe — see the macOS-job comment in `.github/workflows/ci.yml` for
+the full story.
 
 The project uses Swift 6 (`swiftLanguageModes: [.v6]`). All code must be strict-concurrency-safe.
 

@@ -20,19 +20,22 @@ jobs:
         with:
           xcode-version: latest
       - name: Build and test
-        # Run in parallel to exercise concurrent behaviour and catch races.
+        # Run tests serially (--no-parallel) to avoid cooperative thread-pool
+        # saturation on the 3-core macos-15-arm64 runner. Same rationale as the
+        # Linux job below — the tests themselves run parallel-clean on
+        # well-provisioned machines (local development, x100 stress loops via
+        # `scripts/test --loop`), but the small CI box can't absorb 700-way
+        # in-process Task fan-out.
         #
-        # `--num-workers 6` caps in-process parallelism at ~2× the runner's core
-        # count (macos-15-arm64 ships with 3 cores). Without this cap swift-test
-        # spawns a Task per @Test under a single `withDiscardingTaskGroup` and
-        # all ~700 tests contend for 3 cooperative-pool threads. The resulting
-        # queue depth (~233 per core) made `Task.yield()` round-trip 500 ms,
-        # which compounded into a ~12-min job runtime under our settle policy.
-        # Race coverage is unaffected: races are intra-test (a model's
-        # `node.task` / `forEach` / `onChange` racing the test body) and fire
-        # at any worker count ≥ 1. Cross-test parallelism only contributed
-        # speed, and saturation made that negative.
-        run: swift test --parallel --num-workers 6 --skip MemoizePerformanceTests --skip CoalescingBenchmarks --skip LazyContextBenchmarks
+        # We tried `--parallel --num-workers 6` first; turns out `--num-workers`
+        # is a SwiftPM process-orchestration flag for fan-out across multiple
+        # test executables, not an in-process Task cap. Swift-testing inside a
+        # single process still spawns every @Test under one
+        # `withDiscardingTaskGroup` with no worker bound. Serial on CI is the
+        # cleanest workaround until swift-testing exposes per-process Task
+        # capping. Intra-test race coverage (a model's `node.task` / `forEach` /
+        # `onChange` racing the test body) is preserved at any worker count ≥ 1.
+        run: swift test --no-parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks --skip LazyContextBenchmarks
 
   linux:
     name: Linux
