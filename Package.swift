@@ -136,7 +136,20 @@ let package = Package(
                 "SwiftModel",
                 .product(name: "Dependencies", package: "swift-dependencies"),
                 .product(name: "Clocks", package: "swift-clocks"),
-                .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
+                // `IssueReportingTestSupport` is a `type:.dynamic` product. WASI
+                // (the WASM SDK target triple `wasm32-unknown-wasip1`) has no
+                // shared-library / dlopen support, so SwiftPM refuses to link
+                // dynamic products. List the platforms that DO support it
+                // explicitly; WASI is excluded by omission. On WASI,
+                // `reportIssue(...)` calls fall back to the runtime-warning
+                // reporter; the `WASIBridgeIssueReporter` in `Utilities.swift`
+                // re-registers as a swift-testing-bound reporter at process
+                // startup so failures still surface as `Issue.record(...)`.
+                .product(
+                    name: "IssueReportingTestSupport",
+                    package: "xctest-dynamic-overlay",
+                    condition: .when(platforms: [.macOS, .linux, .iOS, .tvOS, .watchOS, .macCatalyst, .android])
+                ),
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
                 .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
             ]
@@ -153,7 +166,12 @@ let package = Package(
             dependencies: [
                 "SwiftModel",
                 .product(name: "Dependencies", package: "swift-dependencies"),
-                .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
+                // See SwiftModelTests for WASI exclusion rationale.
+                .product(
+                    name: "IssueReportingTestSupport",
+                    package: "xctest-dynamic-overlay",
+                    condition: .when(platforms: [.macOS, .linux, .iOS, .tvOS, .watchOS, .macCatalyst, .android])
+                ),
             ]
         ),
         .testTarget(
@@ -163,7 +181,12 @@ let package = Package(
                 .product(name: "Dependencies", package: "swift-dependencies"),
                 .product(name: "InlineSnapshotTesting", package: "swift-snapshot-testing", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "Clocks", package: "swift-clocks"),
-                .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
+                // See SwiftModelTests for WASI exclusion rationale.
+                .product(
+                    name: "IssueReportingTestSupport",
+                    package: "xctest-dynamic-overlay",
+                    condition: .when(platforms: [.macOS, .linux, .iOS, .tvOS, .watchOS, .macCatalyst, .android])
+                ),
             ]
         ),
         .macro(

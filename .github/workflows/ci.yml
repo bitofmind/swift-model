@@ -182,17 +182,24 @@ jobs:
             --checksum 9fa4016ee632c7e9e906608ec3b55cf13dfc4dff44e47574c5af58064dc33fd9
 
       - name: Build SwiftModel for WASM (compile check)
-        # Full test execution is blocked by `IssueReportingTestSupport`
-        # (xctest-dynamic-overlay) being `type:.dynamic`, which the WASM SDK
-        # can't link. `SwiftModelSnapshotTests` and `SwiftModelBenchmarkTests`
-        # are split off from `SwiftModelTests` so SnapshotTesting's Apple-only
-        # types are no longer on the main test target's link path — they only
-        # block their own dedicated test targets — but the
-        # `IssueReportingTestSupport` blocker remains for any test target.
-        # We compile-check the main library target only. The Android job
-        # is also compile-only (cross-compiler index-store bug — see its
-        # comment block).
+        # We compile-check the main library target first as a fast-fail
+        # gate. The Android job is also compile-only (cross-compiler
+        # index-store bug — see its comment block).
         run: |
           swift build \
             --swift-sdk swift-6.3-RELEASE_wasm \
             --target SwiftModel
+
+      - name: Build SwiftModelTests for WASM (compile check)
+        # `IssueReportingTestSupport` (xctest-dynamic-overlay) is `type:.dynamic`;
+        # WASI doesn't link dynamic products. The dep is now platform-conditioned
+        # to omit WASI. This step verifies the test bundle still links — i.e. no
+        # test code unconditionally references TestSupport-only types.
+        #
+        # On failure, the most common cause is an `import IssueReportingTestSupport`
+        # or unqualified call to a TestSupport-only symbol; guard with
+        # `#if !os(WASI)` in the affected test file.
+        run: |
+          swift build \
+            --swift-sdk swift-6.3-RELEASE_wasm \
+            --target SwiftModelTests
