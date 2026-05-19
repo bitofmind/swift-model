@@ -185,20 +185,25 @@ jobs:
         # We compile-check the main library target first as a fast-fail
         # gate. The Android job is also compile-only (cross-compiler
         # index-store bug — see its comment block).
+        #
+        # `SWIFTPM_TARGET_WASI=1` tells `Package.swift` to drop every test
+        # target except `SwiftModelTests` — see the manifest comment at the
+        # bottom of `Package.swift`. The lever exists because WASI's no-
+        # dynamic-libraries rule made the package's test-executable link fail
+        # whenever `IssueReportingTestSupport` (a `type:.dynamic` product)
+        # was reachable from the test graph. Setting the env var unifies
+        # behaviour across all WASM jobs in this file.
+        env:
+          SWIFTPM_TARGET_WASI: "1"
         run: |
           swift build \
             --swift-sdk swift-6.3-RELEASE_wasm \
             --target SwiftModel
 
       - name: Build SwiftModelTests for WASM (compile check)
-        # `IssueReportingTestSupport` (xctest-dynamic-overlay) is `type:.dynamic`;
-        # WASI doesn't link dynamic products. The dep is now platform-conditioned
-        # to omit WASI. This step verifies the test bundle still links — i.e. no
-        # test code unconditionally references TestSupport-only types.
-        #
-        # On failure, the most common cause is an `import IssueReportingTestSupport`
-        # or unqualified call to a TestSupport-only symbol; guard with
-        # `#if !os(WASI)` in the affected test file.
+        # See the previous step for `SWIFTPM_TARGET_WASI` rationale.
+        env:
+          SWIFTPM_TARGET_WASI: "1"
         run: |
           swift build \
             --swift-sdk swift-6.3-RELEASE_wasm \
@@ -232,13 +237,14 @@ jobs:
         # remove the flag so failures gate the PR.
         continue-on-error: true
         env:
+          # `SWIFTPM_TARGET_WASI=1` — see the compile-check step's comment.
+          # Drops every test target except `SwiftModelTests` from the manifest
+          # so the package test-executable link succeeds on WASI.
+          SWIFTPM_TARGET_WASI: "1"
           # WASI doesn't expose env vars by default; pass through what the
           # tests look at. SWIFT_MODEL_TEST_TIMEOUT is the per-test wall-clock
           # cap (default 30 s). Tighten on WASM since execution is slower.
           SWIFT_MODEL_TEST_TIMEOUT: "60"
         run: |
           swift test \
-            --swift-sdk swift-6.3-RELEASE_wasm \
-            --skip SwiftModelBenchmarkTests \
-            --skip SwiftModelSnapshotTests \
-            --skip SwiftModelMacroTests
+            --swift-sdk swift-6.3-RELEASE_wasm

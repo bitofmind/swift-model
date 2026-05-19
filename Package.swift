@@ -3,6 +3,7 @@
 // swift-custom-dump below. swift-dependencies does NOT use traits here — it still ships
 // a `Package@swift-6.0.swift` shadow manifest that SE-0152 always selects over the
 // traits-aware `Package.swift`; any `traits:` override would be a hard error.
+import Foundation
 import PackageDescription
 import CompilerPluginSupport
 
@@ -69,6 +70,26 @@ let defaultIsolationTargets: [Target] = [
 #else
 let defaultIsolationTargets: [Target] = []
 #endif
+
+// When `SWIFTPM_TARGET_WASI=1` is set in the environment, the manifest drops
+// every test target except `SwiftModelTests`. This is the WASM CI's "run only
+// the main test target" lever.
+//
+// Why we need it: WASI doesn't support dynamic libraries, and
+// `IssueReportingTestSupport` is a `type:.dynamic` SwiftPM product. We
+// platform-condition the dep out of all five test targets (search this file
+// for `IssueReportingTestSupport`), but the `swift test` test-executable link
+// still tried to build `libIssueReportingTestSupport.wasm` regardless —
+// SwiftPM seems to materialise the product whenever ANY consumer in the
+// resolved graph references it, even via a platform-failed condition. Until
+// we figure out exactly what triggers that, physically removing the
+// non-essential test targets when targeting WASI is the surest way to keep
+// the dynamic product out of the link plan.
+//
+// The Snapshot / Benchmark / MainActor / Macro tests don't add platform
+// coverage that the main SwiftModelTests suite doesn't already provide for
+// WASM. They stay enabled on every other platform.
+let isWasiBuild = ProcessInfo.processInfo.environment["SWIFTPM_TARGET_WASI"] == "1"
 
 let package = Package(
     name: "swift-model",
@@ -226,6 +247,28 @@ let package = Package(
                 .product(name: "MacroTesting", package: "swift-macro-testing", condition: .when(platforms: [.macOS, .linux])),
             ]
         ),
-    ] + defaultIsolationTargets,
+    ] + (isWasiBuild ? [] : defaultIsolationTargets),
     swiftLanguageModes: [.v6]
 )
+
+// On WASI we want only `SwiftModelTests` linked into the test executable;
+// every other test target pulls in `IssueReportingTestSupport` (via direct
+// dep, MacroTesting, or InlineSnapshotTesting) — that's a `type:.dynamic`
+// SwiftPM product, and WASI's linker rejects dynamic libraries. Conditioning
+// the individual product deps with `.when(platforms:)` doesn't actually keep
+// the dynamic library out of the package test-executable link (something in
+// the resolved graph still materialises it). Physically removing the test
+// targets is the surest way to stop the dynamic product from being built.
+//
+// Keep:
+//   • `SwiftModel`            — the library under test
+//   • `SwiftModelMacros`      — host-built macro plugin (`@Model` expansion)
+//   • `SwiftModelTests`       — the test target we actually want to run
+//   • `SwiftModelBenchmarks`  — executable, unrelated to the test-link issue
+if isWasiBuild {
+    package.targets.removeAll { target in
+        target.name == "SwiftModelBenchmarkTests"
+            || target.name == "SwiftModelSnapshotTests"
+            || target.name == "SwiftModelMacroTests"
+    }
+}
