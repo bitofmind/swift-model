@@ -207,9 +207,11 @@ jobs:
       - name: Install wasmtime (WASI runtime for executing the test bundle)
         # WASM test bundles compile to `.wasm` and need a WASI runtime to execute.
         # `wasmtime` is the reference runtime; bytecodealliance ships static
-        # Linux binaries. The `swift:6.3.0` container has `wget` but not `curl`
-        # — same as the Android job's install step.
+        # Linux binaries. The minimal `swift:6.3.0` Debian image has neither
+        # `curl` nor `wget` preinstalled, so we apt-get one first.
         run: |
+          apt-get update -qq
+          apt-get install -qq -y wget xz-utils 2>/dev/null
           WASMTIME_VERSION="v27.0.0"
           wget -q "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz" \
             -O /tmp/wasmtime.tar.xz
