@@ -203,3 +203,39 @@ jobs:
           swift build \
             --swift-sdk swift-6.3-RELEASE_wasm \
             --target SwiftModelTests
+
+      - name: Install wasmtime (WASI runtime for executing the test bundle)
+        # WASM test bundles compile to `.wasm` and need a WASI runtime to execute.
+        # `wasmtime` is the reference runtime; bytecodealliance ships static
+        # Linux binaries.
+        run: |
+          WASMTIME_VERSION="v27.0.0"
+          curl -sSL "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz" \
+            -o /tmp/wasmtime.tar.xz
+          tar -xJf /tmp/wasmtime.tar.xz -C /tmp
+          install -m 0755 "/tmp/wasmtime-${WASMTIME_VERSION}-x86_64-linux/wasmtime" /usr/local/bin/wasmtime
+          wasmtime --version
+
+      - name: Run SwiftModelTests on WASM (via wasmtime)
+        # Probe step: see whether swift-testing's WASI runtime + wasmtime can
+        # actually execute the test bundle. Expected possible failures:
+        #  • Process model mismatch: tests using `Task.detached`, `DispatchQueue`,
+        #    `pthread_*` — WASI's single-thread model can't host these.
+        #  • Missing reporter bridging: without `IssueReportingTestSupport`,
+        #    `reportIssue(...)` → runtime warning, not `Issue.record`. Tests
+        #    using `withExpectedIssue { reportIssue("…") }` will fail to detect
+        #    the issue.
+        # First pass: continue-on-error so we see the full output. Once stable,
+        # remove the flag so failures gate the PR.
+        continue-on-error: true
+        env:
+          # WASI doesn't expose env vars by default; pass through what the
+          # tests look at. SWIFT_MODEL_TEST_TIMEOUT is the per-test wall-clock
+          # cap (default 30 s). Tighten on WASM since execution is slower.
+          SWIFT_MODEL_TEST_TIMEOUT: "60"
+        run: |
+          swift test \
+            --swift-sdk swift-6.3-RELEASE_wasm \
+            --skip SwiftModelBenchmarkTests \
+            --skip SwiftModelSnapshotTests \
+            --skip SwiftModelMacroTests
