@@ -209,42 +209,27 @@ jobs:
             --swift-sdk swift-6.3-RELEASE_wasm \
             --target SwiftModelTests
 
-      - name: Install wasmtime (WASI runtime for executing the test bundle)
-        # WASM test bundles compile to `.wasm` and need a WASI runtime to execute.
-        # `wasmtime` is the reference runtime; bytecodealliance ships static
-        # Linux binaries. The minimal `swift:6.3.0` Debian image has neither
-        # `curl` nor `wget` preinstalled, so we apt-get one first.
-        run: |
-          apt-get update -qq
-          apt-get install -qq -y wget xz-utils 2>/dev/null
-          WASMTIME_VERSION="v27.0.0"
-          wget -q "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz" \
-            -O /tmp/wasmtime.tar.xz
-          tar -xJf /tmp/wasmtime.tar.xz -C /tmp
-          install -m 0755 "/tmp/wasmtime-${WASMTIME_VERSION}-x86_64-linux/wasmtime" /usr/local/bin/wasmtime
-          wasmtime --version
-
-      - name: Run SwiftModelTests on WASM (via wasmtime)
-        # Probe step: see whether swift-testing's WASI runtime + wasmtime can
-        # actually execute the test bundle. Expected possible failures:
-        #  • Process model mismatch: tests using `Task.detached`, `DispatchQueue`,
-        #    `pthread_*` — WASI's single-thread model can't host these.
-        #  • Missing reporter bridging: without `IssueReportingTestSupport`,
-        #    `reportIssue(...)` → runtime warning, not `Issue.record`. Tests
-        #    using `withExpectedIssue { reportIssue("…") }` will fail to detect
-        #    the issue.
-        # First pass: continue-on-error so we see the full output. Once stable,
-        # remove the flag so failures gate the PR.
-        continue-on-error: true
-        env:
-          # `SWIFTPM_TARGET_WASI=1` — see the compile-check step's comment.
-          # Drops every test target except `SwiftModelTests` from the manifest
-          # so the package test-executable link succeeds on WASI.
-          SWIFTPM_TARGET_WASI: "1"
-          # WASI doesn't expose env vars by default; pass through what the
-          # tests look at. SWIFT_MODEL_TEST_TIMEOUT is the per-test wall-clock
-          # cap (default 30 s). Tighten on WASM since execution is slower.
-          SWIFT_MODEL_TEST_TIMEOUT: "60"
-        run: |
-          swift test \
-            --swift-sdk swift-6.3-RELEASE_wasm
+      # Test execution on WASM is still blocked by SwiftPM's behaviour around
+      # `type:.dynamic` products: even with `IssueReportingTestSupport`
+      # platform-conditioned out of every test target dep AND most test
+      # targets physically removed by `SWIFTPM_TARGET_WASI=1`, the package
+      # test-executable link plan still tries to build
+      # `libIssueReportingTestSupport.wasm` (the dynamic product) and fails:
+      #
+      #   error: dynamic libraries are unsupported for target 'wasm32-unknown-wasip1'
+      #   Linking libIssueReportingTestSupport.wasm
+      #
+      # SwiftPM appears to materialise `type:.dynamic` products whenever the
+      # owning package (`xctest-dynamic-overlay`) is reachable in the
+      # resolved graph at all — which it is, because the main `SwiftModel`
+      # library depends on `IssueReporting` (a different, regular product
+      # from the same package). Until either:
+      #   • SwiftPM stops auto-materialising unused `.dynamic` products on
+      #     non-dlopen targets, or
+      #   • `xctest-dynamic-overlay` declares the dynamic product
+      #     platform-conditionally,
+      # we stop at the compile check and don't try to run tests via wasmtime.
+      #
+      # The compile check above still catches regressions in WASM-target
+      # source-level compatibility (Dispatch / Thread / Foundation API
+      # availability), which is the practical value-add for WASM CI today.
