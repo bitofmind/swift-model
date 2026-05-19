@@ -54,7 +54,12 @@ let defaultIsolationTargets: [Target] = [
         dependencies: [
             "SwiftModel",
             .product(name: "Dependencies", package: "swift-dependencies"),
-            .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
+            // See SwiftModelTests for WASI exclusion rationale.
+            .product(
+                name: "IssueReportingTestSupport",
+                package: "xctest-dynamic-overlay",
+                condition: .when(platforms: [.macOS, .linux, .iOS, .tvOS, .watchOS, .macCatalyst, .android])
+            ),
         ],
         swiftSettings: [
             .unsafeFlags(["-default-isolation", "MainActor"])
