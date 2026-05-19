@@ -232,4 +232,39 @@ final class GlobalTickScheduler: @unchecked Sendable {
 private func monotonicNanoseconds() -> UInt64 {
     DispatchTime.now().uptimeNanoseconds
 }
+
+#else
+
+// MARK: - WASM stub
+//
+// `TestAccess` uses `GlobalTickScheduler` to register deadlines for
+// `expect` / `settle`. WASM (WASI SDK) doesn't ship `Dispatch`, so there's
+// no GCD timer source to back the real scheduler. Providing a no-op stub
+// keeps the call sites in `TestAccess.swift` compiling for WASM without
+// platform-guarding each reference; tests are not executed on WASM today
+// (the `IssueReportingTestSupport` dynamic-library product blocks linking
+// any test target), so the no-op never runs.
+//
+// If we ever do enable WASM test execution, this stub will need replacing
+// with a real cooperative-task-pool-backed implementation — or callers
+// will need explicit `#if canImport(Dispatch)` fallbacks.
+
+final class GlobalTickScheduler: @unchecked Sendable {
+    static let shared = GlobalTickScheduler()
+
+    static let tickGranularityNs: UInt64 = 10_000_000
+
+    @discardableResult
+    func schedule(deadlineNs _: UInt64, callback _: @escaping @Sendable () -> Void) -> @Sendable () -> Void {
+        // No-op: WASM never fires the callback. Callers must not depend on
+        // the deadline firing for correctness on this platform.
+        return {}
+    }
+
+    var _pendingCount: Int { 0 }
+
+    @discardableResult
+    func _drivenTick(nowNs _: UInt64) -> Int { 0 }
+}
+
 #endif

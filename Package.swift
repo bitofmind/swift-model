@@ -34,19 +34,42 @@ let package = Package(
         ),
     ],
     dependencies: [
-        // Tracking pointfreeco/main until a release ≥ PR #406 is tagged. The
-        // `Package@swift-6.0.swift` shadow manifest that previously blocked
-        // consumer-set traits has been dropped from `main` — we can now disable
-        // the default-on `CombineSchedulers` trait explicitly. We only request
-        // `Foundation` + `Clocks`; omitting `CombineSchedulers` drops the
-        // transitive `combine-schedulers` dep, which is what was blocking the
-        // WASM build (its `Internal/Lock.swift` uses `pthread_mutex_destroy`,
-        // not available in the WASI SDK).
+        // Tracking pointfreeco/main until a release ≥ PR #406 is tagged.
+        //
+        // We'd like to disable the default-on `CombineSchedulers` trait — its
+        // transitive `combine-schedulers` dep uses `pthread_mutex_destroy`,
+        // which is unavailable in the WASI SDK and breaks the WASM build.
+        // Setting `traits: ["Foundation", "Clocks"]` does that — but only on
+        // toolchains that pick swift-dependencies' tools-version-6.3
+        // `Package.swift` (which declares `traits`). Per SE-0152, toolchains
+        // < 6.3 instead pick the `Package@swift-6.0.swift` shadow manifest,
+        // which declares no traits — and SwiftPM errors out when a consumer
+        // sets traits on a package whose selected manifest declares none.
+        //
+        // Concretely: macOS CI (Xcode 26.3 → Swift 6.2) picks the shadow and
+        // would error; Linux / Android / WASM CI (swift:6.3.0 container) pick
+        // the trait-aware manifest. Gate the `traits:` parameter on
+        // `swift(>=6.3)` so we only request traits where the selected manifest
+        // actually declares them. On older toolchains we fall back to default
+        // traits — `CombineSchedulers` is pulled in, which is harmless on
+        // macOS/iOS (the dep builds fine there). The WASM job uses 6.3, so it
+        // still gets the trait-gated, CombineSchedulers-free tree.
+        //
+        // Retire this `#if` (and switch back to a tagged release) once
+        // swift-dependencies drops the shadow manifest in `main` and cuts a
+        // tag ≥ PR #406.
+        #if swift(>=6.3)
         .package(
             url: "https://github.com/pointfreeco/swift-dependencies",
             branch: "main",
             traits: ["Foundation", "Clocks"]
         ),
+        #else
+        .package(
+            url: "https://github.com/pointfreeco/swift-dependencies",
+            branch: "main"
+        ),
+        #endif
         // Fork pinned at the revision that gates the FoundationNetworking import and the
         // two FoundationNetworking-typed CustomDump conformances (`NSURLRequest:
         // CustomDumpRepresentable`, `URLRequest.NetworkServiceType:

@@ -1,3 +1,9 @@
+// `InlineSnapshotTesting` is gated to macOS/Linux in Package.swift (it imports
+// Apple-only types). Wrap the whole file in `#if !os(Android) && !os(WASI)` so
+// the source compiles cleanly on cross-platform CI; the tests themselves run on
+// macOS/Linux only.
+#if !os(Android) && !os(WASI)
+
 import Testing
 import InlineSnapshotTesting
 import ConcurrencyExtras
@@ -1680,3 +1686,5 @@ private func registerMultiPropertyReads(_ model: DebugCounter, access: ViewAcces
 }
 
 #endif
+
+#endif // !os(Android) && !os(WASI)

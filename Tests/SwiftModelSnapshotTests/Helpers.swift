@@ -44,3 +44,31 @@ extension ModelNode {
 func waitUntilRemoved<M: Model>(_ model: () async throws -> M) async rethrows {
     try await model().context.waitUntilNil()
 }
+
+// MARK: - UpdatePath
+//
+// Duplicated from `Tests/SwiftModelTests/Utilities.swift` — see the duplication
+// rationale at the top of this file. Only the cases the snapshot suites actually
+// use are kept (both, as a parametric `allCases` enum). Compiles on every
+// platform (no `IssueReporting` / `Testing` import here is needed).
+
+/// Test parameter for validating both observation mechanisms (AccessCollector vs
+/// withObservationTracking). See `Tests/SwiftModelTests/Utilities.swift` for the
+/// canonical doc comment.
+enum UpdatePath: String, CaseIterable {
+    case accessCollector
+    case withObservationTracking
+
+    var options: ModelOption {
+        switch self {
+        case .accessCollector:
+            return [.disableObservationRegistrar]
+        case .withObservationTracking:
+            return []
+        }
+    }
+
+    func withOptions<T>(_ body: () throws -> T) rethrows -> T {
+        try ModelOption.$current.withValue(options, operation: body)
+    }
+}
