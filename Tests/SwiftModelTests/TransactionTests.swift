@@ -148,13 +148,13 @@ struct TransactionTests {
 
     // MARK: - Transaction Isolation
 
-    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     // `Thread.sleep` + `Task.detached`-driven concurrent reads are the whole
     // point of this test; WASI is single-threaded with no Foundation `Thread`,
     // so the scenario can't be expressed there. Skip on WASM — the lock-
     // isolation contract is still exercised by every other test in this
     // suite that runs synchronous mutations under `transaction { ... }`.
     #if !os(WASI)
+    @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test func testConcurrentReadsDuringTransaction() async throws {
         let model = withModelOptions([.disableObservationRegistrar]) { IsolationModel().withAnchor() }
         model.value = 100
