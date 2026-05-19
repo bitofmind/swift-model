@@ -70,7 +70,17 @@ class AnyContext: @unchecked Sendable {
     /// Only consulted by `rootPathTree()` when `rootPaths` is queried (TestAccess / undo
     /// observation). Never accessed in production. Protected by the hierarchy lock;
     /// `nonisolated(unsafe)` since locking discipline is enforced at call sites.
-    nonisolated(unsafe) var collectionElementPathMakersStore: [AnyKeyPath: @Sendable (AnyHashable) -> AnyKeyPath]?
+    ///
+    /// The maker signature is `(elementID, fallbackElement) -> elementPath`. The
+    /// `fallbackElement` is the child context's current live model value, captured
+    /// at the time the path is requested. The `ContainerCursor.get` produced by
+    /// the maker uses this fallback when the requested element has been removed
+    /// from the parent collection between path construction and read — a race
+    /// that can happen when a child task writes to a property of an element that
+    /// is concurrently being removed from the parent collection. Without the
+    /// fallback, `cursor.get` would crash with a force-unwrap. Type-erased to
+    /// `Any` because the generic element type isn't visible at this layer.
+    nonisolated(unsafe) var collectionElementPathMakersStore: [AnyKeyPath: @Sendable (AnyHashable, Any) -> AnyKeyPath]?
 
     private var modeLifeTime: ModelLifetime = .anchored
 
@@ -170,9 +180,10 @@ class AnyContext: @unchecked Sendable {
 
     let mainCallQueue: MainCallQueue
 
-    /// Set by `TestAccess` on the root context to receive task lifecycle events.
-    /// Always `nil` in production — the delegate check is a single `Optional` load.
-    weak var taskLifecycleDelegate: (any TaskLifecycleDelegate)?
+    /// Set by `TestAccess` on the root context. Used by `ModelNode+Undo` to find the
+    /// root `TestAccess` (via `as? TestAccess<…>`) so undo restores propagate
+    /// `didModify` notifications. Always `nil` in production.
+    weak var modelAccess: ModelAccess?
 
     /// Captured during `Context<M>.init` to call `model.onActivate()` with correct `let` values.
     /// Called once by `Context<M>.onActivate()` and then cleared.
@@ -499,9 +510,13 @@ class AnyContext: @unchecked Sendable {
 
     /// Registers a lazy element-path maker for `collectionPath`. No-op if already registered.
     /// Must be called under the hierarchy lock.
+    ///
+    /// `maker` receives the element's ID and a fallback element value (the child
+    /// context's current live model). See `collectionElementPathMakersStore` for
+    /// the rationale.
     func registerCollectionElementPathMaker(
         for collectionPath: AnyKeyPath,
-        maker: @Sendable @escaping (AnyHashable) -> AnyKeyPath
+        maker: @Sendable @escaping (AnyHashable, Any) -> AnyKeyPath
     ) {
         if collectionElementPathMakersStore == nil {
             collectionElementPathMakersStore = [collectionPath: maker]
@@ -526,7 +541,10 @@ class AnyContext: @unchecked Sendable {
                     // elementPath (cursor-based or sentinel \C.self for non-collection children).
                     let elementPath: AnyKeyPath
                     if let maker = parent.collectionElementPathMakersStore?[childPath] {
-                        elementPath = maker(modalRef.id)
+                        // Pass the child's current live model as the fallback
+                        // for the cursor's `get` closure — see
+                        // `collectionElementPathMakersStore` doc.
+                        elementPath = maker(modalRef.id, context.anyModel)
                     } else {
                         elementPath = modalRef.elementPath
                     }

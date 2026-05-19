@@ -101,22 +101,37 @@ private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) 
 
 // MARK: - Shared idle/wait helpers (used by both queue types)
 
-/// Schedules `body` to run after `nanoseconds` nanoseconds.
+/// Schedules `body` to fire at the absolute monotonic deadline (or
+/// immediately if the deadline is already in the past). Returns a
+/// cancel handle; calling it before the deadline fires guarantees the
+/// callback will not run. Idempotent — cancel after fire is a no-op.
 ///
-/// Uses `DispatchQueue.global().asyncAfter` (kernel-level timer) on platforms that have
-/// Dispatch, so it fires regardless of Swift cooperative thread-pool saturation.
-/// Falls back to `Task.detached { Task.sleep }` on platforms without Dispatch (e.g. WASI).
-func scheduleAfter(nanoseconds: UInt64, _ body: @escaping @Sendable () -> Void) {
+/// Routed through `GlobalTickScheduler` on platforms that have
+/// `Dispatch` so all test-infrastructure deadlines share one ticker.
+/// Falls back to `Task.detached { Task.sleep }` on platforms without
+/// Dispatch (WASI), where the cancel handle is a no-op.
+///
+/// **History**: a previous iteration of this code routed deadlines
+/// through GTS but **discarded the cancel handle** — entries piled up
+/// in `GTS.pending` until their original deadline elapsed, and an
+/// observed ~3 % hang in x100 stress was attributed to that
+/// accumulation pressure. The current implementation cancels the GTS
+/// entry as soon as the wait resolves via any other path (idle
+/// callback, cancellation), so `pending` only contains entries that
+/// genuinely need their deadline to fire.
+@discardableResult
+func scheduleAfter(deadline: UInt64, _ body: @escaping @Sendable () -> Void) -> @Sendable () -> Void {
     #if canImport(Dispatch)
-    DispatchQueue.global().asyncAfter(
-        deadline: .now() + .nanoseconds(Int(min(nanoseconds, UInt64(Int.max)))),
-        execute: body
-    )
+    return GlobalTickScheduler.shared.schedule(deadlineNs: deadline, callback: body)
     #else
+    let cancelled = LockIsolated(false)
     Task.detached {
-        try? await Task.sleep(nanoseconds: nanoseconds)
-        body()
+        let nowNs = UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+        let delayNs = deadline > nowNs ? deadline - nowNs : 0
+        try? await Task.sleep(nanoseconds: delayNs)
+        if !cancelled.value { body() }
     }
+    return { cancelled.setValue(true) }
     #endif
 }
 
@@ -125,63 +140,114 @@ private func callQueueIsIdle(_ state: LockIsolated<CallQueueState?>) -> Bool {
 }
 
 private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, deadline: UInt64 = .max) async {
-    await withCheckedContinuation { cont in
-        let resumed = LockIsolated(false)
-        let shouldResume = state.withValue { s -> Bool in
-            if s != nil {
-                s!.onIdleCallbacks.append {
-                    resumed.withValue { r in
-                        guard !r else { return }
-                        r = true
-                        cont.resume()
-                    }
-                }
-                return false
-            }
-            return true
-        }
-        if shouldResume {
-            cont.resume()
-            return
-        }
-        if deadline < .max {
-            let delayNs = deadline > monotonicNanoseconds() ? deadline - monotonicNanoseconds() : 0
-            scheduleAfter(nanoseconds: delayNs) {
-                resumed.withValue { r in
-                    guard !r else { return }
-                    r = true
-                    cont.resume()
-                }
-            }
-        }
+    await callQueueWait(state: state, deadline: deadline) { s, callback in
+        s.onIdleCallbacks.append(callback)
     }
 }
 
+
 private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>, deadline: UInt64) async {
-    await withCheckedContinuation { cont in
-        let shouldResume = state.withValue { s -> Bool in
-            guard s != nil else { return true }
-            let resumed = LockIsolated(false)
-            s!.calls.append {
-                resumed.withValue { r in
-                    guard !r else { return }
-                    r = true
-                    cont.resume()
+    await callQueueWait(state: state, deadline: deadline) { s, callback in
+        s.calls.append(callback)
+    }
+}
+
+/// Shared implementation of `waitUntilIdle` and `waitForCurrentItems`.
+///
+/// The two functions differ only in where they enqueue the resumption
+/// callback inside `CallQueueState` — onIdleCallbacks (fires when the
+/// queue drains to empty) vs `calls` (fires when its position in the
+/// queue is reached). Everything else — the deadline-timer plumbing,
+/// the cancellation-aware continuation, the at-most-once resolve race
+/// against deadline / queue / cancel — is identical, and bug-fix-once
+/// is easier than duplicate.
+///
+/// Resolution paths (whichever fires first wins; the others find
+/// `resumed == true` and no-op):
+///   • queue-side callback (registered via `appendCallback`)
+///   • deadline timer (registered via GTS through `scheduleAfter`)
+///   • Task cancellation (`onCancel` handler)
+///
+/// **Race window for `contSlot`**: must be assigned INSIDE the same
+/// `state.withValue` critical section that appends the queue callback.
+/// If set after releasing `state`'s lock, the drain could fire our
+/// callback (which would see `contSlot == nil` and no-op) before we
+/// set it — the continuation then leaks with no one to resume it.
+/// Latent bug observable under heavy parallel load. Inside the lock,
+/// the drain can't run our callback because it must take the same
+/// lock to dequeue.
+///
+/// **Cancel-on-resolve**: when any path resolves, the GTS timer entry
+/// is cancelled inside the same `resumed.withValue` block. This is
+/// safe (no lock-ordering deadlock): GTS callbacks are invoked OUTSIDE
+/// the GTS internal lock, and `GTS.cancel(id)` only briefly acquires
+/// that lock to remove the entry — no thread acquires GTS's lock then
+/// `resumed`'s. Without cancel-on-resolve, the GTS `pending` list
+/// would accumulate stale entries up to each entry's original
+/// deadline, which a previous migration attempt correlated with a ~3 %
+/// hang under x100 stress.
+private func callQueueWait(
+    state: LockIsolated<CallQueueState?>,
+    deadline: UInt64,
+    appendCallback: @Sendable @escaping (inout CallQueueState, @escaping @Sendable () -> Void) -> Void
+) async {
+    let resumed = LockIsolated(false)
+    let contSlot = LockIsolated<CheckedContinuation<Void, Never>?>(nil)
+    let timerCancel = LockIsolated<(@Sendable () -> Void)?>(nil)
+
+    @Sendable func resolve() {
+        let toResume: CheckedContinuation<Void, Never>? = resumed.withValue { r in
+            guard !r else { return nil }
+            r = true
+            // Cancel the GTS timer entry now that we're resolving via
+            // some other path; otherwise the entry lingers in
+            // `GTS.pending` until its deadline fires.
+            timerCancel.value?()
+            timerCancel.setValue(nil)
+            return contSlot.withValue { slot -> CheckedContinuation<Void, Never>? in
+                let c = slot
+                slot = nil
+                return c
+            }
+        }
+        toResume?.resume()
+    }
+
+    await withTaskCancellationHandler {
+        await withCheckedContinuation { cont in
+            let shouldResume = state.withValue { s -> Bool in
+                if s != nil {
+                    contSlot.setValue(cont)
+                    appendCallback(&s!, resolve)
+                    return false
                 }
+                return true
+            }
+            if shouldResume {
+                cont.resume()
+                return
             }
             if deadline < .max {
-                let delayNs = deadline > monotonicNanoseconds() ? deadline - monotonicNanoseconds() : 0
-                scheduleAfter(nanoseconds: delayNs) {
-                    resumed.withValue { r in
-                        guard !r else { return }
-                        r = true
-                        cont.resume()
+                let cancel = scheduleAfter(deadline: deadline, resolve)
+                // Race-tolerant: if `resolve()` already fired between
+                // schedule and now (deadline already past, or queue
+                // callback / cancellation raced us), cancelling here is
+                // a no-op. If not, storing the cancel handle lets
+                // future `resolve()` calls release the entry.
+                let stillNeedsHandle = resumed.withValue { r -> Bool in
+                    if r {
+                        return false
                     }
+                    timerCancel.setValue(cancel)
+                    return true
+                }
+                if !stillNeedsHandle {
+                    cancel()
                 }
             }
-            return false
         }
-        if shouldResume { cont.resume() }
+    } onCancel: {
+        resolve()
     }
 }
 
@@ -259,6 +325,7 @@ struct MainCallQueue: @unchecked Sendable {
     func waitForCurrentItems(deadline: UInt64 = .max) async {
         await callQueueWaitForCurrentItems(state, deadline: deadline)
     }
+
 }
 
 // MARK: - BackgroundCallQueue
@@ -313,6 +380,66 @@ struct BackgroundCallQueue: @unchecked Sendable {
     func waitForCurrentItems(deadline: UInt64 = .max) async {
         await callQueueWaitForCurrentItems(state, deadline: deadline)
     }
+
+    /// Observe the next idle transition.
+    ///
+    /// If the queue is currently idle, `callback` fires **immediately** on
+    /// the calling thread before this method returns. If the queue is
+    /// currently busy, `callback` fires once when the drain finishes the
+    /// last enqueued item and transitions to idle — the same firing point
+    /// as `waitUntilIdle()`'s wake-up.
+    ///
+    /// **One-shot**: the callback fires at most once per `onIdle` call.
+    /// Subsequent idle transitions are not delivered — re-register if you
+    /// need to observe again.
+    ///
+    /// **Cancellation**: the returned closure cancels the registration.
+    /// Idempotent: cancelling after the callback has fired (or after a
+    /// previous cancel) is a no-op. Cancellation racing with firing is
+    /// safe — the callback runs **at most once**.
+    ///
+    /// This is the building block `TestAccess.awaitSettled` uses to
+    /// detect "all bg pipeline work has drained" without polling. It
+    /// covers the case where a memoize `performUpdate` runs but is
+    /// silent — no `didModify` fires (value unchanged via `isSame`), so
+    /// the wait observer would not otherwise learn the work has
+    /// completed.
+    ///
+    /// Thread-safety: callable from any thread.
+    @discardableResult
+    func onIdle(_ callback: @escaping @Sendable () -> Void) -> @Sendable () -> Void {
+        let fired = LockIsolated(false)
+        // Wrap so a late cancel can still no-op the firing, and a late
+        // fire can't run twice.
+        let wrapped: @Sendable () -> Void = {
+            let shouldFire = fired.withValue { f -> Bool in
+                guard !f else { return false }
+                f = true
+                return true
+            }
+            if shouldFire { callback() }
+        }
+
+        let fireImmediately = state.withValue { s -> Bool in
+            if s == nil { return true }
+            s!.onIdleCallbacks.append(wrapped)
+            return false
+        }
+        if fireImmediately {
+            wrapped()
+            // Cancel is a no-op — already fired.
+            return {}
+        }
+        // Cancel: flip `fired` so the queued wrapper sees it and no-ops
+        // when the drain finally fires onIdleCallbacks. The wrapper
+        // closure remains in `onIdleCallbacks` until the drain consumes
+        // it on the next idle transition — acceptable; idle transitions
+        // happen frequently in active tests.
+        return {
+            fired.withValue { $0 = true }
+        }
+    }
+
 }
 
 /// Returns the current monotonic time in nanoseconds, used for deadline arithmetic.

@@ -117,48 +117,13 @@ extension DependencyValues {
     }
 }
 
-struct WaitTimeoutError: Error, CustomStringConvertible {
-    let file: StaticString
-    let line: UInt
-    let timeoutSeconds: Double
-    
-    var description: String {
-        "Timeout after \(timeoutSeconds)s waiting for condition at \(file):\(line)"
-    }
-}
-
-/// Poll until a condition becomes true.
-/// - Parameters:
-///   - condition: The condition to check (autoclosure)
-///   - pollInterval: How often to check the condition in nanoseconds (default: 1ms)
-///   - timeout: Maximum time to wait in nanoseconds (default: 5s)
-/// - Throws: WaitTimeoutError if timeout is reached before condition becomes true
-func waitUntil(
-    _ condition: @autoclosure () -> Bool,
-    pollInterval: UInt64 = 1_000_000,  // 1ms
-    timeout: UInt64 = 5_000_000_000,   // 5s
-    file: StaticString = #file,
-    line: UInt = #line
-) async throws {
-    if condition() { return }
-
-    let start = DispatchTime.now().uptimeNanoseconds
-    while !condition() {
-        if DispatchTime.now().uptimeNanoseconds - start > timeout {
-            throw WaitTimeoutError(
-                file: file,
-                line: line,
-                timeoutSeconds: Double(timeout) / 1_000_000_000.0
-            )
-        }
-        // Always sleep with a kernel timer — never busy-loop with Task.yield().
-        // Under heavy parallel-test load (600+ concurrent tests), Task.yield() queues
-        // behind every other cooperative task and can stall for seconds. Task.sleep
-        // uses a kernel-level timer that fires after exactly `pollInterval` regardless
-        // of cooperative pool saturation.
-        try await Task.sleep(nanoseconds: pollInterval)
-    }
-}
+// `waitUntil` and its timeout error live in SwiftModel as
+// `Sources/SwiftModel/Internal/WaitUntilCallback.swift` and are picked
+// up here via `@testable import SwiftModel`. That implementation
+// re-evaluates the predicate on `GlobalTickScheduler`'s shared GCD
+// ticker — callbacks fire off the cooperative pool, and all concurrent
+// `waitUntil` calls across parallel tests share one ticker instead of
+// each spinning its own `Task.sleep`.
 
 /// Test parameter for validating both observation mechanisms
 enum ObservationPath: String, CaseIterable {

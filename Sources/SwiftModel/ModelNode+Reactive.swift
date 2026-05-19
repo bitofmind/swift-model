@@ -346,20 +346,76 @@ public extension ModelNode {
         let cancelPreviousKey = UUID()
         let abortKey = UUID()
         let hasBeenAborted = LockIsolated(false)
+        let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
+        let modelName = typeDescription
+        let innerTaskName = name ?? "\(function) @ \(fileAndLine.description)"
 
         let cancellable = task(name, function: function, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column) {
+            // Behaviour B (body serialization). When `cancelPrevious: true`, we cancel the
+            // previous body's underlying Task AND await its full exit before spawning the
+            // next one. Without the await, the cancelled body's sync tail (after its last
+            // suspension point) can race the next body's prefix — both bodies acquire the
+            // model's context lock in turn but interleave between writes, leading to "last
+            // writer wins on stale state" bugs. `Task.cancel()` only flips a flag; a body
+            // that never hits another suspension point (e.g. a long sync section, or a
+            // simple "assign result" tail) runs to completion regardless.
+            //
+            // We construct the inner TaskCancellable directly (rather than going through
+            // the public `task(...)` API) so we can hold a reference and await on its
+            // underlying `Task<Void, Error>.value`. That Task's outermost `defer { onDone() }`
+            // (in TaskCancellable's convenience init) runs UNCONDITIONALLY — including when
+            // the inner `guard !Task.isCancelled` returns early without invoking the user
+            // closure. An earlier attempt that placed the completion signal inside the user
+            // closure deadlocked whenever cancellation arrived before the body was scheduled.
+            var previousInner: TaskCancellable? = nil
+
             for try await value in sequence {
-                task(isDetached: isDetached, priority: priority) {
-                    try await operation(value)
-                } catch: {
-                    if abortIfOperationThrows {
-                        cancelAll(for: abortKey)
-                        hasBeenAborted.setValue(true)
-                        reportCatch($0)
-                    }
+                // Step 1: cancel the previous body so it observes cancellation at its next
+                // suspension point (cooperative cancellation).
+                previousInner?.cancel()
+                // Step 2: await the previous body's wrapped Task to fully unwind. The wrapper's
+                // outer defer runs regardless of whether the user closure executed. If the
+                // underlying Task was never scheduled (defensive — currently unreachable in
+                // this flow since cancellation can't reach the TaskCancellable between its
+                // `init` and our key-registration), the optional chain skips the await.
+                if let t = previousInner?.underlyingTask {
+                    _ = try? await t.value
                 }
+                previousInner = nil
+
+                // Build the inner TaskCancellable inside a `cancellationContext` block so the
+                // body gets its own cancellation scope (matches the behaviour of calling
+                // `task(isDetached:priority:)` directly — preserves `inheritCancellationContext`
+                // propagation for any tasks the user closure itself spawns).
+                var captured: TaskCancellable? = nil
+                let cancellableWrapper = cancellationContext {
+                    captured = TaskCancellable(
+                        modelName: modelName,
+                        taskName: innerTaskName,
+                        fileAndLine: fileAndLine,
+                        context: context,
+                        isDetached: isDetached,
+                        priority: priority,
+                        operation: { try await operation(value) },
+                        catch: {
+                            if abortIfOperationThrows {
+                                cancelAll(for: abortKey)
+                                hasBeenAborted.setValue(true)
+                                reportCatch($0)
+                            }
+                        }
+                    )
+                }
+                _ = cancellableWrapper
                     .cancel(for: cancelPreviousKey, cancelInFlight: true)
                     .inheritCancellationContext()
+                previousInner = captured
+            }
+            // Await the final body's wrapped Task before the outer task ends — so its
+            // lifecycle (cancellation, teardown side effects, test-settling counters) is
+            // fully observed by anyone waiting on the outer task's completion.
+            if let t = previousInner?.underlyingTask {
+                _ = try? await t.value
             }
         } catch: { reportCatch($0) }.cancel(for: abortKey)
 

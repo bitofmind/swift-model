@@ -41,63 +41,56 @@ func yieldToScheduler() async {
 
 // MARK: - How expect works
 //
-// expect { predicate } is a polling loop that:
+// `expect { predicate }` is a register-and-wait reactive primitive:
 //
-//   1. Evaluates each predicate closure. Reading any @Model property during evaluation
-//      fires willAccess<M,V>, which (if a TesterAssertContext is active) appends an
-//      Access entry recording the full root-relative keypath, the current value, and
-//      an `apply` closure that writes that value back into a Root snapshot.
+//   1. Builds a `TesterAssertContext` and a fresh `EvalSnapshot`, then calls
+//      `awaitPredicate(deadlineNs:evaluate:)` with an evaluator closure that
+//      runs the predicates inside `TesterAssertContextBase.$assertContext` +
+//      `usingActiveAccess(self)`.
 //
-//   2. If ALL predicates pass, compares the read values (passedAccesses) against the
-//      current lastState snapshot to verify the model has actually settled at those
-//      values — not just transiently true. If IDs don't match (a backgroundCall batch
-//      is still in flight), it waits and retries rather than accepting a stale read.
+//   2. The evaluator runs INITIALLY on the caller's thread (inside
+//      TestAccess.lock) and on every SUBSEQUENT activity from
+//      `_noteActivity` (also inside the lock). Reading any @Model property
+//      during evaluation fires willAccess<M,V>, which (with the assert
+//      context active) appends an Access entry with the full root-relative
+//      keypath, the current value, and an `apply` closure that writes that
+//      value back into a Root snapshot.
 //
-//   3. On settlement, clears each asserted path from valueUpdates (marking it as
-//      handled), applies the access values into expectedState (advancing the baseline),
-//      and runs the exhaustion check.
+//   3. If ALL predicates pass, the evaluator runs `isEqualIncludingIds` to
+//      verify the model has actually settled at those values — not just
+//      transiently true. If IDs don't match (a backgroundCall batch is still
+//      in flight), the evaluator returns false and waits for the next
+//      activity; the bg drain will fire didModify, which fires
+//      _noteActivity, which re-invokes the evaluator.
 //
-//   4. The exhaustion check diffs expectedState against lastState. Any remaining
-//      unasserted entries in valueUpdates, any unsent events, or any un-consumed probe
-//      values are reported as failures.
+//   4. On settlement, the evaluator clears each asserted path from
+//      valueUpdates, advances expectedState, captures the cleaned-up
+//      valueUpdates snapshot, and returns true. `awaitPredicate` resumes
+//      the caller with `.passed`; `expect` then runs the exhaustion check
+//      OUTSIDE the lock (diffMessage walks customMirror which re-acquires
+//      the lock — deadlock-prone if held cross-thread).
 //
-//   5. If any predicate fails and the timeout has elapsed, reports failures by
-//      diffing the predicate's LHS/RHS and listing un-asserted accesses.
+//   5. If the deadline elapses before the evaluator returns true,
+//      `awaitPredicate` resumes with `.timeout` and `expect` reports the
+//      latest failure snapshot.
 //
-//   6. Between iterations, waitForModification suspends until the next modification
-//      event fires or the timeout expires.
+// Race elimination: predicate eval and activity bookkeeping both happen
+// inside the SAME TestAccess.lock. There's no window where activity can
+// fire between "we evaluated and it failed" and "we registered to be
+// notified" — replaces the old poll-loop's `_activityCounter` /
+// `missedActivityCheck` mechanism with structural impossibility.
 //
 // State lifecycle:
 //   - lastState    : always up to date — updated by didModify whenever any property changes.
 //   - expectedState: advances one assert at a time — updated only when an assert passes.
 //   - valueUpdates : pending un-asserted changes — entries are removed when asserted.
-//
-// Why context storage (node.local.x / node.environment.x) can't currently participate as a regular access:
-//
-//   willAccess<M,V> and didModify<M,V> both guard on a WritableKeyPath<M,Value> so the
-//   value can be stored/applied into the typed Root snapshots (lastState/expectedState).
-//   The synthetic keypath \M[environmentKey: key] used by the context storage observation system
-//   is a read-only KeyPath returning AnyHashableSendable — it can never be cast to
-//   WritableKeyPath, and even if it could, there is no typed Value to write back into Root.
-//   Context values live in AnyContext.contextStorage (a type-erased dictionary), not in
-//   the @Model struct. A parallel tracking system (contextUpdates / expectedContext /
-//   lastContext) with hooks called from willAccessEnvironmentKey/didModifyEnvironmentKey
-//   would be the correct fix — see the planned implementation in the tester gap investigation.
 
-// Task-local overrides for output snapshot tests. These allow tests to trigger specific
-// timeout paths quickly without waiting the normal 5-second minimum.
+/// Test-only overrides. Output-snapshot tests use `hardCapNanoseconds` to
+/// shrink the expect/require budget so failure-message snapshots render
+/// quickly. The name is preserved for API stability across the polling →
+/// reactive migration even though it's no longer a "hard cap" per se.
 enum TestAccessOverrides {
     @TaskLocal static var hardCapNanoseconds: UInt64? = nil
-}
-
-/// Calibration data computed once per wait operation by measuring scheduler latency.
-/// Shared by `expect`, `require`, `settle`, and end-of-test `checkExhaustion`.
-package struct WaitCalibration: Sendable {
-    let yieldLatencyNs: UInt64
-    let yieldRoundNs: UInt64
-    let scaledTimeout: UInt64
-    let hardCap: UInt64
-    let start: UInt64
 }
 
 // Key for tracking context storage writes on dependency models (which have no root-relative keypath).
@@ -116,7 +109,7 @@ private struct DependencyMetadataKey: Hashable, @unchecked Sendable {
     }
 }
 
-final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchecked Sendable {
+final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     let lock = NSRecursiveLock()
     let context: Context<Root>
 
@@ -173,12 +166,112 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     // since visibility is type-level, the result is the same for all instances of the type.
     var privatePathsByType: [ObjectIdentifier: Set<AnyKeyPath>] = [:]
 
-    // Activation task counter (Phase 3): tracks tasks created inside onActivate() that
-    // have not yet begun executing their body. Reaches 0 when all such tasks have entered.
-    var _activationTasksInFlight: Int = 0
+    // MARK: - Wait state machine (reactive expect/settle)
+    //
+    // At most one wait is active at a time per TestAccess — expect/settle/require
+    // are sequential within a test body. The wait state lives directly on
+    // TestAccess so that `didModify`, `didSend`, and probe-call paths (which
+    // all funnel through here) can update it without going through any
+    // subscription layer.
 
-    // General task counter (Phase 5): tracks all currently-running tasks in the hierarchy.
-    var _activeTaskCount: Int = 0
+    // MARK: - Pending expect/require (register-and-wait)
+    //
+    // Each in-flight `awaitPredicate` call registers a `PendingExpect`
+    // here. On every `_noteActivity()` we iterate the list and evaluate
+    // each predicate INLINE under the same lock that bumps activity —
+    // no race window, no per-wait timer, no re-park loop. Predicates
+    // that pass have their continuations resumed (outside the lock).
+    //
+    // A single in-flight expect is the common case (sequential awaits in
+    // a test body). Concurrent expects (via `async let` or task groups)
+    // are NOT currently supported — the code accepts a list for future
+    // extension, but the first concurrent caller hits a precondition.
+    // The list-based design lets us add concurrent support later without
+    // changing the API.
+
+    final class PendingExpect: @unchecked Sendable {
+        /// Three modes share this entry type so `_noteActivity` can iterate
+        /// one list and dispatch on `mode`.
+        enum Mode {
+            /// Predicate mode (`awaitPredicate` — expect / require).
+            /// Evaluator runs on every `_noteActivity()` under
+            /// TestAccess.lock; the entry wakes when it returns true.
+            /// Contract: cheap, reentrant-safe, must not write the model.
+            case predicate(@Sendable () -> Bool)
+
+            /// Debounce mode (`awaitQuietWindow` — pure quiet-window
+            /// without bg-idle check). The entry does NOT wake on
+            /// activity; instead each activity re-arms the deadline to
+            /// `min(now + quietWindowNs, totalBudgetEndNs)`. Wakes when
+            /// the (mutable) deadline finally fires.
+            case debounce(quietWindowNs: UInt64)
+
+            /// Settled mode (`awaitSettled` — settle). Wakes when BOTH
+            /// of these are true simultaneously:
+            ///   • no `_noteActivity` for `quietWindowNs` (quiet window)
+            ///   • `bg` is idle (no pending pipeline work)
+            ///
+            /// Activity re-arms the GTS deadline forward like debounce.
+            /// When the deadline fires, the handler checks `bg.isIdle`:
+            ///   • idle → resume `.passed`
+            ///   • busy → register a `bg.onIdle` observer; when that
+            ///     observer fires, resume `.passed`. Activity between
+            ///     "deadline fired" and "bg idle fired" cancels the
+            ///     observer and re-arms the GTS deadline forward (back
+            ///     to waiting-on-quiet state).
+            ///
+            /// `bg` is captured here (not on the outer entry) because
+            /// each `.modelTesting` test has its own per-test
+            /// `BackgroundCallQueue`; the queue is resolved at
+            /// `awaitSettled` call-time, not when the entry runs.
+            case settled(quietWindowNs: UInt64, bg: BackgroundCallQueue)
+        }
+
+        let id: UInt64
+        /// Mutable in `.debounce` and `.settled` modes (re-armed by
+        /// `_noteActivity`); fixed for `.predicate` mode entries.
+        var deadlineNs: UInt64
+        /// Absolute monotonic-ns hard cap. For `.predicate` mode, equal
+        /// to `deadlineNs`. For the debounced modes, the upper bound
+        /// that `deadlineNs` cannot grow past.
+        let totalBudgetEndNs: UInt64
+        let mode: Mode
+        let continuation: CheckedContinuation<PredicateOutcome, Never>
+        /// Cancellation handle for the GlobalTickScheduler entry that
+        /// will fire if the deadline is reached. Replaced when the
+        /// debounced modes re-arm. `nil` for `.settled` entries that
+        /// have transitioned to waiting-on-bg-idle (GTS deadline already
+        /// fired); re-engaged if activity arrives in that state.
+        var deadlineCancel: (@Sendable () -> Void)?
+        /// `.settled` mode only: cancel handle for the in-flight
+        /// `bg.onIdle` observer, set after the GTS deadline fires and bg
+        /// was still busy. Cleared on re-arm by `_noteActivity` (activity
+        /// = not idle) or on resolution.
+        var bgIdleCancel: (@Sendable () -> Void)?
+
+        init(
+            id: UInt64,
+            deadlineNs: UInt64,
+            totalBudgetEndNs: UInt64,
+            mode: Mode,
+            continuation: CheckedContinuation<PredicateOutcome, Never>
+        ) {
+            self.id = id
+            self.deadlineNs = deadlineNs
+            self.totalBudgetEndNs = totalBudgetEndNs
+            self.mode = mode
+            self.continuation = continuation
+        }
+    }
+
+    enum PredicateOutcome: Sendable {
+        case passed
+        case timeout
+        case cancelled
+    }
+
+    var _pendingExpects: [PendingExpect] = []
+    var _nextPendingExpectId: UInt64 = 0
 
 
     // Captures a single state transition: how to apply it to a Root snapshot, and how to
@@ -216,9 +309,10 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
 
         super.init(useWeakReference: true)
 
-        // Register as lifecycle delegate before activation so tasks created in
-        // onActivate() are counted from the first task creation.
-        context.taskLifecycleDelegate = self
+        // Register on the root context so ModelNode+Undo can find this TestAccess
+        // (via `as? TestAccess<…>`) and propagate `didModify` notifications when
+        // undo restores fire.
+        context.modelAccess = self
         usingAccess(self) {
             // Call onActivate() directly on the context rather than traversing via activate()
             // on context.model. Context.onActivate() uses allChildren directly and invokes
@@ -287,6 +381,19 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     //
     // For dependency model context storage (no root-relative path exists), a dummy Access is
     // returned that carries a cleanup closure to clear dependencyMetadataUpdates.
+    /// See `ModelAccess.acquireWriteLock` doc-comment. Wraps the writer's
+    /// `Context._modify` / `Context.stateTransaction` in our `NSRecursiveLock` so
+    /// readers (predicate evaluators, also holding this lock) cannot observe a new
+    /// `reference.state` value before the corresponding `valueUpdates` entry has
+    /// been appended.
+    override func acquireWriteLock() {
+        lock.lock()
+    }
+
+    override func releaseWriteLock() {
+        lock.unlock()
+    }
+
     override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
         guard let path = path as? WritableKeyPath<M._ModelState, Value> else { return nil }
 
@@ -702,6 +809,10 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
                     }
                 }
             }
+            // Notify any active wait: this write counts as activity. Lives at the
+            // end of the post-lock closure so the wait observer sees the fully-
+            // committed lastState (matches what predicate re-evaluation will read).
+            self._noteActivity()
         }
     }
 
@@ -709,6 +820,374 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
         lock {
             events.append(.init(event: event, context: context))
         }
+        // Notify any active wait: event arrival counts as activity (a predicate
+        // waiting on `model.didSend(...)` can now re-evaluate).
+        _noteActivity()
+    }
+
+    // MARK: - Wait state machine implementation
+
+    /// Notify any active wait that activity has occurred (model write, event
+    /// send, probe call). Evaluates every pending predicate INLINE under the
+    /// same lock that ordered the activity; predicates that now pass have
+    /// their continuations resumed (outside the lock).
+    ///
+    /// Thread-safety: callable from any thread. Wakes continuations OUTSIDE
+    /// the lock so resumed Tasks can call back into `awaitPredicate` /
+    /// `awaitQuietWindow` without re-entering.
+    func _noteActivity() {
+        var wakes: [CheckedContinuation<PredicateOutcome, Never>] = []
+        lock {
+            let now = monotonicNanoseconds()
+            // Iterate in reverse so removals don't shift indices we haven't
+            // visited yet.
+            for i in (0..<_pendingExpects.count).reversed() {
+                let pending = _pendingExpects[i]
+                switch pending.mode {
+                case .predicate(let evaluate):
+                    let passed = evaluate()
+                    if passed {
+                        pending.deadlineCancel?()
+                        wakes.append(pending.continuation)
+                        _pendingExpects.remove(at: i)
+                    }
+                case .debounce(let quietWindowNs):
+                    // Re-arm deadline to `min(now + quietWindow, budgetCap)`.
+                    // Skip the re-schedule when it wouldn't push the
+                    // deadline further out (already at the cap).
+                    //
+                    // GlobalTickScheduler.schedule/cancel acquire a
+                    // separate lock, so re-arming while holding
+                    // TestAccess.lock is deadlock-free. The cancel handle
+                    // is replaced atomically before the new one is
+                    // scheduled; a stale fire of the OLD scheduler entry
+                    // would call `_fireDeadline(pendingId:)`, but by then
+                    // either the entry has been re-armed (cancel happened)
+                    // or it has actually fired (no-op on the second
+                    // attempt — `_pendingExpects` no longer contains it).
+                    let candidate = now &+ quietWindowNs
+                    let newDeadline = candidate < pending.totalBudgetEndNs ? candidate : pending.totalBudgetEndNs
+                    if newDeadline > pending.deadlineNs {
+                        pending.deadlineCancel?()
+                        pending.deadlineNs = newDeadline
+                        let entryId = pending.id
+                        pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline) { [weak self] in
+                            self?._fireDeadline(pendingId: entryId)
+                        }
+                    }
+                case .settled(let quietWindowNs, _):
+                    // Same re-arm rule as `.debounce`, plus: if we're in
+                    // the "waiting on bg-idle" sub-state (deadline already
+                    // fired, bgIdleCancel set), cancel the bg-idle
+                    // observer (this activity proves bg is not idle right
+                    // now) and re-schedule the GTS deadline to push the
+                    // quiet window forward.
+                    let candidate = now &+ quietWindowNs
+                    let newDeadline = candidate < pending.totalBudgetEndNs ? candidate : pending.totalBudgetEndNs
+
+                    // If a bg-idle observer is in flight, cancel it.
+                    // Activity = not idle, so any pending idle-fire is
+                    // semantically stale. The wrapper-with-fired-flag in
+                    // `BackgroundCallQueue.onIdle` makes a racing fire
+                    // observe the cancel and no-op.
+                    if let bgCancel = pending.bgIdleCancel {
+                        bgCancel()
+                        pending.bgIdleCancel = nil
+                    }
+
+                    // Re-engage the GTS deadline. Two cases:
+                    //   1. deadlineCancel != nil → still in waiting-on-GTS
+                    //      state; cancel old entry and re-schedule forward.
+                    //   2. deadlineCancel == nil → GTS deadline already
+                    //      fired earlier; we were in waiting-on-bg-idle.
+                    //      Activity returns us to waiting-on-GTS — schedule
+                    //      a fresh GTS entry.
+                    if pending.deadlineCancel != nil && newDeadline <= pending.deadlineNs {
+                        // No forward movement and still in GTS-waiting
+                        // state → nothing to do.
+                        continue
+                    }
+                    pending.deadlineCancel?()
+                    pending.deadlineNs = newDeadline
+                    let entryId = pending.id
+                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline) { [weak self] in
+                        self?._fireDeadline(pendingId: entryId)
+                    }
+                }
+            }
+        }
+        // Resume outside the lock — resumed Tasks may synchronously call
+        // back into `awaitPredicate`, which would re-acquire the lock.
+        // Order doesn't matter — each continuation is unique.
+        for cont in wakes {
+            cont.resume(returning: .passed)
+        }
+    }
+
+    // MARK: - awaitPredicate
+
+    /// Register a predicate and wait until it passes, the deadline
+    /// elapses, or the Task is cancelled.
+    ///
+    /// `evaluate` is called:
+    /// - **Initially** on the caller's thread, INSIDE TestAccess.lock,
+    ///   before parking. If it returns true, we resolve immediately
+    ///   without parking — same eval cost as the OLD design's first
+    ///   loop iteration.
+    /// - **Subsequently** on writer threads from `_noteActivity`, INSIDE
+    ///   TestAccess.lock. Predicates that now pass have their callers
+    ///   resumed with `.passed`.
+    ///
+    /// **Race elimination**: because eval and the pending-list updates
+    /// are both inside the same lock that `_noteActivity` holds, there's
+    /// no window where activity can fire between "we evaluated and it
+    /// failed" and "we registered to be notified."
+    ///
+    /// **Evaluator contract**: must be cheap (called per activity),
+    /// reentrant-safe (NSRecursiveLock), and MUST NOT write to the
+    /// model (would trigger recursive `_noteActivity` while we hold the
+    /// lock). TaskLocals like `assertContext` must be wrapped inside
+    /// `evaluate` by the caller — they don't propagate from caller to
+    /// writer thread automatically. Pattern:
+    ///
+    /// ```swift
+    /// await access.awaitPredicate(deadlineNs: ...) {
+    ///     TesterAssertContextBase.$assertContext.withValue(context) {
+    ///         usingActiveAccess(access) {
+    ///             // ... evaluate predicates, return true if all pass ...
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Returns `.passed` / `.timeout` / `.cancelled`. The deadline
+    /// callback is registered with `GlobalTickScheduler`, so it fires
+    /// from GCD's pool — not subject to cooperative-pool starvation.
+    func awaitPredicate(
+        deadlineNs: UInt64,
+        evaluate: @escaping @Sendable () -> Bool
+    ) async -> PredicateOutcome {
+        await _awaitPending(
+            initialDeadlineNs: deadlineNs,
+            totalBudgetEndNs: deadlineNs,
+            mode: .predicate(evaluate)
+        )
+    }
+
+    /// Park the calling Task until the model has been silent (no
+    /// `_noteActivity`) for `quietWindowNs`, or until `totalBudgetNs`
+    /// elapses overall, or the Task is cancelled.
+    ///
+    /// **Single-await debounce**: unlike a loop of "wake on activity,
+    /// recompute, re-park", this primitive uses **one** `withCheckedContinuation`.
+    /// On every activity, `_noteActivity` (under TestAccess.lock) re-arms
+    /// the entry's GlobalTickScheduler deadline to `min(now +
+    /// quietWindowNs, totalBudgetEndNs)`. The continuation only wakes
+    /// when the (mutable) deadline finally fires — exactly once per
+    /// `awaitQuietWindow` call.
+    ///
+    /// On wake, the caller compares `monotonicNanoseconds()` to the
+    /// budget end to distinguish "quiet window elapsed (settled)" from
+    /// "budget exhausted." Returns `.passed` in both cases — the
+    /// distinction is the caller's; see `waitUntilSettled`.
+    func awaitQuietWindow(
+        quietWindowNs: UInt64,
+        totalBudgetNs: UInt64
+    ) async -> PredicateOutcome {
+        let now = monotonicNanoseconds()
+        let budgetEnd = now &+ totalBudgetNs
+        // Initial deadline is `min(now + quiet, budgetEnd)` — if no
+        // activity ever arrives we wake when the quiet window first
+        // elapses.
+        let candidate = now &+ quietWindowNs
+        let initialDeadline = candidate < budgetEnd ? candidate : budgetEnd
+        return await _awaitPending(
+            initialDeadlineNs: initialDeadline,
+            totalBudgetEndNs: budgetEnd,
+            mode: .debounce(quietWindowNs: quietWindowNs)
+        )
+    }
+
+    /// Park the calling Task until BOTH:
+    ///   • no `_noteActivity` (model write / event send / probe call)
+    ///     has arrived for `quietWindowNs`, AND
+    ///   • `bg` is idle (no in-flight pipeline work)
+    ///
+    /// are simultaneously true — or `totalBudgetNs` elapses overall, or
+    /// the Task is cancelled.
+    ///
+    /// **Single-await design**: this primitive replaces the previous
+    /// "loop: `awaitQuietWindow` + `bg.waitForCurrentItems` + check
+    /// `modificationCount`" structure in `waitUntilSettled`. The state
+    /// machine — re-arm on activity, transition to waiting-on-bg-idle
+    /// when the quiet window expires while bg is busy, transition back
+    /// to waiting-on-quiet on new activity — runs inside
+    /// `_noteActivity`, `_fireDeadline`, and `_fireBgIdle` under the
+    /// same `TestAccess.lock`. The continuation suspends exactly once;
+    /// the resume happens from whichever path resolves it.
+    ///
+    /// **Why this matters for silent memoize recomputes**: when a
+    /// memoize `performUpdate` re-evaluates and its produced value
+    /// matches the cached one, `update(with:)` skips the `onUpdate`
+    /// callback (`isSame` returns true). No `didModify` fires, so no
+    /// `_noteActivity` wake. `awaitQuietWindow` alone cannot observe
+    /// that bg work; `awaitSettled` does, via the `bg.onIdle`
+    /// observer that fires when the drain completes.
+    ///
+    /// Returns `.passed` whenever the entry resolves (caller compares
+    /// `now` to the budget end to distinguish "fully settled" from
+    /// "budget exhausted") or `.cancelled` on Task cancellation.
+    func awaitSettled(
+        quietWindowNs: UInt64,
+        totalBudgetNs: UInt64,
+        bg: BackgroundCallQueue
+    ) async -> PredicateOutcome {
+        let now = monotonicNanoseconds()
+        let budgetEnd = now &+ totalBudgetNs
+        let candidate = now &+ quietWindowNs
+        let initialDeadline = candidate < budgetEnd ? candidate : budgetEnd
+        return await _awaitPending(
+            initialDeadlineNs: initialDeadline,
+            totalBudgetEndNs: budgetEnd,
+            mode: .settled(quietWindowNs: quietWindowNs, bg: bg)
+        )
+    }
+
+    private func _awaitPending(
+        initialDeadlineNs: UInt64,
+        totalBudgetEndNs: UInt64,
+        mode: PendingExpect.Mode
+    ) async -> PredicateOutcome {
+        let id: UInt64 = lock {
+            _nextPendingExpectId &+= 1
+            return _nextPendingExpectId
+        }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (cont: CheckedContinuation<PredicateOutcome, Never>) in
+                let immediate: PredicateOutcome? = lock {
+                    if Task.isCancelled { return .cancelled }
+
+                    // Initial eval inside the same lock that activity uses.
+                    // For debounce mode we never short-circuit — settle
+                    // wants to wait for the quiet window to elapse.
+                    if case .predicate(let evaluate) = mode, evaluate() {
+                        return .passed
+                    }
+
+                    // Register for future activity / deadline.
+                    let pending = PendingExpect(
+                        id: id,
+                        deadlineNs: initialDeadlineNs,
+                        totalBudgetEndNs: totalBudgetEndNs,
+                        mode: mode,
+                        continuation: cont
+                    )
+                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: initialDeadlineNs) { [weak self] in
+                        self?._fireDeadline(pendingId: id)
+                    }
+                    _pendingExpects.append(pending)
+                    return nil
+                }
+                if let immediate {
+                    cont.resume(returning: immediate)
+                }
+            }
+        } onCancel: {
+            // Task cancellation arrived while we may be parked. Remove
+            // our pending entry (if still present) and resume.
+            let toWake: CheckedContinuation<PredicateOutcome, Never>? = lock {
+                guard let idx = _pendingExpects.firstIndex(where: { $0.id == id }) else { return nil }
+                let pending = _pendingExpects.remove(at: idx)
+                pending.deadlineCancel?()
+                pending.bgIdleCancel?()
+                return pending.continuation
+            }
+            toWake?.resume(returning: .cancelled)
+        }
+    }
+
+    /// Called by GlobalTickScheduler when a pending expect's deadline
+    /// is reached.
+    ///
+    /// Behaviour by mode:
+    ///   • `.predicate` — resume `.timeout`, remove entry.
+    ///   • `.debounce`  — resume `.timeout` (callers of
+    ///     `awaitQuietWindow` treat that as "quiet window expired"),
+    ///     remove entry.
+    ///   • `.settled`   — check `bg.isIdle`. If idle OR the deadline is
+    ///     at/past the total-budget cap (no point waiting further),
+    ///     resume `.timeout` and remove entry. Otherwise register a
+    ///     `bg.onIdle` observer that will fire when bg drains;
+    ///     `bgIdleCancel` is stored on the entry so a racing
+    ///     `_noteActivity` can cancel the in-flight observer and
+    ///     re-arm the GTS deadline forward. The entry stays in
+    ///     `_pendingExpects` while we wait.
+    private func _fireDeadline(pendingId: UInt64) {
+        // Returns the continuation to resume (with .timeout), or nil if
+        // this fire didn't result in a resolution (entry already gone,
+        // or transitioned to waiting-on-bg-idle for `.settled` mode).
+        let toWake: CheckedContinuation<PredicateOutcome, Never>? = lock {
+            guard let idx = _pendingExpects.firstIndex(where: { $0.id == pendingId }) else { return nil }
+            let pending = _pendingExpects[idx]
+            // GTS just fired — clear the cancel handle so the
+            // re-engagement path in `_noteActivity` treats this entry as
+            // having no in-flight GTS entry.
+            pending.deadlineCancel = nil
+
+            switch pending.mode {
+            case .predicate, .debounce:
+                _pendingExpects.remove(at: idx)
+                return pending.continuation
+            case .settled(_, let bg):
+                let now = monotonicNanoseconds()
+                let pastBudget = now >= pending.totalBudgetEndNs
+                if pastBudget || bg.isIdle {
+                    _pendingExpects.remove(at: idx)
+                    return pending.continuation
+                }
+                // bg is busy — register an idle observer. The wrapper-
+                // with-fired-flag inside `onIdle` guarantees at-most-once
+                // delivery, so a race with `_noteActivity` cancelling us
+                // is safe.
+                let entryId = pending.id
+                pending.bgIdleCancel = bg.onIdle { [weak self] in
+                    self?._fireBgIdle(pendingId: entryId)
+                }
+                return nil
+            }
+        }
+        toWake?.resume(returning: .timeout)
+    }
+
+    /// Called by `BackgroundCallQueue.onIdle` when bg drains while a
+    /// `.settled` entry is waiting on it (the GTS deadline already
+    /// fired, bg was busy at the time, we registered a one-shot idle
+    /// observer). Resumes `.timeout` so the caller can compare its
+    /// `now` to `budgetEndNs` and treat it as either "settled" or
+    /// "budget exhausted" — same convention as the deadline path.
+    ///
+    /// **Stale-fire race**: between the bg-idle wrapper firing (on the
+    /// GCD pool) and this method acquiring `TestAccess.lock`, an activity
+    /// can arrive on a writer thread and call `_noteActivity`, which
+    /// will cancel `bgIdleCancel` (no-op now — wrapper already fired)
+    /// AND re-arm the GTS deadline. In that case we observe
+    /// `pending.deadlineCancel != nil` and abandon this fire — the
+    /// activity took precedence and we must continue waiting for the
+    /// re-armed quiet window.
+    private func _fireBgIdle(pendingId: UInt64) {
+        let toWake: CheckedContinuation<PredicateOutcome, Never>? = lock {
+            guard let idx = _pendingExpects.firstIndex(where: { $0.id == pendingId }) else { return nil }
+            let pending = _pendingExpects[idx]
+            // Activity re-armed the GTS deadline after the bg-idle
+            // wrapper fired — this fire is stale; keep waiting.
+            if pending.deadlineCancel != nil {
+                return nil
+            }
+            pending.bgIdleCancel = nil
+            _pendingExpects.remove(at: idx)
+            return pending.continuation
+        }
+        toWake?.resume(returning: .timeout)
     }
 
     func fail(_ message: String, at fileAndLine: FileAndLine) {
@@ -724,12 +1203,6 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
             }
         }
     }
-
-    // Last scheduler-latency measurement (nanoseconds). Updated by calibrate().
-    // Shared safely: calibrate() is only called from the test task (never from model
-    // tasks), so writes are sequential within one TestAccess instance.
-    // Default: 1ms — a reasonable assumption before the first measurement.
-    var _lastYieldLatencyNs: UInt64 = 1_000_000
 
     /// Resets exhaustivity categories within the lock. Called from settle(resetting:) settle paths in expect().
     func _applyResetting(_ bits: _ExhaustivityBits) {
@@ -931,6 +1404,17 @@ final class TestAccess<Root: Model>: ModelAccess, TaskLifecycleDelegate, @unchec
     }
 
     func install(_ probe: TestProbe) {
+        // Set the activity notifier BEFORE adding the probe to the
+        // tracking array. Order matters: a `probe.call()` racing with
+        // install must either see `notifier == nil` (in which case the
+        // probe isn't yet known to this TestAccess and the test isn't
+        // yet waiting on it) or a fully-wired notifier. The reverse
+        // order would let a probe call slip through with the probe
+        // installed but no wake-up — exactly the race that lost activity
+        // signals to parked `expect` calls.
+        probe._setActivityNotifier { [weak self] in
+            self?._noteActivity()
+        }
         lock {
             if probes.contains(where: { $0 === probe }) { return }
             probes.append(probe)

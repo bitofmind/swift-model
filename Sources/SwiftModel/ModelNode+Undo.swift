@@ -244,9 +244,9 @@ private func installPropertyUndoUnchecked<M: Model, T>(
                 // Skip if the model has been destructed (e.g. item removed from parent array).
                 guard context.lifetime == .active else { return }
                 // Propagate the root TestAccess (if any) so that didModify notifications
-                // fire correctly during restore. TestAccess is registered as the root
-                // context's taskLifecycleDelegate; child contexts have no TestAccess.
-                let rootAccess = context.rootParent.taskLifecycleDelegate as? ModelAccess
+                // fire correctly during restore. TestAccess is registered on the root
+                // context's `modelAccess`; child contexts have no TestAccess.
+                let rootAccess = context.rootParent.modelAccess
                 usingAccess(rootAccess) {
                     threadLocals.withValue(true, at: \.isRestoringState) {
                         if useInitialCopy {

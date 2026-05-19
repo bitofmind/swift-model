@@ -31,6 +31,13 @@ public final class TestProbe: @unchecked Sendable {
     let name: String?
     private let lock = NSRecursiveLock()
     private var _values: [Any] = []
+    // Set by `TestAccess.install(_:)` so probe calls can fire
+    // `_noteActivity` and wake parked `expect` / `require` calls. Without
+    // this, predicates like `await expect { probe.wasCalled(...) }`
+    // wouldn't react when the probe is called from a non-tracked code
+    // path (a `forEach` callback, a memoize update, an async task that
+    // does no model write before calling the probe).
+    private var _activityNotifier: (@Sendable () -> Void)?
 
     /// Creates a probe, optionally named for clearer failure messages.
     ///
@@ -39,6 +46,15 @@ public final class TestProbe: @unchecked Sendable {
     public init(_ name: String? = nil) {
         self.name = name
         autoInstallIfNeeded()
+    }
+
+    func _setActivityNotifier(_ notifier: @escaping @Sendable () -> Void) {
+        lock { _activityNotifier = notifier }
+    }
+
+    fileprivate func _fireActivity() {
+        let notifier: (@Sendable () -> Void)? = lock { _activityNotifier }
+        notifier?()
     }
 }
 
@@ -68,6 +84,7 @@ public extension TestProbe {
             _values.append((repeat each value))
         }
         autoInstallIfNeeded()
+        _fireActivity()
     }
 
     /// Allows the probe to be used directly as a closure (e.g. `onSave: probe`).
@@ -77,6 +94,7 @@ public extension TestProbe {
             _values.append((repeat each value))
         }
         autoInstallIfNeeded()
+        _fireActivity()
     }
 
     private func autoInstallIfNeeded() {

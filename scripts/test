@@ -60,7 +60,11 @@ TEST_ARGS+=(
     --skip CoalescingBenchmarks
     --skip LazyContextBenchmarks
 )
-TEST_ARGS+=("${EXTRA_ARGS[@]}")
+# EXTRA_ARGS may be empty; guard against `set -u` unbound-array expansion
+# on bash versions that treat empty-array indexing as unset.
+if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    TEST_ARGS+=("${EXTRA_ARGS[@]}")
+fi
 
 if [[ "${LOOP_COUNT}" -eq 1 ]]; then
     exec swift test "${TEST_ARGS[@]}"

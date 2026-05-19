@@ -74,6 +74,23 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
 
     func didSend<M: Model, Event>(event: Event, from context: Context<M>) {}
 
+    /// Acquired by `Context._modify` / `Context.stateTransaction` BEFORE acquiring the
+    /// context lock, so that writers and readers use the same lock order
+    /// (`access.lock` → `context.lock`). Without this, the writer's
+    /// `release-context.lock → acquire-access.lock` sequence opened a race window where
+    /// the reader (which already holds `access.lock` from inside its predicate
+    /// evaluator) could acquire `context.lock`, read the updated `reference.state`, and
+    /// run its assertion-clearing pass — all before the writer's post-lock callback got
+    /// a chance to record the corresponding `valueUpdates` entry. The clearing pass
+    /// would then see no entry to clear, and the entry would survive to the end-of-test
+    /// exhaustion check.
+    ///
+    /// Default: no-op. `TestAccess` overrides to grab its `NSRecursiveLock`. Other
+    /// access kinds (ViewAccess, AccessCollector) don't queue any state behind the
+    /// reference write, so they don't need this serialization.
+    func acquireWriteLock() {}
+    func releaseWriteLock() {}
+
     var shouldPropagateToChildren: Bool { false }
 
     /// Returns the `ModelAccess` to install on a child model when propagating observation.

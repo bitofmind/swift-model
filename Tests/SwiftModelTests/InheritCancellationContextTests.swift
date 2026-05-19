@@ -59,7 +59,7 @@ struct InheritCancellationContextTests {
             #expect(cancelCount == 0)
             model.cancelAll(for: InheritKey.outer)
             // onCancel fires synchronously since handler is registered at this point
-            try await waitUntil(cancelCount == 1, timeout: 5_000_000_000)
+            try await waitUntil($cancelCount.value == 1, timeout: 5_000_000_000)
         }
 
         #expect(cancelCount == 1)

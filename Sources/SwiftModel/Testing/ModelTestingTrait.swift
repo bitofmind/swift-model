@@ -1,6 +1,18 @@
 #if canImport(Testing) && compiler(>=6) && !os(Android)
+import Foundation
 import Testing
 import IssueReporting
+#if canImport(Dispatch)
+import Dispatch
+#endif
+
+private func monotonicNanoseconds() -> UInt64 {
+    #if canImport(Dispatch)
+    return DispatchTime.now().uptimeNanoseconds
+    #else
+    return UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+    #endif
+}
 
 // MARK: - Global expect / require / settle / withExhaustivity
 
@@ -456,31 +468,227 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
         // Give each test its own BackgroundCallQueue so parallel tests cannot observe
         // each other's in-flight Observed pipeline updates.
         let testQueue = BackgroundCallQueue()
-        // === Diagnostic: per-test trait lifecycle ===
-        // Lets us distinguish three failure modes when CI hangs:
-        //   1. test body never returns  → `body-end` missing for the hung test
-        //   2. checkExhaustion never returns → `exh-end` missing for the hung test
-        //   3. all tests cleanly emit `scope-end` but swift-testing still hangs →
-        //      problem is in swift-testing's run finalise, not our settle code
         let testTag = test.name
-        print("[TRAIT body-start] test=\"\(testTag)\"")
         try await _BackgroundCallLocals.$queue.withValue(testQueue) {
-            try await _ModelTestingLocals.$scope.withValue(pending) {
-                try await function()
-            }
-            print("[TRAIT body-end] test=\"\(testTag)\"")
-            // After the test body completes, run exhaustion check (still inside the
-            // test-local queue scope so any teardown backgroundCall work uses testQueue).
-            if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
-                await concrete.checkExhaustion(at: fl)
-                print("[TRAIT exh-end] test=\"\(testTag)\"")
-            } else {
-                print("[TRAIT no-exh] test=\"\(testTag)\" (no tester registered)")
+            // Per-test wall-clock cap.
+            //
+            // Races the test body + checkExhaustion against a kernel timer. On
+            // timeout the body task is cancelled — all wait primitives use
+            // `withTaskCancellationHandler` to resume parked continuations on
+            // cancellation, so the body actually unwinds rather than hanging
+            // indefinitely while we just record an issue.
+            //
+            // A correct test under any load completes well under the cap.
+            // Hitting it means: deadlock, runaway loop, or a contract-
+            // violating predicate that doesn't react to model state. In all
+            // three the test should fail explicitly rather than hang.
+            try await withoutActuallyEscaping(function) { escapingFunction in
+                try await _withTestTimeout(seconds: ModelTestingTraitOptions.testWallClockSeconds, testTag: testTag) {
+                    try await _ModelTestingLocals.$scope.withValue(pending) {
+                        try await escapingFunction()
+                    }
+                    // After the test body completes, run exhaustion check (still inside the
+                    // test-local queue scope so any teardown backgroundCall work uses testQueue).
+                    if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
+                        await concrete.checkExhaustion(at: fl)
+                    }
+                }
             }
         }
-        print("[TRAIT scope-end] test=\"\(testTag)\"")
     }
 }
+
+/// Per-test configuration knobs. Tunable from a test harness if needed.
+enum ModelTestingTraitOptions {
+    /// Wall-clock cap on a single `@Test(.modelTesting)`'s body + checkExhaustion.
+    /// Generous default — correct tests complete in milliseconds even under
+    /// heavy saturation. Hitting this cap surfaces a real bug.
+    /// Override via `SWIFT_MODEL_TEST_TIMEOUT` env var (seconds, float).
+    static var testWallClockSeconds: Double {
+        if let envValue = ProcessInfo.processInfo.environment["SWIFT_MODEL_TEST_TIMEOUT"],
+           let parsed = Double(envValue), parsed > 0 {
+            return parsed
+        }
+        return 30
+    }
+}
+
+/// Races `body` against a per-test wall-clock timer. Whichever finishes first
+/// wins; the other is cancelled.
+///
+/// **Cancellation propagation**: when the timer fires, `cancelAll()` cancels
+/// the body task. The body's wait primitives (`TestAccess.awaitPredicate`,
+/// `TestAccess.awaitQuietWindow`, `callQueueWaitUntilIdle`,
+/// `callQueueWaitForCurrentItems`) all use `withTaskCancellationHandler` to
+/// resume their parked continuations on cancellation — so the body actually
+/// unwinds rather than hanging while we record an issue.
+///
+/// **Timer source**: uses `GlobalTickScheduler` (GCD-backed) instead of
+/// `Task.sleep`. Task.sleep is scheduled on the Swift cooperative pool, which
+/// can be starved when many parallel tests fan out hundreds of tasks — in
+/// which case the trait cap silently fails to fire and a hung test runs
+/// indefinitely. GCD timers fire from their own thread pool, immune to
+/// cooperative-pool saturation.
+///
+/// On timeout, calls `Issue.record(_:)` so the failure surfaces in the
+/// swift-testing report, then throws `_TestTimeoutError` to abort.
+///
+/// `package` so the test target can drive this directly to validate the
+/// safety net (`Tests/SwiftModelTests/ReactiveWaitInfrastructureTests.swift`).
+/// Set `reportIssueOnTimeout: false` from validation tests so the
+/// `reportIssue(_:)` call doesn't pollute the test's own issue list.
+@Sendable
+package func _withTestTimeout<R: Sendable>(
+    seconds: Double,
+    testTag: String,
+    reportIssueOnTimeout: Bool = true,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column,
+    _ body: @Sendable @escaping () async throws -> R
+) async throws -> R {
+    let deadlineNs = monotonicNanoseconds() + UInt64(seconds * 1_000_000_000)
+    return try await withThrowingTaskGroup(of: _TimedResult<R>.self) { group in
+        group.addTask {
+            let result = try await body()
+            return .body(result)
+        }
+        group.addTask {
+            await _parkUntilDeadlineOrCancel(deadlineNs: deadlineNs)
+            return .timeout
+        }
+        guard let first = try await group.next() else {
+            // Unreachable: at least one child task always returns
+            throw CancellationError()
+        }
+        group.cancelAll()
+        switch first {
+        case .body(let value):
+            return value
+        case .timeout:
+            if reportIssueOnTimeout {
+                reportIssue(
+                    "[TRAIT timeout] test=\"\(testTag)\" exceeded \(seconds)s wall-clock cap. " +
+                    "A correct test should complete in milliseconds even under heavy CI load. " +
+                    "Hitting this cap surfaces a real bug: deadlock, runaway loop, or a " +
+                    "predicate that doesn't react to model state (contract violation).",
+                    fileID: fileID, filePath: filePath, line: line, column: column
+                )
+            }
+            throw _TestTimeoutError(testTag: testTag, seconds: seconds)
+        }
+    }
+}
+
+package enum _TimedResult<T: Sendable>: Sendable {
+    case body(T)
+    case timeout
+}
+
+package struct _TestTimeoutError: Error, Equatable {
+    package let testTag: String
+    package let seconds: Double
+}
+
+#if canImport(Dispatch)
+/// Park the calling Task until either:
+///   • the deadline elapses (GlobalTickScheduler fires) — returns
+///   • the Task is cancelled — returns
+///
+/// Used by `_withTestTimeout` to wait out the wall-clock cap on a
+/// GCD-backed timer, NOT `Task.sleep`. The cooperative pool can be
+/// starved by parallel test fan-out (each test starts ~70 in-process
+/// tasks; 100 parallel tests = 7000 tasks competing for ~10 cooperative
+/// threads). When that happens, `Task.sleep` doesn't fire — so the
+/// trait cap silently doesn't enforce its bound and hung tests can
+/// run indefinitely. GCD has its own thread pool, unaffected by
+/// cooperative saturation.
+@Sendable
+private func _parkUntilDeadlineOrCancel(deadlineNs: UInt64) async {
+    // Shared state across the continuation body, the timer callback,
+    // and the cancellation handler. Class so all three can capture by
+    // reference. NSLock protects the fields — short critical sections,
+    // no async work inside.
+    final class State: @unchecked Sendable {
+        var cont: CheckedContinuation<Void, Never>?
+        var cancel: (@Sendable () -> Void)?
+        var resumed: Bool = false
+    }
+    let state = State()
+    let lock = NSLock()
+
+    await withTaskCancellationHandler {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            // If the task is already cancelled, short-circuit.
+            let immediateResume = lock.withLock { () -> Bool in
+                if state.resumed { return true }  // defensive
+                if Task.isCancelled {
+                    state.resumed = true
+                    return true
+                }
+                state.cont = cont
+                return false
+            }
+            if immediateResume {
+                cont.resume()
+                return
+            }
+            // Register the timer. The callback resumes the continuation
+            // exactly once. The cancellation handler (below) also resumes
+            // exactly once — `state.resumed` ensures at-most-once.
+            let cancel = GlobalTickScheduler.shared.schedule(deadlineNs: deadlineNs) {
+                let toResume = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                    guard !state.resumed, let c = state.cont else { return nil }
+                    state.resumed = true
+                    state.cont = nil
+                    state.cancel = nil
+                    return c
+                }
+                toResume?.resume()
+            }
+            // Race: cancellation could have fired before we got here.
+            // Store the cancel handle and re-check. If onCancel already
+            // ran (state.resumed == true), call cancel immediately.
+            let needsImmediateCancel = lock.withLock { () -> Bool in
+                if state.resumed {
+                    // onCancel ran between our isCancelled check and now.
+                    // We still need to release the scheduler entry.
+                    return true
+                }
+                state.cancel = cancel
+                return false
+            }
+            if needsImmediateCancel {
+                cancel()
+            }
+        }
+    } onCancel: {
+        let (toResume, cancel) = lock.withLock { () -> (CheckedContinuation<Void, Never>?, (@Sendable () -> Void)?) in
+            if state.resumed { return (nil, nil) }
+            let c = state.cont
+            let k = state.cancel
+            state.cont = nil
+            state.cancel = nil
+            state.resumed = true
+            return (c, k)
+        }
+        cancel?()
+        toResume?.resume()
+    }
+}
+#else
+@Sendable
+private func _parkUntilDeadlineOrCancel(deadlineNs: UInt64) async {
+    // Fallback for platforms without Dispatch (WASM): cooperative-pool
+    // Task.sleep. WASM tests don't run the parallel-saturation scenarios
+    // that motivated the GCD-backed timer.
+    let now = monotonicNanoseconds()
+    let delayNs = deadlineNs > now ? deadlineNs - now : 0
+    try? await Task.sleep(nanoseconds: delayNs)
+}
+#endif
+
 #else
 extension ModelTestingTrait: TestTrait, SuiteTrait {
     public var isRecursive: Bool { true }

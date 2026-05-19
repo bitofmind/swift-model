@@ -462,7 +462,7 @@ struct MemoizeDirtyObservationTests {
 
         // Hover over item 1 → [1]
         model.hoverID = 1
-        try await waitUntil(updates.value.last == [1], timeout: 2_000_000_000)
+        try await waitUntil(updates.value.last == [1])
         #expect(updates.value.last == [1], "Should see [1] after hover")
         updates.setValue([])
 
@@ -513,7 +513,7 @@ struct MemoizeDirtyObservationTests {
 
         // One full nil → X → nil → Y cycle (the exact bug scenario)
         model.hoverID = 1
-        try await waitUntil(updates.value.last == [1], timeout: 2_000_000_000)
+        try await waitUntil(updates.value.last == [1])
         #expect(updates.value.last == [1], "[\(path)] Should see [1]")
 
         model.hoverID = nil

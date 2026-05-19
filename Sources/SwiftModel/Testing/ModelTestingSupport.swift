@@ -200,11 +200,6 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         // Mark tester so its deinit skips cleanup — we are running it here instead.
         tester.cleanupHandledExternally = true
 
-        // Reuse the latency measured during the test body (expect/settle/require all
-        // update the cache). This avoids a fresh GCD hop here — which, under 500+
-        // parallel tests, would flood the global queue and add ~2 s to every test.
-        let cal = tester.access.calibrateWithCachedLatency()
-
         // Phase 1: Seal — prevent any new task registrations across the entire context
         // hierarchy. After sealing, Cancellations.register() immediately calls
         // onCancel() on incoming registrations and does NOT add them to `registered`.
@@ -224,17 +219,11 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         // Phase 2: Cancel all currently-registered onActivate tasks.
         tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
 
-        // Phase 3: Wait for naturally-completing tasks to finish and drain any remaining
-        // backgroundCall writes.
-        //
-        // Tasks created during GCD-drain activation run in a non-async context
-        // (no Swift Task active), so AnyCancellable.contexts is empty and these
-        // tasks are NOT keyed with .onActivate. cancelAllRecursively(for: .onActivate)
-        // does not cancel them; they must complete on their own cooperative-pool turns.
-        //
-        // waitUntilSettled uses GCD-backed waitForModification (not Task.yield loops)
-        // so it is safe under 500+ parallel test load.
-        await tester.access.waitUntilSettled(calibration: cal, reportTimeout: false, at: fileAndLine)
+        // Phase 3: Wait for naturally-completing tasks to commit any final
+        // writes, then verify nothing's still arriving. Debounce on model
+        // writes / events with the cleanup window (longer than in-test
+        // settle, to absorb cancel-handler writes that may take time).
+        await tester.access.waitUntilSettled(cleanup: true, at: fileAndLine)
 
         tester.access.checkExhaustion(at: fileAndLine, includeUpdates: false, checkTasks: true)
         tester.access.context.onRemoval()

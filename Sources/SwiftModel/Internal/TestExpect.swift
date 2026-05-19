@@ -5,8 +5,9 @@ import Dispatch
 import CustomDump
 import IssueReporting
 import Dependencies
+import ConcurrencyExtras
 
-private func monotonicNanoseconds() -> UInt64 {
+private func nowMonotonicNs() -> UInt64 {
     #if canImport(Dispatch)
     return DispatchTime.now().uptimeNanoseconds
     #else
@@ -15,493 +16,395 @@ private func monotonicNanoseconds() -> UInt64 {
 }
 
 extension TestAccess {
+    // Default total budget for `expect`/`require`: maximum wall-clock time
+    // a single call will wait for its predicate to become true.
+    //
+    // Predicate re-evaluations are driven purely by reactive wake-ups —
+    // `didModify`, `didSend`, and probe calls fire `_noteActivity()` on
+    // TestAccess, which now evaluates pending predicates INLINE (no
+    // park/wake loop). See `awaitPredicate`.
+    //
+    // Predicates that depend on state outside the reactive system —
+    // raw `LockIsolated` counters mutated from `forEach` callbacks,
+    // etc. — belong in `waitUntil` (Tests/SwiftModelTests/Utilities.swift).
+    //
+    // Output-snapshot tests override the budget via
+    // `TestAccessOverrides.$hardCapNanoseconds`.
+    static var expectDefaultBudgetNs: UInt64 {
+        TestAccessOverrides.hardCapNanoseconds ?? 5_000_000_000
+    }
+
+    /// Snapshot of one predicate evaluation, mutated in place by the
+    /// evaluator closure so the post-await code can read whether the
+    /// latest eval passed and what it recorded.
+    ///
+    /// Class (not struct) so the evaluator can mutate it through a
+    /// captured reference. `@unchecked Sendable` because synchronisation
+    /// is provided externally: writes happen INSIDE `TestAccess.lock`
+    /// (the evaluator is called from `_noteActivity` / `awaitPredicate`'s
+    /// initial check, both holding the lock). The post-await read in
+    /// `expect` happens AFTER `awaitPredicate` returns, which only
+    /// happens once the last evaluator run resumed our continuation;
+    /// the continuation-resume happens-before the await-return, so the
+    /// final snapshot write is visible.
+    fileprivate final class EvalSnapshot: @unchecked Sendable {
+        var failures: [TesterAssertContext.Failure] = []
+        var passedAccesses: [TesterAssertContext.Access] = []
+        /// `valueUpdates` snapshot taken under TestAccess.lock at the
+        /// end of a successful eval (mirrors what the old code captured
+        /// before running exhaustion check).
+        var capturedValueUpdates: [PartialKeyPath<Root>: [ValueUpdate]]?
+    }
+
     func expect(settleResetting: _ExhaustivityBits? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
-        await expect(timeoutNanoseconds: 1_000_000_000, settleResetting: settleResetting, at: fileAndLine, predicates: predicates, enableExhaustionTest: enableExhaustionTest)
+        await expect(timeoutNanoseconds: Self.expectDefaultBudgetNs, settleResetting: settleResetting, at: fileAndLine, predicates: predicates, enableExhaustionTest: enableExhaustionTest)
     }
 
     func expect(timeoutNanoseconds timeout: UInt64, settleResetting: _ExhaustivityBits? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
-        let cal = await calibrate(timeout: timeout)
-        let scaledTimeout = cal.scaledTimeout
-        let yieldRoundNs = cal.yieldRoundNs
-        let hardCap = cal.hardCap
         let context = TesterAssertContext(events: { self.lock { self.events } }, fileAndLine: fileAndLine)
+        // Mutable across evaluations. Read after `awaitPredicate` returns
+        // (success → use passedAccesses + capturedValueUpdates; timeout →
+        // use failures). See `EvalSnapshot` doc-comment for the
+        // synchronisation argument.
+        let snapshot = EvalSnapshot()
 
-        await TesterAssertContextBase.$assertContext.withValue(context) {
+        let startNs = nowMonotonicNs()
+        let deadlineNs = startNs &+ timeout
 
-            let start = cal.start
-            var lastProgressTime = start  // reset whenever a state modification arrives
-            var retryCount = 0
-            var failures: [TesterAssertContext.Failure] = []
-            var passedAccesses: [TesterAssertContext.Access] = []
-            while true {
-                // Defensive: clear any stale transition override that might linger on this
-                // pthread thread from a previous iteration. The willAccess callback normally
-                // clears it, but skipped-callback paths (e.g. destructed model branch in
-                // Context._read) can leave it set. Clearing here ensures each predicate
-                // evaluation starts from a known-clean state.
-                threadLocals.transitionOverrideValue = nil
-
-                failures = []
-                passedAccesses = []
-
-                context.eventsSent.removeAll()
-                context.probes.removeAll()
-
-                // Snapshot valueUpdates entry counts before predicate evaluation.
-                // Paths that gain new entries during evaluation had side-effect writes
-                // (e.g. `accessCount += 1` inside a computed getter). These must be
-                // skipped in isEqualIncludingIds because capturedValue is pre-write
-                // but lastState is post-write.
-                let prePredicateUpdateCounts: [AnyKeyPath: Int] = lock {
-                    var counts: [AnyKeyPath: Int] = [:]
-                    for (path, entries) in self.valueUpdates {
-                        counts[path] = entries.count
-                    }
-                    return counts
+        // The evaluator runs both initially (caller's thread) and on every
+        // subsequent activity (writer thread, inside _noteActivity, under
+        // TestAccess.lock). Returns true when the predicate is satisfied
+        // AND the lastState IDs match (isEqualIncludingIds).
+        //
+        // `weak self` would force `self` Optional everywhere inside; we
+        // hold a strong reference instead since the evaluator's lifetime
+        // is bounded by the awaitPredicate await on this task.
+        let outcome = await self.awaitPredicate(deadlineNs: deadlineNs) { @Sendable [self] in
+            TesterAssertContextBase.$assertContext.withValue(context) {
+                usingActiveAccess(self) {
+                    self._evaluateExpect(predicates: predicates, context: context, snapshot: snapshot)
                 }
+            }
+        }
 
-                // Step 1: Evaluate all predicates. Reading properties inside a predicate
-                // fires willAccess → appends Access entries to context.accesses.
-                for predicate in predicates {
-                    context.predicate = predicate
-                    
-                    context.accesses.removeAll(keepingCapacity: true)
-                    context.eventsNotSent.removeAll(keepingCapacity: true)
-                    context.modelsNoLongerPartOfTester.removeAll(keepingCapacity: true)
+        switch outcome {
+        case .passed:
+            // Latest eval succeeded. Snapshot's passedAccesses +
+            // capturedValueUpdates were stored under TestAccess.lock by
+            // the evaluator at that moment, so they're consistent.
+            let capturedUpdates = snapshot.capturedValueUpdates
 
-                    let passed = usingActiveAccess(self) { predicate.predicate() }
-                    let accesses = context.accesses
-                    if passed {
-                        passedAccesses += accesses
-                    } else {
-                        failures.append(.init(
-                            predicate: predicate,
-                            accesses: accesses,
-                            events: context.eventsNotSent,
-                            modelsNoLongerPartOfTester: context.modelsNoLongerPartOfTester,
-                            probes: context.probes
-                        ))
-
-                        break
-                    }
-                }
-
-                if failures.isEmpty {
-                    // Step 2: All predicates passed. Verify that the predicate's read values
-                    // match lastState. This guards against the predicate passing transiently
-                    // while a backgroundCall batch is still committing changes.
-                    //
-                    // Read values from lastState directly under the TestAccess lock.
-                    // _writeToFrozenState also holds this lock when writing to lastState's
-                    // reference.state, so reads and writes are mutually exclusive — no race.
-                    //
-                    // Previously used snap.frozenCopy OUTSIDE the lock, but frozenCopy reads
-                    // snap.reference.state — the SAME class object _writeToFrozenState writes.
-                    // This was a data race: on CI under heavy load, frozenCopy could see a
-                    // stale value (e.g. [] instead of [nil]) while the write was in flight,
-                    // causing isEqualIncludingIds to return false indefinitely until the
-                    // 10-second hard cap was hit.
-                    //
-                    // Container cursor key paths (isContainerTypeValue) are SKIPPED, so we
-                    // never evaluate them here. Non-container value paths (e.g. [Int?]) read
-                    // via reference.state[keyPath:] — no _swift_getKeyPath, no runtime-lock
-                    // contention, safe to evaluate while holding the TestAccess lock.
-                    //
-                    // isApplyingSnapshot suppresses willAccessDirect (early-returns before any
-                    // _swift_getKeyPath call). forceDirectAccess bypasses live-context routing
-                    // and reads reference.state directly. Both are needed for frozen copies.
-                    let isEqualIncludingIds: Bool = {
-                        guard !passedAccesses.isEmpty else { return true }
-                        return lock {
-                            threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-                                threadLocals.withValue(true, at: \.forceDirectAccess) {
-                                    threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
-                                        passedAccesses.reduce(true) { result, access in
-                                            if access.skipEqualityCheck { return result }
-                                            if access.isModelTypeValue { return result }
-                                            if access.isContainerTypeValue { return result }
-                                            if exhaustivity.contains(.transitions) && valueUpdates[access.path] != nil { return result }
-                                            if let currentCount = valueUpdates[access.path]?.count,
-                                               currentCount > (prePredicateUpdateCounts[access.path] ?? 0) { return result }
-                                            let a = lastState[keyPath: access.path]
-                                            let d = diff(access.capturedValue(), a)
-                                            return result && d == nil
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }()
-
-                    // Predicate passed but IDs don't match yet: there is a pending
-                    // backgroundCall batch in flight. Wait for items currently queued to
-                    // drain (FIFO sentinel), then retry. We use waitForCurrentItems rather
-                    // than waitUntilIdle so we don't block on other tests' work under 100x load.
-                    // If the timeout has elapsed even here, fall through to the failure path so
-                    // the assert doesn't spin forever when isEqualIncludingIds is permanently false.
-                    if !isEqualIncludingIds {
-                        if start.distance(to: monotonicNanoseconds()) > hardCap {
-                            fail("State did not settle: model IDs kept diverging after the predicate passed. This may indicate a backgroundCallQueue loop or an unresolvable ID mismatch.", at: fileAndLine)
-                            return
-                        }
-                        await backgroundCall.waitForCurrentItems(deadline: start + hardCap)
-                        await yieldToScheduler()
-                        // Count as progress — backgroundCall draining counts as activity.
-                        lastProgressTime = monotonicNanoseconds()
-                        continue
-                    }
-
-                    if isEqualIncludingIds {
-                        // Settling mode: after the predicate passes and IDs converge,
-                        // wait for all activation tasks to enter their body, then run
-                        // one idle cycle to catch trailing mutations (e.g. forEach first
-                        // fires). Finally, reset selected exhaustivity categories so
-                        // subsequent expect {} calls only see changes made after settling.
-                        if let resetting = settleResetting {
-                            let settled = await waitUntilSettled(calibration: cal, at: fileAndLine)
-                            if !settled { return }
-
-                            // Reset selected exhaustivity categories.
-                            _applyResetting(resetting)
-                            return
-                        }
-
-                        // Step 3: Model has settled. Mark all asserted paths as handled,
-                        // advance expectedState, and run the exhaustion check.
-                        //
-                        // Capture valueUpdates inside the same lock that clears it.
-                        // checkExhaustion would otherwise re-read valueUpdates under a
-                        // separate lock acquisition, creating a race window where a concurrent
-                        // thread running an activeAccessCallback can write a new entry between
-                        // the clearing block's unlock and checkExhaustion's lock — producing
-                        // a spurious "State not exhausted" failure.
-                        var capturedValueUpdates: [PartialKeyPath<Root>: [ValueUpdate]]? = nil
-                        lock {
-                            // Sync expectedState to lastState for structural consistency.
-                            // Individual consumed.apply(&expectedState) is unsafe because deep
-                            // paths through container types (Optional<Child>, array elements)
-                            // use cursor keypaths whose setters force-unwrap — expectedState may
-                            // have a nil/stale container. Assigning lastState directly keeps all
-                            // container structures and IDs in sync. Remaining FIFO entries in
-                            // valueUpdates are caught by Layer 3 of the exhaustion check.
-                            expectedState = lastState
-
-                            let isTransitions = exhaustivity.contains(.transitions)
-                            for access in passedAccesses {
-                                if valueUpdates[access.path] != nil {
-                                    if isTransitions {
-                                        // Transitions mode: pop only the front (oldest unasserted) entry.
-                                        // Subsequent writes remain for the next assertion to consume.
-                                        valueUpdates[access.path]!.removeFirst()
-                                        if valueUpdates[access.path]!.isEmpty {
-                                            valueUpdates[access.path] = nil
-                                        }
-                                    } else {
-                                        // Non-transitions mode (last-write-wins): clear all entries.
-                                        // The assertion consumed the final value; intermediate writes
-                                        // do not need to be individually asserted.
-                                        valueUpdates[access.path] = nil
-                                    }
-                                }
-                                // For dependency context storage, run the additional cleanup (clears
-                                // dependencyMetadataUpdates for this storage key+context).
-                                access.additionalCleanup?()
-                            }
-
-                            for index in context.eventsSent.reversed() { events.remove(at: index) }
-
-                            for (probe, value) in context.probes {
-                                probe.consume(value)
-                            }
-
-                            // Capture valueUpdates after clearing so checkExhaustion uses
-                            // this consistent snapshot rather than re-reading under a new lock.
-                            capturedValueUpdates = valueUpdates
-                        }
-
-                        if enableExhaustionTest && !exhaustivity.contains(.transitions) {
-                            // Step 4: Check that no other state changed without being
-                            // asserted. Diffs expectedState against lastState.
-                            // IMPORTANT: Must be called outside the lock. checkExhaustion calls
-                            // diffMessage/customDump which triggers customMirror on @Model types,
-                            // which reads @ModelTracked properties, which calls willAccess, which
-                            // acquires context.rootPaths — also guarded by the same lock. If we
-                            // are suspended via an async withValue and resume on a different thread,
-                            // the NSRecursiveLock is not re-entrant across threads and deadlocks.
-                            checkExhaustion(at: fileAndLine, includeUpdates: true, capturedUpdates: capturedValueUpdates)
-                        }
-
-                        return
-                    }
-                }
-
-                // Step 5 (timeout): Report failures.
-                // IMPORTANT: All reporting (diffMessage, customDump, fail) happens outside the lock.
-                // diffMessage/customDump triggers customMirror on @Model types, which reads
-                // @ModelTracked properties, which calls willAccess → rootPaths → tries to acquire
-                // this same lock from the continuation's thread — deadlock if already held.
-                //
-                // Activity-relative timeout: fail only when the model has made no progress for
-                // `scaledTimeout` (no state changes), or when the absolute hard cap fires.
-                let now = monotonicNanoseconds()
-                if lastProgressTime.distance(to: now) > scaledTimeout || start.distance(to: now) > hardCap {
-                    // Build all failure messages outside the lock so that diffMessage/customDump
-                    // cannot re-enter it via willAccess → rootPaths.
-                    var reports: [[(String, FileAndLine)]] = []
-                    for failure in failures {
-                        var messages: [(String, FileAndLine)] = []
-                        if let (lhs, rhs) = failure.predicate.values() {
-                            let propertyNames = failure.accesses.compactMap { access in
-                                access.propertyName.map { "\(access.modelName).\($0)" }
-                            }.joined(separator: ", ")
-
-                            let title = "Expectation not met: \(propertyNames)"
-                            let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                                diffMessage(expected: rhs, actual: lhs, title: title)
-                            }
-                            messages.append((message ?? title, failure.predicate.fileAndLine))
-                        } else {
-                            for access in failure.accesses {
-                                let pred = access.propertyName.map {
-                                    "\(access.modelName).\($0) == \(access.value())"
-                                } ?? access.value()
-                                messages.append(("Expectation not met: \(pred)", failure.predicate.fileAndLine))
-                            }
-                        }
-
-                        for event in failure.events {
-                            messages.append(("Expected event not sent: \(String(customDumping: event.event)) from \(event.context.typeDescription)", failure.predicate.fileAndLine))
-                        }
-
-                        for modelName in failure.modelsNoLongerPartOfTester {
-                            messages.append(("Model \(modelName) is no longer part of this tester", fileAndLine))
-                        }
-
-                        for (probe, value) in failure.probes {
-                            let preTitle = "Expected probe not called" + (probe.name.map { " \"\($0)\":" } ?? ":")
-                            let title = value is NoArgs ? preTitle :
-                                """
-                                \(preTitle)
-                                    \(String(customDumping: value))
-                                """
-
-                            if probe.isEmpty {
-                                messages.append((
-                                    """
-                                    \(title)
-
-                                    No available probe values
-                                    """, fileAndLine))
-                            } else if probe.count == 1, let message = threadLocals.withValue(true, at: \.includeChildrenInMirror, perform: { diffMessage(expected: value, actual: probe.values[0], title: "Probe does not match") }) {
-                                messages.append((message, fileAndLine))
-                            } else {
-                                messages.append((
-                                    """
-                                    \(title)
-
-                                    \(probe.count) Available probe values to assert:
-                                        \(probe.values.map { String(customDumping: $0) }.joined(separator: "\n    "))
-                                    """, fileAndLine))
-                            }
-                        }
-
-                        if failure.accesses.isEmpty, failure.events.isEmpty, failure.modelsNoLongerPartOfTester.isEmpty, failure.probes.isEmpty {
-                            messages.append(("Assertion failed", failure.predicate.fileAndLine))
-                        }
-                        reports.append(messages)
-                    }
-
-                    // Now apply state mutations under the lock (no diffMessage/customDump here).
-                    lock {
-                        // Sync expectedState for structural consistency (see Step 3 comment).
-                        expectedState = lastState
-
-                        for access in passedAccesses {
-                            // Pop front entry from FIFO queue if present.
-                            if valueUpdates[access.path] != nil {
-                                valueUpdates[access.path]!.removeFirst()
-                                if valueUpdates[access.path]!.isEmpty {
-                                    valueUpdates[access.path] = nil
-                                }
-                            }
-                            access.additionalCleanup?()
-                        }
-
-                        for index in context.eventsSent.reversed() { events.remove(at: index) }
-
-                        for (probe, value) in context.probes {
-                            probe.consume(value)
-                        }
-                    }
-
-                    // Emit failure reports outside the lock.
-                    for messages in reports {
-                        for (message, location) in messages {
-                            fail(message, at: location)
-                        }
-                    }
-
-
-                    if enableExhaustionTest {
-                        checkExhaustion(at: fileAndLine, includeUpdates: false)
-                    }
-                    return
-                }
-
-                // Step 6: Wait for the next modification event before re-checking.
-                // Pass the remaining no-progress budget as the wait timeout (how long to sleep
-                // if no modification arrives). The hard cap is checked at Step 5 next iteration.
-                let elapsed = lastProgressTime.distance(to: monotonicNanoseconds())
-                let remaining = elapsed < scaledTimeout ? scaledTimeout - UInt64(elapsed) : 0
-                retryCount += 1
-
-                let didProgress = await waitForModification(timeoutNanoseconds: remaining, yieldRoundNs: yieldRoundNs, retryCount: retryCount)
-                if didProgress { lastProgressTime = monotonicNanoseconds() }
+            if let resetting = settleResetting {
+                // Settling mode: predicate passed; now wait for the model
+                // to quiet down before resetting exhaustivity.
+                let settled = await waitUntilSettled(at: fileAndLine)
+                if !settled { return }
+                _applyResetting(resetting)
+                return
             }
 
-            // Step 5 (timeout): Report failures.
-            // IMPORTANT: All reporting (diffMessage, customDump, fail) happens outside the lock.
-            // diffMessage/customDump triggers customMirror on @Model types, which reads
-            // @ModelTracked properties, which calls willAccess → rootPaths → tries to acquire
-            // this same lock from the continuation's thread — deadlock if already held.
-            // Build all failure messages outside the lock so that diffMessage/customDump
-            // cannot re-enter it via willAccess → rootPaths.
-            var reports: [[(String, FileAndLine)]] = []
-            for failure in failures {
-                var messages: [(String, FileAndLine)] = []
-                if let (lhs, rhs) = failure.predicate.values() {
-                    let propertyNames = failure.accesses.compactMap { access in
-                        access.propertyName.map { "\(access.modelName).\($0)" }
-                    }.joined(separator: ", ")
+            if enableExhaustionTest && !exhaustivity.contains(.transitions) {
+                // Run exhaustion check OUTSIDE the lock — diffMessage walks
+                // model state via customMirror → willAccess → lock, which
+                // would deadlock cross-thread (NSRecursiveLock not
+                // reentrant across threads).
+                checkExhaustion(at: fileAndLine, includeUpdates: true, capturedUpdates: capturedUpdates)
+            }
+            return
 
-                    let title = "Expectation not met: \(propertyNames)"
-                    let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
-                        diffMessage(expected: rhs, actual: lhs, title: title)
-                    }
-                    messages.append((message ?? title, failure.predicate.fileAndLine))
+        case .timeout:
+            // Latest eval failed. Snapshot.failures is what to report.
+            // Fall through to common failure-reporting block below.
+            break
+
+        case .cancelled:
+            // Per-test trait cap fired (or external cancel). The trait
+            // already recorded `[TRAIT timeout]`. Just unwind.
+            return
+        }
+
+        // ----- Failure reporting (timeout case only) -----
+        // All reporting (diffMessage, customDump, fail) happens outside
+        // the lock. diffMessage triggers customMirror on @Model types,
+        // which reads @ModelTracked properties, which calls willAccess →
+        // rootPaths → acquires the same lock — deadlock if held.
+        var reports: [[(String, FileAndLine)]] = []
+        for failure in snapshot.failures {
+            var messages: [(String, FileAndLine)] = []
+            if let (lhs, rhs) = failure.predicate.values() {
+                let propertyNames = failure.accesses.compactMap { access in
+                    access.propertyName.map { "\(access.modelName).\($0)" }
+                }.joined(separator: ", ")
+
+                let title = "Expectation not met: \(propertyNames)"
+                let message = threadLocals.withValue(true, at: \.includeChildrenInMirror) {
+                    diffMessage(expected: rhs, actual: lhs, title: title)
+                }
+                messages.append((message ?? title, failure.predicate.fileAndLine))
+            } else {
+                for access in failure.accesses {
+                    let pred = access.propertyName.map {
+                        "\(access.modelName).\($0) == \(access.value())"
+                    } ?? access.value()
+                    messages.append(("Expectation not met: \(pred)", failure.predicate.fileAndLine))
+                }
+            }
+
+            for event in failure.events {
+                messages.append(("Expected event not sent: \(String(customDumping: event.event)) from \(event.context.typeDescription)", failure.predicate.fileAndLine))
+            }
+
+            for modelName in failure.modelsNoLongerPartOfTester {
+                messages.append(("Model \(modelName) is no longer part of this tester", fileAndLine))
+            }
+
+            for (probe, value) in failure.probes {
+                let preTitle = "Expected probe not called" + (probe.name.map { " \"\($0)\":" } ?? ":")
+                let title = value is NoArgs ? preTitle :
+                    """
+                    \(preTitle)
+                        \(String(customDumping: value))
+                    """
+
+                if probe.isEmpty {
+                    messages.append((
+                        """
+                        \(title)
+
+                        No available probe values
+                        """, fileAndLine))
+                } else if probe.count == 1, let message = threadLocals.withValue(true, at: \.includeChildrenInMirror, perform: { diffMessage(expected: value, actual: probe.values[0], title: "Probe does not match") }) {
+                    messages.append((message, fileAndLine))
                 } else {
-                    for access in failure.accesses {
-                        let pred = access.propertyName.map {
-                            "\(access.modelName).\($0) == \(access.value())"
-                        } ?? access.value()
-                        messages.append(("Expectation not met: \(pred)", failure.predicate.fileAndLine))
-                    }
-                }
-
-                for event in failure.events {
-                    messages.append(("Expected event not sent: \(String(customDumping: event.event)) from \(event.context.typeDescription)", failure.predicate.fileAndLine))
-                }
-
-                for modelName in failure.modelsNoLongerPartOfTester {
-                    messages.append(("Model \(modelName) is no longer part of this tester", fileAndLine))
-                }
-
-                for (probe, value) in failure.probes {
-                    let preTitle = "Expected probe not called" + (probe.name.map { "\"\($0)\":" } ?? ":")
-                    let title = value is NoArgs ? preTitle :
+                    messages.append((
                         """
-                        \(preTitle)
-                            \(String(customDumping: value))
-                        """
+                        \(title)
 
-                    if probe.isEmpty {
-                        messages.append((
-                            """
-                            \(title)
+                        \(probe.count) Available probe values to assert:
+                            \(probe.values.map { String(customDumping: $0) }.joined(separator: "\n    "))
+                        """, fileAndLine))
+                }
+            }
 
-                            No available probe values
-                            """, fileAndLine))
-                    } else if probe.count == 1, let message = threadLocals.withValue(true, at: \.includeChildrenInMirror, perform: { diffMessage(expected: value, actual: probe.values[0], title: "Probe does not match") }) {
-                        messages.append((message, fileAndLine))
-                    } else {
-                        messages.append((
-                            """
-                            \(title)
+            if failure.accesses.isEmpty, failure.events.isEmpty, failure.modelsNoLongerPartOfTester.isEmpty, failure.probes.isEmpty {
+                messages.append(("Assertion failed", failure.predicate.fileAndLine))
+            }
+            reports.append(messages)
+        }
 
-                            \(probe.count) Available probe values to assert:
-                                \(probe.values.map { String(customDumping: $0) }.joined(separator: "\n\t"))
-                            """, fileAndLine))
+        // Apply state mutations under the lock (no diffMessage here).
+        lock {
+            expectedState = lastState
+
+            for access in snapshot.passedAccesses {
+                if valueUpdates[access.path] != nil {
+                    valueUpdates[access.path]!.removeFirst()
+                    if valueUpdates[access.path]!.isEmpty {
+                        valueUpdates[access.path] = nil
                     }
                 }
-
-                if failure.accesses.isEmpty, failure.events.isEmpty, failure.modelsNoLongerPartOfTester.isEmpty, failure.probes.isEmpty {
-                    messages.append(("Expectation not met", failure.predicate.fileAndLine))
-                }
-                reports.append(messages)
+                access.additionalCleanup?()
             }
 
-            // Now apply state mutations under the lock (no diffMessage/customDump here).
-            lock {
-                // Sync expectedState for structural consistency (see Step 3 comment).
-                expectedState = lastState
+            for index in context.eventsSent.reversed() { events.remove(at: index) }
 
-                for access in passedAccesses {
-                    // Pop front entry from FIFO queue if present.
-                    if valueUpdates[access.path] != nil {
-                        valueUpdates[access.path]!.removeFirst()
-                        if valueUpdates[access.path]!.isEmpty {
-                            valueUpdates[access.path] = nil
-                        }
-                    }
-                    access.additionalCleanup?()
-                }
-
-                for index in context.eventsSent.reversed() { events.remove(at: index) }
-
-                for (probe, value) in context.probes {
-                    probe.consume(value)
-                }
+            for (probe, value) in context.probes {
+                probe.consume(value)
             }
+        }
 
-            // Emit failure reports outside the lock.
-            for messages in reports {
-                for (message, location) in messages {
-                    fail(message, at: location)
-                }
+        // Emit failure reports outside the lock.
+        for messages in reports {
+            for (message, location) in messages {
+                fail(message, at: location)
             }
+        }
 
-            if enableExhaustionTest {
-                checkExhaustion(at: fileAndLine, includeUpdates: false)
-            }
+        if enableExhaustionTest {
+            checkExhaustion(at: fileAndLine, includeUpdates: false)
         }
     }
 
-    /// Polls `expression` until it returns a non-nil value, then returns the unwrapped result.
-    /// Uses the same activity-relative idle detection as `expect`: the timeout resets on every
-    /// model state change, so a healthy model never hits it. The hard cap is the absolute
-    /// safety net (default 5 s, overridable via `TestAccessOverrides.hardCapNanoseconds`).
-    func require<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
-        let cal = await calibrate()
-        let scaledTimeout = cal.scaledTimeout
-        let yieldRoundNs = cal.yieldRoundNs
-        let hardCap = cal.hardCap
-        let start = cal.start
-        var lastProgressTime = start
-        var retryCount = 0
+    /// The actual predicate-evaluation logic, factored out so `expect`'s
+    /// `awaitPredicate` evaluator stays small. Must be called with the
+    /// caller having set up `TesterAssertContextBase.$assertContext` and
+    /// `usingActiveAccess(self)`. Returns true when:
+    ///   1. All predicates returned true
+    ///   2. `isEqualIncludingIds` succeeded (lastState matches the read
+    ///      values — guards against backgroundCall-in-flight stale reads)
+    ///
+    /// Writes the latest eval's state into `snapshot` so the caller can
+    /// report success/failure details.
+    ///
+    /// This runs INSIDE `TestAccess.lock` (the evaluator is called from
+    /// `_noteActivity` and `awaitPredicate`'s initial check, both holding
+    /// the lock). NSRecursiveLock allows re-entry on the same thread, so
+    /// predicate reads that fire `willAccess → self.lock` are fine.
+    fileprivate func _evaluateExpect(
+        predicates: [AssertBuilder.Predicate],
+        context: TesterAssertContext,
+        snapshot: EvalSnapshot
+    ) -> Bool {
+        // Defensive: clear any stale transition override from prior eval.
+        threadLocals.transitionOverrideValue = nil
 
-        while true {
-            if let value = expression() {
-                // Expression is non-nil. Drive the same settled-state stability check as expect.
-                let predicate = AssertBuilder.Predicate(predicate: { expression() != nil }, fileAndLine: fileAndLine)
-                await expect(timeoutNanoseconds: nanosPerSecond, at: fileAndLine, predicates: [predicate], enableExhaustionTest: false)
-                return value
+        // Snapshot valueUpdates entry counts before predicate evaluation.
+        // Paths that gain new entries during evaluation had side-effect
+        // writes (e.g. `accessCount += 1` inside a computed getter). These
+        // must be skipped in isEqualIncludingIds because capturedValue is
+        // pre-write but lastState is post-write.
+        let prePredicateUpdateCounts: [AnyKeyPath: Int] = {
+            var counts: [AnyKeyPath: Int] = [:]
+            for (path, entries) in self.valueUpdates {
+                counts[path] = entries.count
             }
+            return counts
+        }()
 
-            let now = monotonicNanoseconds()
-            if lastProgressTime.distance(to: now) > scaledTimeout || start.distance(to: now) > hardCap {
-                fail("Failed to unwrap value of type \(T.self)", at: fileAndLine)
+        // Fresh per-eval bookkeeping.
+        context.eventsSent.removeAll()
+        context.probes.removeAll(keepingCapacity: true)
+
+        // Reset snapshot for this eval — previous eval may have left
+        // stale failures/passedAccesses that no longer apply.
+        snapshot.failures.removeAll(keepingCapacity: true)
+        snapshot.passedAccesses.removeAll(keepingCapacity: true)
+        snapshot.capturedValueUpdates = nil
+
+        // Step 1: Evaluate all predicates.
+        for predicate in predicates {
+            context.predicate = predicate
+            context.accesses.removeAll(keepingCapacity: true)
+            context.eventsNotSent.removeAll(keepingCapacity: true)
+            context.modelsNoLongerPartOfTester.removeAll(keepingCapacity: true)
+
+            let passed = predicate.predicate()
+            let accesses = context.accesses
+            if passed {
+                snapshot.passedAccesses += accesses
+            } else {
+                snapshot.failures.append(.init(
+                    predicate: predicate,
+                    accesses: accesses,
+                    events: context.eventsNotSent,
+                    modelsNoLongerPartOfTester: context.modelsNoLongerPartOfTester,
+                    probes: context.probes
+                ))
+                break
+            }
+        }
+
+        if !snapshot.failures.isEmpty {
+            return false
+        }
+
+        // Step 2: isEqualIncludingIds — verify lastState matches the
+        // captured values. Detects transient passes where the
+        // backgroundCall pipeline hasn't yet committed.
+        let isEqualIncludingIds: Bool = {
+            guard !snapshot.passedAccesses.isEmpty else { return true }
+            return threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+                threadLocals.withValue(true, at: \.forceDirectAccess) {
+                    threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
+                        snapshot.passedAccesses.reduce(true) { result, access in
+                            if access.skipEqualityCheck { return result }
+                            if access.isModelTypeValue { return result }
+                            if access.isContainerTypeValue { return result }
+                            if exhaustivity.contains(.transitions) && valueUpdates[access.path] != nil { return result }
+                            if let currentCount = valueUpdates[access.path]?.count,
+                               currentCount > (prePredicateUpdateCounts[access.path] ?? 0) { return result }
+                            let a = lastState[keyPath: access.path]
+                            let d = diff(access.capturedValue(), a)
+                            return result && d == nil
+                        }
+                    }
+                }
+            }
+        }()
+
+        if !isEqualIncludingIds {
+            // Predicate passed but pending bg drain hasn't committed.
+            // Wait for next activity — the bg drain will fire didModify,
+            // which fires _noteActivity, which re-invokes us. Keep
+            // passedAccesses in the snapshot so timeout-time reporting
+            // has the latest captured state.
+            return false
+        }
+
+        // Step 3: Success! Clear asserted paths from valueUpdates,
+        // advance expectedState, consume events and probes — exactly
+        // what the old success path did under TestAccess.lock (we ARE
+        // under the lock).
+        expectedState = lastState
+        let isTransitions = exhaustivity.contains(.transitions)
+        for access in snapshot.passedAccesses {
+            if valueUpdates[access.path] != nil {
+                if isTransitions {
+                    valueUpdates[access.path]!.removeFirst()
+                    if valueUpdates[access.path]!.isEmpty {
+                        valueUpdates[access.path] = nil
+                    }
+                } else {
+                    valueUpdates[access.path] = nil
+                }
+            }
+            access.additionalCleanup?()
+        }
+        for index in context.eventsSent.reversed() { events.remove(at: index) }
+        for (probe, value) in context.probes {
+            probe.consume(value)
+        }
+
+        // Capture valueUpdates after clearing so the exhaustion check
+        // (which runs OUTSIDE the lock after we return) sees a stable
+        // snapshot.
+        snapshot.capturedValueUpdates = valueUpdates
+        return true
+    }
+
+    /// Tries `expression` until it returns a non-nil value, then returns
+    /// the unwrapped result. Reactive wake-up on each model write / event
+    /// / probe call via `awaitPredicate`. After `expectDefaultBudgetNs`
+    /// of no successful evaluation, fails with `UnwrapError`.
+    /// Predicates that depend on external state (non-tracked values)
+    /// should use `waitUntil` instead.
+    ///
+    /// **Note**: the evaluator returns `Bool` (not `T?`) to avoid
+    /// requiring `T: Sendable`. After `awaitPredicate` resolves with
+    /// `.passed`, we re-evaluate `expression` on the caller's task to
+    /// obtain the value. Costs one extra evaluation but keeps the
+    /// public API T-agnostic.
+    func require<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
+        let startNs = nowMonotonicNs()
+        let deadlineNs = startNs &+ Self.expectDefaultBudgetNs
+
+        let outcome = await self.awaitPredicate(deadlineNs: deadlineNs) { @Sendable in
+            expression() != nil
+        }
+
+        switch outcome {
+        case .passed:
+            // Re-evaluate on this task to get the value. The expression
+            // passed at least once during awaitPredicate so it should
+            // still pass here; if it doesn't (unusual race where state
+            // briefly toggled), we fall through to defensive failure.
+            guard let value = expression() else {
+                fail("require: predicate passed during await but value is now nil", at: fileAndLine)
                 throw UnwrapError()
             }
+            // Drive the same settled-state stability check as expect
+            // (uses isEqualIncludingIds + exhaustion-free expect plumbing).
+            let predicate = AssertBuilder.Predicate(predicate: { expression() != nil }, fileAndLine: fileAndLine)
+            await expect(timeoutNanoseconds: Self.expectDefaultBudgetNs, at: fileAndLine, predicates: [predicate], enableExhaustionTest: false)
+            return value
 
-            let elapsed = start.distance(to: now)
-            let remaining = elapsed < hardCap ? hardCap - UInt64(elapsed) : 0
-            let didProgress = await waitForModification(
-                timeoutNanoseconds: min(remaining, yieldRoundNs),
-                yieldRoundNs: yieldRoundNs,
-                retryCount: retryCount
-            )
-            if didProgress { lastProgressTime = monotonicNanoseconds() }
-            retryCount += 1
+        case .timeout:
+            fail("Failed to unwrap value of type \(T.self)", at: fileAndLine)
+            throw UnwrapError()
+
+        case .cancelled:
+            // Trait cap fired; unwind without recording another issue.
+            throw UnwrapError()
         }
     }
 }

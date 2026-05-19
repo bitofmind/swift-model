@@ -41,10 +41,6 @@ let package = Package(
         // When swift-dependencies removes the shadow manifests and cuts a release, switch
         // back to `from: "X.Y.Z"` and add `traits: ["Clocks", "Foundation"]`.
         .package(url: "https://github.com/pointfreeco/swift-dependencies", branch: "main"),
-        // Pin below 1.1.0: that version introduced a trait-based OpenCombine shim that
-        // auto-enables based on the host OS rather than the target, breaking Android
-        // cross-compilation. 1.0.x guards all Combine code with #if canImport(Combine).
-        .package(url: "https://github.com/pointfreeco/combine-schedulers", "1.0.0"..<"1.1.0"),
         // Fork pinned at the revision that gates the FoundationNetworking import and the
         // two FoundationNetworking-typed CustomDump conformances (`NSURLRequest:
         // CustomDumpRepresentable`, `URLRequest.NetworkServiceType:

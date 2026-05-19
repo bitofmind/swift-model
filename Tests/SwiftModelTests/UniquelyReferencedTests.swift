@@ -34,82 +34,78 @@ struct UniquelyReferencedTests {
     // MARK: - isUniquelyReferenced (observed)
 
     /// The stream emits `true` initially when there is only one owner.
-    @Test func testUniquelyReferencedStreamEmitsTrueInitially() async {
+    @Test func testUniquelyReferencedStreamEmitsTrueInitially() async throws {
         let testResult = TestResult()
-        await withModelTesting {
+        try await withModelTesting {
             let _ = WatchedChildHost().withAnchor {
                 $0.testResult = testResult
             }
-            // Initial emission: child is uniquely referenced
-            await expect(testResult.value.contains("unique:true"))
+            // Initial emission: child is uniquely referenced.
+            // `testResult` is a LockIsolated outside the reactive system —
+            // use `waitUntil` (explicit polling).
+            try await waitUntil(testResult.value.contains("unique:true"))
         }
     }
 
     /// When the same model instance is added to a second owner, the stream emits `false`.
-    @Test func testUniquelyReferencedStreamEmitsFalseWhenShared() async {
+    @Test func testUniquelyReferencedStreamEmitsFalseWhenShared() async throws {
         let testResult = TestResult()
-        await withModelTesting {
+        try await withModelTesting {
             let model = WatchedChildHost().withAnchor {
                 $0.testResult = testResult
             }
-            await expect(testResult.value.contains("unique:true"))
+            try await waitUntil(testResult.value.contains("unique:true"))
 
             // Share the child by adding it to the secondary slot
             model.secondary = model.primary
 
-            await expect {
-                model.secondary != nil
-                testResult.value.contains("unique:false")
-            }
+            await expect(model.secondary != nil)
+            try await waitUntil(testResult.value.contains("unique:false"))
         }
     }
 
     /// When sharing is removed, the stream emits `true` again.
-    @Test func testUniquelyReferencedStreamEmitsTrueAfterSharingRemoved() async {
+    @Test func testUniquelyReferencedStreamEmitsTrueAfterSharingRemoved() async throws {
         let testResult = TestResult()
-        await withModelTesting {
+        try await withModelTesting {
             let model = WatchedChildHost().withAnchor {
                 $0.testResult = testResult
             }
-            await expect(testResult.value.contains("unique:true"))
+            try await waitUntil(testResult.value.contains("unique:true"))
 
             // Share the child
             model.secondary = model.primary
 
-            await expect {
-                model.secondary != nil
-                testResult.value.contains("unique:false")
-            }
+            await expect(model.secondary != nil)
+            try await waitUntil(testResult.value.contains("unique:false"))
 
             // Un-share: remove from secondary
             model.secondary = nil
 
-            await expect {
-                model.secondary == nil
-                // The last emission should be true again
-                testResult.value.hasSuffix("unique:true")
-            }
+            await expect(model.secondary == nil)
+            // The last emission should be true again
+            try await waitUntil(testResult.value.hasSuffix("unique:true"))
         }
     }
 
     /// Consecutive duplicate values are NOT re-emitted (stream deduplicates).
-    @Test func testUniquelyReferencedStreamDeduplicates() async {
+    @Test func testUniquelyReferencedStreamDeduplicates() async throws {
         let testResult = TestResult()
-        await withModelTesting(exhaustivity: .off) {
+        try await withModelTesting(exhaustivity: .off) {
             let model = WatchedChildHost().withAnchor {
                 $0.testResult = testResult
             }
-            await expect(testResult.value.contains("unique:true"))
+            try await waitUntil(testResult.value.contains("unique:true"))
 
             // Mutate an unrelated property — uniqueness doesn't change
             model.unrelated += 1
             model.unrelated += 1
 
-            await expect {
-                model.unrelated == 2
-                // No extra "unique:true" emission — still exactly one
-                testResult.value.components(separatedBy: "unique:true").count - 1 == 1
-            }
+            await expect(model.unrelated == 2)
+            // No extra "unique:true" emission — still exactly one. Settle
+            // first to let any spurious emission propagate, then check.
+            await settle()
+            #expect(testResult.value.components(separatedBy: "unique:true").count - 1 == 1)
         }
     }
 }

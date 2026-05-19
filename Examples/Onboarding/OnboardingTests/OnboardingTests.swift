@@ -378,6 +378,7 @@ struct ProfileStepModelTests {
 
         model.username = "ab"
         await expect(model.availabilityError != nil)
+
         model.username = ""
         await expect(model.availabilityError == nil)
     }
@@ -397,6 +398,10 @@ struct ProfileStepModelTests {
         }
 
         model.username = "swiftdev"
+        await expect {
+            !model.isCheckingAvailability
+            model.availabilityError == nil
+        }
         model.continueTapped()
 
         await expect { probe.wasCalled(with: "swiftdev") }

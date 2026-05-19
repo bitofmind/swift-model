@@ -105,8 +105,8 @@ struct SharedModelTests {
             parent.children.count == 1
             parent.didSend("p")
             parent.child.didSend("c")
-            testResult.value == "CpPc" || testResult.value == "PcCp"
         }
+        try await waitUntil(testResult.value == "CpPc" || testResult.value == "PcCp")
     }
 }
 

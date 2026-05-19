@@ -99,10 +99,12 @@ struct MyTests {
 }
 ```
 
-- `expect { }` waits for all predicates to become true, similar to `assertNow`.
-- `settle()` waits for activation tasks, runs an idle cycle, then resets exhaustivity. Use after `withAnchor()` to skip past activation side effects. Supports `resetting:` for selective category reset (e.g., `settle(resetting: .full.removing(.events)) { ... }`).
+- `expect { }` waits for all predicates to become true, similar to `assertNow`. **Reactive only** — wakes on `@Model` writes, `node.send(...)` events, and `TestProbe` calls. Predicates that read state *outside* the reactive system (e.g. a `LockIsolated` counter mutated from a `forEach` callback) will not wake `expect` and should use `waitUntil` (see below).
+- `settle()` waits for the model to be quiet for a short debounce window (50 ms in-test), then resets exhaustivity. Use after `withAnchor()` to skip past activation side effects. Supports `resetting:` for selective category reset (e.g., `settle(resetting: .full.removing(.events)) { ... }`).
+- `waitUntil(condition)` (in `Tests/SwiftModelTests/Utilities.swift`) is the **explicit polling** helper for framework-internal lifecycle tests whose predicates read `TestResult` / `LockIsolated` state. Not appropriate in typical user tests — use `expect` / `require` / `settle` instead.
 - Per-suite exhaustivity: `@Suite(.modelTesting(exhaustivity: .off))` when individual tests use `#expect` directly (bypasses exhaustivity). Opt specific tests back in with `@Test(.modelTesting(exhaustivity: .preference))`.
 - Tests that exercise both observation mechanisms use `options: [.disableObservationRegistrar]` inside `withAnchor(options:)`.
+- A per-test 30 s wall-clock cap is enforced by the `.modelTesting` trait. Hangs surface as `[TRAIT timeout]` rather than freezing CI. Override per-process via the `SWIFT_MODEL_TEST_TIMEOUT` env var (seconds, float).
 
 ### `ModelTester` directly — only for specific cases
 
@@ -129,6 +131,16 @@ Direct use of `ModelTester(model, ...)` (requires `@testable import SwiftModel`)
    Files currently in this category: `UniquelyReferencedTests`, `ModelDependencyTests`, `ModelDependencyBehaviourTests`, `ObserveAnyModificationLifetimeTests`.
 
 2. **Testing the testing framework itself**: `OutputSnapshotTests` uses `withModelTesting` + `assertIssueSnapshot` to capture and snapshot the failure messages produced by the framework. The `didSendOnUnanchoredModel` test requires direct access to `TestAccess.TesterAssertContext` internals.
+
+### Known load-sensitive tests under x100 stress
+
+The full suite is **clean on serial CI** (`swift test --no-parallel`) and clean on local sub-x10 parallel runs. A small set of tests are load-sensitive under x100 parallel stress on a developer machine. The shape is the same in each case — the test schedules async work onto the cooperative pool (an `onActivate` task with `ImmediateClock`, a memoize coalesced `performUpdate`, etc.) and asserts the result within a fixed wall-clock budget (typically `expect`'s 5 s). Under heavy parallel load the cooperative pool can delay the scheduled task past the budget. The library code is correct; the test's timing assumptions break under extreme load. None block CI.
+
+  • `ClockTests.testImmediateClock` — `await expect(model.secondsElapsed > 0)` against an `ImmediateClock`-driven timer.
+  • `ChildActivationTaskTests.childTasksCompleteBeforeTeardown` — `await expect(parent.items.allSatisfy { $0.loaded })` where each child's `onActivate` task sets `loaded = true` after an `ImmediateClock` sleep. Can also fail in exhaustion-check mode if the loaded transitions race with the predicate evaluator's access capture.
+  • `MemoizeDirtyObservationTests.testDirtyPathWithOnModifyCallback` — `#expect(updateCount.value >= 1)` after a 5 s poll for the memoize coalesced `performUpdate` to fire its `onModify` callback. Same shape: write to a dependency schedules `performUpdate` on the per-test `BackgroundCallQueue` via the cooperative pool; under x100 parallel stress the task can be delayed past the 5 s poll budget, leaving `updateCount = 0`. Library code is correct (the test runs through every iteration in serial / sub-x10 stress); the test's wall-clock budget is the load-fragile bit.
+
+When investigating new load flakes, check first whether the test matches this pattern (cooperative-pool-scheduled async work + reactive `expect` / wall-clock poll budget) before chasing a library bug.
 
 ## Building and testing with MCP
 

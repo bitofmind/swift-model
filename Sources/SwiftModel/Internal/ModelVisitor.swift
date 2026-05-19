@@ -379,11 +379,43 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
         // (TestAccess / undo observation) — never in production. One closure per property.
         if context.collectionElementPathMakersStore?[collectionPath] == nil {
             context.lock {
-                context.registerCollectionElementPathMaker(for: collectionPath) { anyID in
+                context.registerCollectionElementPathMaker(for: collectionPath) { anyID, anyFallback in
                     guard let typedID = anyID.base as? C.Element.ID else { return \C.self }
+                    // `anyFallback` is the child context's current live model
+                    // (`context.anyModel` at maker-invocation time). Used by
+                    // `cursor.get` when the element has been concurrently
+                    // removed from the parent collection between this
+                    // invocation and the read — see
+                    // `collectionElementPathMakersStore` doc.
+                    let typedFallback = anyFallback as? C.Element
                     let cursor = ContainerCursor<C.Element.ID, C, C.Element>(
                         id: typedID,
-                        get: { $0.first(where: { $0.id == typedID })! },
+                        get: { coll in
+                            if let found = coll.first(where: { $0.id == typedID }) {
+                                return found
+                            }
+                            // Element removed concurrently. Race window
+                            // observed in `SearchTests` x100: parent's
+                            // `\.results` updated (element dropped from
+                            // `lastState`) BEFORE the child's pending
+                            // `detailLine` write reaches
+                            // `TestAccess.didModify`, which then walks this
+                            // cursor to capture the "from" value. Returning
+                            // the captured-at-path-build-time snapshot
+                            // avoids the force-unwrap crash; the resulting
+                            // "from" description will be the last live
+                            // model value, which is acceptable for a write
+                            // that semantically targets a freshly-removed
+                            // element.
+                            if let fallback = typedFallback {
+                                return fallback
+                            }
+                            // No fallback available (older code path before
+                            // the maker was extended, or an element from a
+                            // foreign context type). Preserve the original
+                            // diagnostic.
+                            return coll.first(where: { $0.id == typedID })!
+                        },
                         set: { coll, val in
                             guard let idx = coll.firstIndex(where: { $0.id == typedID }) else { return }
                             coll[idx] = val

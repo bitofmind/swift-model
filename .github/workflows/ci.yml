@@ -58,68 +58,34 @@ jobs:
         run: swift test --no-parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks --skip LazyContextBenchmarks
 
   android:
-    name: Android (aarch64)
-    # Run on Linux: canImport(ObjectiveC/AppKit/UIKit) is false on Linux, which
-    # correctly matches the Android target and avoids false-positive compilation
-    # errors that occur when cross-compiling from macOS (where those checks
-    # evaluate against the macOS host instead of the Android target).
+    name: Android (aarch64, emulator)
+    # `skiptools/swift-android-action` does the heavy lifting: installs the
+    # Swift Android SDK + NDK, boots an Android emulator, cross-compiles the
+    # package, pushes the test binary + Swift runtime .so files via adb, and
+    # runs the swift-testing harness on the emulator. This replaces the manual
+    # SDK install + index-store seed dance we used to compile-only-check.
+    #
+    # Test running on emulator confirmed reproducible behaviour beyond just
+    # compilation. Concrete win: cross-@Model `Observed` propagation was
+    # claimed to fail on Android — local verification + this CI run now
+    # exercise it on real Android.
+    #
+    # Runs on `ubuntu-latest` (not in the swift:6.3.0 container) because the
+    # action manages its own toolchain and emulator/qemu host. `free-disk-space`
+    # frees ~14 GB on the runner — the emulator image plus Swift SDK plus
+    # NDK plus build outputs comfortably fit otherwise but disk pressure
+    # causes intermittent failures.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    container:
-      image: swift:6.3.0
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-
-      - name: Install Android NDK r27d and Swift Android SDK
-        run: |
-          apt-get update -qq
-          apt-get install -qq -y unzip wget 2>/dev/null
-          wget -q "https://dl.google.com/android/repository/android-ndk-r27d-linux.zip" -O /tmp/ndk.zip
-          unzip -q /tmp/ndk.zip -d /opt
-          export ANDROID_NDK_HOME=/opt/android-ndk-r27d
-          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> "$GITHUB_ENV"
-
-          swift sdk install \
-            "https://download.swift.org/swift-6.3-release/android-sdk/swift-6.3-RELEASE/swift-6.3-RELEASE_android.artifactbundle.tar.gz" \
-            --checksum 2f2942c4bcea7965a08665206212c66991dabe23725aeec7c4365fc91acad088
-          # swift sdk install uses FileManager.homeDirectoryForCurrentUser (getpwuid)
-          # on Linux, which returns /root regardless of the $HOME env var. GitHub
-          # Actions containers set HOME=/github/home, but the bundle always lands
-          # in /root/.swiftpm/swift-sdks/ when running as the root container user.
-          SETUP_SCRIPT=$(find /root/.swiftpm/swift-sdks -name "setup-android-sdk.sh" 2>/dev/null | head -1)
-          if [ -z "$SETUP_SCRIPT" ]; then
-            echo "setup-android-sdk.sh not found. Bundle contents:"; find /root/.swiftpm | head -20; exit 1
-          fi
-          bash "$SETUP_SCRIPT"
-
-      - name: Build Linux tests (seed index store for Android cross-compilation)
-        # Workaround for a Swift 6.3 cross-compilation bug: the cross-compiler
-        # writes index units to the HOST store instead of the Android store.
-        # Building for Linux first seeds those units so that SPM's test-discovery
-        # step can find them when cross-compiling for Android (next step copies
-        # them to the Android index store path).
-        run: swift build --build-tests
-
-      - name: Seed Android index store from Linux build
-        run: |
-          LINUX_STORE=".build/x86_64-unknown-linux-gnu/debug/index/store/v5"
-          ANDROID_STORE=".build/aarch64-unknown-linux-android28/debug/index/store/v5"
-          mkdir -p "$ANDROID_STORE/units" "$ANDROID_STORE/records"
-          cp "$LINUX_STORE/units/"* "$ANDROID_STORE/units/"
-          for subdir in "$LINUX_STORE/records/"*/; do
-            name=$(basename "$subdir")
-            mkdir -p "$ANDROID_STORE/records/$name"
-            cp "$subdir"* "$ANDROID_STORE/records/$name/"
-          done
-
-      - name: Build SwiftModelTests for Android (aarch64)
-        # ANDROID_NDK_ROOT must be unset: it overrides ANDROID_NDK_HOME and
-        # breaks the SDK bundle's NDK path resolution.
-        run: |
-          unset ANDROID_NDK_ROOT
-          swift build \
-            --swift-sdk aarch64-unknown-linux-android28 \
-            --build-tests
+      - name: Test Swift package on Android
+        uses: skiptools/swift-android-action@v2
+        with:
+          swift-version: '6.3'
+          android-api-level: 28
+          # run-tests defaults to true.
+          free-disk-space: true
 
   wasm:
     name: WASM (wasm32-unknown-wasip1)
@@ -143,8 +109,9 @@ jobs:
         # Full test execution is blocked by third-party dependencies:
         # IssueReportingTestSupport (xctest-dynamic-overlay) is type:.dynamic,
         # and SnapshotTesting uses Apple-only types — both unsupported on WASM.
-        # We compile-check the main library target only, consistent with the
-        # Android job which also omits test execution.
+        # We compile-check the main library target only. The Android job DOES
+        # execute tests on an emulator now (via `skiptools/swift-android-action`),
+        # so this is the only "compile-only" target left.
         run: |
           swift build \
             --swift-sdk swift-6.3-RELEASE_wasm \

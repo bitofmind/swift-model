@@ -106,9 +106,9 @@ struct ModelDependencyBehaviourTests {
 
     /// Events reach dependency models only when `.dependencies` is in the relation alongside
     /// `.children` or `.descendants` (dependency contexts are treated as children in traversal).
-    @Test func testEventReachesDependencyModelWhenRelationIncludesDependencies() async {
+    @Test func testEventReachesDependencyModelWhenRelationIncludesDependencies() async throws {
         let testResult = TestResult()
-        await withModelTesting(exhaustivity: .off) {
+        try await withModelTesting(exhaustivity: .off) {
             let model = HostModelWithEvents().withAnchor {
                 $0.testResult = testResult
                 $0[ListeningDep.self] = ListeningDep()
@@ -122,7 +122,9 @@ struct ModelDependencyBehaviourTests {
             // Using just [.self, .dependencies] would NOT reach the dep context.
             model.node.send(HostEvent.ping, to: [.self, .children, .dependencies])
 
-            await expect(testResult.value.contains("ping-received"))
+            // `testResult` is a LockIsolated outside the reactive system —
+            // use `waitUntil` (explicit polling) rather than `expect`.
+            try await waitUntil(testResult.value.contains("ping-received"))
         }
         #expect(testResult.value.contains("ping-received"))
     }
@@ -149,9 +151,9 @@ struct ModelDependencyBehaviourTests {
 
     /// Events sent from a dependency model with the default `to: [.self, .ancestors]`
     /// travel up to the host because the dep's context has the host as a parent.
-    @Test func testEventFromDependencyReachesHostAncestor() async {
+    @Test func testEventFromDependencyReachesHostAncestor() async throws {
         let testResult = TestResult()
-        await withModelTesting(exhaustivity: .off) {
+        try await withModelTesting(exhaustivity: .off) {
             let model = HostListeningForDepEvents().withAnchor {
                 $0.testResult = testResult
                 $0[SendingDep.self] = SendingDep()
@@ -160,7 +162,9 @@ struct ModelDependencyBehaviourTests {
             await expect(model.dep.lifetime == .active)
             model.dep.triggerEvent()
 
-            await expect(testResult.value.contains("dep-event-received"))
+            // `testResult` is a LockIsolated outside the reactive system —
+            // use `waitUntil` (explicit polling) rather than `expect`.
+            try await waitUntil(testResult.value.contains("dep-event-received"))
         }
         #expect(testResult.value.contains("dep-event-received"))
     }
@@ -172,9 +176,9 @@ struct ModelDependencyBehaviourTests {
     /// The dependency context inherits `disableObservationRegistrar` from its parent context,
     /// so the same observation semantics apply whether using ObservationRegistrar or AccessCollector.
     @Test(arguments: ObservationPath.allCases)
-    func testParentCanObserveDependencyModelProperty(observationPath: ObservationPath) async {
+    func testParentCanObserveDependencyModelProperty(observationPath: ObservationPath) async throws {
         let testResult = TestResult()
-        await withModelTesting {
+        try await withModelTesting {
             let model = observationPath.withOptions { ObservingHostModel().withAnchor {
                 $0.testResult = testResult
                 $0[SimpleDep.self] = SimpleDep(tag: "initial")
@@ -184,28 +188,25 @@ struct ModelDependencyBehaviourTests {
 
             model.dep.tag = "updated"
 
-            await expect {
-                model.dep.tag == "updated"
-                testResult.value.contains("tag=updated")
-            }
+            await expect(model.dep.tag == "updated")
+            // `testResult` is external state — use waitUntil.
+            try await waitUntil(testResult.value.contains("tag=updated"))
         }
         #expect(testResult.value.contains("tag=updated"))
     }
 
     // MARK: - Lifecycle: activation and deactivation
 
-    @Test func testDependencyModelActivatedOnFirstAccess() async {
+    @Test func testDependencyModelActivatedOnFirstAccess() async throws {
         let testResult = TestResult()
-        await withModelTesting {
+        try await withModelTesting {
             let model = HostModel().withAnchor {
                 $0.testResult = testResult
                 $0[SimpleDep.self] = SimpleDep(tag: "svc")
             }
 
-            await expect {
-                model.dep.tag == "svc"
-                testResult.value.contains("D:svc")
-            }
+            await expect(model.dep.tag == "svc")
+            try await waitUntil(testResult.value.contains("D:svc"))
         }
         #expect(testResult.value.contains("D:svc"))
         #expect(testResult.value.contains("d:svc"))
@@ -215,9 +216,9 @@ struct ModelDependencyBehaviourTests {
 
     /// When two child models share the same dependency type from the root, they receive
     /// the same dependency context — it is activated once and deactivated once.
-    @Test func testSharedDependencyActivatedOnceAcrossMultipleChildren() async {
+    @Test func testSharedDependencyActivatedOnceAcrossMultipleChildren() async throws {
         let testResult = TestResult()
-        await withModelTesting {
+        try await withModelTesting {
             let model = MultiChildHost().withAnchor {
                 $0.testResult = testResult
                 $0[SimpleDep.self] = SimpleDep(tag: "shared")
@@ -232,10 +233,8 @@ struct ModelDependencyBehaviourTests {
             // Mutating via one child is visible on the other — they share a context
             model.child1.dep.tag = "updated"
 
-            await expect {
-                model.child2.dep.tag == "updated"
-                testResult.value.contains("tag-changed:updated")
-            }
+            await expect(model.child2.dep.tag == "updated")
+            try await waitUntil(testResult.value.contains("tag-changed:updated"))
         }
         // Activation is prefixed "D:", deactivation "d:".
         // The dep is activated with tag "shared" → "D:shared".

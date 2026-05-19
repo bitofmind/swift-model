@@ -965,6 +965,21 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     subscript<T>(statePath statePath: WritableKeyPath<M._ModelState, T>, isSame isSame: ((T, T) -> Bool)?, accessBox accessBox: _ModelAccessBox) -> T {
         _read { fatalError() }
         _modify {
+            // Lock-order inversion guard. The writer's `activeAccessCallback` (which
+            // appends to `TestAccess.valueUpdates` and updates `lastState`) runs AFTER
+            // `lock.unlock()` below, and acquires `TestAccess.lock` at that time.
+            // Readers (predicate evaluators) hold `TestAccess.lock` and then take
+            // `context.lock` — opposite order. Without serialization the reader can
+            // observe the new `reference.state` (after our `lock.unlock()`) before
+            // `TestAccess.valueUpdates` has the corresponding entry, miss the entry in
+            // its clearing pass, and leave it surviving to end-of-test exhaustion.
+            // Taking the access's write lock BEFORE the context lock matches the
+            // reader's order and closes the window. No-op when `activeAccess` is nil
+            // (production) or a non-test `ModelAccess` (View/AccessCollector — they
+            // don't queue state behind the reference write).
+            let writeLockHolder = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
+            writeLockHolder?.acquireWriteLock()
+            defer { writeLockHolder?.releaseWriteLock() }
             lock.lock()
             if unprotectedIsDestructed {
                 if reference._stateCleared {
@@ -1016,6 +1031,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     /// Transaction-based modification using state paths and access box.
     func stateTransaction<Value, T>(at statePath: WritableKeyPath<M._ModelState, Value>, isSame: ((Value, Value) -> Bool)?, accessBox: _ModelAccessBox, modify: (inout Value) throws -> T) rethrows -> T {
+        // See the matching comment in `subscript[statePath:isSame:accessBox:]._modify`.
+        // Take the access's write lock BEFORE the context lock so we match the reader's
+        // lock order (TestAccess.lock → context.lock) and writers don't race the
+        // valueUpdates append against a concurrent predicate evaluation.
+        let writeLockHolder = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
+        writeLockHolder?.acquireWriteLock()
+        defer { writeLockHolder?.releaseWriteLock() }
         lock.lock()
         let result: T
         if unprotectedIsDestructed {
