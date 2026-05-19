@@ -34,13 +34,19 @@ let package = Package(
         ),
     ],
     dependencies: [
-        // Tracking pointfreeco/main until a release ≥ PR #406 is tagged.
-        // traits: cannot be used here — swift-dependencies ships Package@swift-6.0.swift,
-        // which SE-0152 always selects over the traits-aware Package.swift, and SwiftPM
-        // hard-errors when a consumer tries to set traits on a package that declares none.
-        // When swift-dependencies removes the shadow manifests and cuts a release, switch
-        // back to `from: "X.Y.Z"` and add `traits: ["Clocks", "Foundation"]`.
-        .package(url: "https://github.com/pointfreeco/swift-dependencies", branch: "main"),
+        // Tracking pointfreeco/main until a release ≥ PR #406 is tagged. The
+        // `Package@swift-6.0.swift` shadow manifest that previously blocked
+        // consumer-set traits has been dropped from `main` — we can now disable
+        // the default-on `CombineSchedulers` trait explicitly. We only request
+        // `Foundation` + `Clocks`; omitting `CombineSchedulers` drops the
+        // transitive `combine-schedulers` dep, which is what was blocking the
+        // WASM build (its `Internal/Lock.swift` uses `pthread_mutex_destroy`,
+        // not available in the WASI SDK).
+        .package(
+            url: "https://github.com/pointfreeco/swift-dependencies",
+            branch: "main",
+            traits: ["Foundation", "Clocks"]
+        ),
         // Fork pinned at the revision that gates the FoundationNetworking import and the
         // two FoundationNetworking-typed CustomDump conformances (`NSURLRequest:
         // CustomDumpRepresentable`, `URLRequest.NetworkServiceType:
@@ -61,13 +67,17 @@ let package = Package(
         //      in favour of relying purely on the (unioned-on) trait gate. Newer
         //      revisions therefore break WASM builds.
         //
-        // d2cd96963deea88de9674d436a01c295944a3166 still has the `#if !os(WASI)` guard
-        // and predates the trait rename to `FoundationNetworking`. Bump when the upstream
-        // PR merges and the fork can be retired in favour of a tagged `pointfreeco/`
-        // release.
+        // 0fc8018b2903e6ce471eb458ab23f8fc0ba6fdf6 is the latest commit on the
+        // fork's PR branch (pointfreeco/swift-custom-dump#164). Keeps the
+        // `#if !os(WASI)` guard and the trait-gated `FoundationNetworking`
+        // import; the trait name matches what upstream `swift-snapshot-testing`
+        // now expects (`FoundationNetworking`, not the old `Networking`), so
+        // SwiftPM's identity-unification of the two `swift-custom-dump`
+        // references resolves cleanly. Bump when the upstream PR merges and the
+        // fork can be retired in favour of a tagged `pointfreeco/` release.
         .package(
             url: "https://github.com/mansbernhardt/swift-custom-dump",
-            revision: "d2cd96963deea88de9674d436a01c295944a3166",
+            revision: "0fc8018b2903e6ce471eb458ab23f8fc0ba6fdf6",
             traits: []
         ),
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "600.0.0"),
@@ -92,11 +102,35 @@ let package = Package(
             dependencies: [
                 "SwiftModel",
                 .product(name: "Dependencies", package: "swift-dependencies"),
-                .product(name: "InlineSnapshotTesting", package: "swift-snapshot-testing", condition: .when(platforms: [.macOS, .linux])),
                 .product(name: "Clocks", package: "swift-clocks"),
                 .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
                 .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
+            ]
+        ),
+        // Split off from `SwiftModelTests` so we can:
+        //   • Skip these on regular CI runs by simply not naming the target (instead
+        //     of `--skip Foo --skip Bar` per file).
+        //   • Run the snapshot / benchmark suites in isolation when iterating on them.
+        //   • Compile-check more of the test surface on platforms that can't host
+        //     `InlineSnapshotTesting` (Apple-only types) — those constraints are now
+        //     contained in `SwiftModelSnapshotTests` only.
+        .testTarget(
+            name: "SwiftModelBenchmarkTests",
+            dependencies: [
+                "SwiftModel",
+                .product(name: "Dependencies", package: "swift-dependencies"),
+                .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
+            ]
+        ),
+        .testTarget(
+            name: "SwiftModelSnapshotTests",
+            dependencies: [
+                "SwiftModel",
+                .product(name: "Dependencies", package: "swift-dependencies"),
+                .product(name: "InlineSnapshotTesting", package: "swift-snapshot-testing", condition: .when(platforms: [.macOS, .linux])),
+                .product(name: "Clocks", package: "swift-clocks"),
+                .product(name: "IssueReportingTestSupport", package: "xctest-dynamic-overlay"),
             ]
         ),
         .macro(

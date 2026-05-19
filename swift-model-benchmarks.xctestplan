@@ -13,15 +13,10 @@
   },
   "testTargets" : [
     {
-      "selectedTags" : {
-        "tags" : [
-          ".benchmark"
-        ]
-      },
       "target" : {
         "containerPath" : "container:",
-        "identifier" : "SwiftModelTests",
-        "name" : "SwiftModelTests"
+        "identifier" : "SwiftModelBenchmarkTests",
+        "name" : "SwiftModelBenchmarkTests"
       }
     }
   ],

@@ -18,9 +18,11 @@ Sources/
     SwiftUI/            # SwiftUI-specific code (guarded with #if canImport(SwiftUI))
   SwiftModelMacros/     # @Model macro implementation (SwiftSyntax-based)
 Tests/
-  SwiftModelTests/      # Main test suite
-  SwiftModelMacroTests/ # Macro expansion tests
-Examples/               # Standalone example apps (each embeds a copy of the library)
+  SwiftModelTests/           # Main test suite (default for regular runs)
+  SwiftModelSnapshotTests/   # InlineSnapshotTesting-based output / diff tests
+  SwiftModelBenchmarkTests/  # Performance benchmarks (skipped from regular runs)
+  SwiftModelMacroTests/      # Macro expansion tests
+Examples/                    # Standalone example apps (each embeds a copy of the library)
 ```
 
 ## Build & test

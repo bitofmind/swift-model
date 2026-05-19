@@ -35,6 +35,13 @@
     },
     {
       "target" : {
+        "containerPath" : "container:",
+        "identifier" : "SwiftModelSnapshotTests",
+        "name" : "SwiftModelSnapshotTests"
+      }
+    },
+    {
+      "target" : {
         "containerPath" : "container:Examples\/CounterFact\/CounterFact.xcodeproj",
         "identifier" : "F61EBCD02786139400F098A8",
         "name" : "CounterFactTests"

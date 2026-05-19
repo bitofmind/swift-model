@@ -49,6 +49,13 @@
       }
     },
     {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "SwiftModelSnapshotTests",
+        "name" : "SwiftModelSnapshotTests"
+      }
+    },
+    {
       "skippedTags" : {
         "tags" : [
           ".benchmark"

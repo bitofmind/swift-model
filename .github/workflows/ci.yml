@@ -35,7 +35,11 @@ jobs:
         # cleanest workaround until swift-testing exposes per-process Task
         # capping. Intra-test race coverage (a model's `node.task` / `forEach` /
         # `onChange` racing the test body) is preserved at any worker count ≥ 1.
-        run: swift test --no-parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks --skip LazyContextBenchmarks
+        # Benchmarks live in `SwiftModelBenchmarkTests` (split off from
+        # `SwiftModelTests`) — skipped from regular CI runs. Run them on-demand
+        # via `swift test --filter SwiftModelBenchmarkTests` or the
+        # `swift-model-benchmarks` Xcode test plan.
+        run: swift test --no-parallel --skip SwiftModelBenchmarkTests
 
   linux:
     name: Linux
@@ -55,7 +59,9 @@ jobs:
       - name: Build and test
         # Run tests serially (--no-parallel) to avoid cooperative thread-pool saturation
         # on the 2-vCPU Linux runner. Parallel race-condition coverage is provided by macOS.
-        run: swift test --no-parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks --skip LazyContextBenchmarks
+        # Benchmarks (`SwiftModelBenchmarkTests`) are skipped — same rationale as the
+        # macOS job; run on-demand via the `swift-model-benchmarks` Xcode test plan.
+        run: swift test --no-parallel --skip SwiftModelBenchmarkTests
 
   android:
     name: Android (aarch64, emulator)
@@ -106,9 +112,13 @@ jobs:
             --checksum 9fa4016ee632c7e9e906608ec3b55cf13dfc4dff44e47574c5af58064dc33fd9
 
       - name: Build SwiftModel for WASM (compile check)
-        # Full test execution is blocked by third-party dependencies:
-        # IssueReportingTestSupport (xctest-dynamic-overlay) is type:.dynamic,
-        # and SnapshotTesting uses Apple-only types — both unsupported on WASM.
+        # Full test execution is blocked by `IssueReportingTestSupport`
+        # (xctest-dynamic-overlay) being `type:.dynamic`, which the WASM SDK
+        # can't link. `SwiftModelSnapshotTests` and `SwiftModelBenchmarkTests`
+        # are split off from `SwiftModelTests` so SnapshotTesting's Apple-only
+        # types are no longer on the main test target's link path — they only
+        # block their own dedicated test targets — but the
+        # `IssueReportingTestSupport` blocker remains for any test target.
         # We compile-check the main library target only. The Android job DOES
         # execute tests on an emulator now (via `skiptools/swift-android-action`),
         # so this is the only "compile-only" target left.

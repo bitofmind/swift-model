@@ -42,7 +42,7 @@ struct MemoizeIsolationTests {
         // a debug collector, or a test access) running during a read of the
         // memoized property. We expect the recorder to see ONLY the memoize
         // sentinel — not `value`, which is read inside `produce`.
-        _ = usingActiveAccess(recorder) {
+        usingActiveAccess(recorder) {
             _ = model.doubled
         }
 
@@ -76,7 +76,7 @@ struct MemoizeIsolationTests {
         model.value = 5
 
         let recorder = RecordingAccess()
-        _ = usingActiveAccess(recorder) {
+        usingActiveAccess(recorder) {
             _ = model.doubled   // hits the dirty-recompute path
         }
 

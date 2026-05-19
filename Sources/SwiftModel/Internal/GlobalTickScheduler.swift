@@ -61,7 +61,7 @@ private let _gtsTraceFile: FileHandle? = {
     guard _gtsTraceEnabled else { return nil }
     let path = "/tmp/swift-model-gts-trace.log"
     if !FileManager.default.fileExists(atPath: path) {
-        FileManager.default.createFile(atPath: path, contents: nil)
+        _ = FileManager.default.createFile(atPath: path, contents: nil)
     }
     return try? FileHandle(forWritingTo: URL(fileURLWithPath: path))
 }()

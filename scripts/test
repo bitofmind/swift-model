@@ -56,9 +56,7 @@ if [[ "${SAW_PARALLEL_FLAG}" -eq 0 ]]; then
     TEST_ARGS+=(--parallel)
 fi
 TEST_ARGS+=(
-    --skip MemoizePerformanceTests
-    --skip CoalescingBenchmarks
-    --skip LazyContextBenchmarks
+    --skip SwiftModelBenchmarkTests
 )
 # EXTRA_ARGS may be empty; guard against `set -u` unbound-array expansion
 # on bash versions that treat empty-array indexing as unset.

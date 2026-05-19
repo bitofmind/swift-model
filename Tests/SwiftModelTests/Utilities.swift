@@ -211,3 +211,28 @@ extension Trait where Self == BackgroundCallIsolationTrait {
     /// observing each other's in-flight `Observed` pipeline updates.
     static var backgroundCallIsolation: Self { Self() }
 }
+
+// MARK: - CapturingIssueReporter
+//
+// Used by `CancellationTests` to assert that specific code paths emit
+// `reportIssue` calls. Duplicated in `Tests/SwiftModelSnapshotTests/` as well
+// (the snapshot target's `AssertIssueSnapshot.swift` defines its own copy)
+// because SwiftPM test targets can't import each other.
+
+/// Collects failure messages from `reportIssue` calls without emitting them as test failures.
+final class CapturingIssueReporter: IssueReporter, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var messages: [String] = []
+
+    func reportIssue(
+        _ message: @autoclosure () -> String?,
+        severity: IssueSeverity,
+        fileID: StaticString,
+        filePath: StaticString,
+        line: UInt,
+        column: UInt
+    ) {
+        let m = message() ?? ""
+        lock.withLock { messages.append(m) }
+    }
+}
