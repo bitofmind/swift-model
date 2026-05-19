@@ -1,5 +1,8 @@
 import Testing
 import Foundation
+#if canImport(Dispatch)
+import Dispatch
+#endif
 @testable import SwiftModel
 
 // MARK: - Keys
@@ -341,7 +344,12 @@ struct ConcurrencyTests {
 
         // After both tasks finish, let the drain loop flush any remaining callbacks.
         // Any pending performUpdate on the removed leaf must be a no-op (not a crash).
-        await backgroundCall.waitUntilIdle(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        #if canImport(Dispatch)
+        let deadlineNs = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+        #else
+        let deadlineNs = UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000) + 5_000_000_000
+        #endif
+        await backgroundCall.waitUntilIdle(deadline: deadlineNs)
 
         // Sanity: the remaining leaf must still be responsive.
         if !container.leaves.isEmpty {

@@ -596,7 +596,7 @@ struct MemoizeDirtyObservationTests {
         // per-test queue. We cannot waitForCurrentItems on the global queue here.
         // Use a generous waitUntil timeout instead so the consumer task has time to
         // receive the value.
-        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        await backgroundCall.waitForCurrentItems(deadline: _monotonicNs() + 5_000_000_000)
 
         // The final value must be observed (20 * 2 = 40)
         // 10 s covers: global queue drain (usually <100 ms) + consumer task scheduling (usually <500 ms).
@@ -612,7 +612,7 @@ struct MemoizeDirtyObservationTests {
             model.value = 20 + i
         }
         // Same two-hop delivery as above; only wait on per-test queue for hop 1.
-        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        await backgroundCall.waitForCurrentItems(deadline: _monotonicNs() + 5_000_000_000)
         // Final value: 40 * 2 = 80
         try await waitUntil(updates.value.contains(80), timeout: 10_000_000_000)
         #expect(updates.value.contains(80), "[\(path)] Subscription must survive a second round of rapid mutations")

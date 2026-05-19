@@ -2,8 +2,24 @@
 import ConcurrencyExtras
 import Dependencies
 import Foundation
+#if canImport(Dispatch)
+import Dispatch
+#endif
 import IssueReporting
 import Testing
+
+/// Monotonic-nanoseconds reader that works on every supported platform —
+/// Dispatch on Apple/Linux/Android, ProcessInfo.systemUptime fallback on WASI
+/// (no Dispatch). The fallback's resolution is coarser but adequate for the
+/// 5s/10s test deadlines this is used for.
+@inline(__always)
+func _monotonicNs() -> UInt64 {
+    #if canImport(Dispatch)
+    return DispatchTime.now().uptimeNanoseconds
+    #else
+    return UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+    #endif
+}
 
 @propertyWrapper
 final class Locked<Value> {
@@ -53,9 +69,9 @@ extension Optional where Wrapped: AnyObject {
     // Returns a closure with a weak capture so the strong reference doesn't prevent deallocation.
     var waitUntilNil: () async -> Void {
         { [weak self] in
-            let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+            let deadline = _monotonicNs() + 5_000_000_000
             while self != nil {
-                if DispatchTime.now().uptimeNanoseconds > deadline {
+                if _monotonicNs() > deadline {
                     reportIssue("waitUntilRemoved timed out after 5s — model was not released. Check for retain cycles.")
                     return
                 }
@@ -65,7 +81,7 @@ extension Optional where Wrapped: AnyObject {
             // onRemoval may still be held in backgroundCall's drain task queue.
             // Wait for those to finish so transitively owned objects (e.g. child
             // context References) are also released before callers assert on them.
-            let idleDeadline = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+            let idleDeadline = _monotonicNs() + 10_000_000_000
             await backgroundCall.waitUntilIdle(deadline: idleDeadline)
         }
     }
