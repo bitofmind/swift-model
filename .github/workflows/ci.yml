@@ -182,17 +182,12 @@ jobs:
             --checksum 9fa4016ee632c7e9e906608ec3b55cf13dfc4dff44e47574c5af58064dc33fd9
 
       - name: Build SwiftModel for WASM (compile check)
-        # We compile-check the main library target first as a fast-fail
-        # gate. The Android job is also compile-only (cross-compiler
-        # index-store bug — see its comment block).
-        #
         # `SWIFTPM_TARGET_WASI=1` tells `Package.swift` to drop every test
         # target except `SwiftModelTests` — see the manifest comment at the
         # bottom of `Package.swift`. The lever exists because WASI's no-
         # dynamic-libraries rule made the package's test-executable link fail
         # whenever `IssueReportingTestSupport` (a `type:.dynamic` product)
-        # was reachable from the test graph. Setting the env var unifies
-        # behaviour across all WASM jobs in this file.
+        # was reachable from the test graph.
         env:
           SWIFTPM_TARGET_WASI: "1"
         run: |
@@ -209,27 +204,19 @@ jobs:
             --swift-sdk swift-6.3-RELEASE_wasm \
             --target SwiftModelTests
 
-      # Test execution on WASM is still blocked by SwiftPM's behaviour around
-      # `type:.dynamic` products: even with `IssueReportingTestSupport`
-      # platform-conditioned out of every test target dep AND most test
-      # targets physically removed by `SWIFTPM_TARGET_WASI=1`, the package
-      # test-executable link plan still tries to build
-      # `libIssueReportingTestSupport.wasm` (the dynamic product) and fails:
+      # Actually running the WASM test bundle is still blocked at the
+      # link stage by SwiftPM auto-materialising the
+      # `IssueReportingTestSupport` (`type:.dynamic`) product into any test
+      # build plan, regardless of platform conditions on consumer-side
+      # target deps. The workaround needs xctest-dynamic-overlay's manifest
+      # to drop the product when an env signal is set; that change has been
+      # prepared on the fork branch
+      #   https://github.com/mansbernhardt/swift-issue-reporting/tree/suppress-dynamic-on-wasi
+      # but can't be wired in here today because the fork's URL basename
+      # is `swift-issue-reporting` and SwiftPM derives package identity
+      # from URL basename — pulling the fork creates a duplicate-product
+      # identity conflict with the upstream `xctest-dynamic-overlay`
+      # identity that comes in transitively via swift-clocks etc.
       #
-      #   error: dynamic libraries are unsupported for target 'wasm32-unknown-wasip1'
-      #   Linking libIssueReportingTestSupport.wasm
-      #
-      # SwiftPM appears to materialise `type:.dynamic` products whenever the
-      # owning package (`xctest-dynamic-overlay`) is reachable in the
-      # resolved graph at all — which it is, because the main `SwiftModel`
-      # library depends on `IssueReporting` (a different, regular product
-      # from the same package). Until either:
-      #   • SwiftPM stops auto-materialising unused `.dynamic` products on
-      #     non-dlopen targets, or
-      #   • `xctest-dynamic-overlay` declares the dynamic product
-      #     platform-conditionally,
-      # we stop at the compile check and don't try to run tests via wasmtime.
-      #
-      # The compile check above still catches regressions in WASM-target
-      # source-level compatibility (Dispatch / Thread / Foundation API
-      # availability), which is the practical value-add for WASM CI today.
+      # Open the upstream PR on pointfreeco/swift-issue-reporting; once
+      # merged + released, we get the env lever without an identity rename.
