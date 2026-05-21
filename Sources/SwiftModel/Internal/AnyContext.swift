@@ -633,9 +633,12 @@ class AnyContext: @unchecked Sendable {
     }
 
     var activeTasks: [(modelName: String, tasks: [(name: String, fileAndLine: FileAndLine)])] {
-        allChildren.reduce(into: cancellationsStore?.activeTasks ?? []) {
-            $0.append(contentsOf: $1.activeTasks)
-        }
+        // Snapshot self's tasks + children under self.lock. `allChildren` walks
+        // `children.values` and `dependencyContexts.values`, both of which are
+        // protected by self.lock for writes. Reading lockless here races with
+        // concurrent `childContext` / `setupModelDependency` inserts.
+        let (selfTasks, snapshot) = lock { (cancellationsStore?.activeTasks ?? [], allChildren) }
+        return snapshot.reduce(into: selfTasks) { $0.append(contentsOf: $1.activeTasks) }
     }
 
     /// Returns the main registrar if the pair has already been allocated AND the main
@@ -961,8 +964,20 @@ class AnyContext: @unchecked Sendable {
     }
 
     func cancelAllRecursively(for id: some Hashable&Sendable) {
-        cancellationsStore?.cancelAll(for: id)
-        forEachChild { $0.cancelAllRecursively(for: id) }
+        // Snapshot children under self.lock to avoid racing against concurrent
+        // `childContext` / `setupModelDependency` writes to `children` and
+        // `dependencyContexts`. Recursion happens on the snapshot, OUTSIDE the
+        // lock — each child takes its own lock when `cancelAllRecursively` enters
+        // it, so we never hold more than one context's lock at a time and stay
+        // consistent with the parent→child lock order used by `addParent` /
+        // `removeParent`.
+        let children = lock {
+            cancellationsStore?.cancelAll(for: id)
+            return allChildren
+        }
+        for child in children {
+            child.cancelAllRecursively(for: id)
+        }
     }
 
     func sealRecursively() {
@@ -970,11 +985,17 @@ class AnyContext: @unchecked Sendable {
         // If we only do `cancellationsStore?.seal()`, a nil store is a no-op and any
         // subsequent lazy creation produces an unsealed store — allowing tasks to register
         // after cancelAllRecursively() has already run.
-        lock {
+        //
+        // Snapshot children under the same lock so the recursive walk doesn't race
+        // against concurrent inserts (same reasoning as `cancelAllRecursively`).
+        let children = lock {
             if cancellationsStore == nil { cancellationsStore = Cancellations() }
             cancellationsStore!.seal()
+            return allChildren
         }
-        forEachChild { $0.sealRecursively() }
+        for child in children {
+            child.sealRecursively()
+        }
     }
 
     var typeDescription: String { fatalError() }
