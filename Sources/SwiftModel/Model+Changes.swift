@@ -733,10 +733,40 @@ private extension ModelNode {
 #endif
                         }
 
+                        // Preserve isDirty across the entry replacement — **but only on
+                        // the coalesced (async) path**.
+                        //
+                        // **Coalesced path (`useCoalescing=true`)**: `performUpdate`
+                        // runs on the BackgroundCallQueue drain task, concurrent with
+                        // ongoing mutations. By the time `update.update(with:index:)`
+                        // calls us, mutations that occurred between when
+                        // `performUpdate` captured `value` (under `last.withValue`) and
+                        // now may have set `entry.isDirty = true` via
+                        // `didModifyCallback`. The captured `value` is potentially
+                        // stale relative to those mutations. Clearing `isDirty` here
+                        // would silently swallow that signal — the cache would then
+                        // hold a stale `value` with `isDirty=false`, and the next
+                        // memoize read would return stale data instead of recomputing.
+                        // (Race observed in `testMemoizeWithNestedModelMutations` under
+                        // parallel load.) The previous code used `usesAsyncTracking`
+                        // as the gate, which produced the correct behaviour for the
+                        // `withObservationTracking` path but the wrong behaviour for
+                        // `accessCollector` + coalescing.
+                        //
+                        // **Non-coalesced path (`useCoalescing=false`)**: `performUpdate`
+                        // runs synchronously inside the setter's `buildPostLockCallbacks`.
+                        // `value` is freshly computed from the post-mutation state, so
+                        // `isDirty=false` is correct — there is no concurrent mutation
+                        // window to race against.
+                        //
+                        // `wrappedOnUpdate` (the sync-recompute path's callback) has
+                        // always preserved `currentEntry.isDirty` because that path runs
+                        // *after* `produce()` on the reader's thread, with the same
+                        // race window — preserving there is correct for the same reason.
                         context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
                             value: value,
                             cancellable: prevCancellable ?? {},
-                            isDirty: usesAsyncTracking && (entry?.isDirty ?? false),
+                            isDirty: useCoalescing && (entry?.isDirty ?? false),
                             onUpdate: wrappedOnUpdate,
                             usesAsyncTracking: usesAsyncTracking,
                             isSame: typeErasedIsSame,
