@@ -966,15 +966,29 @@ class AnyContext: @unchecked Sendable {
     func cancelAllRecursively(for id: some Hashable&Sendable) {
         // Snapshot children under self.lock to avoid racing against concurrent
         // `childContext` / `setupModelDependency` writes to `children` and
-        // `dependencyContexts`. Recursion happens on the snapshot, OUTSIDE the
-        // lock — each child takes its own lock when `cancelAllRecursively` enters
-        // it, so we never hold more than one context's lock at a time and stay
-        // consistent with the parent→child lock order used by `addParent` /
-        // `removeParent`.
-        let children = lock {
-            cancellationsStore?.cancelAll(for: id)
-            return allChildren
-        }
+        // `dependencyContexts`.
+        //
+        // CRITICAL: do NOT call `cancellationsStore?.cancelAll(for: id)` while
+        // holding self.lock. `cancelAll(for:)` invokes `onCancel()` on each
+        // registered cancellable, which for `TaskCancellable` calls
+        // `Task.cancel()` → `swift_task_cancelImpl` → `withStatusRecordLock`.
+        // Inside that status-record lock the runtime propagates cancellation
+        // to child tasks/groups; those child cancellations fire user cancel
+        // callbacks (e.g. `ForceObserver.cancel` → `Context.onModify`'s
+        // unsubscribe closure) that re-enter context locks. If self.lock is
+        // held and a sibling task is already inside `withStatusRecordLock`
+        // waiting for the same self.lock (via its own onModify unsubscribe),
+        // we deadlock: lock-then-status-record on this side vs.
+        // status-record-then-lock on the other side. `Cancellations` has its
+        // own internal NSLock for `registered`/`keyed`, so calling cancelAll
+        // outside self.lock is fully synchronized.
+        //
+        // Recursion runs on the snapshot OUTSIDE the lock as well — each
+        // child takes its own lock when `cancelAllRecursively` enters it, so
+        // we never hold more than one context's lock at a time, matching the
+        // parent→child convention `addParent` / `removeParent` use.
+        let children = lock { allChildren }
+        cancellationsStore?.cancelAll(for: id)
         for child in children {
             child.cancelAllRecursively(for: id)
         }
