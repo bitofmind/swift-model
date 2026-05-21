@@ -436,32 +436,59 @@ class AnyContext: @unchecked Sendable {
     func didModifyParents(callbacks: inout [() -> Void]) {}
 
     func addParent(_ parent: AnyContext, callbacks: inout [() -> Void]) {
-        willModifyParents()
-        parentsLock { weakParents.append(WeakParent(parent: parent)) }
-        anyModificationActiveCount += parent.anyModificationActiveCount
-        didModifyParents(callbacks: &callbacks)
+        // Take `self.lock` for the whole body.
+        //
+        // The caller is the *parent* context, which is holding *its own* lock
+        // (`parent.lock`). For same-hierarchy children, `child.lock === parent.lock`
+        // and the recursive NSRecursiveLock makes this a near-free re-entry. For
+        // *separately-anchored* children grafted into another hierarchy
+        // (`child.lock !== parent.lock`), we'd otherwise mutate `self`'s state
+        // (`willModifyParents`, `didModifyParents` reading `modifyCallbacks`, …)
+        // under the wrong lock — racing against any other thread that touches
+        // `self` under `self.lock`.
+        //
+        // Lock ordering: callers always hold `parent.lock` first, then take
+        // `self.lock` (the child's). This matches the existing ordering at
+        // `Context.swift:childContext` call sites.
+        lock {
+            willModifyParents()
+            parentsLock { weakParents.append(WeakParent(parent: parent)) }
+            anyModificationActiveCount += parent.anyModificationActiveCount
+            didModifyParents(callbacks: &callbacks)
+        }
     }
 
     func removeParent(_ parent: AnyContext, callbacks: inout [() -> Void]) {
-        willModifyParents()
-        var found = false
-        parentsLock {
-            for i in weakParents.indices {
-                if weakParents[i].parent === parent {
-                    weakParents.remove(at: i)
-                    found = true
-                    break
+        // Take `self.lock` for the whole body — same reasoning as `addParent`.
+        //
+        // This also covers the `onRemoval(callbacks:)` recursion at the tail:
+        // when the child's last parent is being removed, `onRemoval(callbacks:)`
+        // tears down `self`'s dictionaries (`_memoizeCache`, `eventContinuations`,
+        // `modifyCallbacks`, …). Without this lock acquisition, a sibling-hierarchy
+        // parent tearing down concurrently would race on the same dictionaries —
+        // the documented heap-use-after-free in the `__NSTaggedDate
+        // doesNotRecognizeSelector countByEnumeratingWithState:` crash signature.
+        lock {
+            willModifyParents()
+            var found = false
+            parentsLock {
+                for i in weakParents.indices {
+                    if weakParents[i].parent === parent {
+                        weakParents.remove(at: i)
+                        found = true
+                        break
+                    }
                 }
             }
-        }
-        if found {
-            anyModificationActiveCount -= parent.anyModificationActiveCount
-        }
+            if found {
+                anyModificationActiveCount -= parent.anyModificationActiveCount
+            }
 
-        didModifyParents(callbacks: &callbacks)
+            didModifyParents(callbacks: &callbacks)
 
-        if parents.isEmpty {
-            onRemoval(callbacks: &callbacks)
+            if parents.isEmpty {
+                onRemoval(callbacks: &callbacks)
+            }
         }
     }
 

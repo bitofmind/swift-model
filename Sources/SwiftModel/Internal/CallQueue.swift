@@ -5,9 +5,8 @@ import Dispatch
 #endif
 
 // - `BackgroundCallQueue` / `backgroundCall`: delivers Observed pipeline updates on a
-//   kernel DispatchQueue thread (Apple/Linux) or Task.detached (WASM). Never touches
-//   the main thread. Supports `isIdle`/`waitUntilIdle()`/`waitForCurrentItems()` for
-//   the test assert loop.
+//   detached cooperative-pool Task. Never touches the main thread. Supports
+//   `isIdle`/`waitUntilIdle()`/`waitForCurrentItems()` for the test assert loop.
 
 // MARK: - Shared State
 
@@ -45,38 +44,17 @@ private func mainCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async 
     }
 }
 
-#if canImport(Dispatch)
-/// GCD-based drain for `BackgroundCallQueue` on Apple and Linux platforms.
+/// Task-based drain for `BackgroundCallQueue`.
 ///
-/// Runs on kernel DispatchQueue threads, which are independent of the Swift cooperative
-/// pool. This avoids an ARC race that occurs when a drain Task on the cooperative pool
-/// holds a live reference to a memoize cache entry while the test task's anchor deinit
-/// simultaneously clears `_memoizeCache` in `AnyContext.onRemoval`.
+/// Earlier iterations dispatched drains through `DispatchQueue.global(.userInitiated)`
+/// to mask a heap-use-after-free in `AnyContext.onRemoval` — see commit a9e240b.
+/// The actual race (cross-hierarchy `removeParent` not acquiring `self.lock`) is now
+/// fixed at the source in `AnyContext.removeParent`/`addParent`, so the drain can go
+/// back to a simple cooperative-pool Task.
 ///
-/// Processes one batch of callbacks per invocation, then reschedules itself on GCD.
-/// When the queue is empty it fires idle callbacks and sets state to nil.
-private func backgroundCallQueueGCDDrain(state: LockIsolated<CallQueueState?>) {
-    let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
-        guard $0 != nil else { return ([], []) }
-        if $0!.calls.isEmpty {
-            $0!.task.cancel()
-            let idle = $0!.onIdleCallbacks
-            $0 = nil
-            return ([], idle)
-        }
-        let batch = $0!.calls
-        $0!.calls.removeAll()
-        return (batch, [])
-    }
-    for f in onIdle { f() }
-    guard !batch.isEmpty else { return }
-    for call in batch { call() }
-    DispatchQueue.global(qos: .userInitiated).async {
-        backgroundCallQueueGCDDrain(state: state)
-    }
-}
-#else
-/// Task-based drain for `BackgroundCallQueue` on WASM (no libdispatch).
+/// Bonus: per-test `BackgroundCallQueue` drains no longer all compete for
+/// `DispatchQueue.global(.userInitiated)`'s bounded kernel pool, removing a
+/// shared-resource contention bottleneck under parallel test load.
 private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
@@ -97,7 +75,6 @@ private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) 
         await Task.yield()
     }
 }
-#endif
 
 // MARK: - Shared idle/wait helpers (used by both queue types)
 
@@ -330,13 +307,7 @@ struct MainCallQueue: @unchecked Sendable {
 
 // MARK: - BackgroundCallQueue
 
-/// Delivers Observed pipeline updates on a background thread.
-///
-/// On platforms with libdispatch (Apple, Linux): drains via `DispatchQueue.global()`,
-/// running on kernel threads independent of the Swift cooperative pool. This avoids an
-/// ARC race where a drain Task on the cooperative pool holds memoize cache references
-/// while the test task's anchor deinit simultaneously clears `_memoizeCache`.
-/// On WASM (no libdispatch): uses `Task.detached` on the single-threaded event loop.
+/// Delivers Observed pipeline updates on a detached cooperative-pool Task.
 struct BackgroundCallQueue: @unchecked Sendable {
     private let state = LockIsolated<CallQueueState?>(nil)
 
@@ -346,19 +317,9 @@ struct BackgroundCallQueue: @unchecked Sendable {
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
         state.withValue {
             if $0 == nil {
-#if canImport(Dispatch)
-                // Use a dummy task for CallQueueState compatibility; the real drain runs
-                // on kernel DispatchQueue threads, independent of the cooperative pool.
-                let dummyTask = Task<(), Never>.detached { }
-                $0 = CallQueueState(task: dummyTask, calls: [callback])
-                DispatchQueue.global(qos: .userInitiated).async {
-                    backgroundCallQueueGCDDrain(state: self.state)
-                }
-#else
                 $0 = CallQueueState(task: Task.detached(priority: .userInitiated) {
                     await backgroundCallQueueDrainLoop(state: self.state)
                 }, calls: [callback])
-#endif
             } else {
                 $0!.calls.append(callback)
             }
