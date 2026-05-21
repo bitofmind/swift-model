@@ -1053,6 +1053,9 @@ class AnyContext: @unchecked Sendable {
     }
 
     func didModify(callbacks: inout [() -> Void], kind: ModificationKind, depth: Int, origin: AnyContext, propertyDescription: (@Sendable () -> String?)? = nil) {
+        // Process self under self.lock — the caller is responsible for holding it
+        // when entering didModify. All entry call sites in Context.swift acquire
+        // self.lock around the call (`buildPostLockCallbacks` and friends).
         _modificationCounts = nil
         guard anyModificationActiveCount > 0 else { return }
 
@@ -1063,8 +1066,53 @@ class AnyContext: @unchecked Sendable {
             }
         }
 
-        for parent in parents {
-            parent.didModify(callbacks: &callbacks, kind: kind, depth: depth + 1, origin: origin, propertyDescription: propertyDescription)
+        // Walk ancestors iteratively, holding at most one ancestor's lock at a time.
+        //
+        // The pre-fix code recursed via `parent.didModify(callbacks:&callbacks, …)`
+        // without acquiring `parent.lock`. For same-hierarchy ancestors
+        // (`parent.lock === self.lock`) NSRecursiveLock re-entry made the
+        // unlocked read safe. For cross-hierarchy ancestors (a separately-
+        // anchored model grafted via `addParent`) `parent.lock !== self.lock`
+        // and the read of `parent.anyModificationCallbacks.values` raced
+        // against concurrent writes to `anyModificationCallbacksStore` —
+        // same `Dictionary` mid-mutation pattern fixed in
+        // `addParent`/`removeParent` (commit 1955172).
+        //
+        // The naive fix — wrap the recursive call in `parent.lock { … }` —
+        // would chain locks `leaf.lock → parent.lock → grandparent.lock → …`,
+        // which is the REVERSE of the `parent.lock → child.lock` order used by
+        // `addParent`/`removeParent` (caller holds parent's lock, callee
+        // acquires child's lock). Cross-hierarchy concurrent invocations would
+        // deadlock: a setter walking didModify upward + a teardown walking
+        // removeParent downward on overlapping context pairs each wait for the
+        // other's lock.
+        //
+        // Iterative walk via an explicit DFS stack resolves this by never
+        // holding more than one ancestor's lock simultaneously. Each
+        // ancestor's contribution (callback dispatch +
+        // `_modificationCounts = nil` reset + parents read) is atomic under
+        // that ancestor's own lock; the lock is released before descending
+        // further. Stack push uses `.reversed()` so the pop order matches the
+        // original recursive DFS (each parent's full ancestor subtree drains
+        // before the next parent's subtree begins). `_ModificationCallbackSource`
+        // is reconstructed per level with the correct `depth`, matching the
+        // recursive form.
+        var stack: [(AnyContext, Int)] = parents.reversed().map { ($0, depth + 1) }
+        while let (current, d) = stack.popLast() {
+            let nextParents = current.lock { () -> [AnyContext] in
+                current._modificationCounts = nil
+                guard current.anyModificationActiveCount > 0 else { return [] }
+                let s = _ModificationCallbackSource(isFinished: false, kind: kind, depth: d, origin: origin, propertyDescription: propertyDescription)
+                for callback in current.anyModificationCallbacks.values {
+                    if let c = callback(s) {
+                        callbacks.append(c)
+                    }
+                }
+                return current.parents
+            }
+            for parent in nextParents.reversed() {
+                stack.append((parent, d + 1))
+            }
         }
     }
 
