@@ -940,7 +940,21 @@ class AnyContext: @unchecked Sendable {
         // on the parent relationship. Using plain `parents` (not `observedParents`) avoids the
         // `willAccessParents()` call at every level, reducing lock hold time and observation overhead.
         reduceHierarchy(for: relation, observeParents: false, transform: \.self, into: ()) { _, context in
-            for continuation in context.eventContinuations.values {
+            // Snapshot `eventContinuations.values` under `context.lock`.
+            //
+            // `reduceHierarchy(observeParents: false, …)` deliberately avoids each
+            // context's hierarchy lock for property-read isolation (see the class-doc
+            // at the top of this file). But `eventContinuationsStore` itself is mutated
+            // under `context.lock` — `events()` inserts new continuations there, and
+            // `onRemoval` clears the dict. Iterating `.values` lockless against those
+            // writers is the same `Dictionary`-mid-mutation pattern that produced the
+            // `__NSTaggedDate doesNotRecognizeSelector` heap-UAF in `onRemoval` before
+            // the `addParent`/`removeParent` lock fix landed.
+            //
+            // Yielding into the continuations happens outside the lock to avoid
+            // holding it across `AsyncStream.Continuation.yield`'s buffer push.
+            let continuations = context.lock { Array(context.eventContinuations.values) }
+            for continuation in continuations {
                 continuation.yield(eventInfo)
             }
         }
