@@ -257,6 +257,67 @@ internal func update<T: Sendable>(
         // Box for performUpdate so observe()'s onChange closure can reference it
         let performUpdateBox = LockIsolated<(@Sendable () -> Void)?>(nil)
 
+        // ── Registration-gap race fix ──────────────────────────────────────────
+        // PERSISTENT shadow `AccessCollector` that lives for the observer's full
+        // lifetime, dispatched via `threadLocals.gapShadowCollector` inside the
+        // observe()-time WOT closure. Closes two complementary gap-races on the
+        // `withObservationTracking` path:
+        //
+        //   Gap A — *intra-observe()*: between the WOT closure returning and
+        //   `onChange` installation. A write that lands here finds no Apple
+        //   listener; the shadow's per-(context, path) `context.onModify`
+        //   subscription, registered synchronously inside `willAccess`, catches
+        //   it.
+        //
+        //   Gap B — *inter-observe()*: between performUpdate clearing
+        //   `hasPendingUpdate` (the previous onChange has already fired and
+        //   consumed itself; it's a one-shot) and the next observe()'s WOT
+        //   installing a fresh onChange. The shadow's subscriptions PERSIST
+        //   across observe() calls, so any write in this window still fires
+        //   them. Without persistence, this window leaks the same way Apple's
+        //   one-shot does.
+        //
+        // The shadow's `onModify` closure feeds `onObservedChange()` directly —
+        // same coalescing dedup (`hasPendingUpdate`) as Apple's `onChange`, so
+        // a write that fires both listeners only triggers one performUpdate.
+        //
+        // Per-(context, path) precision matters: a global counter approach
+        // falsely fires for writes to unrelated properties anywhere in the
+        // process. The shadow only subscribes to properties the user's
+        // `access` closure *actually reads*, so unrelated writes (and writes
+        // to the same context's untracked properties) are correctly ignored.
+        //
+        // The shadow is dispatched via `threadLocals.gapShadowCollector` (not
+        // via `usingActiveAccess`) because the existing `usingActiveAccess(nil)`
+        // + `isInsideMemoizeObserve` machinery must be preserved inside
+        // observe(): setting shadow as the active access would inadvertently
+        // suppress Apple's `registrar.access(...)` via the
+        // `!(isInsideAsyncPerformUpdate && cachedActive != nil)` guard in
+        // `Context.willAccessDirect`, breaking ALL observation.
+        //
+        // Each `observe()` call wraps its WOT in `shadow.reset { ... }` so the
+        // collector diffs the newly-accessed (context, path) set against the
+        // previous one: re-accessed properties keep their existing subscription
+        // (no churn), newly-accessed properties get fresh subscriptions, and
+        // properties no longer accessed have their subscriptions cancelled.
+        // This matches the AccessCollector path's own steady-state behaviour.
+        //
+        // Idea adapted from Apple's `Observation.Observations` AsyncSequence
+        // (SE-0475), which closes the same gap with a `dirty` tombstone bit
+        // checked atomically with iterator-continuation parking. We use a
+        // per-property AccessCollector because our pipeline schedules a
+        // re-run rather than resuming an iterator, and we need per-(context,
+        // path) precision to avoid false positives in observers that read a
+        // subset of a context's properties.
+        //
+        // See `TaskIdSerializationTests.taskIdBodiesNeverRunConcurrently` for
+        // the regression test, and the `_accessCollector` variant for the
+        // diagnostic baseline that demonstrates AccessCollector is naturally
+        // race-free.
+        let shadow = AccessCollector { _, _ in
+            return { onObservedChange() }
+        }
+
         // Shared change handler used by withObservationTracking.onChange.
         @Sendable func onObservedChange() {
             if hasBeenCancelled.value { return }
@@ -307,20 +368,33 @@ internal func update<T: Sendable>(
             // same reads via `registrar.access(...)` — so memoize on iOS 17+ guarantees
             // *freshness dedup* but not full *observation isolation* against the
             // SwiftUI re-render layer.
-            let value = withObservationTracking {
-                usingActiveAccess(nil) {
-                    threadLocals.withValue(true, at: \.isInsideMemoizeObserve) {
-                        access()
+            //
+            // Shadow gap-race detector: see the long doc-comment above the
+            // `let shadow = …` declaration at the top of this branch. The
+            // shadow is dispatched via `threadLocals.gapShadowCollector`
+            // inside `Context.willAccessDirect`, registering a synchronous
+            // per-(context, path) `context.onModify` subscription for every
+            // accessed property. Subscriptions persist across `observe()`
+            // calls via `shadow.reset { … }` semantics so writes in the
+            // inter-observe gap (between previous onChange consuming itself
+            // and the next observe() re-installing) are also caught.
+            return shadow.reset {
+                threadLocals.withValue(shadow, at: \.gapShadowCollector) {
+                    withObservationTracking {
+                        usingActiveAccess(nil) {
+                            threadLocals.withValue(true, at: \.isInsideMemoizeObserve) {
+                                access()
+                            }
+                        }
+                    } onChange: {
+                        // Call didModify immediately when dependency changes (for dirty tracking).
+                        // onChange fires on the withObservationTracking path, which is always asynchronous,
+                        // so threadLocals.forceObservation is never set here. Pass false for now;
+                        // the async path uses ForceObserver + forceNext for touch propagation.
+                        onObservedChange()
                     }
                 }
-            } onChange: {
-                // Call didModify immediately when dependency changes (for dirty tracking).
-                // onChange fires on the withObservationTracking path, which is always asynchronous,
-                // so threadLocals.forceObservation is never set here. Pass false for now;
-                // the async path uses ForceObserver + forceNext for touch propagation.
-                onObservedChange()
             }
-            return value
         }
 
         let performUpdate: @Sendable () -> Void = {
@@ -394,6 +468,11 @@ internal func update<T: Sendable>(
                 // no concurrent release from _memoizeCache.removeAll().
                 performUpdateBox.setValue(nil)
                 forceObserver.cancel()
+                // Cancel the gap-detector shadow's persistent per-(context, path)
+                // subscriptions. Empty reset diffs `added` (empty) against existing,
+                // cancelling every live subscription. See the shadow doc-comment
+                // at the top of this branch for the full rationale.
+                shadow.reset { }
             },
             forceNextUpdate: {
                 forceNext.setValue(true)

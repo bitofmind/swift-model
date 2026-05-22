@@ -117,6 +117,21 @@ final class ThreadLocals: @unchecked Sendable {
     /// is supposed to prevent.
     var isInsideMemoizeObserve = false
 
+    /// When non-nil, `Context.willAccessDirect` ALSO dispatches `willAccess`
+    /// to this collector (in addition to the existing `activeAccess` / Apple
+    /// registrar paths), giving observe()'s gap-race fix a way to register
+    /// per-(context, path) `context.onModify` subscriptions synchronously
+    /// with each read.
+    ///
+    /// Set by `ObservationTracking.observe()` for the `withObservationTracking`
+    /// branch only. Outside that scope this is `nil` and incurs zero cost.
+    /// Dispatched separately from `ModelAccess.active` because that task-local
+    /// is intentionally kept `nil` inside observe() (see the comment block in
+    /// `observe()` for why) — overriding it would inadvertently suppress
+    /// Apple's `registrar.access(...)` via the
+    /// `!(isInsideAsyncPerformUpdate && cachedActive != nil)` guard.
+    var gapShadowCollector: ModelAccess? = nil
+
     var pendingStack = _PendingStackBox()
 
     fileprivate init() {}

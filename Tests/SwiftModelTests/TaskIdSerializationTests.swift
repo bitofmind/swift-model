@@ -52,6 +52,24 @@ struct TaskIdSerializationTests {
     /// the serialization fix in place, `maxConcurrentBodies` stays at 1 no matter how
     /// many times we change `id` while a body is mid-flight.
     @Test func taskIdBodiesNeverRunConcurrently() async {
+        await _taskIdBodiesNeverRunConcurrentlyBody()
+    }
+
+    /// AccessCollector-path variant of the above. Originally added as a
+    /// diagnostic baseline while diagnosing the `withObservationTracking`
+    /// registration-gap race (the AccessCollector path was naturally race-free
+    /// because its `context.onModify` subscriptions register synchronously
+    /// inside `willAccess` rather than after the closure). Kept as a
+    /// permanent regression test for the AccessCollector path, alongside the
+    /// `withObservationTracking` variant above which now also passes thanks
+    /// to the persistent shadow `AccessCollector` in `ObservationTracking.observe()`.
+    @Test func taskIdBodiesNeverRunConcurrently_accessCollector() async {
+        await ModelOption.$current.withValue([.disableObservationRegistrar]) {
+            await _taskIdBodiesNeverRunConcurrentlyBody()
+        }
+    }
+
+    private func _taskIdBodiesNeverRunConcurrentlyBody() async {
         let model = BodyRaceModel().withAnchor()
         // Wait for the initial body (id == 0) to fully complete before pushing more
         // changes. settle() returns when the model has been quiet for the debounce window.

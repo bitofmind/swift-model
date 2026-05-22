@@ -847,6 +847,20 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             }
         }
 
+        // Shadow gap-race detector. When non-nil (set by
+        // `ObservationTracking.observe()`), dispatch willAccess here too so
+        // it can register a synchronous per-(context, path) `context.onModify`
+        // subscription for each read — closing Apple's `withObservationTracking`
+        // registration-gap race. Runs BEFORE the
+        // `isInsideMemoizeObserve` short-circuit because the shadow needs to
+        // see reads even inside memoize observation (that's the whole point).
+        // See `ThreadLocals.gapShadowCollector` for the rationale on why
+        // this can't piggyback on `activeAccess`.
+        if let shadow = threadLocals.gapShadowCollector {
+            let sendableStatePath = unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self)
+            _ = shadow.willAccess(from: self, at: sendableStatePath)
+        }
+
         // Skip the swift-model side `activeAccess.willAccess` dispatch during a
         // memoize's async `observe()` body. The registrar.access above keeps
         // memoize's own `withObservationTracking` tracking intact; this check
