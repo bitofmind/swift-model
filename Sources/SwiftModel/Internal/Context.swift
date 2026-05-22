@@ -677,6 +677,17 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// routes Model/Container writes through `stateTransaction`). The `statePath` is used for
     /// explicit notifications for scalar writes that bypass `stateTransaction`.
     func transaction<Value, T>(at path: WritableKeyPath<M, Value>&Sendable, statePath: WritableKeyPath<M._ModelState, Value>&Sendable, isSame: ((Value, Value) -> Bool)?, modelContext: ModelContext<M>, modify: (inout Value) throws -> T) rethrows -> T {
+        // Lock-order inversion guard — see the matching comment in
+        // `subscript[statePath:isSame:accessBox:]._modify` (line ~990) and
+        // the `transaction(_:)` variant below (line ~1201) for the full
+        // rationale. Acquire `TestAccess.lock` BEFORE `context.lock` to
+        // match the reader's order (`TestAccess → context`); without this
+        // a concurrent `subscript._modify` on another thread can deadlock
+        // against an in-flight transaction that holds `context.lock` and
+        // then tries to acquire `TestAccess.lock` for its nested writes.
+        let writeLockHolder = modelContext.access ?? ModelAccess.current
+        writeLockHolder?.acquireWriteLock()
+        defer { writeLockHolder?.releaseWriteLock() }
         lock.lock()
         let result: T
         do {
@@ -1207,6 +1218,35 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         defer {
             runPostLockCallbacks(postLockCallbacks)
         }
+
+        // Lock-order inversion guard — same shape as the one in
+        // `subscript[statePath:isSame:accessBox:]._modify` (line ~990) and
+        // `stateTransaction` (line ~1047). Acquire `TestAccess.lock` BEFORE
+        // `context.lock` to match the reader's order.
+        //
+        // Without this guard, a deadlock pattern exists:
+        //   Thread A: enters this `transaction`, takes `lock` (context.lock),
+        //     inside `callback` does a property write which goes through
+        //     `stateTransaction` and tries to take `TestAccess.lock` while
+        //     still holding `context.lock` — chain `context → TestAccess`.
+        //   Thread B: enters `subscript._modify` (a regular property write),
+        //     takes `TestAccess.lock` then tries `context.lock` — the
+        //     documented `TestAccess → context` order.
+        // Cross those threads and you have the classic inversion.
+        //
+        // Diagnosed via `testChangeOfChildConcurrency` hanging at the
+        // 30s [TRAIT timeout] cap; `sample` of the hung xctest showed one
+        // cooperative thread holding `TestAccess.lock` waiting for
+        // `context.lock` (the `_modify` side), and another holding
+        // `context.lock` waiting for `TestAccess.lock` (this method's
+        // nested `stateTransaction` call).
+        //
+        // No `accessBox` is available here (caller is `Model.transaction { ... }`),
+        // so we use `ModelAccess.active ?? ModelAccess.current`. In production
+        // both are nil and `acquireWriteLock` is a no-op.
+        let writeLockHolder = ModelAccess.active ?? ModelAccess.current
+        writeLockHolder?.acquireWriteLock()
+        defer { writeLockHolder?.releaseWriteLock() }
 
         return try lock {
             if threadLocals.postTransactions != nil {
