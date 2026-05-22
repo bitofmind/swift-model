@@ -66,6 +66,44 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
     var _hasStartedRunningBox: LockIsolated<Bool>?
     var hasStartedRunning: Bool { _hasStartedRunningBox?.value ?? false }
 
+    /// `true` once the task body has explicitly opted into "long-lived
+    /// consumer" mode by calling `TaskCancellable.markCurrentAsLongLived()`.
+    /// `node.forEach`'s body sets this before entering its `for await`
+    /// loop — once entered, the body is in steady state and `settle()`
+    /// should ignore it.
+    ///
+    /// Combined with `hasStartedRunning` and the registered set, `settle()`
+    /// blocks on tasks satisfying `registered && hasStartedRunning &&
+    /// !isLongLived`. For `node.task { … }` bodies (no opt-in), this stays
+    /// `false` and settle waits for the task to unregister — the right
+    /// behaviour for one-shot `onActivate` work like
+    /// `node.task { await sleep; detailLine = … }` which we want to settle
+    /// AFTER `detailLine` is written, not after the body merely starts
+    /// running.
+    let _isLongLivedBox = LockIsolated(false)
+    var isLongLived: Bool { _isLongLivedBox.value }
+
+    /// Captured by the body wrapper (convenience init) and set as the
+    /// `_currentForSettle` task-local before invoking user operation, so
+    /// nested code (e.g. `_forEachImpl`) can find "the currently-running
+    /// TaskCancellable" to flip its long-lived bit.
+    var _selfRefBox: LockIsolated<TaskCancellable?>?
+
+    /// Task-local pointer to the currently-running `TaskCancellable`, so
+    /// `markCurrentAsLongLived()` can mutate the right instance from
+    /// anywhere on the task's body stack. Set by the convenience init's
+    /// body wrapper for the duration of the user operation.
+    @TaskLocal static var _currentForSettle: TaskCancellable?
+
+    /// Mark the currently-running `TaskCancellable` as a long-lived
+    /// consumer so that `settle()` stops blocking on its completion.
+    /// `node.forEach` calls this before entering its `for await` loop.
+    /// No-op outside a `TaskCancellable` body or after the task has been
+    /// marked already (idempotent).
+    static func markCurrentAsLongLived() {
+        Self._currentForSettle?._isLongLivedBox.setValue(true)
+    }
+
     init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
         self.cancellations = context.cancellations
         let id = context.cancellations.nextId
@@ -119,9 +157,11 @@ extension TaskCancellable {
     }
 
     convenience init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, isDetached: Bool, priority: TaskPriority?, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async throws -> Void, `catch`: (@Sendable (Error) -> Void)?) {
-        // Constructed BEFORE self.init so the factory closure can capture it.
-        // Stored on `self` AFTER self.init completes — see `_hasStartedRunningBox`.
+        // Constructed BEFORE self.init so the factory closure can capture them.
+        // Stored on `self` AFTER self.init completes — see `_hasStartedRunningBox`,
+        // `_selfRefBox`, and `markCurrentAsLongLived`.
         let hasStartedRunningBox = LockIsolated(false)
+        let selfRefBox = LockIsolated<TaskCancellable?>(nil)
 
         self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, context: context) { onDone in
             let contexts = AnyCancellable.contexts
@@ -147,7 +187,15 @@ extension TaskCancellable {
                                     hasStartedRunningBox.setValue(true)
                                     ModelAccess.current?.taskBodyStarted()
 
-                                    try await operation()
+                                    // Install self as `_currentForSettle` for the duration of
+                                    // user operation so nested code (e.g. `_forEachImpl`'s
+                                    // for-await body) can call `markCurrentAsLongLived()` and
+                                    // flip OUR `_isLongLivedBox`. `selfRefBox` is populated
+                                    // after `self.init` returns — by the time this body
+                                    // actually runs, it's non-nil.
+                                    try await TaskCancellable.$_currentForSettle.withValue(selfRefBox.value) {
+                                        try await operation()
+                                    }
                                 }
                             }
                         }
@@ -164,13 +212,10 @@ extension TaskCancellable {
                 return Task(name: taskName, priority: priority, operation: operation)
             }
         }
-        // Install the box on the now-initialised instance. Readers that
-        // grab the cancellable through `Cancellations` after this point
-        // see the box; readers that race the init see `nil` →
-        // `hasStartedRunning` returns its default (`true`), which is
-        // conservatively "fine to settle" — strictly less safe than
-        // gating, but the race window is sub-microsecond.
+        // Install the boxes on the now-initialised instance.
         self._hasStartedRunningBox = hasStartedRunningBox
+        self._selfRefBox = selfRefBox
+        selfRefBox.setValue(self)
     }
 }
 
