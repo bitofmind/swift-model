@@ -345,7 +345,11 @@ public extension ModelNode {
     func transaction<T>(_ callback: () -> T) -> T {
         if let context = _context {
             return ModelAccess.$isInModelTaskContext.withValue(true) {
-                context.transaction(callback)
+                // Use the same writeLockHolder chain that `stateTransaction`
+                // uses for nested property writes — see the comment block in
+                // `Context.transaction(writeLockHolder:_:)`.
+                let writeLockHolder = ModelAccess.active ?? _$modelContext._access._reference?.access ?? ModelAccess.current
+                return context.transaction(writeLockHolder: writeLockHolder, callback)
             }
         } else {
             return callback()

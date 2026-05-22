@@ -1209,7 +1209,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    func transaction<T>(_ callback: () throws -> T) rethrows -> T {
+    func transaction<T>(writeLockHolder: ModelAccess?, _ callback: () throws -> T) rethrows -> T {
         if reference.isDestructed {
             return try callback()
         }
@@ -1221,7 +1221,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
         // Lock-order inversion guard — same shape as the one in
         // `subscript[statePath:isSame:accessBox:]._modify` (line ~990) and
-        // `stateTransaction` (line ~1047). Acquire `TestAccess.lock` BEFORE
+        // `stateTransaction` (line ~1058). Acquire `TestAccess.lock` BEFORE
         // `context.lock` to match the reader's order.
         //
         // Without this guard, a deadlock pattern exists:
@@ -1234,17 +1234,22 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         //     documented `TestAccess → context` order.
         // Cross those threads and you have the classic inversion.
         //
-        // Diagnosed via `testChangeOfChildConcurrency` hanging at the
-        // 30s [TRAIT timeout] cap; `sample` of the hung xctest showed one
-        // cooperative thread holding `TestAccess.lock` waiting for
-        // `context.lock` (the `_modify` side), and another holding
-        // `context.lock` waiting for `TestAccess.lock` (this method's
-        // nested `stateTransaction` call).
+        // CRITICAL: `writeLockHolder` MUST be computed by the caller using
+        // the SAME chain that `stateTransaction` will use inside the
+        // callback — `ModelAccess.active ?? accessBox._reference?.access ??
+        // ModelAccess.current`. Otherwise this method holds one `TestAccess`
+        // instance's lock while the nested `stateTransaction` picks a
+        // different one (when stamped access differs from `ModelAccess.current`),
+        // re-introducing the same inversion via two distinct `NSRecursiveLock`s
+        // — `NSRecursiveLock` allows re-entry only on identity, not "any
+        // TestAccess".
         //
-        // No `accessBox` is available here (caller is `Model.transaction { ... }`),
-        // so we use `ModelAccess.active ?? ModelAccess.current`. In production
-        // both are nil and `acquireWriteLock` is a no-op.
-        let writeLockHolder = ModelAccess.active ?? ModelAccess.current
+        // The first fix attempt (commit fa4fdea) used
+        // `ModelAccess.active ?? ModelAccess.current` here, which dropped
+        // the `accessBox._reference?.access` middle term and re-introduced
+        // the deadlock in `testChangeOfChildConcurrency` on the very next
+        // x1000 stress run. Threading the chain through the caller (which
+        // has the accessBox) closes that gap.
         writeLockHolder?.acquireWriteLock()
         defer { writeLockHolder?.releaseWriteLock() }
 

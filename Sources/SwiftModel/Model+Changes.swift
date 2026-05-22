@@ -578,8 +578,13 @@ private extension ModelNode {
                 return existingEntry.value as! T
             }
 
-            // First access: set up tracking with didModify callback
-            let (cancellable, forceNextUpdate) = context.transaction {
+            // First access: set up tracking with didModify callback.
+            // memoize setup doesn't issue user-property writes via stateTransaction,
+            // so we don't need an accessBox here — pass the same `active ?? current`
+            // chain `Context.transaction` uses as a fallback. See the long
+            // comment block at `Context.transaction(writeLockHolder:_:)`.
+            let memoizeWriteLockHolder = ModelAccess.active ?? ModelAccess.current
+            let (cancellable, forceNextUpdate) = context.transaction(writeLockHolder: memoizeWriteLockHolder) {
                 // Enable coalescing by default to batch multiple dependency changes during transactions
                 // Can be disabled via ModelOption.disableMemoizeCoalescing for testing
                 let useCoalescing = !context.options.contains(.disableMemoizeCoalescing)
