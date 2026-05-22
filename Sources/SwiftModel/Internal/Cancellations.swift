@@ -83,29 +83,17 @@ final class Cancellations: @unchecked Sendable {
         }
     }
 
-    /// True if any registered `TaskCancellable` is in its "initial pass" —
-    /// i.e. either:
-    ///   • the body has not yet been scheduled past its first CPU slot
-    ///     (`!hasStartedRunning`), OR
-    ///   • the body has started but the task has not opted into long-lived
-    ///     consumer mode (`!isLongLived`) and so settle should wait for the
-    ///     body to complete (and unregister) before declaring quiet.
-    ///
-    /// Long-lived consumers (`node.forEach`'s for-await body, equivalents)
-    /// call `TaskCancellable.markCurrentAsLongLived()` before suspending on
-    /// their first `await`, which flips `isLongLived = true` and excludes
-    /// them from this gate so they don't block settle indefinitely.
-    /// One-shot tasks (`node.task { await x; y = … }`) never opt in, so
-    /// settle waits for their full body — including any `await sleep` —
-    /// to finish, then unregister.
-    ///
-    /// Used by `TestAccess.settle()` (`_fireDeadline` / `_fireBgIdle`).
+    /// True if any registered `TaskCancellable` has not yet had its body
+    /// scheduled past its first CPU slot. Used by `TestAccess.settle()` to
+    /// hold open the quiet window until every freshly-registered task has at
+    /// least started running — otherwise an `onActivate` task that's still
+    /// sitting in the cooperative pool's queue can write a tracked property
+    /// AFTER settle's exhaustivity baseline has been reset.
+    /// See `TaskCancellable.hasStartedRunning` and
+    /// `ModelAccess.taskBodyStarted`.
     var hasPendingStartTask: Bool {
         lock {
-            registered.values.contains { c in
-                guard let task = c as? TaskCancellable else { return false }
-                return !task.hasStartedRunning || !task.isLongLived
-            }
+            registered.values.contains { ($0 as? TaskCancellable)?.hasStartedRunning == false }
         }
     }
 

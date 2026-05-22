@@ -282,9 +282,6 @@ public extension ModelNode {
         let cancelPreviousKey = UUID()
 
         return task(name, function: function, isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column) {
-            // Long-lived consumer — see the matching call in the `forEach`
-            // path below for the rationale.
-            TaskCancellable.markCurrentAsLongLived()
             for await newValue in Observed(initial: initial, removeDuplicates: removeDuplicates, coalesceUpdates: coalesceUpdates, idClosure) {
                 guard !Task.isCancelled, !context.isDestructed else { return }
 
@@ -332,12 +329,6 @@ public extension ModelNode {
 
         guard cancelPrevious else {
             return task(name, function: function, isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column, operation: {
-                // Opt this `TaskCancellable` out of `settle()`'s wait-for-completion
-                // gate: a `forEach` body is a long-lived consumer that sits in
-                // `for await` indefinitely. Without this, `settle()` would block
-                // forever waiting for it to unregister. See `TaskCancellable.markCurrentAsLongLived()`
-                // and `Cancellations.hasPendingStartTask`.
-                TaskCancellable.markCurrentAsLongLived()
                 for try await value in sequence {
                     guard !Task.isCancelled, !context.isDestructed else { return }
 
@@ -360,10 +351,6 @@ public extension ModelNode {
         let innerTaskName = name ?? "\(function) @ \(fileAndLine.description)"
 
         let cancellable = task(name, function: function, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column) {
-            // Long-lived consumer — same rationale as the simple `forEach`
-            // body above. The `for try await` loop below sits indefinitely
-            // waiting for stream values; settle must not block on it.
-            TaskCancellable.markCurrentAsLongLived()
             // Behaviour B (body serialization). When `cancelPrevious: true`, we cancel the
             // previous body's underlying Task AND await its full exit before spawning the
             // next one. Without the await, the cancelled body's sync tail (after its last
