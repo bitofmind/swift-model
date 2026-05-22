@@ -91,6 +91,18 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
     func acquireWriteLock() {}
     func releaseWriteLock() {}
 
+    /// Called from the prelude of every `TaskCancellable`'s body — i.e. the
+    /// FIRST time the task actually gets a CPU slot after being scheduled.
+    /// Used by `TestAccess.settle()` to keep its quiet window open until
+    /// every freshly-registered task has had a chance to execute at least
+    /// once. Without this, settle would happily declare "quiet" while an
+    /// `onActivate` task was still sitting in the cooperative pool waiting
+    /// to be scheduled, then the task would later run and write a property
+    /// AFTER settle's exhaustivity baseline had been reset.
+    ///
+    /// Default: no-op. `TestAccess` overrides to fire `_noteActivity`.
+    func taskBodyStarted() {}
+
     var shouldPropagateToChildren: Bool { false }
 
     /// Returns the `ModelAccess` to install on a child model when propagating observation.

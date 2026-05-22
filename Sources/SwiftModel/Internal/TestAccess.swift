@@ -394,6 +394,16 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Called from the prelude of every `TaskCancellable`'s body (first CPU
+    /// slot after `Task { … }` was scheduled). Fires `_noteActivity` so the
+    /// quiet window re-arms — combined with the `hasPendingStartTask` gate
+    /// in `_fireDeadline`, this guarantees `settle()` keeps waiting through
+    /// the registration→first-execution gap of any newly-spawned task.
+    /// See `ModelAccess.taskBodyStarted` for the rationale.
+    override func taskBodyStarted() {
+        _noteActivity()
+    }
+
     override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
         guard let path = path as? WritableKeyPath<M._ModelState, Value> else { return nil }
 
@@ -1138,9 +1148,37 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             case .predicate, .debounce:
                 _pendingExpects.remove(at: idx)
                 return pending.continuation
-            case .settled(_, let bg):
+            case .settled(let quietWindowNs, let bg):
                 let now = monotonicNanoseconds()
                 let pastBudget = now >= pending.totalBudgetEndNs
+
+                // Pending-start gate: if any registered TaskCancellable's
+                // body hasn't begun executing yet, do NOT declare quiet —
+                // an `onActivate` task still queued in the cooperative pool
+                // would write a property after settle returned, surviving
+                // to the exhaustivity check as an unasserted modification
+                // (see `ModelAccess.taskBodyStarted` for the full rationale).
+                //
+                // We can't observe "task body started" as a discrete event
+                // here, but `taskBodyStarted` on the same TestAccess fires
+                // `_noteActivity`, which re-arms the GTS deadline — so when
+                // the body finally runs we'll re-fire this deadline and
+                // re-check. As a belt-and-suspenders, if no
+                // `_noteActivity` arrives, we still re-arm with one quiet
+                // window so we keep polling rather than hang forever on a
+                // task that never schedules (the total budget catches that
+                // case as a normal settle timeout).
+                if !pastBudget && context.hasPendingStartTask {
+                    let candidate = now &+ quietWindowNs
+                    let newDeadline = candidate < pending.totalBudgetEndNs ? candidate : pending.totalBudgetEndNs
+                    pending.deadlineNs = newDeadline
+                    let entryId = pending.id
+                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline) { [weak self] in
+                        self?._fireDeadline(pendingId: entryId)
+                    }
+                    return nil
+                }
+
                 if pastBudget || bg.isIdle {
                     _pendingExpects.remove(at: idx)
                     return pending.continuation
@@ -1181,6 +1219,22 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             // Activity re-armed the GTS deadline after the bg-idle
             // wrapper fired — this fire is stale; keep waiting.
             if pending.deadlineCancel != nil {
+                return nil
+            }
+            // Pending-start gate (same rationale as `_fireDeadline`'s
+            // `.settled` branch): even with bg idle, if a registered
+            // `TaskCancellable` body hasn't executed once yet, we must
+            // keep waiting. Re-arm GTS and abandon this fire.
+            if case .settled(let quietWindowNs, _) = pending.mode, context.hasPendingStartTask {
+                let now = monotonicNanoseconds()
+                let candidate = now &+ quietWindowNs
+                let newDeadline = candidate < pending.totalBudgetEndNs ? candidate : pending.totalBudgetEndNs
+                pending.deadlineNs = newDeadline
+                let entryId = pending.id
+                pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline) { [weak self] in
+                    self?._fireDeadline(pendingId: entryId)
+                }
+                pending.bgIdleCancel = nil
                 return nil
             }
             pending.bgIdleCancel = nil

@@ -641,6 +641,17 @@ class AnyContext: @unchecked Sendable {
         return snapshot.reduce(into: selfTasks) { $0.append(contentsOf: $1.activeTasks) }
     }
 
+    /// True if any context in this subtree has a `TaskCancellable` whose body
+    /// has not yet started running. Used by `TestAccess.settle()` to keep its
+    /// quiet window open until every freshly-registered task has had a chance
+    /// to execute at least once — see `Cancellations.hasPendingStartTask`.
+    var hasPendingStartTask: Bool {
+        // Same lock-protected snapshot pattern as `activeTasks`.
+        let (selfPending, snapshot) = lock { (cancellationsStore?.hasPendingStartTask ?? false, allChildren) }
+        if selfPending { return true }
+        return snapshot.contains { $0.hasPendingStartTask }
+    }
+
     /// Returns the main registrar if the pair has already been allocated AND the main
     /// channel has been created (lazy), or nil otherwise.
     /// `_registrarBox` is a `let` constant; `_main` is `nonisolated(unsafe)` with single

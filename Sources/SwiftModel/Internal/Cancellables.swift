@@ -48,6 +48,24 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
     let lock = NSLock()
     var hasBeenCancelled = false
 
+    /// `true` once the wrapped Task's body has begun executing on the
+    /// cooperative pool. Read by `TestAccess.settle()` (via
+    /// `Cancellations.hasPendingStartTask` and `AnyContext.hasPendingStartTask`)
+    /// to keep its quiet window open until every freshly-registered task has
+    /// had at least one CPU slot. See the `ModelAccess.taskBodyStarted`
+    /// doc-comment for why this matters.
+    ///
+    /// Set via a `LockIsolated<Bool>` captured by the body wrapper in the
+    /// convenience init (see below). The box is created BEFORE `self.init`
+    /// runs (since the factory closure is constructed before designated-init
+    /// completes), then stored on the instance afterwards. The brief window
+    /// where `register(self)` has run inside the designated init but
+    /// `_hasStartedRunningBox` is still `nil` reports `hasStartedRunning ==
+    /// false` (the safe default — settle keeps waiting), so a settle racing
+    /// this init never declares quiet prematurely.
+    var _hasStartedRunningBox: LockIsolated<Bool>?
+    var hasStartedRunning: Bool { _hasStartedRunningBox?.value ?? false }
+
     init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
         self.cancellations = context.cancellations
         let id = context.cancellations.nextId
@@ -101,6 +119,10 @@ extension TaskCancellable {
     }
 
     convenience init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, isDetached: Bool, priority: TaskPriority?, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async throws -> Void, `catch`: (@Sendable (Error) -> Void)?) {
+        // Constructed BEFORE self.init so the factory closure can capture it.
+        // Stored on `self` AFTER self.init completes — see `_hasStartedRunningBox`.
+        let hasStartedRunningBox = LockIsolated(false)
+
         self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, context: context) { onDone in
             let contexts = AnyCancellable.contexts
             let operation = { @Sendable in
@@ -115,6 +137,16 @@ extension TaskCancellable {
                                     defer { onDone() }
 
                                     guard !Task.isCancelled, !context.isDestructed else { return }
+
+                                    // Signal that the body has now actually started executing —
+                                    // see `ModelAccess.taskBodyStarted` and
+                                    // `TaskCancellable._hasStartedRunningBox`. Setting the box
+                                    // BEFORE notifying the access avoids a window where settle
+                                    // could re-check `hasPendingStartTask`, see this task still
+                                    // not-started, and re-arm pointlessly.
+                                    hasStartedRunningBox.setValue(true)
+                                    ModelAccess.current?.taskBodyStarted()
+
                                     try await operation()
                                 }
                             }
@@ -125,13 +157,20 @@ extension TaskCancellable {
                     `catch`?(error)
                 }
             }
-            
+
             if isDetached {
                 return Task.detached(name: taskName, priority: priority, operation: operation)
             } else {
                 return Task(name: taskName, priority: priority, operation: operation)
             }
         }
+        // Install the box on the now-initialised instance. Readers that
+        // grab the cancellable through `Cancellations` after this point
+        // see the box; readers that race the init see `nil` →
+        // `hasStartedRunning` returns its default (`true`), which is
+        // conservatively "fine to settle" — strictly less safe than
+        // gating, but the race window is sub-microsecond.
+        self._hasStartedRunningBox = hasStartedRunningBox
     }
 }
 
