@@ -318,7 +318,36 @@ internal func update<T: Sendable>(
             return { onObservedChange() }
         }
 
-        // Shared change handler used by withObservationTracking.onChange.
+        // Shared change handler used by withObservationTracking.onChange AND by the
+        // shadow's `onModify` post-callback. Three deferral tiers determine when
+        // `performUpdate` is enqueued onto the background drain queue:
+        //
+        // 1. Inside a `node.transaction { … }`: append to `threadLocals.postTransactions`.
+        //    Drained when the transaction defer runs (still under the context lock,
+        //    before `lock.unlock()`).
+        //
+        // 2. Inside a single-write lock-held window (`threadLocals.lockHeldBackgroundCalls
+        //    != nil`): append to that array. Drained on the SAME thread after the
+        //    writer's `lock.unlock()` and `runPostLockCallbacks` finish. This matches
+        //    what `AccessCollector` already does naturally — it returns the
+        //    `backgroundCallQueue(performUpdate)` as a post-callback rather than
+        //    enqueuing it inline.
+        //
+        // 3. Outside both (e.g. a touch-driven force fire, a memoize initial
+        //    activation): enqueue inline.
+        //
+        // Why tier 2 matters: `performUpdate`'s `last.withValue` clears
+        // `hasPendingUpdate = false` BEFORE calling `observe()` (must clear before
+        // observe() to avoid losing notifications — see performUpdate's comment).
+        // If `performUpdate` starts running on the cooperative pool while the writer
+        // still holds the context lock, it can clear the flag in that "between" gap.
+        // A subsequent shadow `onModify` post-callback for the same write — running
+        // on the writer thread immediately after lock release — then reads the
+        // just-cleared flag and schedules a duplicate `performUpdate`. Deferring the
+        // enqueue until after the writer's lock-held + post-callback phases ensures
+        // both Apple's onChange schedule and the shadow's schedule have completed
+        // their dedup against the SAME hasPendingUpdate snapshot before
+        // `performUpdate` can start touching it.
         @Sendable func onObservedChange() {
             if hasBeenCancelled.value { return }
             didModify?(false)
@@ -334,12 +363,26 @@ internal func update<T: Sendable>(
 
             guard shouldSchedule, let performUpdate = performUpdateBox.value else { return }
 
-            if threadLocals.postTransactions != nil {
-                threadLocals.postTransactions!.append { _ in
+            // Schedule the enqueue, choosing the most-deferred tier available.
+            // The closure that actually calls `backgroundCallQueue(performUpdate)`
+            // re-checks `lockHeldBackgroundCalls` AT INVOCATION TIME so that the
+            // postTransactions tier (drained UNDER LOCK before the outer
+            // `lockHeldBackgroundCalls` drain) still routes through the
+            // lock-held deferral — otherwise the postTx-tier enqueue races
+            // against the writer's outer post-callback drain.
+            let enqueue: @Sendable () -> Void = {
+                if threadLocals.lockHeldBackgroundCalls != nil {
+                    threadLocals.lockHeldBackgroundCalls!.append {
+                        backgroundCallQueue(performUpdate)
+                    }
+                } else {
                     backgroundCallQueue(performUpdate)
                 }
+            }
+            if threadLocals.postTransactions != nil {
+                threadLocals.postTransactions!.append { _ in enqueue() }
             } else {
-                backgroundCallQueue(performUpdate)
+                enqueue()
             }
         }
 

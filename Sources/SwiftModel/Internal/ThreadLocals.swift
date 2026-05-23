@@ -117,6 +117,49 @@ final class ThreadLocals: @unchecked Sendable {
     /// is supposed to prevent.
     var isInsideMemoizeObserve = false
 
+    /// When non-nil, `ObservationTracking.onObservedChange` defers its
+    /// `backgroundCallQueue(performUpdate)` enqueue into this array instead
+    /// of enqueuing inline. Used by all write paths (`Context.subscript._modify`,
+    /// `Context.stateTransaction`, `Context.transaction(at:...)` and
+    /// `Context.transaction(writeLockHolder:_:)`) to ensure that `performUpdate`
+    /// does not start running on the cooperative pool until after the writer's
+    /// lock-held + post-callback phases have completed.
+    ///
+    /// **The race this closes** — the `withObservationTracking` observation path
+    /// has two listeners that both schedule `performUpdate` on the same writer:
+    ///
+    ///   1. Apple's `withObservationTracking.onChange` (one-shot) — fires
+    ///      synchronously inside `invokeDidModifyDirect` (registrar.willSet
+    ///      callback dispatch) while the writer holds the context lock.
+    ///   2. The shadow `AccessCollector` (gap-race detector, persistent
+    ///      per-(context, path) subscription) — registered as a `context.onModify`
+    ///      modifyCallback; fires as a *post-callback* via `runPostLockCallbacks`
+    ///      *after* the writer releases the lock.
+    ///
+    /// Both call `onObservedChange`, which dedups via a shared `hasPendingUpdate`
+    /// flag. If `performUpdate` starts running on the cooperative pool between
+    /// Apple's onChange and the shadow's post-callback (a tight window that opens
+    /// the moment Apple's onChange enqueues), it can clear `hasPendingUpdate=false`
+    /// (it must clear BEFORE the next `observe()` re-registration to avoid losing
+    /// the next write — see the comment in `performUpdate`). The shadow's
+    /// post-callback then reads the just-cleared flag and schedules a duplicate
+    /// `performUpdate` for the same write Apple already handled.
+    ///
+    /// Deferring the enqueue serialises both schedules against the writer's
+    /// lock-held + post-callback window — by the time `performUpdate` can start,
+    /// every `onObservedChange` for the current write has already made its dedup
+    /// decision against the same `hasPendingUpdate` snapshot. This matches what
+    /// the `AccessCollector` observation path already does naturally: its
+    /// `onModify` returns the `backgroundCallQueue(performUpdate)` as a
+    /// post-callback that `runPostLockCallbacks` invokes after lock release, so
+    /// `performUpdate` never starts mid-write.
+    ///
+    /// Drained on the same thread, at the end of the outermost write, after the
+    /// lock has been released and `runPostLockCallbacks` has finished. Nested
+    /// writes share the outer scope's array — they append but don't drain. Items
+    /// are invoked in registration order.
+    var lockHeldBackgroundCalls: [() -> Void]? = nil
+
     /// When non-nil, `Context.willAccessDirect` ALSO dispatches `willAccess`
     /// to this collector (in addition to the existing `activeAccess` / Apple
     /// registrar paths), giving observe()'s gap-race fix a way to register

@@ -688,6 +688,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let writeLockHolder = modelContext.access ?? ModelAccess.current
         writeLockHolder?.acquireWriteLock()
         defer { writeLockHolder?.releaseWriteLock() }
+        // Defer `ObservationTracking.onObservedChange` enqueues until this write's
+        // lock-held + postLockCallbacks phases finish. See the helper definitions
+        // (`beginLockHeldBackgroundCallsScope` / `endLockHeldBackgroundCallsScope`)
+        // and `ThreadLocals.lockHeldBackgroundCalls` for rationale.
+        let lhbcOwned = beginLockHeldBackgroundCallsScope()
+        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
         lock.lock()
         let result: T
         do {
@@ -1005,6 +1011,15 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             let writeLockHolder = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
             writeLockHolder?.acquireWriteLock()
             defer { writeLockHolder?.releaseWriteLock() }
+            // Defer `ObservationTracking.onObservedChange`'s `backgroundCallQueue(performUpdate)`
+            // enqueue until AFTER this write's lock-held + postLockCallbacks phases finish.
+            // See the helper definitions (`beginLockHeldBackgroundCallsScope` /
+            // `endLockHeldBackgroundCallsScope`) and `ThreadLocals.lockHeldBackgroundCalls`
+            // for the rationale on why an inline enqueue races against the writer's
+            // own dedup decisions (shadow `onModify`'s `hasPendingUpdate` check vs
+            // `performUpdate`'s clear).
+            let lhbcOwned = beginLockHeldBackgroundCallsScope()
+            defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
             lock.lock()
             if unprotectedIsDestructed {
                 if reference._stateCleared {
@@ -1063,6 +1078,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let writeLockHolder = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
         writeLockHolder?.acquireWriteLock()
         defer { writeLockHolder?.releaseWriteLock() }
+        // Defer `ObservationTracking.onObservedChange` enqueues until this write's
+        // lock-held + postLockCallbacks phases finish. See the helper definitions
+        // (`beginLockHeldBackgroundCallsScope` / `endLockHeldBackgroundCallsScope`)
+        // and `ThreadLocals.lockHeldBackgroundCalls` for rationale.
+        let lhbcOwned = beginLockHeldBackgroundCallsScope()
+        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
         lock.lock()
         let result: T
         if unprotectedIsDestructed {
@@ -1213,6 +1234,22 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         if reference.isDestructed {
             return try callback()
         }
+
+        // Defer `ObservationTracking.onObservedChange` enqueues until the entire
+        // transaction (lock-held callback + post-transaction defer drain + outer
+        // postLockCallbacks) has completed. See `ThreadLocals.lockHeldBackgroundCalls`
+        // for why this matters — without it, `performUpdate` (queued during the
+        // transaction's defer drain) can start running on the cooperative pool
+        // and clear `hasPendingUpdate` while the outer postLockCallbacks (which
+        // include shadow `onObservedChange` invocations on the WOT path) are still
+        // running, causing those shadow callbacks to schedule duplicate
+        // performUpdates against the just-cleared flag.
+        //
+        // This defer is registered FIRST so it runs LAST (LIFO) — after
+        // `runPostLockCallbacks` below, ensuring all observation dedup decisions
+        // have completed before any `performUpdate` is enqueued.
+        let lhbcOwned = beginLockHeldBackgroundCallsScope()
+        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
 
         var postLockCallbacks: [() -> Void] = []
         defer {
@@ -2009,3 +2046,28 @@ func runPostLockCallbacks(_ callbacks: [() -> Void]?) {
     threadLocals.postLockFlushes = nil
     for f in flushes { f() }
 }
+
+/// Begin a `lockHeldBackgroundCalls` scope on the current thread. Returns `true`
+/// if the scope was newly opened (caller owns the drain); `false` if a scope was
+/// already open (caller is nested — the outer caller will drain).
+///
+/// Paired with `endLockHeldBackgroundCallsScope`. See `ThreadLocals.lockHeldBackgroundCalls`
+/// for rationale.
+func beginLockHeldBackgroundCallsScope() -> Bool {
+    if threadLocals.lockHeldBackgroundCalls == nil {
+        threadLocals.lockHeldBackgroundCalls = []
+        return true
+    }
+    return false
+}
+
+/// Close a `lockHeldBackgroundCalls` scope opened by `beginLockHeldBackgroundCallsScope`.
+/// If `owned` is `true`, drains the accumulated calls on the current thread and clears
+/// the scope. If `false`, this is a no-op (the nested caller's outer scope will drain).
+func endLockHeldBackgroundCallsScope(_ owned: Bool) {
+    guard owned else { return }
+    let calls = threadLocals.lockHeldBackgroundCalls!
+    threadLocals.lockHeldBackgroundCalls = nil
+    for f in calls { f() }
+}
+
