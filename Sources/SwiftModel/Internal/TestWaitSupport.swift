@@ -92,10 +92,20 @@ extension TestAccess {
         //     `budgetEndNs`: if `now < budgetEndNs` we settled inside the
         //     budget; otherwise the 5 s hard cap exhausted and we report
         //     the diagnostic (in non-cleanup mode).
+        // Cleanup settle uses `.responsive` callback priority — by this
+        // point `cancelAllRecursively` has torn down the active tasks
+        // and the 200 ms cleanup window already absorbs cancel-handler
+        // writes, so we don't need the `.background`-queue hop here.
+        // Without this, every test's teardown stalls behind the
+        // `.background` queue's drain cadence and parallel tests
+        // finish in synchronised clusters (~2 s, ~3 s, ~3.5 s buckets).
+        // In-test settle keeps the default `.deferential` priority to
+        // close the toggleExpanded class of race.
         let outcome = await awaitSettled(
             quietWindowNs: window,
             totalBudgetNs: totalBudgetNs,
-            bg: backgroundCall
+            bg: backgroundCall,
+            priority: cleanup ? .responsive : .deferential
         )
         switch outcome {
         case .cancelled:

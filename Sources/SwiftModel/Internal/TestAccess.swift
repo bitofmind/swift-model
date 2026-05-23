@@ -16,6 +16,35 @@ private func monotonicNanoseconds() -> UInt64 {
     #endif
 }
 
+// MARK: - Settle trace logging (set SWIFT_MODEL_GTS_TRACE=1 to enable)
+//
+// Temporary diagnostic. Pairs with `_gtsTrace` in GlobalTickScheduler so we
+// can correlate "settle armed deadline at T+50ms" with the actual GTS
+// `tick fired …lateMs=…` line. Validates that `.background` QoS does what
+// we think it does. Remove (or gate on a separate verbose flag) once the
+// design is stable.
+
+private let _settleTraceEnabled: Bool = {
+    ProcessInfo.processInfo.environment["SWIFT_MODEL_GTS_TRACE"] == "1"
+}()
+private let _settleTraceLock = NSLock()
+private let _settleTraceFile: FileHandle? = {
+    guard _settleTraceEnabled else { return nil }
+    let path = "/tmp/swift-model-settle-trace.log"
+    if !FileManager.default.fileExists(atPath: path) {
+        _ = FileManager.default.createFile(atPath: path, contents: nil)
+    }
+    return try? FileHandle(forWritingTo: URL(fileURLWithPath: path))
+}()
+@inline(__always)
+private func _settleTrace(_ msg: @autoclosure () -> String) {
+    guard _settleTraceEnabled, let fh = _settleTraceFile else { return }
+    let line = "[\(monotonicNanoseconds())] \(msg())\n"
+    _settleTraceLock.withLock {
+        try? fh.write(contentsOf: Data(line.utf8))
+    }
+}
+
 /// Suspends briefly and resumes on the next scheduler round.
 ///
 /// On Apple platforms, uses a GCD hop (`DispatchQueue.global().async`) which fires a
@@ -236,6 +265,18 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         /// that `deadlineNs` cannot grow past.
         let totalBudgetEndNs: UInt64
         let mode: Mode
+        /// GTS callback priority for this entry's deadlines (initial
+        /// arming and every re-arm). `.deferential` for in-test settle —
+        /// the callback hops to `.background` so suspended cooperative-
+        /// pool Tasks (which might still write to the model) get CPU
+        /// first, closing the toggleExpanded class of race. `.responsive`
+        /// for cleanup settle (cancelAll has already torn down the
+        /// active tasks, the 200 ms cleanup window absorbs cancel-handler
+        /// writes naturally, and deferring would just stall every test's
+        /// teardown behind the `.background` queue's drain cadence) and
+        /// for `.predicate` mode (failure-case budget — must fire close
+        /// to its requested time).
+        let priority: GlobalTickScheduler.CallbackPriority
         let continuation: CheckedContinuation<PredicateOutcome, Never>
         /// Cancellation handle for the GlobalTickScheduler entry that
         /// will fire if the deadline is reached. Replaced when the
@@ -254,12 +295,14 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             deadlineNs: UInt64,
             totalBudgetEndNs: UInt64,
             mode: Mode,
+            priority: GlobalTickScheduler.CallbackPriority,
             continuation: CheckedContinuation<PredicateOutcome, Never>
         ) {
             self.id = id
             self.deadlineNs = deadlineNs
             self.totalBudgetEndNs = totalBudgetEndNs
             self.mode = mode
+            self.priority = priority
             self.continuation = continuation
         }
     }
@@ -875,15 +918,15 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     // either the entry has been re-armed (cancel happened)
                     // or it has actually fired (no-op on the second
                     // attempt — `_pendingExpects` no longer contains it).
-                    let candidate = now &+ quietWindowNs
-                    let newDeadline = candidate < pending.totalBudgetEndNs ? candidate : pending.totalBudgetEndNs
+                    let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
                     if newDeadline > pending.deadlineNs {
                         pending.deadlineCancel?()
                         pending.deadlineNs = newDeadline
                         let entryId = pending.id
-                        pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline) { [weak self] in
+                        pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
                             self?._fireDeadline(pendingId: entryId)
                         }
+                        _settleTrace("rearm:debounce id=\(pending.id) newDeadlineInMs=\((Int64(bitPattern: newDeadline) &- Int64(bitPattern: now)) / 1_000_000)")
                     }
                 case .settled(let quietWindowNs, _):
                     // Same re-arm rule as `.debounce`, plus: if we're in
@@ -892,8 +935,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     // observer (this activity proves bg is not idle right
                     // now) and re-schedule the GTS deadline to push the
                     // quiet window forward.
-                    let candidate = now &+ quietWindowNs
-                    let newDeadline = candidate < pending.totalBudgetEndNs ? candidate : pending.totalBudgetEndNs
+                    let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
+                    _settleTrace("rearm:settled id=\(pending.id) newDeadlineInMs=\((Int64(bitPattern: newDeadline) &- Int64(bitPattern: now)) / 1_000_000) hadBgCancel=\(pending.bgIdleCancel != nil)")
 
                     // If a bg-idle observer is in flight, cancel it.
                     // Activity = not idle, so any pending idle-fire is
@@ -920,7 +963,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     pending.deadlineCancel?()
                     pending.deadlineNs = newDeadline
                     let entryId = pending.id
-                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline) { [weak self] in
+                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
                         self?._fireDeadline(pendingId: entryId)
                     }
                 }
@@ -980,8 +1023,39 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         await _awaitPending(
             initialDeadlineNs: deadlineNs,
             totalBudgetEndNs: deadlineNs,
-            mode: .predicate(evaluate)
+            mode: .predicate(evaluate),
+            // Responsive — expect's budget timeout must fire close to
+            // its requested time to surface bugs.
+            priority: .responsive
         )
+    }
+
+    /// Compute the deadline for a settle quiet-window arming. Returns
+    /// `min(now + quietWindowNs, budgetEndNs)` — **literal**, no scaling.
+    ///
+    /// **Used by**: every site in this file that arms a `.debounce` or
+    /// `.settled` quiet window — `awaitQuietWindow`, `awaitSettled`, the
+    /// `_noteActivity` re-arm paths, and the pending-start retry paths
+    /// in `_fireDeadline` / `_fireBgIdle`.
+    ///
+    /// **No load-aware extension**. The natural load adaptation lives
+    /// one layer down: `GlobalTickScheduler` runs at `.background` QoS,
+    /// so its tick callback is itself deferred until higher-priority
+    /// work has drained. A 50 ms nominal deadline armed during heavy
+    /// contention naturally fires at ~50 ms + scheduling latency, which
+    /// is exactly the "wait until the system has settled" semantic we
+    /// want. Multiplying the window on top of that was double-counting
+    /// — and worse, fragile: a single late tick observation could pin
+    /// a 200 ms window to 2 s with no mechanism to recover when the
+    /// load passed.
+    static func _quietDeadline(nowNs now: UInt64, quietWindowNs: UInt64, budgetEndNs: UInt64) -> UInt64 {
+        let candidate = now &+ quietWindowNs
+        let deadline = candidate < budgetEndNs ? candidate : budgetEndNs
+        // Signed wrap-safe trace: `deadline` may be ≤ `now` when
+        // `budgetEndNs` has already elapsed.
+        let traceDeltaMs = (Int64(bitPattern: deadline) &- Int64(bitPattern: now)) / 1_000_000
+        _settleTrace("_quietDeadline quietMs=\(quietWindowNs / 1_000_000) deadlineInMs=\(traceDeltaMs)")
+        return deadline
     }
 
     /// Park the calling Task until the model has been silent (no
@@ -1009,13 +1083,20 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // Initial deadline is `min(now + quiet, budgetEnd)` — if no
         // activity ever arrives we wake when the quiet window first
         // elapses.
-        let candidate = now &+ quietWindowNs
-        let initialDeadline = candidate < budgetEnd ? candidate : budgetEnd
-        return await _awaitPending(
+        let initialDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: budgetEnd)
+        _settleTrace("awaitQuietWindow:arm quietMs=\(quietWindowNs / 1_000_000) budgetMs=\(totalBudgetNs / 1_000_000)")
+        let outcome = await _awaitPending(
             initialDeadlineNs: initialDeadline,
             totalBudgetEndNs: budgetEnd,
-            mode: .debounce(quietWindowNs: quietWindowNs)
+            mode: .debounce(quietWindowNs: quietWindowNs),
+            // Same rationale as in-test `awaitSettled`: this is a
+            // race-protection wait, defer the quiet check so suspended
+            // Tasks land first.
+            priority: .deferential
         )
+        let elapsedMs = (monotonicNanoseconds() &- now) / 1_000_000
+        _settleTrace("awaitQuietWindow:resume outcome=\(outcome) elapsedMs=\(elapsedMs)")
+        return outcome
     }
 
     /// Park the calling Task until BOTH:
@@ -1047,26 +1128,42 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// Returns `.passed` whenever the entry resolves (caller compares
     /// `now` to the budget end to distinguish "fully settled" from
     /// "budget exhausted") or `.cancelled` on Task cancellation.
+    /// - Parameter priority: GTS callback priority for the deadline.
+    ///   `.deferential` (default) defers the quiet-check callback to
+    ///   `.background` QoS so suspended cooperative-pool Tasks land
+    ///   their writes first — needed by in-test settle to close the
+    ///   toggleExpanded race. Cleanup settle passes `.responsive`
+    ///   because by then `cancelAllRecursively` has torn down tasks,
+    ///   the 200 ms cleanup window absorbs cancel-handler writes
+    ///   naturally, and deferring would stall every test's teardown
+    ///   behind the `.background` queue's drain cadence (the
+    ///   "all-tests-finish-at-the-same-instant clusters" pattern).
     func awaitSettled(
         quietWindowNs: UInt64,
         totalBudgetNs: UInt64,
-        bg: BackgroundCallQueue
+        bg: BackgroundCallQueue,
+        priority: GlobalTickScheduler.CallbackPriority = .deferential
     ) async -> PredicateOutcome {
         let now = monotonicNanoseconds()
         let budgetEnd = now &+ totalBudgetNs
-        let candidate = now &+ quietWindowNs
-        let initialDeadline = candidate < budgetEnd ? candidate : budgetEnd
-        return await _awaitPending(
+        let initialDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: budgetEnd)
+        _settleTrace("awaitSettled:arm quietMs=\(quietWindowNs / 1_000_000) budgetMs=\(totalBudgetNs / 1_000_000) priority=\(priority)")
+        let outcome = await _awaitPending(
             initialDeadlineNs: initialDeadline,
             totalBudgetEndNs: budgetEnd,
-            mode: .settled(quietWindowNs: quietWindowNs, bg: bg)
+            mode: .settled(quietWindowNs: quietWindowNs, bg: bg),
+            priority: priority
         )
+        let elapsedMs = (monotonicNanoseconds() &- now) / 1_000_000
+        _settleTrace("awaitSettled:resume outcome=\(outcome) elapsedMs=\(elapsedMs)")
+        return outcome
     }
 
     private func _awaitPending(
         initialDeadlineNs: UInt64,
         totalBudgetEndNs: UInt64,
-        mode: PendingExpect.Mode
+        mode: PendingExpect.Mode,
+        priority: GlobalTickScheduler.CallbackPriority
     ) async -> PredicateOutcome {
         let id: UInt64 = lock {
             _nextPendingExpectId &+= 1
@@ -1084,15 +1181,19 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         return .passed
                     }
 
-                    // Register for future activity / deadline.
+                    // Register for future activity / deadline. The
+                    // priority chosen by the caller (and stored on the
+                    // entry) is reused by every subsequent re-arm in
+                    // `_noteActivity` / `_fireDeadline` / `_fireBgIdle`.
                     let pending = PendingExpect(
                         id: id,
                         deadlineNs: initialDeadlineNs,
                         totalBudgetEndNs: totalBudgetEndNs,
                         mode: mode,
+                        priority: priority,
                         continuation: cont
                     )
-                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: initialDeadlineNs) { [weak self] in
+                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: initialDeadlineNs, priority: priority) { [weak self] in
                         self?._fireDeadline(pendingId: id)
                     }
                     _pendingExpects.append(pending)
@@ -1137,7 +1238,10 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // this fire didn't result in a resolution (entry already gone,
         // or transitioned to waiting-on-bg-idle for `.settled` mode).
         let toWake: CheckedContinuation<PredicateOutcome, Never>? = lock {
-            guard let idx = _pendingExpects.firstIndex(where: { $0.id == pendingId }) else { return nil }
+            guard let idx = _pendingExpects.firstIndex(where: { $0.id == pendingId }) else {
+                _settleTrace("fireDeadline:gone id=\(pendingId)")
+                return nil
+            }
             let pending = _pendingExpects[idx]
             // GTS just fired — clear the cancel handle so the
             // re-engagement path in `_noteActivity` treats this entry as
@@ -1146,6 +1250,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
             switch pending.mode {
             case .predicate, .debounce:
+                _settleTrace("fireDeadline:resolve id=\(pendingId) mode=\(pending.mode)")
                 _pendingExpects.remove(at: idx)
                 return pending.continuation
             case .settled(let quietWindowNs, let bg):
@@ -1169,17 +1274,18 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 // task that never schedules (the total budget catches that
                 // case as a normal settle timeout).
                 if !pastBudget && context.hasPendingStartTask {
-                    let candidate = now &+ quietWindowNs
-                    let newDeadline = candidate < pending.totalBudgetEndNs ? candidate : pending.totalBudgetEndNs
+                    let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
                     pending.deadlineNs = newDeadline
                     let entryId = pending.id
-                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline) { [weak self] in
+                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
                         self?._fireDeadline(pendingId: entryId)
                     }
+                    _settleTrace("fireDeadline:retryPendingStart id=\(pendingId)")
                     return nil
                 }
 
                 if pastBudget || bg.isIdle {
+                    _settleTrace("fireDeadline:resolve id=\(pendingId) mode=settled pastBudget=\(pastBudget) bgIdle=\(bg.isIdle)")
                     _pendingExpects.remove(at: idx)
                     return pending.continuation
                 }
@@ -1191,6 +1297,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 pending.bgIdleCancel = bg.onIdle { [weak self] in
                     self?._fireBgIdle(pendingId: entryId)
                 }
+                _settleTrace("fireDeadline:waitBgIdle id=\(pendingId)")
                 return nil
             }
         }
@@ -1214,11 +1321,15 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// re-armed quiet window.
     private func _fireBgIdle(pendingId: UInt64) {
         let toWake: CheckedContinuation<PredicateOutcome, Never>? = lock {
-            guard let idx = _pendingExpects.firstIndex(where: { $0.id == pendingId }) else { return nil }
+            guard let idx = _pendingExpects.firstIndex(where: { $0.id == pendingId }) else {
+                _settleTrace("fireBgIdle:gone id=\(pendingId)")
+                return nil
+            }
             let pending = _pendingExpects[idx]
             // Activity re-armed the GTS deadline after the bg-idle
             // wrapper fired — this fire is stale; keep waiting.
             if pending.deadlineCancel != nil {
+                _settleTrace("fireBgIdle:stale id=\(pendingId) (activity re-armed)")
                 return nil
             }
             // Pending-start gate (same rationale as `_fireDeadline`'s
@@ -1227,17 +1338,18 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             // keep waiting. Re-arm GTS and abandon this fire.
             if case .settled(let quietWindowNs, _) = pending.mode, context.hasPendingStartTask {
                 let now = monotonicNanoseconds()
-                let candidate = now &+ quietWindowNs
-                let newDeadline = candidate < pending.totalBudgetEndNs ? candidate : pending.totalBudgetEndNs
+                let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
                 pending.deadlineNs = newDeadline
                 let entryId = pending.id
-                pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline) { [weak self] in
+                pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
                     self?._fireDeadline(pendingId: entryId)
                 }
                 pending.bgIdleCancel = nil
+                _settleTrace("fireBgIdle:retryPendingStart id=\(pendingId)")
                 return nil
             }
             pending.bgIdleCancel = nil
+            _settleTrace("fireBgIdle:resolve id=\(pendingId)")
             _pendingExpects.remove(at: idx)
             return pending.continuation
         }

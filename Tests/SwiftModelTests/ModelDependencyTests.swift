@@ -184,7 +184,12 @@ struct ModelDependencyTests {
                 model.children.isEmpty
                 sharedDep.lifetime == .destructed
             }
-            try await waitUntil(testResult.value.contains("(->5)(->5)"))
+            // Generous timeout: the second "(->5)" comes from a deinit chain
+            // whose timing is at the mercy of when the last strong reference
+            // is released — under x1000 parallel-test stress this can take
+            // longer than the default 5 s. 10 s still surfaces a real
+            // "deinit never fired" bug while tolerating load-induced latency.
+            try await waitUntil(testResult.value.contains("(->5)(->5)"), timeout: 10_000_000_000)
 
             #expect(testResult.value == "D(1:4711)D(3:8)(->7)(4:7)(->5)(->5)d")
         }

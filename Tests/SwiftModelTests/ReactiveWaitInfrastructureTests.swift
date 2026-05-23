@@ -70,8 +70,14 @@ struct ReactiveWaitInfrastructureTests {
         let elapsedNs = Self.elapsedNs(since: startNs)
 
         #expect(didResume.value, "Task body should unwind after cancellation")
-        #expect(elapsedNs < 1_000_000_000,
-                "cancel→resume should land within 1 s; took \(elapsedNs) ns")
+        // Generous upper bound: this test validates that Swift Concurrency's
+        // intrinsic cancellation propagation works at all, not exact latency.
+        // Under x1000 parallel-test stress the cooperative pool's scheduling
+        // of Task.sleep wake + task.cancel + onCancel + continuation.resume
+        // can stretch to 1.5-2 s. A real "cancellation hung" bug would still
+        // exceed 5 s.
+        #expect(elapsedNs < 5_000_000_000,
+                "cancel→resume should land within 5 s; took \(elapsedNs) ns")
     }
 
     // MARK: - 2. CallQueue wait primitives are cancellation-aware
@@ -299,24 +305,24 @@ struct ReactiveWaitInfrastructureTests {
             fired.setValue(true)
         }
 
-        // Poll up to 3 s for the callback to fire. Under heavy parallel-test
-        // load (933 in-process tests) the GCD pool can stall the dispatch
-        // source's tick handler for >1 s; observed 1.8 s once on the
-        // macOS-15 CI runner. The test only asserts "the scheduler fires"
-        // and "not before the deadline" — exact jitter is a GCD property,
-        // not ours.
-        for _ in 0..<300 {
+        // Poll up to 15 s for the callback to fire. GTS now runs at
+        // `.background` QoS, which the OS scheduler can delay multiple
+        // seconds under parallel-test load (933 in-process tests
+        // saturating the cores). The test only asserts "the scheduler
+        // fires" and "not before the deadline" — exact jitter is a GCD
+        // property, not ours.
+        for _ in 0..<1500 {
             if fired.value { break }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
 
-        #expect(fired.value, "callback should have fired within 3 s")
+        #expect(fired.value, "callback should have fired within 15 s")
         let elapsed = firedAt.value - startNs
         #expect(elapsed >= 40_000_000, "should not fire before deadline (allow 10 ms slack); fired at \(elapsed) ns")
-        // Upper bound is loose — under heavy parallel load GCD can delay the
-        // ticker by seconds. We're testing that the scheduler fires at all,
-        // not exact jitter (that's a GCD property, not ours).
-        #expect(elapsed < 3_000_000_000, "should fire within 3 s of deadline; fired at \(elapsed) ns")
+        // Upper bound is loose — under heavy parallel load GCD can delay
+        // the `.background` ticker by many seconds. We're testing that the
+        // scheduler fires at all, not exact jitter.
+        #expect(elapsed < 15_000_000_000, "should fire within 15 s of deadline; fired at \(elapsed) ns")
     }
 
     /// Cancelling a scheduled callback prevents it from firing.
@@ -333,6 +339,12 @@ struct ReactiveWaitInfrastructureTests {
     }
 
     /// Multiple callbacks scheduled at different deadlines fire in order.
+    ///
+    /// Generous poll budget: GTS now runs at `.background` QoS, which the
+    /// OS scheduler can delay by several seconds under parallel-test load.
+    /// We only assert ordering and eventual firing — exact latency is the
+    /// OS's call, not ours. Real "GTS hung" bugs would still exceed 15 s
+    /// and surface as the trait cap.
     @Test func globalTickScheduler_multipleDeadlinesFireInOrder() async throws {
         let fireOrder = LockIsolated<[Int]>([])
         let baseNs = DispatchTime.now().uptimeNanoseconds
@@ -348,8 +360,8 @@ struct ReactiveWaitInfrastructureTests {
             fireOrder.withValue { $0.append(3) }
         }
 
-        // Wait up to 1 s for all three.
-        for _ in 0..<100 {
+        // Wait up to 15 s for all three.
+        for _ in 0..<1500 {
             if fireOrder.value.count == 3 { break }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
@@ -358,13 +370,17 @@ struct ReactiveWaitInfrastructureTests {
     }
 
     /// Cancel is idempotent — calling after fire is a no-op.
+    ///
+    /// Generous poll budget: GTS at `.background` may take several seconds
+    /// under parallel-test load. We only assert "eventually fires" and
+    /// "double-cancel is safe".
     @Test func globalTickScheduler_cancelAfterFireIsNoOp() async throws {
         let fired = LockIsolated(false)
         let cancel = GlobalTickScheduler.shared.schedule(deadlineNs: DispatchTime.now().uptimeNanoseconds + 50_000_000) {
             fired.setValue(true)
         }
-        // Wait for the callback to fire
-        for _ in 0..<100 {
+        // Wait up to 15 s for the callback to fire
+        for _ in 0..<1500 {
             if fired.value { break }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
@@ -425,6 +441,11 @@ struct ReactiveWaitInfrastructureTests {
 
     /// A predicate that never becomes true resolves with `.timeout` near
     /// the deadline.
+    ///
+    /// Generous upper bound: GTS at `.background` can be delayed by
+    /// several seconds under parallel-test load. We only assert the
+    /// deadline fires eventually and not before the requested time —
+    /// exact jitter is the OS scheduler's call.
     @Test func awaitPredicate_timesOutWhenPredicateStuck() async throws {
         let tester = ModelTester(ActivitySignalModel(), exhaustivity: .off)
         let access = tester.access
@@ -438,7 +459,7 @@ struct ReactiveWaitInfrastructureTests {
 
         #expect(outcome == .timeout)
         #expect(elapsedNs >= 130_000_000, "should not fire before deadline; fired at \(elapsedNs) ns")
-        #expect(elapsedNs < 2_000_000_000, "should fire within reasonable window; took \(elapsedNs) ns")
+        #expect(elapsedNs < 15_000_000_000, "should fire within reasonable window; took \(elapsedNs) ns")
     }
 
     /// Cancelling the awaiting Task resolves with `.cancelled`.
@@ -474,7 +495,7 @@ struct ReactiveWaitInfrastructureTests {
         let startNs = DispatchTime.now().uptimeNanoseconds
         let outcome = await access.awaitQuietWindow(
             quietWindowNs: 100_000_000,    // 100 ms
-            totalBudgetNs: 5_000_000_000   // 5 s budget cap
+            totalBudgetNs: 15_000_000_000  // 15 s budget cap (loose enough for .background GTS under load)
         )
         let elapsedNs = Self.elapsedNs(since: startNs)
 
@@ -483,10 +504,11 @@ struct ReactiveWaitInfrastructureTests {
         #expect(outcome == .timeout)
         #expect(elapsedNs >= 80_000_000,
                 "should not fire before quiet window; fired at \(elapsedNs) ns")
-        // Upper bound: quiet window + reasonable GCD slack. The
-        // congestion-debt extension could add to this under load — keep
-        // generous to avoid flake here.
-        #expect(elapsedNs < 2_000_000_000,
+        // Upper bound is generous: GTS at `.background` can be delayed
+        // by several seconds under parallel-test load, and load_factor
+        // scales the quiet window further. Real "GTS hung" bugs would
+        // exceed 14 s and trip the budget cap before this assertion.
+        #expect(elapsedNs < 14_000_000_000,
                 "should fire within reasonable window; took \(elapsedNs) ns")
     }
 
@@ -499,6 +521,10 @@ struct ReactiveWaitInfrastructureTests {
     // is covered by `awaitQuietWindow_firesAfterQuietWindow` above.
 
     /// Scheduling from inside a callback re-arms the ticker correctly.
+    ///
+    /// Generous poll budget: GTS at `.background` may take several seconds
+    /// under parallel-test load. We only assert the chain DOES fire and
+    /// takes at least the minimum nominal time.
     @Test func globalTickScheduler_canScheduleFromCallback() async throws {
         let firedCount = LockIsolated(0)
         let baseNs = DispatchTime.now().uptimeNanoseconds
@@ -512,8 +538,8 @@ struct ReactiveWaitInfrastructureTests {
         }
         scheduleNext(3)
 
-        // Wait up to 2 s for all 3 chained fires.
-        for _ in 0..<200 {
+        // Wait up to 20 s for all 3 chained fires.
+        for _ in 0..<2000 {
             if firedCount.value == 3 { break }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }

@@ -134,13 +134,27 @@ Direct use of `ModelTester(model, ...)` (requires `@testable import SwiftModel`)
 
 2. **Testing the testing framework itself**: `OutputSnapshotTests` uses `withModelTesting` + `assertIssueSnapshot` to capture and snapshot the failure messages produced by the framework. The `didSendOnUnanchoredModel` test requires direct access to `TestAccess.TesterAssertContext` internals.
 
-### Known load-sensitive tests under x100 stress
+### `GlobalTickScheduler` (GTS) — settle's deadline source
 
-The full suite is **clean on serial CI** (`swift test --no-parallel`) and clean on local sub-x10 parallel runs. A small set of tests are load-sensitive under x100 parallel stress on a developer machine. The shape is the same in each case — the test schedules async work onto the cooperative pool (an `onActivate` task with `ImmediateClock`, a memoize coalesced `performUpdate`, etc.) and asserts the result within a fixed wall-clock budget (typically `expect`'s 5 s). Under heavy parallel load the cooperative pool can delay the scheduled task past the budget. The library code is correct; the test's timing assumptions break under extreme load. None block CI.
+`Sources/SwiftModel/Internal/GlobalTickScheduler.swift` is the GCD-backed deadline scheduler that every wait primitive (`expect`, `settle`, `waitUntil`, the per-test trait cap) routes through. Key design points worth knowing before touching it:
+
+- **One-shot timer source, not periodic.** The timer is armed for the soonest pending deadline; after each fire it re-arms to the next-soonest, or stops if no deadlines remain. Zero idle CPU; natural coalescing when many deadlines cluster within tens of ms.
+- **Timer fires at `.userInitiated` QoS** so deadlines surface promptly regardless of cooperative-pool load.
+- **Per-callback execution priority.** Each scheduled entry carries a `CallbackPriority`:
+  - `.responsive` (default) — callback runs inline on the timer's `.userInitiated` GCD queue. Used for failure-case timeouts (30 s trait cap, 5 s `expect` budget) and polling (`waitUntil`) where firing-close-to-deadline is the contract.
+  - `.deferential` — callback hops to `DispatchQueue.global(qos: .background)` before executing. Used by **in-test** settle's quiet-window check: the callback waits for runnable `.medium`-priority cooperative-pool Tasks to drain first, which closes the toggleExpanded class of race (a cascade task that wakes after settle's nominal deadline still gets a chance to write and re-arm via `_noteActivity`).
+- **Cleanup settle uses `.responsive`** — by the time `checkExhaustion` runs, `cancelAllRecursively` has torn down active tasks and the 200 ms cleanup window absorbs cancel-handler writes naturally. Deferring here would stall every test's teardown behind the `.background` queue's drain cadence, producing visible test-bunching clusters.
+- **No load-aware scaling, no multipliers.** `GTS` doesn't track or apply a `load_factor`. Adaptation under load lives entirely in the OS scheduler's QoS prioritisation of `.background` work. This is deliberate — earlier iterations with scaling caused either feedback loops (2024 "congestion debt") or fragile one-spike-pins-a-deadline-for-seconds patterns.
+- **Diagnostic tracing**: set `SWIFT_MODEL_GTS_TRACE=1` to write per-event logs to `/tmp/swift-model-gts-trace.log` and `/tmp/swift-model-settle-trace.log`. Tags every `schedule`, `armTimer`, `fire`, `_quietDeadline` call with absolute monotonic-ns timestamps for correlating settle latency with GTS scheduling.
+
+### Known load-sensitive tests under x100+ stress
+
+The full suite is **clean on serial CI** (`swift test --no-parallel`) and clean on local sub-x10 parallel runs. A small set of tests can flake at extreme parallel stress on a developer machine — typically because the test asserts a timing property that depends on the cooperative pool's scheduling cadence, which we don't control. None block CI; expected rate is under ~3/1,000,000 test runs.
 
   • `ClockTests.testImmediateClock` — `await expect(model.secondsElapsed > 0)` against an `ImmediateClock`-driven timer.
-  • `ChildActivationTaskTests.childTasksCompleteBeforeTeardown` — `await expect(parent.items.allSatisfy { $0.loaded })` where each child's `onActivate` task sets `loaded = true` after an `ImmediateClock` sleep. Can also fail in exhaustion-check mode if the loaded transitions race with the predicate evaluator's access capture.
-  • `MemoizeDirtyObservationTests.testDirtyPathWithOnModifyCallback` — `#expect(updateCount.value >= 1)` after a 5 s poll for the memoize coalesced `performUpdate` to fire its `onModify` callback. Same shape: write to a dependency schedules `performUpdate` on the per-test `BackgroundCallQueue` via the cooperative pool; under x100 parallel stress the task can be delayed past the 5 s poll budget, leaving `updateCount = 0`. Library code is correct (the test runs through every iteration in serial / sub-x10 stress); the test's wall-clock budget is the load-fragile bit.
+  • `ChildActivationTaskTests.childTasksCompleteBeforeTeardown` — `await expect(parent.items.allSatisfy { $0.loaded })` where each child's `onActivate` task sets `loaded = true` after an `ImmediateClock` sleep.
+  • `MemoizeDirtyObservationTests.testDirtyPathWithOnModifyCallback` — `#expect(updateCount.value >= 1)` after a 5 s poll for a memoize-coalesced `performUpdate` to fire its `onModify` callback.
+  • `SearchTests.toggleExpanded` (Examples/Search) — ~0.1 % flake rate where an `onActivate` task's write to `detailLine` lands after settle's quiet window. Closed *most* of the time by GTS's `.deferential` settle callback (the cascade task at `.medium` runs before the `.background` callback), but the timing window isn't strictly zero.
 
 When investigating new load flakes, check first whether the test matches this pattern (cooperative-pool-scheduled async work + reactive `expect` / wall-clock poll budget) before chasing a library bug.
 
