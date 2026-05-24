@@ -459,7 +459,11 @@ struct ReactiveWaitInfrastructureTests {
 
         #expect(outcome == .timeout)
         #expect(elapsedNs >= 130_000_000, "should not fire before deadline; fired at \(elapsedNs) ns")
-        #expect(elapsedNs < 15_000_000_000, "should fire within reasonable window; took \(elapsedNs) ns")
+        // Upper bound matches `expectDefaultBudgetNs` / `settleTotalBudgetNs`
+        // ceiling: `awaitPredicate` now uses `.deferential` priority on its
+        // budget callback, so under parallel-test load the timeout can be
+        // delayed by the cooperative pool draining higher-priority work.
+        #expect(elapsedNs < 25_000_000_000, "should fire within reasonable window; took \(elapsedNs) ns")
     }
 
     /// Cancelling the awaiting Task resolves with `.cancelled`.
