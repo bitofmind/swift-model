@@ -22,12 +22,34 @@ extension TestAccess {
     package static var settleDebounceCleanupNs: UInt64 { 200_000_000 } // 200 ms
 
     /// Total time budget for `waitUntilSettled` before it declares the model
-    /// "never settled". A test that hits this cap has a runaway task that
-    /// keeps writing — e.g. an `onActivate` task that loops without ever
-    /// pausing. Output-snapshot tests override this via
+    /// "never settled". A test that hits this cap is either truly stuck
+    /// (deadlock, infinite `onActivate` loop) or running on a CI box so
+    /// loaded that even the `.deferential` `.background` GTS callback
+    /// never got a slot within the budget.
+    ///
+    /// **Why 25 s, not 5 s** — settle uses `.deferential` priority on its
+    /// quiet-window check; the callback runs at `.background` QoS and only
+    /// fires once all higher-priority cooperative-pool Tasks have drained.
+    /// On well-provisioned machines this happens in milliseconds; on a
+    /// 2-vCPU CI runner with 700-way Task fan-out, it can take seconds.
+    ///
+    /// A wall-clock cap shorter than that drain time fights the very
+    /// mechanism `.deferential` provides — it fails the test based on
+    /// wall-clock without ever consulting the scheduler signal we built
+    /// the callback to listen for. Under parallel execution there's also
+    /// no fast-fail benefit: the test slot would have been busy with other
+    /// tests' work regardless, so fast-failing one test buys no wall-clock.
+    ///
+    /// 25 s is the natural value: just under the 30 s `.modelTesting`
+    /// trait cap, so when the budget *does* fire, the settle-specific
+    /// diagnostic (model name + active task list) lands first instead
+    /// of being swallowed by the trait timeout. The 5 s headroom catches
+    /// post-settle assertion work before the trait kills the test.
+    ///
+    /// Output-snapshot tests override this via
     /// `TestAccessOverrides.$hardCapNanoseconds`.
     package static var settleTotalBudgetNs: UInt64 {
-        TestAccessOverrides.hardCapNanoseconds ?? 5_000_000_000 // 5 s
+        TestAccessOverrides.hardCapNanoseconds ?? 25_000_000_000 // 25 s
     }
 
     /// Returns when no model write / event send has occurred for one

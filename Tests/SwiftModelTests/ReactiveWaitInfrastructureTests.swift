@@ -495,7 +495,7 @@ struct ReactiveWaitInfrastructureTests {
         let startNs = DispatchTime.now().uptimeNanoseconds
         let outcome = await access.awaitQuietWindow(
             quietWindowNs: 100_000_000,    // 100 ms
-            totalBudgetNs: 15_000_000_000  // 15 s budget cap (loose enough for .background GTS under load)
+            totalBudgetNs: 25_000_000_000  // 25 s budget cap — matches settleTotalBudgetNs
         )
         let elapsedNs = Self.elapsedNs(since: startNs)
 
@@ -504,11 +504,13 @@ struct ReactiveWaitInfrastructureTests {
         #expect(outcome == .timeout)
         #expect(elapsedNs >= 80_000_000,
                 "should not fire before quiet window; fired at \(elapsedNs) ns")
-        // Upper bound is generous: GTS at `.background` can be delayed
-        // by several seconds under parallel-test load, and load_factor
-        // scales the quiet window further. Real "GTS hung" bugs would
-        // exceed 14 s and trip the budget cap before this assertion.
-        #expect(elapsedNs < 14_000_000_000,
+        // Upper bound matches the settle budget: GTS at `.background` can
+        // be delayed by seconds under parallel-test load on a small CI box;
+        // the new design lets `.deferential` wait as long as it needs and
+        // only the trait-cap-adjacent 25 s ceiling catches truly stuck
+        // primitives. Real "GTS hung" bugs would exceed this and trip the
+        // budget cap before this assertion.
+        #expect(elapsedNs < 25_000_000_000,
                 "should fire within reasonable window; took \(elapsedNs) ns")
     }
 

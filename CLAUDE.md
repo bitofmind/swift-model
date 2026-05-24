@@ -48,10 +48,15 @@ scripts/test --loop 100
 scripts/test --no-parallel
 ```
 
-CI runs `--no-parallel` on both macOS and Linux: the 3-core/2-core runners
-can't absorb 700-way in-process Task fan-out. The tests themselves are
-parallel-safe — see the macOS-job comment in `.github/workflows/ci.yml` for
-the full story.
+CI runs **both** `--parallel` and `--no-parallel` on macOS and Linux as a
+matrix. The parallel job validates the framework's parallel-test claim
+(a real differentiator vs. e.g. TCA's enforced `@MainActor`); the serial
+job is the deterministic regression gate that has historically caught
+serialization-only races (e.g. the OR-path race fixed in 497c2ab).
+Settle's `.deferential` priority + 25 s budget (just under the 30 s trait
+cap) gives the parallel job enough headroom to absorb cooperative-pool
+saturation on the small 2–3 core CI runners. See the macOS-job comment in
+`.github/workflows/ci.yml` for the full story.
 
 The project uses Swift 6 (`swiftLanguageModes: [.v6]`). All code must be strict-concurrency-safe.
 
@@ -147,14 +152,16 @@ Direct use of `ModelTester(model, ...)` (requires `@testable import SwiftModel`)
 - **No load-aware scaling, no multipliers.** `GTS` doesn't track or apply a `load_factor`. Adaptation under load lives entirely in the OS scheduler's QoS prioritisation of `.background` work. This is deliberate — earlier iterations with scaling caused either feedback loops (2024 "congestion debt") or fragile one-spike-pins-a-deadline-for-seconds patterns.
 - **Diagnostic tracing**: set `SWIFT_MODEL_GTS_TRACE=1` to write per-event logs to `/tmp/swift-model-gts-trace.log` and `/tmp/swift-model-settle-trace.log`. Tags every `schedule`, `armTimer`, `fire`, `_quietDeadline` call with absolute monotonic-ns timestamps for correlating settle latency with GTS scheduling.
 
-### Known load-sensitive tests under x100+ stress
+### Known load-sensitive tests under extreme parallel stress
 
-The full suite is **clean on serial CI** (`swift test --no-parallel`) and clean on local sub-x10 parallel runs. A small set of tests can flake at extreme parallel stress on a developer machine — typically because the test asserts a timing property that depends on the cooperative pool's scheduling cadence, which we don't control. None block CI; expected rate is under ~3/1,000,000 test runs.
+The full suite is **clean on both serial and parallel CI**, and clean on local sub-x100 parallel runs. A small set of tests can flake at extreme parallel stress on a developer machine (x1000+) — typically because the test asserts a timing property that depends on the cooperative pool's scheduling cadence, which we don't control. None block CI.
+
+The 25 s `settleTotalBudgetNs` (bumped from 5 s when the dual-mode CI matrix landed) absorbs most of these under reasonable load — settle's `.deferential` priority gets enough wall-clock to actually let the cooperative pool drain before the wait fails. The remaining flake surface is tests whose assertion runs *after* settle returns and reads state set by an `ImmediateClock` / `onActivate` task that hasn't been given a pool slot yet:
 
   • `ClockTests.testImmediateClock` — `await expect(model.secondsElapsed > 0)` against an `ImmediateClock`-driven timer.
   • `ChildActivationTaskTests.childTasksCompleteBeforeTeardown` — `await expect(parent.items.allSatisfy { $0.loaded })` where each child's `onActivate` task sets `loaded = true` after an `ImmediateClock` sleep.
   • `MemoizeDirtyObservationTests.testDirtyPathWithOnModifyCallback` — `#expect(updateCount.value >= 1)` after a 5 s poll for a memoize-coalesced `performUpdate` to fire its `onModify` callback.
-  • `SearchTests.toggleExpanded` (Examples/Search) — ~0.1 % flake rate where an `onActivate` task's write to `detailLine` lands after settle's quiet window. Closed *most* of the time by GTS's `.deferential` settle callback (the cascade task at `.medium` runs before the `.background` callback), but the timing window isn't strictly zero.
+  • `SearchTests.toggleExpanded` (Examples/Search) — rare flake where an `onActivate` task's write to `detailLine` lands after settle's quiet window.
 
 When investigating new load flakes, check first whether the test matches this pattern (cooperative-pool-scheduled async work + reactive `expect` / wall-clock poll budget) before chasing a library bug.
 
@@ -182,10 +189,15 @@ Do not treat disabled macro tests as a failure when the destination is a simulat
 ## CI
 
 GitHub Actions (`.github/workflows/ci.yml`):
-- **macOS**: `macos-15`, default Xcode, `swift test`.
-- **Linux**: `ubuntu-latest`, `swift:6.3.0` container, `swift test`.
-- **Android**: `swift:6.3.0` container + Swift Android SDK + `skiptools/swift-android-action`.
-- **WASM**: `swift:6.3.0` container + WASM SDK.
+- **macOS** (matrix: `parallel` | `serial`): `macos-15`, default Xcode, `swift test`.
+- **Linux** (matrix: `parallel` | `serial`): `ubuntu-latest`, `swift:6.3.0` container, `swift test`.
+- **Android**: compile-only cross-compile to `aarch64-unknown-linux-android28`.
+- **WASM**: compile-only build to `wasm32-unknown-wasip1`.
+
+Both `parallel` and `serial` test modes run for macOS and Linux. Parallel
+validates the framework's parallel-test claim; serial is the deterministic
+regression gate (caught the OR-path race fixed in 497c2ab). `fail-fast: false`
+on the matrices so one mode's flake doesn't suppress the other's signal.
 
 `swift-tools-version` is **6.1** — minimum required for the `traits:` parameter
 on `.package(...)`, used by the `swift-custom-dump` fork dependency. Pre-6.1
