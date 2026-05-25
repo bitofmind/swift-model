@@ -479,20 +479,26 @@ struct DualRegistrarTests {
     ///   → schedules performUpdate on the test's BackgroundCallQueue
     ///   → performUpdate re-evaluates the closure, gets the new value, yields to the stream
     ///
-    /// Each observable change is triggered only after waitUntil confirms the previous value
-    /// was delivered. This guarantees hasPendingUpdate is false and tracking is re-registered
-    /// before the next change, making coalescing and timing races impossible.
-    /// waitUntil uses kernel dispatch hops (DispatchQueue.global) rather than cooperative
-    /// pool awaits, so it works correctly even when the cooperative thread pool is saturated.
+    /// **Why `settle()` between writes** — for pure `@Observable` writes (not `@Model`),
+    /// delivery depends entirely on Apple's `withObservationTracking` one-shot mechanism.
+    /// The shadow `AccessCollector` safety net we have for `@Model` writes (see
+    /// `observe()`'s shadow comment in `ObservationTracking.swift`) doesn't cover this
+    /// path, because shadow subscriptions are keyed on `(Context, KeyPath)` and the
+    /// `@Observable`'s registrar is outside our context system.
+    ///
+    /// Empirically this test has shown a very rare (~1 in 1500 local, higher on a
+    /// 2-vCPU Linux runner) failure where the chain doesn't deliver a value within
+    /// the 30 s trait cap. We've reviewed both our framework code and Apple's
+    /// `withObservationTracking` source and the chain *looks* correct in both, but
+    /// the precise window is fragile enough to vanish under any instrumentation
+    /// overhead. Pending root-cause analysis (tracked separately), this test uses
+    /// `settle()` between writes so the test framework's quiescence primitive — not
+    /// raw `iter.next()` racing the cooperative pool — gates the next iteration.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     @Test func testObservedStreamWithModelAccessingObservable() async {
         let observable = PureObservableModel()
         let model = ModelHoldingObservable(observable: observable).withAnchor()
 
-        // Consume Observed directly in the test body rather than a separate Task so that
-        // each mutation is triggered only after iter.next() confirms the previous value was
-        // consumed, keeping hasPendingUpdate false and ensuring re-registration before the
-        // next change.
         var iter = Observed({ model.doubledObservableValue }).makeAsyncIterator()
 
         let v0 = await iter.next()
@@ -500,11 +506,13 @@ struct DualRegistrarTests {
 
         // value=5 → doubledObservableValue=10
         observable.value = 5
+        await settle()
         let v10 = await iter.next()
         #expect(v10 == 10, "Observed should track @Observable changes via @Model")
 
         // value=10 → doubledObservableValue=20
         observable.value = 10
+        await settle()
         let v20 = await iter.next()
         #expect(v20 == 20, "Should continue tracking @Observable changes")
     }
