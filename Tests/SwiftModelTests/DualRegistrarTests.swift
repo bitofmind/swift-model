@@ -479,42 +479,45 @@ struct DualRegistrarTests {
     ///   → schedules performUpdate on the test's BackgroundCallQueue
     ///   → performUpdate re-evaluates the closure, gets the new value, yields to the stream
     ///
-    /// **Why `settle()` between writes** — for pure `@Observable` writes (not `@Model`),
-    /// delivery depends entirely on Apple's `withObservationTracking` one-shot mechanism.
-    /// The shadow `AccessCollector` safety net we have for `@Model` writes (see
-    /// `observe()`'s shadow comment in `ObservationTracking.swift`) doesn't cover this
-    /// path, because shadow subscriptions are keyed on `(Context, KeyPath)` and the
-    /// `@Observable`'s registrar is outside our context system.
+    /// **Observation chain fragility** — pure `@Observable` writes (not `@Model`) depend
+    /// entirely on Apple's `withObservationTracking` one-shot mechanism. The shadow
+    /// `AccessCollector` safety net we have for `@Model` writes (see `observe()`'s shadow
+    /// comment in `ObservationTracking.swift`) doesn't cover this path, because shadow
+    /// subscriptions are keyed on `(Context, KeyPath)` and the `@Observable`'s registrar
+    /// is outside our context system. Apple has a `.continuous` option in
+    /// `ObservationTracking.Options` that would solve this, but it has no public accessor.
     ///
-    /// Empirically this test has shown a very rare (~1 in 1500 local, higher on a
-    /// 2-vCPU Linux runner) failure where the chain doesn't deliver a value within
-    /// the 30 s trait cap. We've reviewed both our framework code and Apple's
-    /// `withObservationTracking` source and the chain *looks* correct in both, but
-    /// the precise window is fragile enough to vanish under any instrumentation
-    /// overhead. Pending root-cause analysis (tracked separately), this test uses
-    /// `settle()` between writes so the test framework's quiescence primitive — not
-    /// raw `iter.next()` racing the cooperative pool — gates the next iteration.
+    /// The test pattern uses a consumer `Task` + `waitUntil` rather than direct
+    /// `iter.next()` because `waitUntil` polls via GCD (not cooperative-pool-dependent)
+    /// and the consumer task accumulates ALL delivered values into a `LockIsolated` —
+    /// so the assertion can check on values that arrive in any order/timing without
+    /// racing the cooperative pool's resume scheduling for `iter.next()` continuations.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-    @Test func testObservedStreamWithModelAccessingObservable() async {
+    @Test func testObservedStreamWithModelAccessingObservable() async throws {
         let observable = PureObservableModel()
         let model = ModelHoldingObservable(observable: observable).withAnchor()
 
-        var iter = Observed({ model.doubledObservableValue }).makeAsyncIterator()
+        let values = LockIsolated<[Int]>([])
 
-        let v0 = await iter.next()
-        #expect(v0 == 0, "Initial value should be 0")
+        let task = Task {
+            for await value in Observed({ model.doubledObservableValue }) {
+                values.withValue { $0.append(value) }
+                if value >= 20 { break }
+            }
+        }
+        defer { task.cancel() }
 
-        // value=5 → doubledObservableValue=10
+        // Generous 15 s per-step poll: consumer Task scheduling on a saturated
+        // 2-vCPU runner under 700-way fan-out has been measured at multi-second
+        // latencies. The actual delivery is reactive — waitUntil resumes the
+        // instant the value lands — so this only matters as the failure budget.
+        try await waitUntil(values.value.contains(0), timeout: 15_000_000_000)
+
         observable.value = 5
-        await settle()
-        let v10 = await iter.next()
-        #expect(v10 == 10, "Observed should track @Observable changes via @Model")
+        try await waitUntil(values.value.contains(10), timeout: 15_000_000_000)
 
-        // value=10 → doubledObservableValue=20
         observable.value = 10
-        await settle()
-        let v20 = await iter.next()
-        #expect(v20 == 20, "Should continue tracking @Observable changes")
+        try await waitUntil(values.value.contains(20), timeout: 15_000_000_000)
     }
 
 }
