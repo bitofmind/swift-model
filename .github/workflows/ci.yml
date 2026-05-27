@@ -35,9 +35,7 @@ jobs:
         #   `@MainActor`. Under contention on a 3-core runner, settle's
         #   `.deferential` priority defers the quiet-window check to
         #   `.background` QoS, so the wait correctly extends to match
-        #   actual pool load instead of failing on wall-clock. The 25 s
-        #   `settleTotalBudgetNs` ceiling sits just under the 30 s trait
-        #   cap so the diagnostic still surfaces on truly stuck tests.
+        #   actual pool load instead of failing on wall-clock.
         #
         # • `--no-parallel` is the deterministic regression gate. It was
         #   what caught the OR-path race fixed in 497c2ab, which only
@@ -47,10 +45,19 @@ jobs:
         # `fail-fast: false` so a serial-only flake doesn't cancel the
         # parallel job's signal (and vice versa).
         #
+        # `SWIFT_MODEL_TIMEOUT_SCALE=3` multiplies all test-infrastructure
+        # budgets (expect 5 s → 15 s; in-test settle 5 s → 15 s; cleanup
+        # settle 25 s → 75 s; trait cap 30 s → 90 s; meta-test bounds
+        # scale with budget). The small CI runners can stall `.background`
+        # QoS callbacks for many seconds under saturation; locally tests
+        # use scale=1 (default) for fast failure feedback.
+        #
         # Benchmarks live in `SwiftModelBenchmarkTests` (split off from
         # `SwiftModelTests`) — skipped from regular CI runs. Run them
         # on-demand via `swift test --filter SwiftModelBenchmarkTests`
         # or the `swift-model-benchmarks` Xcode test plan.
+        env:
+          SWIFT_MODEL_TIMEOUT_SCALE: "3"
         run: swift test ${{ matrix.flag }} --skip SwiftModelBenchmarkTests
 
   linux:
@@ -92,7 +99,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-swift-6.3-${{ matrix.mode }}-v2-${{ hashFiles('Package.swift') }}
       - name: Build and test (${{ matrix.mode }})
-        # See the macOS job for the dual-mode rationale.
+        # See the macOS job for the dual-mode rationale and
+        # `SWIFT_MODEL_TIMEOUT_SCALE` justification.
+        env:
+          SWIFT_MODEL_TIMEOUT_SCALE: "3"
         run: swift test ${{ matrix.flag }} --skip SwiftModelBenchmarkTests
 
   android:

@@ -120,7 +120,8 @@ struct MyTests {
 - `waitUntil(condition)` (in `Tests/SwiftModelTests/Utilities.swift`) is the **explicit polling** helper for framework-internal lifecycle tests whose predicates read `TestResult` / `LockIsolated` state. Not appropriate in typical user tests — use `expect` / `require` / `settle` instead.
 - Per-suite exhaustivity: `@Suite(.modelTesting(exhaustivity: .off))` when individual tests use `#expect` directly (bypasses exhaustivity). Opt specific tests back in with `@Test(.modelTesting(exhaustivity: .preference))`.
 - Tests that exercise both observation mechanisms use `options: [.disableObservationRegistrar]` inside `withAnchor(options:)`.
-- A per-test 30 s wall-clock cap is enforced by the `.modelTesting` trait. Hangs surface as `[TRAIT timeout]` rather than freezing CI. Override per-process via the `SWIFT_MODEL_TEST_TIMEOUT` env var (seconds, float).
+- A per-test 30 s wall-clock cap is enforced by the `.modelTesting` trait. Hangs surface as `[TRAIT timeout]` rather than freezing CI. Override the absolute value via the `SWIFT_MODEL_TEST_TIMEOUT` env var (seconds, float).
+- **`SWIFT_MODEL_TIMEOUT_SCALE`** — multiplier on every test-infrastructure budget: `expect` (5 s default), in-test `settle` (5 s), cleanup `settle` (25 s), trait cap (30 s), and the meta-test bounds that assert primitive behaviour. Defaults to `1.0` for fast local feedback. CI sets this to `3` so the `.deferential` `.background` QoS callbacks have wall-clock to actually fire on small parallel-saturated runners. Bump to 2–4 in any environment where you see meta-test or budget timeouts that aren't real bugs.
 
 ### `ModelTester` directly — only for specific cases
 

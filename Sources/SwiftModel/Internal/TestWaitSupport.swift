@@ -25,10 +25,13 @@ extension TestAccess {
     /// it declares the model "never settled". A test that hits this cap is
     /// genuinely stuck — a runaway `onActivate` task, a deadlock, or a
     /// predicate that doesn't react to model state. Fast-fail surfaces these
-    /// promptly. Output-snapshot tests override this via
-    /// `TestAccessOverrides.$hardCapNanoseconds`.
+    /// promptly.
+    ///
+    /// Scaled by `ModelTestingTraitOptions.timeoutScale` (env
+    /// `SWIFT_MODEL_TIMEOUT_SCALE`). Output-snapshot tests override
+    /// absolutely via `TestAccessOverrides.$hardCapNanoseconds`.
     package static var settleTotalBudgetNs: UInt64 {
-        TestAccessOverrides.hardCapNanoseconds ?? 5_000_000_000 // 5 s
+        TestAccessOverrides.hardCapNanoseconds ?? UInt64(5_000_000_000 * ModelTestingTraitOptions.timeoutScale)
     }
 
     /// Total time budget for **cleanup** `waitUntilSettled` (after
@@ -47,8 +50,10 @@ extension TestAccess {
     /// cleanup that exceeds this surfaces a real bug (a leaked task that
     /// won't unregister) rather than a load symptom. The in-test budget is
     /// kept short for fast feedback on genuinely-stuck tests.
+    ///
+    /// Scaled by `ModelTestingTraitOptions.timeoutScale`.
     package static var settleCleanupTotalBudgetNs: UInt64 {
-        TestAccessOverrides.hardCapNanoseconds ?? 25_000_000_000 // 25 s
+        TestAccessOverrides.hardCapNanoseconds ?? UInt64(25_000_000_000 * ModelTestingTraitOptions.timeoutScale)
     }
 
     /// Returns when no model write / event send has occurred for one

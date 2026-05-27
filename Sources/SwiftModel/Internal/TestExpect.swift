@@ -35,9 +35,13 @@ extension TestAccess {
     // assertion depends on), use `settle { … }` — `settle` waits for the
     // model to be quiet (debounce window + bg-idle) plus your predicate to
     // hold, which guarantees the chain has completed before you proceed.
-    // Output-snapshot tests override via `TestAccessOverrides.$hardCapNanoseconds`.
+    //
+    // Scaled by `ModelTestingTraitOptions.timeoutScale` (env
+    // `SWIFT_MODEL_TIMEOUT_SCALE`) — bump on slow CI runners. Output-
+    // snapshot tests override absolutely via
+    // `TestAccessOverrides.$hardCapNanoseconds`.
     static var expectDefaultBudgetNs: UInt64 {
-        TestAccessOverrides.hardCapNanoseconds ?? 5_000_000_000
+        TestAccessOverrides.hardCapNanoseconds ?? UInt64(5_000_000_000 * ModelTestingTraitOptions.timeoutScale)
     }
 
     /// Snapshot of one predicate evaluation, mutated in place by the

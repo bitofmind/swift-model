@@ -496,10 +496,19 @@ struct ReactiveWaitInfrastructureTests {
         let tester = ModelTester(ActivitySignalModel(), exhaustivity: .off)
         let access = tester.access
 
+        // Budget and upper bound both scale with `timeoutScale`. On a
+        // developer machine (scale=1): 5 s budget, 4.5 s bound — fast
+        // failure if the primitive hangs. On slow CI runners (scale 2–4)
+        // both expand together so the `.deferential` `.background`
+        // callback has wall-clock to actually fire before the assertion.
+        let scale = ModelTestingTraitOptions.timeoutScale
+        let budgetNs = UInt64(5_000_000_000 * scale)
+        let upperBoundNs = UInt64(4_500_000_000 * scale)
+
         let startNs = DispatchTime.now().uptimeNanoseconds
         let outcome = await access.awaitQuietWindow(
             quietWindowNs: 100_000_000,    // 100 ms
-            totalBudgetNs: 5_000_000_000   // 5 s budget cap — matches settleTotalBudgetNs
+            totalBudgetNs: budgetNs
         )
         let elapsedNs = Self.elapsedNs(since: startNs)
 
@@ -508,12 +517,8 @@ struct ReactiveWaitInfrastructureTests {
         #expect(outcome == .timeout)
         #expect(elapsedNs >= 80_000_000,
                 "should not fire before quiet window; fired at \(elapsedNs) ns")
-        // Upper bound generous enough to absorb cooperative-pool dispatch
-        // jitter for the `.deferential` settle callback under parallel-test
-        // load. Real "GTS hung" bugs would exceed this and trip the budget
-        // cap before this assertion.
-        #expect(elapsedNs < 4_500_000_000,
-                "should fire within reasonable window; took \(elapsedNs) ns")
+        #expect(elapsedNs < upperBoundNs,
+                "should fire within reasonable window; took \(elapsedNs) ns (scale=\(scale))")
     }
 
     // Note: explicit `awaitQuietWindow` timing tests (activity extension,
