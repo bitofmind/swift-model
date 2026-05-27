@@ -47,7 +47,12 @@ package struct WaitUntilTimeoutError: Error, CustomStringConvertible {
 ///     practice. Smaller values are accepted but get rounded up by the
 ///     ticker.
 ///   - timeout: Maximum total wall-clock time before throwing
-///     `WaitUntilTimeoutError`. Default 5 s.
+///     `WaitUntilTimeoutError`. Default 5 s. The effective timeout is the
+///     value passed here **multiplied by `ModelTestingTraitOptions.timeoutScale`**
+///     (env `SWIFT_MODEL_TIMEOUT_SCALE`, default 1.0) — so a test calling
+///     `waitUntil(..., timeout: 15s)` waits 45 s on CI when scale=3.
+///     This matches the framework-level budget scaling and removes the need
+///     for individual tests to know about CI tolerance.
 package func waitUntil(
     _ condition: @autoclosure @escaping @Sendable () -> Bool,
     pollInterval: UInt64 = 10_000_000,
@@ -56,10 +61,11 @@ package func waitUntil(
     line: UInt = #line
 ) async throws {
     if condition() { return }
+    let scaledTimeout = UInt64(Double(timeout) * ModelTestingTraitOptions.timeoutScale)
     try await _waitUntil(
         condition: condition,
         pollInterval: pollInterval,
-        timeout: timeout,
+        timeout: scaledTimeout,
         file: file,
         line: line
     )
