@@ -30,6 +30,18 @@ private func monotonicNanoseconds() -> UInt64 {
 /// }
 /// ```
 ///
+/// `expect` is **purely reactive**: it resolves the moment the predicate first
+/// becomes true. If the predicate happens to be satisfied by the model's
+/// *initial* state — before an async chain triggered by an earlier write has
+/// run — it resolves immediately on that initial match. The next line of your
+/// test then runs while the chain may still be in flight.
+///
+/// When that matters — i.e. when a *next* user action's behaviour depends on
+/// the chain having completed (e.g. a guard reading a flag the chain
+/// transiently writes) — use `settle { … }` instead. `settle` waits for the
+/// model to become quiet *and* for your predicate to hold, which guarantees
+/// the chain has finished before you proceed.
+///
 /// > Important: Must be called inside a `@Test(.modelTesting)` function. Calling outside
 ///   a model testing scope reports an issue.
 public func expect(
@@ -95,9 +107,20 @@ public func expect(
 
 // MARK: - settle
 
-/// Waits for the model to settle — all activation tasks enter their body, the model
-/// becomes idle (no state changes for one scheduling round) — then resets selected
-/// exhaustivity categories so subsequent `expect {}` calls start from a clean baseline.
+/// Waits for the model to become quiet — every spawned task body has started and
+/// no writes, events, or probe calls have occurred for a short debounce window —
+/// then resets selected exhaustivity categories so subsequent `expect {}` calls
+/// start from a clean baseline.
+///
+/// `settle` is the **phase-boundary** verb. Use it when you want to separate one
+/// chapter of behaviour (e.g. activation, or a previous user action's full
+/// settle) from what you're about to assert, so the next `expect` doesn't see
+/// state changes that belong to the previous chapter as "unasserted modifications".
+///
+/// Contrast with `expect`, which resolves as soon as its predicate is true plus
+/// any spawned task bodies have started — it does *not* wait for the world to
+/// become quiet, and it does *not* reset the exhaustivity baseline. Use `expect`
+/// for assertions; reach for `settle` when you need a clean tracking slate.
 ///
 /// Use `settle()` without predicates after anchoring to skip past activation side effects:
 ///

@@ -1024,21 +1024,11 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             initialDeadlineNs: deadlineNs,
             totalBudgetEndNs: deadlineNs,
             mode: .predicate(evaluate),
-            // `.deferential` — same rationale as settle (see
-            // `waitUntilSettled` and `settleTotalBudgetNs`'s comment).
-            // expect's predicate becomes true only when some
-            // cooperative-pool Task writes/sends/probes; on a loaded
-            // box that Task may not get CPU within wall-clock budget.
-            // Routing the budget-end callback through `.background`
-            // QoS ensures the timeout only fires after the scheduler
-            // has actually drained higher-priority work — so we don't
-            // declare failure on a load symptom. The 30 s trait cap
-            // remains the true safety net for genuine hangs.
-            //
-            // Predicate evaluation itself is still INLINE on every
-            // `_noteActivity`, so the happy-path latency is unchanged
-            // (resolves the instant the predicate becomes true).
-            priority: .deferential
+            // `.responsive` — expect's budget timeout must fire close to
+            // its requested time to surface bugs. Predicate evaluation
+            // remains INLINE on every `_noteActivity`, so the happy-path
+            // latency is unchanged.
+            priority: .responsive
         )
     }
 

@@ -21,34 +21,33 @@ extension TestAccess {
     package static var settleDebounceInTestNs: UInt64 { 50_000_000 }   // 50 ms
     package static var settleDebounceCleanupNs: UInt64 { 200_000_000 } // 200 ms
 
-    /// Total time budget for `waitUntilSettled` before it declares the model
-    /// "never settled". A test that hits this cap is either truly stuck
-    /// (deadlock, infinite `onActivate` loop) or running on a CI box so
-    /// loaded that even the `.deferential` `.background` GTS callback
-    /// never got a slot within the budget.
-    ///
-    /// **Why 25 s, not 5 s** — settle uses `.deferential` priority on its
-    /// quiet-window check; the callback runs at `.background` QoS and only
-    /// fires once all higher-priority cooperative-pool Tasks have drained.
-    /// On well-provisioned machines this happens in milliseconds; on a
-    /// 2-vCPU CI runner with 700-way Task fan-out, it can take seconds.
-    ///
-    /// A wall-clock cap shorter than that drain time fights the very
-    /// mechanism `.deferential` provides — it fails the test based on
-    /// wall-clock without ever consulting the scheduler signal we built
-    /// the callback to listen for. Under parallel execution there's also
-    /// no fast-fail benefit: the test slot would have been busy with other
-    /// tests' work regardless, so fast-failing one test buys no wall-clock.
-    ///
-    /// 25 s is the natural value: just under the 30 s `.modelTesting`
-    /// trait cap, so when the budget *does* fire, the settle-specific
-    /// diagnostic (model name + active task list) lands first instead
-    /// of being swallowed by the trait timeout. The 5 s headroom catches
-    /// post-settle assertion work before the trait kills the test.
-    ///
-    /// Output-snapshot tests override this via
+    /// Total time budget for in-test `waitUntilSettled` (and `expect`) before
+    /// it declares the model "never settled". A test that hits this cap is
+    /// genuinely stuck — a runaway `onActivate` task, a deadlock, or a
+    /// predicate that doesn't react to model state. Fast-fail surfaces these
+    /// promptly. Output-snapshot tests override this via
     /// `TestAccessOverrides.$hardCapNanoseconds`.
     package static var settleTotalBudgetNs: UInt64 {
+        TestAccessOverrides.hardCapNanoseconds ?? 5_000_000_000 // 5 s
+    }
+
+    /// Total time budget for **cleanup** `waitUntilSettled` (after
+    /// `cancelAllRecursively` at end-of-test). Cleanup has to absorb the
+    /// cooperative pool scheduling cancelled task bodies so they can hit
+    /// their `Task.isCancelled` guard, unwind through `defer { onDone() }`,
+    /// and unregister themselves from `Cancellations.registered`. Under
+    /// heavy parallel-test load (each iteration runs ~700 tests in
+    /// parallel; per-test cancellation handlers compete for cooperative-pool
+    /// slots), this can take several seconds. The cleanup-settle's
+    /// `hasPendingStartTask` gate keeps re-arming the quiet window until
+    /// every cancelled task has finally been scheduled long enough to
+    /// unregister.
+    ///
+    /// 25 s sits just under the 30 s `.modelTesting` trait cap, so a
+    /// cleanup that exceeds this surfaces a real bug (a leaked task that
+    /// won't unregister) rather than a load symptom. The in-test budget is
+    /// kept short for fast feedback on genuinely-stuck tests.
+    package static var settleCleanupTotalBudgetNs: UInt64 {
         TestAccessOverrides.hardCapNanoseconds ?? 25_000_000_000 // 25 s
     }
 
@@ -81,7 +80,7 @@ extension TestAccess {
     @discardableResult
     package func waitUntilSettled(cleanup: Bool = false, at fileAndLine: FileAndLine) async -> Bool {
         let window = cleanup ? Self.settleDebounceCleanupNs : Self.settleDebounceInTestNs
-        let totalBudgetNs = Self.settleTotalBudgetNs
+        let totalBudgetNs = cleanup ? Self.settleCleanupTotalBudgetNs : Self.settleTotalBudgetNs
         let startNs = _monotonicNs()
         let budgetEndNs = startNs &+ totalBudgetNs
 

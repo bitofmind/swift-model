@@ -184,8 +184,9 @@ struct SearchResultItemTests {
         let item = SearchResultItem(repo: Repo.mocks[0]).withAnchor {
             $0.continuousClock = ImmediateClock()
         }
-        // settle() lets the detailLine task complete and resets the exhaustivity baseline
-        await settle()
+        // Wait for the activation task to populate detailLine, then reset the
+        // exhaustivity baseline before the user interactions we want to assert.
+        await settle { item.detailLine != nil }
         item.toggleExpanded()
         await expect(item.isExpanded)
         item.toggleExpanded()

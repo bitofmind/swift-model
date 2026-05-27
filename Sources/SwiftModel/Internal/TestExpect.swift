@@ -28,21 +28,16 @@ extension TestAccess {
     // raw `LockIsolated` counters mutated from `forEach` callbacks,
     // etc. — belong in `waitUntil` (Tests/SwiftModelTests/Utilities.swift).
     //
-    // **25 s, not 5 s** — same rationale as `settleTotalBudgetNs` in
-    // `TestWaitSupport.swift`. `awaitPredicate` uses `.deferential`
-    // priority on its budget-end callback (see `TestAccess.awaitPredicate`),
-    // so the timeout only fires once the cooperative pool has actually
-    // had a chance to make the predicate true. Failing on wall-clock
-    // before that signal arrives is fail-fast that buys nothing under
-    // parallel execution — the test slot was busy with other tests'
-    // work regardless. The new ceiling sits just under the 30 s trait
-    // cap so the expect-specific diagnostic (predicate text + failure
-    // detail) still lands first on truly stuck tests.
-    //
-    // Output-snapshot tests override the budget via
-    // `TestAccessOverrides.$hardCapNanoseconds`.
+    // 5 s gives runaway tests fast feedback. `expect` is **purely reactive**:
+    // it resolves the moment the predicate is true. If your test needs to
+    // wait for an async chain that a user action set in motion (e.g. a
+    // `node.task(id:)` triggered by a property write whose body the next
+    // assertion depends on), use `settle { … }` — `settle` waits for the
+    // model to be quiet (debounce window + bg-idle) plus your predicate to
+    // hold, which guarantees the chain has completed before you proceed.
+    // Output-snapshot tests override via `TestAccessOverrides.$hardCapNanoseconds`.
     static var expectDefaultBudgetNs: UInt64 {
-        TestAccessOverrides.hardCapNanoseconds ?? 25_000_000_000
+        TestAccessOverrides.hardCapNanoseconds ?? 5_000_000_000
     }
 
     /// Snapshot of one predicate evaluation, mutated in place by the
@@ -341,6 +336,7 @@ extension TestAccess {
             // has the latest captured state.
             return false
         }
+
 
         // Step 3: Success! Clear asserted paths from valueUpdates,
         // advance expectedState, consume events and probes — exactly
