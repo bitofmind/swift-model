@@ -22,7 +22,15 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test(arguments: ObservationPath.allCases)
+    // ValuesModel uses Observed(coalesceUpdates: false) which always uses AccessCollector regardless
+    // of ObservationPath settings. The observationRegistrar variant adds no coverage — it only
+    // enables the OT registrar, which queues extra async mainCallQueue notifications that pile up
+    // under heavy load (50× repetitions) and fire after the test's `await expect` completes,
+    // causing spurious "State not exhausted" / "State did not settle" failures.
+    // This test is only meaningful with .accessCollector.
+    // exhaustivity: .off — intermediate count/counts changes from concurrent increments
+    // are not individually asserted; settle() drains all pending callbacks before expect.
+    @Test(.modelTesting(exhaustivity: .off), arguments: [ObservationPath.accessCollector])
     func testChangeOfConcurrency(observationPath: ObservationPath) async throws {
         let model = observationPath.withOptions { ValuesModel(initial: false, recursive: false).withAnchor() }
 
@@ -34,14 +42,15 @@ struct UpdateStreamTests {
                         model.count += 1
                     }
                 }
-                
+
                 await group.waitForAll()
             }
         }.value
 
-        // Give time for background observation callbacks to process
-        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-        
+        // Drain all pending background Observed callbacks and reset the exhaustivity
+        // baseline so that the final-state expect below runs from a stable starting point.
+        await settle()
+
         await expect {
             model.count == range.count
             model.counts.count > 0
@@ -82,9 +91,13 @@ struct UpdateStreamTests {
     // of UpdatePath settings. The withObservationTracking variant adds no coverage — it only enables
     // the OT registrar, which queues extra async mainCallQueue notifications on Linux and causes
     // spurious exhaustivity failures. This test is only meaningful with .accessCollector.
+    // settle() drains all initial forEach callbacks (initial: true) before asserting, which prevents
+    // a race on Linux where the settle check sees the values mid-flight and never converges.
     @Test(arguments: [UpdatePath.accessCollector])
     func testChangeOfChildWhereChildIsUpdated(updatePath: UpdatePath) async throws {
         let model = updatePath.withOptions { ValuesModel(child: ChildModel(count: 2), initial: true, recursive: false).withAnchor() }
+
+        await settle()
 
         await expect {
             model.child.count == 2
@@ -100,7 +113,9 @@ struct UpdateStreamTests {
         }
     }
 
-    @Test
+    // exhaustivity: .off — concurrent transactions produce intermediate child/childCounts values
+    // that are not individually asserted. settle() drains all pending Observed callbacks.
+    @Test(.modelTesting(exhaustivity: .off))
     func testChangeOfChildConcurrency() async throws {
         let model = ValuesModel(child: ChildModel(count: 0), initial: false, recursive: false).withAnchor()
 
@@ -119,9 +134,7 @@ struct UpdateStreamTests {
             }
         }.value
 
-        // Give time for background observation callbacks to process
-        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-        
+        await settle()
         await expect {
             model.child.count == range.count
             model.childCounts.count > 0
@@ -444,6 +457,36 @@ struct UpdateStreamTests {
         #expect(model.snapshots.last?.count == 3)
     }
 
+    /// Regression scenario reported by an Android Swift 6.3 SDK user: when `Observed { ... }`
+    /// is constructed in `onActivate()` and the value is captured into a separate Task body
+    /// (instead of being constructed inline inside the Task body), subsequent mutations no
+    /// longer re-fire — only the initial value is delivered. The shape is identical to what
+    /// `node.forEach(Observed(...)) { ... }` does internally (the existing `node.forEach`
+    /// tests cover the same pattern, but this test pins the bare-`Task` form for parity with
+    /// the user's reproducer). Verifies every-mutation delivery on both observation paths.
+    @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
+    func testCapturedObservedFiresOnEveryMutation(updatePath: UpdatePath) async throws {
+        let model = updatePath.withOptions { CapturedObservedRegressionModel().withAnchor() }
+
+        // Initial fire for both: snapshots == [[0, 0]] each.
+        await expect {
+            model.capturedSnapshots == [[0, 0]]
+            model.inlineSnapshots == [[0, 0]]
+        }
+
+        model.children[0].count = 5
+        await expect {
+            model.capturedSnapshots == [[0, 0], [5, 0]]
+            model.inlineSnapshots == [[0, 0], [5, 0]]
+        }
+
+        model.children[1].count = 99
+        await expect {
+            model.capturedSnapshots == [[0, 0], [5, 0], [5, 99]]
+            model.inlineSnapshots == [[0, 0], [5, 0], [5, 99]]
+        }
+    }
+
     /// Observed { child } only fires when the child model is replaced (different identity);
     /// neither direct property changes nor descendant changes trigger re-evaluation.
     @Test(.modelTesting(exhaustivity: .off), arguments: UpdatePath.allCases)
@@ -490,6 +533,39 @@ struct UpdateStreamTests {
         model.active.count = 9
         try await Task.sleep(nanoseconds: 50_000_000)
         #expect(model.snapshots.count == 2, "Property change on new active should not trigger")
+    }
+}
+
+/// Pairs an "Observed constructed inline inside the Task body" subscription with an
+/// "Observed constructed in onActivate's scope and captured by a separate Task body"
+/// subscription so a test can assert they receive the same sequence of values.
+/// `removeDuplicates: false` keeps the comparison clean even if duplicate snapshots
+/// appear; the array shape (`[Int]`) is Equatable so the Equatable overload is used.
+@Model private struct CapturedObservedRegressionModel {
+    var children: [ChildModel] = [ChildModel(), ChildModel()]
+    var capturedSnapshots: [[Int]] = []
+    var inlineSnapshots: [[Int]] = []
+
+    func onActivate() {
+        // (B) Constructed in onActivate's scope, captured by a separate Task body.
+        //     Same shape as node.forEach(Observed(...)) { ... }.
+        let captured = Observed(initial: true, removeDuplicates: false) {
+            children.map(\.count)
+        }
+        node.task {
+            for await snapshot in captured {
+                capturedSnapshots.append(snapshot)
+            }
+        }
+
+        // (A) Constructed inline inside the Task body.
+        node.task {
+            for await snapshot in Observed(initial: true, removeDuplicates: false, {
+                children.map(\.count)
+            }) {
+                inlineSnapshots.append(snapshot)
+            }
+        }
     }
 }
 

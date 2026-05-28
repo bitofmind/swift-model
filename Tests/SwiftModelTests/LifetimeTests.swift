@@ -73,13 +73,11 @@ struct LifetimeTests {
 
         a.child = i.child
 
-        withKnownIssue {
-            i.child = fi.child
-        }
+        // Assigning a frozen child to a live model works: the framework
+        // re-anchors the child with a fresh context.
+        i.child = fi.child
 
-        withKnownIssue {
-            a.child = fa.child
-        }
+        a.child = fa.child
     }
 
     @Test func testChildrenLifetime() {
@@ -116,13 +114,11 @@ struct LifetimeTests {
 
         a.children[0] = i.children[0]
 
-        withKnownIssue {
-            i.children[0] = fi.children[0]
-        }
+        // Assigning a frozen child to a live model works: the framework
+        // re-anchors the child with a fresh context.
+        i.children[0] = fi.children[0]
 
-        withKnownIssue {
-            a.children[0] = fa.children[0]
-        }
+        a.children[0] = fa.children[0]
     }
 }
 

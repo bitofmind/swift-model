@@ -108,16 +108,3 @@ struct TodoListView: View {
 }
 ```
 
-### Shared Models and Unique Ownership
-
-`node.uniquelyReferenced()` returns a stream that emits `true` when a model has exactly one owner in the hierarchy and `false` when it is shared across multiple parents. This enables "exclusive editing" UX patterns — for example, disabling an edit button while a model is referenced from multiple places:
-
-```swift
-func onActivate() {
-    node.forEach(node.uniquelyReferenced()) { isExclusive in
-        isEditable = isExclusive
-    }
-}
-```
-
-The stream emits the current value immediately and deduplicates consecutive equal values.

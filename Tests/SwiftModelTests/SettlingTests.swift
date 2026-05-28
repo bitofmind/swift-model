@@ -168,6 +168,21 @@ struct SettlingTests {
         await expect { model.count == 1 }
     }
 
+    @Test func settleWithConcurrentWriterDoesNotRaceOnFrozenCopy() async {
+        // Regression test for a data race between settle() (no predicates) and a
+        // concurrently-running forEach body. frozenCopy reads _stateHolder outside
+        // the hierarchy lock while the forEach task writes inside its own lock;
+        // skipping frozenCopy when passedAccesses is empty eliminates the race.
+        let model = SettleRaceOuter().withAnchor()
+        await settle()
+
+        model.trigger = true
+        // settle() with no predicates must not race with the forEach body writing inner.value.
+        await settle()
+
+        await expect { model.inner.value == "iteration-99" }
+    }
+
     // MARK: Partial exhaustivity reset
 
     @Test func settleResettingOnlyStateKeepsEvents() async {
@@ -345,6 +360,25 @@ private struct TaskAndForEachModel {
         }
         node.forEach(Observed(initial: false, coalesceUpdates: false) { taskDone }) { _ in
             observedCount += 1
+        }
+    }
+}
+
+@Model
+private struct SettleRaceInner {
+    var value: String = ""
+}
+
+@Model
+private struct SettleRaceOuter {
+    var inner = SettleRaceInner()
+    var trigger = false
+
+    func onActivate() {
+        node.forEach(Observed(initial: false, coalesceUpdates: false) { trigger }, cancelPrevious: true) { _ in
+            for i in 0..<100 {
+                inner.value = "iteration-\(i)"
+            }
         }
     }
 }

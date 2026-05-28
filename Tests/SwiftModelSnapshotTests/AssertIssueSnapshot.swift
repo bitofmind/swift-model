@@ -13,9 +13,9 @@ import InlineSnapshotTesting
 ///
 /// ```swift
 /// await assertIssueSnapshot {
-///     let (model, tester) = Counter().andTester()
-///     model.count = 7
-///     await tester.access.expect(timeoutNanoseconds: NSEC_PER_SEC, at: tester.fileAndLine, predicates: [])
+///     let tester = ModelTester(Counter(), exhaustivity: .full)
+///     tester.model.count = 7
+///     await tester.access.expect(timeoutNanoseconds: NSEC_PER_SEC, at: tester.access.fileAndLine, predicates: [])
 /// } matches: {
 ///     """
 ///     State not exhausted: …

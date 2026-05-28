@@ -73,12 +73,10 @@ Test it exhaustively with no extra setup:
 ```swift
 import Testing
 
-@Test func testIncrement() async {
-    let (model, tester) = CounterModel().andTester()
+@Test(.modelTesting) func testIncrement() async {
+    let model = CounterModel().withAnchor()
     model.incrementTapped()
-    await tester.assert {
-        model.count == 1
-    }
+    await expect { model.count == 1 }
 }
 ```
 

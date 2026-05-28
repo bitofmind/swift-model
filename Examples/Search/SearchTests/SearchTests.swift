@@ -130,7 +130,7 @@ struct SearchTests {
     /// withActivation lets callers inject extra setup after onActivate() without
     /// modifying SearchModel itself. Here we pre-set the query so the search fires
     /// automatically during activation — useful for testing pre-populated states.
-    @Test func withActivationPrePopulatesResults() async {
+    @Test(.modelTesting(.removing(.tasks))) func withActivationPrePopulatesResults() async {
         let model = SearchModel()
             .withActivation { $0.query = "swift" }
             .withAnchor {
@@ -184,8 +184,9 @@ struct SearchResultItemTests {
         let item = SearchResultItem(repo: Repo.mocks[0]).withAnchor {
             $0.continuousClock = ImmediateClock()
         }
-        // settle() lets the detailLine task complete and resets the exhaustivity baseline
-        await settle()
+        // Wait for the activation task to populate detailLine, then reset the
+        // exhaustivity baseline before the user interactions we want to assert.
+        await settle { item.detailLine != nil }
         item.toggleExpanded()
         await expect(item.isExpanded)
         item.toggleExpanded()

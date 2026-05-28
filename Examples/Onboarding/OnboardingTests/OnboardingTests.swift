@@ -378,6 +378,7 @@ struct ProfileStepModelTests {
 
         model.username = "ab"
         await expect(model.availabilityError != nil)
+
         model.username = ""
         await expect(model.availabilityError == nil)
     }
@@ -397,6 +398,17 @@ struct ProfileStepModelTests {
         }
 
         model.username = "swiftdev"
+        // The username write spawns an availability-check task that briefly
+        // flips `isCheckingAvailability` to `true` before resolving back to
+        // `false`. `settle { … }` (not `expect`) is the right primitive here:
+        // we need to wait for the check to *complete*, not just for the
+        // predicate to match the initial state. In production a real user
+        // can't type and tap fast enough to race this; in tests, settle
+        // makes the wait explicit.
+        await settle {
+            !model.isCheckingAvailability
+            model.availabilityError == nil
+        }
         model.continueTapped()
 
         await expect { probe.wasCalled(with: "swiftdev") }

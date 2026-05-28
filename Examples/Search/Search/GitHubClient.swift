@@ -3,7 +3,7 @@ import Dependencies
 
 // MARK: - Domain types
 
-struct Repo: Sendable, Identifiable, Equatable {
+nonisolated struct Repo: Sendable, Identifiable, Equatable {
     let id: Int
     let name: String
     let fullName: String
@@ -17,7 +17,7 @@ struct Repo: Sendable, Identifiable, Equatable {
 // MARK: - Dependency
 
 /// A client for searching GitHub repositories.
-struct GitHubClient: Sendable {
+nonisolated struct GitHubClient: Sendable {
     var search: @Sendable (_ query: String) async throws -> [Repo]
 }
 
@@ -37,7 +37,7 @@ enum GitHubError: Error, LocalizedError {
     }
 }
 
-extension GitHubClient: DependencyKey {
+nonisolated extension GitHubClient: DependencyKey {
     static let liveValue = GitHubClient(
         search: { query in
             guard !query.isEmpty else { return [] }
@@ -66,7 +66,7 @@ extension GitHubClient: DependencyKey {
 }
 
 extension DependencyValues {
-    var gitHubClient: GitHubClient {
+    nonisolated var gitHubClient: GitHubClient {
         get { self[GitHubClient.self] }
         set { self[GitHubClient.self] = newValue }
     }
@@ -74,11 +74,11 @@ extension DependencyValues {
 
 // MARK: - Codable helpers (private)
 
-private struct SearchResponse: Decodable {
+private nonisolated struct SearchResponse: Decodable {
     let items: [RepoItem]
 }
 
-private struct RepoItem: Decodable {
+private nonisolated struct RepoItem: Decodable {
     let id: Int
     let name: String
     let full_name: String
@@ -89,11 +89,11 @@ private struct RepoItem: Decodable {
     let html_url: String
 }
 
-private struct OwnerItem: Decodable {
+private nonisolated struct OwnerItem: Decodable {
     let login: String
 }
 
-private extension Repo {
+private nonisolated extension Repo {
     init(_ item: RepoItem) {
         self.init(
             id: item.id,
@@ -110,7 +110,7 @@ private extension Repo {
 
 // MARK: - Mock data
 
-extension Repo {
+nonisolated extension Repo {
     static let mocks: [Repo] = [
         Repo(id: 1, name: "swift", fullName: "apple/swift",
              description: "The Swift Programming Language", starCount: 66_900,

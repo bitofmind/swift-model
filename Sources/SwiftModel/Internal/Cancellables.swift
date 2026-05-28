@@ -1,19 +1,6 @@
 import Foundation
 import Dependencies
 
-/// Receives notifications about task lifecycle events for test instrumentation.
-/// Conformed to by `TestAccess` — `nil` in production, so all call sites are free.
-protocol TaskLifecycleDelegate: AnyObject, Sendable {
-    /// Called on the creating thread when a task born from `onActivate()` is registered.
-    func activationTaskCreated()
-    /// Called from inside the task body when an `onActivate()` task begins executing.
-    func activationTaskEntered()
-    /// Called on the creating thread when any task is registered (Phase 5).
-    func taskCreated()
-    /// Called from inside any task body when it completes (Phase 5).
-    func taskCompleted()
-}
-
 struct EmptyCancellable: Cancellable {
     func cancel() {}
 
@@ -61,6 +48,24 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
     let lock = NSLock()
     var hasBeenCancelled = false
 
+    /// `true` once the wrapped Task's body has begun executing on the
+    /// cooperative pool. Read by `TestAccess.settle()` (via
+    /// `Cancellations.hasPendingStartTask` and `AnyContext.hasPendingStartTask`)
+    /// to keep its quiet window open until every freshly-registered task has
+    /// had at least one CPU slot. See the `ModelAccess.taskBodyStarted`
+    /// doc-comment for why this matters.
+    ///
+    /// Set via a `LockIsolated<Bool>` captured by the body wrapper in the
+    /// convenience init (see below). The box is created BEFORE `self.init`
+    /// runs (since the factory closure is constructed before designated-init
+    /// completes), then stored on the instance afterwards. The brief window
+    /// where `register(self)` has run inside the designated init but
+    /// `_hasStartedRunningBox` is still `nil` reports `hasStartedRunning ==
+    /// false` (the safe default — settle keeps waiting), so a settle racing
+    /// this init never declares quiet prematurely.
+    var _hasStartedRunningBox: LockIsolated<Bool>?
+    var hasStartedRunning: Bool { _hasStartedRunningBox?.value ?? false }
+
     init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
         self.cancellations = context.cancellations
         let id = context.cancellations.nextId
@@ -72,25 +77,10 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
 
         context.cancellations.register(self)
 
-        // Notify lifecycle delegate (TestAccess in tests, nil in production).
-        // Check the onActivate task-local *before* creating the Swift Task which may
-        // start on a different context. `AnyCancellable.contexts` still holds the value
-        // at this point because we're still on the creating thread inside `onActivate`.
-        let delegate = context.rootParent.taskLifecycleDelegate
-        let isActivationTask = delegate != nil && AnyCancellable.contexts.contains { ($0.key as? ContextCancellationKey) == .onActivate }
-        if isActivationTask {
-            delegate?.activationTaskCreated()
-        }
-        delegate?.taskCreated()
-
         lock {
             guard !self.hasBeenCancelled else {
-                // Task was cancelled before it started; undo the counters
-                // so the settling logic doesn't wait forever for a task that will never run.
-                if isActivationTask {
-                    delegate?.activationTaskEntered()
-                }
-                delegate?.taskCompleted()
+                // Task was cancelled before init reached the task-creation point;
+                // the underlying Task stays nil and never runs.
                 return
             }
             self.task = task { [weak cancellations = context.cancellations] in
@@ -118,12 +108,21 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
 }
 
 extension TaskCancellable {
+    /// The underlying Swift `Task<Void, Error>`, or `nil` if the task was cancelled
+    /// before `init` could schedule it. Awaiting `.value` on this Task resolves once
+    /// the wrapped Task's outer `defer { onDone() }` runs — which is unconditional
+    /// (it fires regardless of whether the inner cancellation guard let the user
+    /// closure execute). Used by `_forEachImpl`'s body-serialization logic to
+    /// guarantee the next body starts only after the previous body's full unwind.
+    var underlyingTask: Task<Void, Error>? {
+        lock { self.task }
+    }
+
     convenience init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, isDetached: Bool, priority: TaskPriority?, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async throws -> Void, `catch`: (@Sendable (Error) -> Void)?) {
-        // Capture the activation flag here on the creating thread, before `init` clears the
-        // task-local via `$contexts.withValue([])` inside the Task body.
-        // Note: the designated init also captures this flag and calls activationTaskCreated().
-        // This capture is used to call activationTaskEntered() when the body begins.
-        let isActivationTask = context.rootParent.taskLifecycleDelegate != nil && AnyCancellable.contexts.contains { ($0.key as? ContextCancellationKey) == .onActivate }
+        // Constructed BEFORE self.init so the factory closure can capture it.
+        // Stored on `self` AFTER self.init completes — see `_hasStartedRunningBox`.
+        let hasStartedRunningBox = LockIsolated(false)
+
         self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, context: context) { onDone in
             let contexts = AnyCancellable.contexts
             let operation = { @Sendable in
@@ -135,17 +134,19 @@ extension TaskCancellable {
                         try await ModelAccess.$isInModelTaskContext.withValue(true) {
                             try await AnyCancellable.$inheritedContexts.withValue(contexts) {
                                 try await AnyCancellable.$contexts.withValue([]) {
-                                    // Task body has begun executing. Signal "entered" so the
-                                    // activation counter can decrement (Phase 3).
-                                    if isActivationTask {
-                                        context.rootParent.taskLifecycleDelegate?.activationTaskEntered()
-                                    }
-                                    defer {
-                                        onDone()
-                                        context.rootParent.taskLifecycleDelegate?.taskCompleted()
-                                    }
+                                    defer { onDone() }
 
                                     guard !Task.isCancelled, !context.isDestructed else { return }
+
+                                    // Signal that the body has now actually started executing —
+                                    // see `ModelAccess.taskBodyStarted` and
+                                    // `TaskCancellable._hasStartedRunningBox`. Setting the box
+                                    // BEFORE notifying the access avoids a window where settle
+                                    // could re-check `hasPendingStartTask`, see this task still
+                                    // not-started, and re-arm pointlessly.
+                                    hasStartedRunningBox.setValue(true)
+                                    ModelAccess.current?.taskBodyStarted()
+
                                     try await operation()
                                 }
                             }
@@ -156,13 +157,20 @@ extension TaskCancellable {
                     `catch`?(error)
                 }
             }
-            
+
             if isDetached {
                 return Task.detached(name: taskName, priority: priority, operation: operation)
             } else {
                 return Task(name: taskName, priority: priority, operation: operation)
             }
         }
+        // Install the box on the now-initialised instance. Readers that
+        // grab the cancellable through `Cancellations` after this point
+        // see the box; readers that race the init see `nil` →
+        // `hasStartedRunning` returns its default (`true`), which is
+        // conservatively "fine to settle" — strictly less safe than
+        // gating, but the race window is sub-microsecond.
+        self._hasStartedRunningBox = hasStartedRunningBox
     }
 }
 

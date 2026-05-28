@@ -9,8 +9,8 @@ import Dependencies
     var destination: Destination?
 
     init(standupDetails: IdentifiedArrayOf<StandupDetail> = [], destination: Destination? = nil) {
-        _standupDetails = standupDetails
-        _destination = destination
+        self.standupDetails = standupDetails
+        self.destination = destination
     }
 
     @ModelContainer @CasePathable

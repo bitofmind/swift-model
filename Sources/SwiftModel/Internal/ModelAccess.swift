@@ -4,11 +4,104 @@ class ModelAccessReference: @unchecked Sendable {
     var access: ModelAccess? { fatalError() }
 }
 
+/// The observation/tracking hook for the SwiftModel framework.
+///
+/// Subclasses intercept property reads (`willAccess`) and writes (`didModify`) to implement
+/// different observation strategies without coupling the model to any specific observer.
+///
+/// # Concrete subclasses
+///
+/// - `ModelSetupAccess<M>`: Pre-anchor only. Accumulates dependency overrides and
+///   activation closures set via `.withActivation` / `.dependencies {}`. Extracted by
+///   `Context.init` and then discarded — never stored on the context (would form a
+///   retain cycle: context → access → anchor → context).
+///
+/// - Bare `ModelAccess(useWeakReference: false)`: Anchor holder. Created by `returningAnchor()`
+///   when no other access is present. Its only role is holding `retainedObject = anchor`
+///   so the anchor stays alive as long as the model value is held.
+///
+/// - `TestAccess<Root>`: Exhaustive test observer. Records every read and write for
+///   assertion. `shouldPropagateToChildren = true`. Access is propagated via task-locals
+///   (`ModelAccess.active` / `ModelAccess.current`): `ModelTester.model` wraps in
+///   `usingActiveAccess`, predicate evaluation wraps in `usingActiveAccess`, and
+///   `LocalValues`/`EnvironmentContext`/`PreferenceValues` capture `activeAccess` from the
+///   model value and restore it via `usingActiveAccess` for their subscript calls.
+///
+/// - `ViewAccess` (pre-iOS 17 SwiftUI): Registers `context.onModify` callbacks per
+///   accessed property and calls `objectWillChange.send()` on changes. Stored weakly
+///   on context. `shouldPropagateToChildren = true`.
+///
+/// - `AccessCollector` (`Observed {}` streams, pre-iOS 17): Collects property accesses
+///   during the closure, registers `onModify` callbacks, and re-runs on change. Installed
+///   via `ModelAccess.$current` task-local — not on model values.
+///   `shouldPropagateToChildren = false`.
+///
+/// - `LastSeenAccess`: Carries a timestamp and dependency cache on snapshot copies after
+///   model destruction. Pure data carrier — no willAccess/didModify behaviour.
+///
+/// # The three homes of access
+///
+/// 1. **Model value** (`ModelContext._access: _ModelAccessBox`): Primary home. Carried
+///    on the model struct. Read subscripts stamp access onto returned child model values
+///    via `withAccessIfPropagateToChildren` — transiently at return time, NOT stored in
+///    `_stateHolder.state`. Required so that test predicates and SwiftUI `body` closures
+///    can read child model properties without an ambient task-local context.
+///
+/// 2. **Task-local propagation for metadata storage**: `Context.model` stamps
+///    `ModelAccess.active ?? ModelAccess.current` onto the returned model value.
+///    `metadataModelContext()` (used by `willAccessStorage`/`didModifyStorage` etc.)
+///    reads the same task-locals. Callers ensure the right access is active:
+///    `ModelTester.model` and predicate evaluation use `usingActiveAccess(testAccess)`;
+///    tasks created during `onActivate()` inherit `ModelAccess.current` via `usingAccess`.
+///
+/// 3. **Task-local** (`ModelAccess.current` / `ModelAccess.active`): Fallback when the
+///    model value has no stored access. `usingAccess(_:)` wraps `onActivate()` so tasks
+///    created inside inherit access for TestAccess task counting.
+///
+/// # shouldPropagateToChildren
+///
+/// When `true` (TestAccess, ViewAccess), the read subscripts in `_ModelSourceBox` call
+/// `withAccessIfPropagateToChildren` on every child model value they return. This stamps
+/// the access onto the child value's `_access` box so that subsequent property reads on
+/// that value fire `willAccess` — even when no task-local access is active (e.g. in
+/// SwiftUI `body` or test predicates).
+///
+/// The models inside `_stateHolder.state` never carry access; it is applied only to
+/// the VALUE returned to the caller (transient, not persisted in stored state).
 class ModelAccess: ModelAccessReference, @unchecked Sendable {
-    func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? { nil }
-    func didModify<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? { nil }
+    func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? { nil }
+    func didModify<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? { nil }
 
     func didSend<M: Model, Event>(event: Event, from context: Context<M>) {}
+
+    /// Acquired by `Context._modify` / `Context.stateTransaction` BEFORE acquiring the
+    /// context lock, so that writers and readers use the same lock order
+    /// (`access.lock` → `context.lock`). Without this, the writer's
+    /// `release-context.lock → acquire-access.lock` sequence opened a race window where
+    /// the reader (which already holds `access.lock` from inside its predicate
+    /// evaluator) could acquire `context.lock`, read the updated `reference.state`, and
+    /// run its assertion-clearing pass — all before the writer's post-lock callback got
+    /// a chance to record the corresponding `valueUpdates` entry. The clearing pass
+    /// would then see no entry to clear, and the entry would survive to the end-of-test
+    /// exhaustion check.
+    ///
+    /// Default: no-op. `TestAccess` overrides to grab its `NSRecursiveLock`. Other
+    /// access kinds (ViewAccess, AccessCollector) don't queue any state behind the
+    /// reference write, so they don't need this serialization.
+    func acquireWriteLock() {}
+    func releaseWriteLock() {}
+
+    /// Called from the prelude of every `TaskCancellable`'s body — i.e. the
+    /// FIRST time the task actually gets a CPU slot after being scheduled.
+    /// Used by `TestAccess.settle()` to keep its quiet window open until
+    /// every freshly-registered task has had a chance to execute at least
+    /// once. Without this, settle would happily declare "quiet" while an
+    /// `onActivate` task was still sitting in the cooperative pool waiting
+    /// to be scheduled, then the task would later run and write a property
+    /// AFTER settle's exhaustivity baseline had been reset.
+    ///
+    /// Default: no-op. `TestAccess` overrides to fire `_noteActivity`.
+    func taskBodyStarted() {}
 
     var shouldPropagateToChildren: Bool { false }
 

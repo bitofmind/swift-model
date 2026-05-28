@@ -2,8 +2,24 @@
 import ConcurrencyExtras
 import Dependencies
 import Foundation
+#if canImport(Dispatch)
+import Dispatch
+#endif
 import IssueReporting
 import Testing
+
+/// Monotonic-nanoseconds reader that works on every supported platform —
+/// Dispatch on Apple/Linux/Android, ProcessInfo.systemUptime fallback on WASI
+/// (no Dispatch). The fallback's resolution is coarser but adequate for the
+/// 5s/10s test deadlines this is used for.
+@inline(__always)
+func _monotonicNs() -> UInt64 {
+    #if canImport(Dispatch)
+    return DispatchTime.now().uptimeNanoseconds
+    #else
+    return UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+    #endif
+}
 
 @propertyWrapper
 final class Locked<Value> {
@@ -53,9 +69,9 @@ extension Optional where Wrapped: AnyObject {
     // Returns a closure with a weak capture so the strong reference doesn't prevent deallocation.
     var waitUntilNil: () async -> Void {
         { [weak self] in
-            let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+            let deadline = _monotonicNs() + 5_000_000_000
             while self != nil {
-                if DispatchTime.now().uptimeNanoseconds > deadline {
+                if _monotonicNs() > deadline {
                     reportIssue("waitUntilRemoved timed out after 5s — model was not released. Check for retain cycles.")
                     return
                 }
@@ -65,7 +81,7 @@ extension Optional where Wrapped: AnyObject {
             // onRemoval may still be held in backgroundCall's drain task queue.
             // Wait for those to finish so transitively owned objects (e.g. child
             // context References) are also released before callers assert on them.
-            let idleDeadline = DispatchTime.now().uptimeNanoseconds + 10_000_000_000
+            let idleDeadline = _monotonicNs() + 10_000_000_000
             await backgroundCall.waitUntilIdle(deadline: idleDeadline)
         }
     }
@@ -117,48 +133,13 @@ extension DependencyValues {
     }
 }
 
-struct WaitTimeoutError: Error, CustomStringConvertible {
-    let file: StaticString
-    let line: UInt
-    let timeoutSeconds: Double
-    
-    var description: String {
-        "Timeout after \(timeoutSeconds)s waiting for condition at \(file):\(line)"
-    }
-}
-
-/// Poll until a condition becomes true.
-/// - Parameters:
-///   - condition: The condition to check (autoclosure)
-///   - pollInterval: How often to check the condition in nanoseconds (default: 1ms)
-///   - timeout: Maximum time to wait in nanoseconds (default: 5s)
-/// - Throws: WaitTimeoutError if timeout is reached before condition becomes true
-func waitUntil(
-    _ condition: @autoclosure () -> Bool,
-    pollInterval: UInt64 = 1_000_000,  // 1ms
-    timeout: UInt64 = 5_000_000_000,   // 5s
-    file: StaticString = #file,
-    line: UInt = #line
-) async throws {
-    if condition() { return }
-
-    let start = DispatchTime.now().uptimeNanoseconds
-    while !condition() {
-        if DispatchTime.now().uptimeNanoseconds - start > timeout {
-            throw WaitTimeoutError(
-                file: file,
-                line: line,
-                timeoutSeconds: Double(timeout) / 1_000_000_000.0
-            )
-        }
-        // Always sleep with a kernel timer — never busy-loop with Task.yield().
-        // Under heavy parallel-test load (600+ concurrent tests), Task.yield() queues
-        // behind every other cooperative task and can stall for seconds. Task.sleep
-        // uses a kernel-level timer that fires after exactly `pollInterval` regardless
-        // of cooperative pool saturation.
-        try await Task.sleep(nanoseconds: pollInterval)
-    }
-}
+// `waitUntil` and its timeout error live in SwiftModel as
+// `Sources/SwiftModel/Internal/WaitUntilCallback.swift` and are picked
+// up here via `@testable import SwiftModel`. That implementation
+// re-evaluates the predicate on `GlobalTickScheduler`'s shared GCD
+// ticker — callbacks fire off the cooperative pool, and all concurrent
+// `waitUntil` calls across parallel tests share one ticker instead of
+// each spinning its own `Task.sleep`.
 
 /// Test parameter for validating both observation mechanisms
 enum ObservationPath: String, CaseIterable {
@@ -245,4 +226,29 @@ extension Trait where Self == BackgroundCallIsolationTrait {
     /// Gives each test its own `BackgroundCallQueue`, preventing parallel tests from
     /// observing each other's in-flight `Observed` pipeline updates.
     static var backgroundCallIsolation: Self { Self() }
+}
+
+// MARK: - CapturingIssueReporter
+//
+// Used by `CancellationTests` to assert that specific code paths emit
+// `reportIssue` calls. Duplicated in `Tests/SwiftModelSnapshotTests/` as well
+// (the snapshot target's `AssertIssueSnapshot.swift` defines its own copy)
+// because SwiftPM test targets can't import each other.
+
+/// Collects failure messages from `reportIssue` calls without emitting them as test failures.
+final class CapturingIssueReporter: IssueReporter, @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var messages: [String] = []
+
+    func reportIssue(
+        _ message: @autoclosure () -> String?,
+        severity: IssueSeverity,
+        fileID: StaticString,
+        filePath: StaticString,
+        line: UInt,
+        column: UInt
+    ) {
+        let m = message() ?? ""
+        lock.withLock { messages.append(m) }
+    }
 }

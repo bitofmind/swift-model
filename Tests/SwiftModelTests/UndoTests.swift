@@ -356,7 +356,12 @@ struct TrackUndoSelectiveTests {
 /// `stack.undo()`/`stack.redo()` returns. Checking them through the model dependency
 /// system on the `.withObservationTracking` path would require the dependency model's own
 /// `@MainActor` drain task to be scheduled first.
-@Suite(.modelTesting(exhaustivity: .off), .serialized)
+///
+/// (Previously `.serialized` because an earlier shape of these tests polled a
+/// `LockIsolated` updated by a `for await` loop; serialization gave the cooperative
+/// pool room to drain. The reactive `expect` + synchronous `#expect(stack.…)` shape
+/// below doesn't need that — the framework already wakes on `_noteActivity`.)
+@Suite(.modelTesting(exhaustivity: .off))
 struct UndoObservationTests {
 
     // MARK: - Direct property (trackUndo())

@@ -14,6 +14,10 @@ A GitHub repository search app that demonstrates real-world async patterns in Sw
 | Optional child models | `filter: FilterModel?` and `detail: RepoDetailModel?` — exist only while their sheets are open |
 | Deep links | `AppModel.handleURL(_:)` sets `search.query` from a `githubsearch://search?q=…` URL |
 
+## Swift concurrency isolation
+
+This target is built with `defaultIsolation: MainActor` (`OTHER_SWIFT_FLAGS = -default-isolation MainActor`), which matches what Xcode 26 sets on new projects. Dependency types (`GitHubClient`) are declared `nonisolated struct` and their `DependencyKey` conformances use `nonisolated extension` — see [`Docs/Dependencies.md`](../../Docs/Dependencies.md) for the full pattern.
+
 ## Project structure
 
 ```

@@ -20,6 +20,18 @@
       },
       "target" : {
         "containerPath" : "container:",
+        "identifier" : "SwiftModelMainActorTests",
+        "name" : "SwiftModelMainActorTests"
+      }
+    },
+    {
+      "skippedTags" : {
+        "tags" : [
+          ".benchmark"
+        ]
+      },
+      "target" : {
+        "containerPath" : "container:",
         "identifier" : "SwiftModelMacroTests",
         "name" : "SwiftModelMacroTests"
       }
@@ -34,6 +46,13 @@
         "containerPath" : "container:",
         "identifier" : "SwiftModelTests",
         "name" : "SwiftModelTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "SwiftModelSnapshotTests",
+        "name" : "SwiftModelSnapshotTests"
       }
     },
     {

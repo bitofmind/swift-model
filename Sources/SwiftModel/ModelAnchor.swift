@@ -80,17 +80,15 @@ public extension Model {
         let context = Context(model: self, lock: NSRecursiveLock(), dependencies: dependencies, parent: nil)
         var model = self
         model.withContextAdded(context: context)
-        context.model.activate()
+        // Call onActivate() directly on the context rather than traversing via activate()
+        // on context.model. Context.onActivate() uses allChildren directly and invokes
+        // pendingActivation for the model's own onActivate() with correct let values.
+        _ = context.onActivate()
         model.modelContext = ModelContext(context: context)
         model.modelContext.access = self.access ?? ModelAccess(useWeakReference: false)
         return (model, ModelAnchor(context: context))
     }
 
-    /// Deprecated: use `returningAnchor(withDependencies:)` instead.
-    @available(*, deprecated, renamed: "returningAnchor(withDependencies:)")
-    func andAnchor(function: String = #function, andDependencies dependencies: @escaping (inout ModelDependencies) -> Void = { _ in }) -> (model: Self, anchor: ModelAnchor<Self>) {
-        returningAnchor(function: function, withDependencies: dependencies)
-    }
 }
 
 public class ModelAnchor<M: Model>: @unchecked Sendable {

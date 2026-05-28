@@ -23,16 +23,18 @@ public enum StoragePropagation: Sendable {
 
 /// A typed key + default value for per-context storage.
 ///
-/// Declare one as a computed property on `ContextKeys`. The source location
-/// captured at `init` time serves as the unique dictionary key — no separate enum needed.
+/// Declare one as a computed property on ``LocalKeys`` or ``EnvironmentKeys``. The source
+/// location captured at `init` time serves as the unique dictionary key — no separate enum needed.
 ///
-/// ## Declaring a context key
+/// ## Declaring a storage key
 ///
 /// ```swift
-/// extension ContextKeys {
+/// extension LocalKeys {
 ///     var isFeatureEnabled: ContextStorage<Bool> {
 ///         .init(defaultValue: false)
 ///     }
+/// }
+/// extension EnvironmentKeys {
 ///     var theme: ContextStorage<ColorScheme> {
 ///         .init(defaultValue: .light, propagation: .environment)
 ///     }
@@ -62,8 +64,8 @@ public struct ContextStorage<Value: Sendable>: Hashable, Sendable {
     /// The value returned when no storage entry has been set for this key.
     public let defaultValue: Value
     let key: AnyHashableSendable
-    /// The property name captured from the `ContextKeys` call site via `#function`.
-    /// Used in test exhaustion failure messages to show `context.isDarkMode` instead of `UNKNOWN`.
+    /// The property name captured from the `LocalKeys`/`EnvironmentKeys` call site via `#function`.
+    /// Used in test exhaustion failure messages to show `local.isDarkMode` instead of `UNKNOWN`.
     let name: String
     /// Controls whether the value propagates down the model hierarchy.
     public let propagation: StoragePropagation
@@ -78,8 +80,8 @@ public struct ContextStorage<Value: Sendable>: Hashable, Sendable {
 
     /// Creates a context storage descriptor using the call-site source location as the unique key.
     ///
-    /// Because each computed property on `ContextKeys` has its own source location, distinct
-    /// properties produce distinct keys automatically — no explicit key type is needed.
+    /// Because each computed property on `LocalKeys`/`EnvironmentKeys` has its own source location,
+    /// distinct properties produce distinct keys automatically — no explicit key type is needed.
     ///
     /// - Parameters:
     ///   - defaultValue: The value returned when no entry has been set.
@@ -380,187 +382,6 @@ extension EnvironmentStorage where Value: Equatable {
             line: line,
             column: column
         )
-    }
-}
-
-// MARK: - LocalKeys
-
-/// A namespace for declaring named local storage keys as computed properties.
-///
-/// Extend `LocalKeys` with computed properties that return `LocalStorage<Value>` descriptors.
-/// SwiftModel uses the source location of each property as a unique key automatically.
-///
-/// ```swift
-/// extension LocalKeys {
-///     var isEditing: LocalStorage<Bool> {
-///         .init(defaultValue: false)
-///     }
-/// }
-/// ```
-///
-/// Access values via `node.local`:
-///
-/// ```swift
-/// node.local.isEditing        // read
-/// node.local.isEditing = true // write
-/// ```
-public struct LocalKeys: Sendable {
-    public init() {}
-}
-
-// MARK: - LocalValues
-
-/// Provides `@dynamicMemberLookup` access to a model node's local storage via `LocalKeys`.
-///
-/// Obtained from `node.local` inside your model implementation.
-///
-/// ```swift
-/// let editing = node.local.isEditing   // read
-/// node.local.isEditing = true          // write
-/// ```
-@dynamicMemberLookup
-public struct LocalValues: Sendable {
-    let context: AnyContext?
-
-    init(context: AnyContext?) {
-        self.context = context
-    }
-
-    /// Reads or writes a local value using a storage descriptor directly.
-    public subscript<V>(storage: LocalStorage<V>) -> V {
-        get {
-            guard let context else { return storage.storage.defaultValue }
-            return context[storage.storage]
-        }
-        nonmutating set {
-            guard let context else { return }
-            context[storage.storage] = newValue
-        }
-    }
-
-    /// Reads or writes a local value using a key path on `LocalKeys`.
-    public subscript<V>(dynamicMember path: KeyPath<LocalKeys, LocalStorage<V>>) -> V {
-        get { self[LocalKeys()[keyPath: path]] }
-        nonmutating set { self[LocalKeys()[keyPath: path]] = newValue }
-    }
-}
-
-// MARK: - EnvironmentKeys
-
-/// A namespace for declaring named environment storage keys as computed properties.
-///
-/// Extend `EnvironmentKeys` with computed properties that return `EnvironmentStorage<Value>` descriptors.
-///
-/// ```swift
-/// extension EnvironmentKeys {
-///     var theme: EnvironmentStorage<ColorScheme> {
-///         .init(defaultValue: .light)
-///     }
-/// }
-/// ```
-///
-/// Access values via `node.environment`:
-///
-/// ```swift
-/// node.environment.theme         // read (walks up hierarchy to nearest setter)
-/// node.environment.theme = .dark // write (stores here, visible to descendants)
-/// ```
-public struct EnvironmentKeys: Sendable {
-    public init() {}
-}
-
-// MARK: - EnvironmentContext
-
-/// Provides `@dynamicMemberLookup` access to a model node's environment storage via `EnvironmentKeys`.
-///
-/// Obtained from `node.environment` inside your model implementation. Reads walk up the hierarchy
-/// to the nearest ancestor that has set the value; writes store on this node and are inherited
-/// by all descendants.
-///
-/// ```swift
-/// let current = node.environment.theme    // read — walks up hierarchy
-/// node.environment.theme = .dark          // write — visible to all descendants
-/// ```
-@dynamicMemberLookup
-public struct EnvironmentContext: Sendable {
-    let context: AnyContext?
-
-    init(context: AnyContext?) {
-        self.context = context
-    }
-
-    /// Reads or writes an environment value using a storage descriptor directly.
-    public subscript<V>(storage: EnvironmentStorage<V>) -> V {
-        get {
-            guard let context else { return storage.storage.defaultValue }
-            return context.environmentValue(for: storage.storage)
-        }
-        nonmutating set {
-            guard let context else { return }
-            context[storage.storage] = newValue
-        }
-    }
-
-    /// Reads or writes an environment value using a key path on `EnvironmentKeys`.
-    public subscript<V>(dynamicMember path: KeyPath<EnvironmentKeys, EnvironmentStorage<V>>) -> V {
-        get { self[EnvironmentKeys()[keyPath: path]] }
-        nonmutating set { self[EnvironmentKeys()[keyPath: path]] = newValue }
-    }
-}
-
-// MARK: - ContextKeys (deprecated)
-
-/// A namespace for declaring named context storage keys as computed properties.
-///
-/// - Important: Deprecated. Use ``LocalKeys`` for node-private storage or ``EnvironmentKeys``
-///   for top-down propagating storage.
-@available(*, deprecated, message: "Use LocalKeys for node-private storage or EnvironmentKeys for top-down propagating storage.")
-public struct ContextKeys: Sendable {
-    public init() {}
-}
-
-// MARK: - ContextValues (deprecated)
-
-/// Provides `@dynamicMemberLookup` access to a model node's context storage via `ContextKeys`.
-///
-/// - Important: Deprecated. Use `node.local` for node-private storage or `node.environment`
-///   for top-down propagating storage.
-@available(*, deprecated, message: "Use node.local for node-private storage or node.environment for top-down propagating storage.")
-@dynamicMemberLookup
-public struct ContextValues: Sendable {
-    // Optional: nil when the node is unanchored. Reads return defaultValue, writes are no-ops.
-    let context: AnyContext?
-
-    init(context: AnyContext?) {
-        self.context = context
-    }
-
-    /// Reads or writes a context value using a storage descriptor directly.
-    public subscript<V>(storage: ContextStorage<V>) -> V {
-        get {
-            guard let context else { return storage.defaultValue }
-            switch storage.propagation {
-            case .local:
-                return context[storage]
-            case .environment:
-                // Walk ancestors calling willAccessStorage on each — this registers
-                // observation dependencies at every level so any ancestor write is detected.
-                return context.environmentValue(for: storage)
-            }
-        }
-        nonmutating set {
-            guard let context else { return }
-            // Both local and environment writes just store on this context.
-            // For environment keys the observation system fires naturally because
-            // readers registered willAccess on this context during their walk.
-            context[storage] = newValue
-        }
-    }
-
-    /// Reads or writes a context value using a key path on `ContextKeys`.
-    public subscript<V>(dynamicMember path: KeyPath<ContextKeys, ContextStorage<V>>) -> V {
-        get { self[ContextKeys()[keyPath: path]] }
-        nonmutating set { self[ContextKeys()[keyPath: path]] = newValue }
     }
 }
 

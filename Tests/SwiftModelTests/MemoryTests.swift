@@ -3,6 +3,31 @@ import Testing
 import Observation
 
 struct MemoryTests {
+    // MARK: - Layout size tests
+
+    /// `_ModelSourceBox` must stay at 8 bytes.
+    ///
+    /// The 8-byte size comes from a 2-case enum whose cases both carry a `Context<M>.Reference`
+    /// class pointer. Swift encodes the discriminant in the spare low bits of the pointer
+    /// (heap objects are ≥8-byte aligned, so bits 0–2 are always 0). If this test breaks,
+    /// someone likely added a stored property or changed the layout strategy.
+    @Test func modelSourceBoxIs8Bytes() {
+        #expect(MemoryLayout<_ModelSourceBox<Child>>.size == 8)
+        #expect(MemoryLayout<_ModelSourceBox<Parent>>.size == 8)
+    }
+
+    /// `_ModelAccessBox` must stay at 8 bytes (Optional class reference).
+    @Test func modelAccessBoxIs8Bytes() {
+        #expect(MemoryLayout<_ModelAccessBox>.size == 8)
+    }
+
+    /// A `@Model` struct with no `let` fields should be exactly 16 bytes:
+    /// 8 bytes for `_$modelSource` + 8 bytes for `_$modelContext`.
+    @Test func emptyModelIs16Bytes() {
+        #expect(MemoryLayout<EmptyModel>.size == 16)
+    }
+
+
     @Test func testParent() async {
         weak var parentRef: Context<Parent>.Reference?
         do {
@@ -168,6 +193,9 @@ struct MemoryTests {
         #expect(objectRef == nil)
     }
 }
+
+@Model
+private struct EmptyModel {}
 
 @Model
 private struct Parent {

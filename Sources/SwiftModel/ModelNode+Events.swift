@@ -21,7 +21,8 @@ public extension ModelNode {
     ///   - relation: Which models receive the event. Defaults to `[.self, .ancestors]`.
     func send(_ event: M.Event, to relation: ModelRelation = [.self, .ancestors]) {
         guard let context = enforcedContext() else { return }
-        context.sendEvent(event, to: relation, context: context)
+        let senderModel: any Model = _model ?? context.model
+        context.sendEvent(event, model: senderModel, to: relation, context: context)
         access?.didSend(event: event, from: context)
     }
 
@@ -35,7 +36,8 @@ public extension ModelNode {
     ///   - relation: Which models receive the event. Defaults to `[.self, .ancestors]`.
     func send<E>(_ event: E, to relation: ModelRelation = [.self, .ancestors]) {
         guard let context = enforcedContext() else { return }
-        context.sendEvent(event, to: relation, context: context)
+        let senderModel: any Model = _model ?? context.model
+        context.sendEvent(event, model: senderModel, to: relation, context: context)
         access?.didSend(event: event, from: context)
     }
 }
@@ -82,8 +84,8 @@ public extension ModelNode {
     func event<FromModel: Model>(fromType modelType: FromModel.Type) -> AsyncStream<(event: FromModel.Event, model: FromModel)> where FromModel.Event: Sendable {
         guard let context = enforcedContext() else { return .never }
         return context.events().compactMap {
-            guard let event = $0.event as? FromModel.Event, let context = $0.context as? Context<FromModel> else { return nil }
-            return (event, context.model)
+            guard let event = $0.event as? FromModel.Event, let model = $0.model as? FromModel else { return nil }
+            return (event, model)
         }.eraseToStream()
     }
 
@@ -103,7 +105,7 @@ public extension ModelNode {
     func event<Event: Sendable, FromModel: Sendable>(ofType eventType: Event.Type, fromType modelType: FromModel.Type) -> AsyncStream<(event: Event, model: FromModel)> {
         guard let context = enforcedContext() else { return .never }
         return context.events().compactMap {
-            guard let event = $0.event as? Event, let model = $0.context.anyModel as? FromModel else { return nil }
+            guard let event = $0.event as? Event, let model = $0.model as? FromModel else { return nil }
             return (event, model)
         }.eraseToStream()
     }
@@ -160,7 +162,7 @@ public extension ModelNode {
     func event<FromModel: Model>(of event: FromModel.Event, fromType modelType: FromModel.Type) -> AsyncStream<FromModel> where FromModel.Event: Equatable&Sendable {
         guard let context = enforcedContext() else { return .never }
         return context.events().compactMap {
-            guard let e = $0.event as? FromModel.Event, e == event, let model = $0.context.anyModel as? FromModel else { return nil }
+            guard let e = $0.event as? FromModel.Event, e == event, let model = $0.model as? FromModel else { return nil }
             return model
         }.eraseToStream()
     }
@@ -178,7 +180,7 @@ public extension ModelNode {
     func event<Event: Equatable&Sendable, FromModel: Sendable>(of event: Event, fromType modelType: FromModel.Type) -> AsyncStream<FromModel> {
         guard let context = enforcedContext() else { return .never }
         return context.events().compactMap {
-            guard let e = $0.event as? Event, e == event, let model = $0.context.anyModel as? FromModel else { return nil }
+            guard let e = $0.event as? Event, e == event, let model = $0.model as? FromModel else { return nil }
             return model
         }.eraseToStream()
     }

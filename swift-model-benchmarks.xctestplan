@@ -1,0 +1,24 @@
+{
+  "configurations" : [
+    {
+      "id" : "A1B2C3D4-0003-4345-8D79-DDE5C0E432B6",
+      "name" : "Benchmarks",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "performanceAntipatternCheckerEnabled" : false
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "SwiftModelBenchmarkTests",
+        "name" : "SwiftModelBenchmarkTests"
+      }
+    }
+  ],
+  "version" : 1
+}

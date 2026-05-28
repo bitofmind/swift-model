@@ -543,8 +543,10 @@ struct MemoizeTests {
     func testEquatableMemoizeSuppressesObserverNotifications(updatePath: UpdatePath) async throws {
         let model = updatePath.withOptions { EquatableSuppressionModel().withAnchor() }
 
-        // Wait for initial observation (product == 0)
-        await expect(model.notificationCount.value >= 1)
+        // Wait for initial observation (product == 0). `notificationCount`
+        // is a `LockIsolated` outside the reactive system, so this needs
+        // explicit polling via `waitUntil` rather than `expect`.
+        try await waitUntil(model.notificationCount.value >= 1)
         let countAfterInit = model.notificationCount.value
 
         // Change multiplier so product changes: 0 * 2 = 0, still 0 — should NOT notify
@@ -557,7 +559,7 @@ struct MemoizeTests {
 
         // Now change value so product actually changes: 1 * 2 = 2 — SHOULD notify
         model.value = 1
-        await expect(model.notificationCount.value > countAfterInit)
+        try await waitUntil(model.notificationCount.value > countAfterInit)
         #expect(model.notificationCount.value > countAfterInit,
                 "Observer must fire when Equatable value genuinely changes")
     }

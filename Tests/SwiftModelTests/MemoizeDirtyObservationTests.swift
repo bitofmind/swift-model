@@ -369,17 +369,18 @@ struct MemoizeDirtyObservationTests {
                 super.init(useWeakReference: false)
             }
             
-            override func willAccess<M: Model, Value>(_ model: M, at path: KeyPath<M, Value>&Sendable) -> (() -> Void)? {
-                guard let context = model.context else { return nil }
-                
+            override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
                 // Register onModify callback (this is what ViewAccess does for SwiftUI)
                 cancellable = context.onModify(for: path) { [weak self] finished, _ in
                     guard let self else { return {} }
                     if !finished {
                         self.updateCount.withValue { $0 += 1 }
                         // Re-read value (like SwiftUI would)
-                        if let typedPath = path as? KeyPath<DirtyTrackingModel, Int> {
-                            let newValue = self.model[keyPath: typedPath]
+                        if context is Context<DirtyTrackingModel> {
+                            // The memoize keypath has value type AnyHashableSendable (not Int),
+                            // and its getter calls fatalError() — it exists only for keypath
+                            // construction. Read the computed value directly instead.
+                            let newValue = self.model.computed
                             self.observedValues.withValue { $0.append(newValue) }
                         }
                     }
@@ -461,7 +462,7 @@ struct MemoizeDirtyObservationTests {
 
         // Hover over item 1 → [1]
         model.hoverID = 1
-        try await waitUntil(updates.value.last == [1], timeout: 2_000_000_000)
+        try await waitUntil(updates.value.last == [1])
         #expect(updates.value.last == [1], "Should see [1] after hover")
         updates.setValue([])
 
@@ -512,7 +513,7 @@ struct MemoizeDirtyObservationTests {
 
         // One full nil → X → nil → Y cycle (the exact bug scenario)
         model.hoverID = 1
-        try await waitUntil(updates.value.last == [1], timeout: 2_000_000_000)
+        try await waitUntil(updates.value.last == [1])
         #expect(updates.value.last == [1], "[\(path)] Should see [1]")
 
         model.hoverID = nil
@@ -595,7 +596,7 @@ struct MemoizeDirtyObservationTests {
         // per-test queue. We cannot waitForCurrentItems on the global queue here.
         // Use a generous waitUntil timeout instead so the consumer task has time to
         // receive the value.
-        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        await backgroundCall.waitForCurrentItems(deadline: _monotonicNs() + 5_000_000_000)
 
         // The final value must be observed (20 * 2 = 40)
         // 10 s covers: global queue drain (usually <100 ms) + consumer task scheduling (usually <500 ms).
@@ -611,7 +612,7 @@ struct MemoizeDirtyObservationTests {
             model.value = 20 + i
         }
         // Same two-hop delivery as above; only wait on per-test queue for hop 1.
-        await backgroundCall.waitForCurrentItems(deadline: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        await backgroundCall.waitForCurrentItems(deadline: _monotonicNs() + 5_000_000_000)
         // Final value: 40 * 2 = 80
         try await waitUntil(updates.value.contains(80), timeout: 10_000_000_000)
         #expect(updates.value.contains(80), "[\(path)] Subscription must survive a second round of rapid mutations")

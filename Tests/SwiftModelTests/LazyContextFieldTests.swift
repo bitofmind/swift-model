@@ -52,22 +52,58 @@ struct LazyContextFieldTests {
 
     // MARK: - ObservationRegistrar lazy allocation
 
+    /// With `RegistrarBox`, the `RegistrarPair` is created lazily on first observation
+    /// access. The box itself is allocated cheaply at root anchor time. Inside the pair,
+    /// `background` is created eagerly when the pair is first needed; `main` is created
+    /// lazily on first main-channel use, so trees that never reach the main thread save
+    /// one `ObservationRegistrar` (plus its internal `Extent` heap object) per hierarchy.
     @Test func observationRegistrarNilBeforeFirstAccess() async {
         let model = LeafForLazyTests().withAnchor()
-        #expect(model.context?.mainObservationRegistrarStore == nil)
-        #expect(model.context?.backgroundObservationRegistrarStore == nil)
-    }
-
-    @Test func observationRegistrarAllocatesOnFirstObservationAccess() async {
-        let model = LeafForLazyTests().withAnchor()
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            withObservationTracking {
-                _ = model.value
-            } onChange: {}
-            #expect(model.context?.mainObservationRegistrarStore != nil)
-            #expect(model.context?.backgroundObservationRegistrarStore != nil)
+            #expect(model.context?.mainObservationRegistrarStore == nil)
+            #expect(model.context?.backgroundObservationRegistrarStore == nil)
         }
     }
+
+    /// A first observation access on a non-main thread allocates only the `background`
+    /// registrar. The `main` registrar remains lazy until a main-thread access happens —
+    /// trees on Linux/Android (where `useMainThreadObservation == false`) never trigger
+    /// this branch and so never pay the main-channel allocation.
+    @Test func observationRegistrarBackgroundAllocatesOnFirstNonMainAccess() async {
+        let model = LeafForLazyTests().withAnchor()
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            // Force the access to run on a background thread so `isOnMainThread` is false
+            // inside `willAccessDirect`. Swift Testing test bodies usually run on the
+            // cooperative pool already, but `Task.detached` makes the thread choice
+            // explicit and deterministic regardless of the runner.
+            await Task.detached {
+                withObservationTracking {
+                    _ = model.value
+                } onChange: {}
+            }.value
+            #expect(model.context?.backgroundObservationRegistrarStore != nil)
+            #expect(model.context?.mainObservationRegistrarStore == nil)
+        }
+    }
+
+    /// A first observation access on the main thread allocates the `main` registrar.
+    /// Only Apple platforms reach this branch — on non-Apple (Linux/Android/WASM)
+    /// `useMainThreadObservation` is forced off and `willAccessDirect` reroutes a
+    /// main-thread access to `backgroundObservationRegistrar` instead. Compiled out
+    /// entirely on non-Apple to avoid a meaningless assertion there.
+    #if canImport(Darwin)
+    @Test func observationRegistrarMainAllocatesOnFirstMainAccess() async {
+        let model = LeafForLazyTests().withAnchor()
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            await MainActor.run {
+                withObservationTracking {
+                    _ = model.value
+                } onChange: {}
+            }
+            #expect(model.context?.mainObservationRegistrarStore != nil)
+        }
+    }
+    #endif
 
     // MARK: - Cancellations lazy allocation
 

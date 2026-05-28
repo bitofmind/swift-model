@@ -35,20 +35,6 @@ import SwiftModel
 > }
 > ```
 
-### Xcodeproj Setup
-
-> **App target prerequisite:** Any Xcode app target using SwiftModel must add `OTHER_LDFLAGS = $(inherited) -weak_framework Testing` to its build settings. This is required for the app to launch, independently of whether you have any tests. See [Install](../README.md#install) in the README.
-
-If your test target uses `BUNDLE_LOADER` (the Xcode default for xcodeproj targets that test an app binary), one additional build setting is required on the **app target**:
-
-```
-ENABLE_TESTING_SEARCH_PATHS = YES
-```
-
-`ENABLE_TESTING_SEARCH_PATHS` makes the testing APIs available inside the app binary, which the test bundle inherits at runtime via `BUNDLE_LOADER`.
-
-Do **not** add `SwiftModel` to the test target's Frameworks — the test bundle gets all symbols from the app, and adding extra links creates duplicate symbol errors.
-
 The `expect` builder block accepts any number of predicates. Using `==` gives you a pretty-printed diff on failure; any other `Bool` expression also works:
 
 ```swift
@@ -365,3 +351,17 @@ When that level of fidelity is exactly what you want — equivalent to TCA's `se
 ```
 
 The difference: no action enum to rename, no `receive` case to enumerate. Just the state, in order.
+
+### Xcodeproj Setup
+
+> **App target prerequisite:** Any Xcode app target using SwiftModel must add `OTHER_LDFLAGS = $(inherited) -weak_framework Testing` to its build settings. This is required for the app to launch, independently of whether you have any tests. See [Install](../README.md#install) in the README.
+
+If your test target uses `BUNDLE_LOADER` (the Xcode default for xcodeproj targets that test an app binary), one additional build setting is required on the **app target**:
+
+```
+ENABLE_TESTING_SEARCH_PATHS = YES
+```
+
+`ENABLE_TESTING_SEARCH_PATHS` makes the testing APIs available inside the app binary, which the test bundle inherits at runtime via `BUNDLE_LOADER`.
+
+Do **not** add `SwiftModel` to the test target's Frameworks — the test bundle gets all symbols from the app, and adding extra links creates duplicate symbol errors.

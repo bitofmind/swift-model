@@ -83,6 +83,20 @@ final class Cancellations: @unchecked Sendable {
         }
     }
 
+    /// True if any registered `TaskCancellable` has not yet had its body
+    /// scheduled past its first CPU slot. Used by `TestAccess.settle()` to
+    /// hold open the quiet window until every freshly-registered task has at
+    /// least started running — otherwise an `onActivate` task that's still
+    /// sitting in the cooperative pool's queue can write a tracked property
+    /// AFTER settle's exhaustivity baseline has been reset.
+    /// See `TaskCancellable.hasStartedRunning` and
+    /// `ModelAccess.taskBodyStarted`.
+    var hasPendingStartTask: Bool {
+        lock {
+            registered.values.contains { ($0 as? TaskCancellable)?.hasStartedRunning == false }
+        }
+    }
+
     func cancelAll() {
         lock {
             defer {

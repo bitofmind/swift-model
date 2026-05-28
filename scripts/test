@@ -1,0 +1,92 @@
+#!/bin/bash
+# Run the SwiftModel test suite. Local default is `--parallel` (unbounded,
+# matches swift-test's default) — well-provisioned machines absorb 700-way
+# in-process Task fan-out without issue, and the parallel mode is what
+# exercises cross-test scheduling diversity for race-detection purposes.
+#
+# Usage:
+#   scripts/test                          # single pass, --parallel
+#   scripts/test --filter <pattern>       # single pass, --filter forwarded
+#   scripts/test --no-parallel            # single pass, serial (matches CI)
+#   scripts/test --loop 100               # 100 iterations stability stress
+#   scripts/test --loop 100 --no-parallel # mix-and-match
+#
+# All `--skip` flags from the macOS CI invocation are applied here too so
+# local matches CI's behaviour in terms of which tests are even run.
+#
+# CI runs `--no-parallel` on both macOS and Linux because their runners can't
+# keep up with our 700-way unbounded Task fan-out. The tests themselves are
+# parallel-safe — see the macOS-job comment in `.github/workflows/ci.yml` for
+# the full story.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+LOOP_COUNT=1
+EXTRA_ARGS=()
+SAW_PARALLEL_FLAG=0
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --loop)
+            LOOP_COUNT="$2"
+            shift 2
+            ;;
+        --loop=*)
+            LOOP_COUNT="${1#*=}"
+            shift
+            ;;
+        --parallel|--no-parallel)
+            SAW_PARALLEL_FLAG=1
+            EXTRA_ARGS+=("$1")
+            shift
+            ;;
+        *)
+            EXTRA_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Default to --parallel locally if the caller didn't pick a mode. Match the
+# convention swift-test itself uses; the override `--no-parallel` reproduces CI.
+TEST_ARGS=()
+if [[ "${SAW_PARALLEL_FLAG}" -eq 0 ]]; then
+    TEST_ARGS+=(--parallel)
+fi
+TEST_ARGS+=(
+    --skip SwiftModelBenchmarkTests
+)
+# EXTRA_ARGS may be empty; guard against `set -u` unbound-array expansion
+# on bash versions that treat empty-array indexing as unset.
+if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+    TEST_ARGS+=("${EXTRA_ARGS[@]}")
+fi
+
+if [[ "${LOOP_COUNT}" -eq 1 ]]; then
+    exec swift test "${TEST_ARGS[@]}"
+fi
+
+# Stress-loop mode: run the suite N times, keep going on failure, summarise at the end.
+# Each iteration's stdout/stderr is redirected to /tmp; the path is printed on failure
+# so post-mortems on the failing run are easy.
+echo "Stress loop: ${LOOP_COUNT} iterations, args: ${TEST_ARGS[*]}"
+FAIL_COUNT=0
+for i in $(seq 1 "${LOOP_COUNT}"); do
+    printf "Iteration %d/%d ... " "$i" "${LOOP_COUNT}"
+    START="$(date +%s)"
+    if swift test "${TEST_ARGS[@]}" > "/tmp/swift-model-stress-${i}.log" 2>&1; then
+        END="$(date +%s)"
+        printf "ok (%ds)\n" "$((END - START))"
+        rm -f "/tmp/swift-model-stress-${i}.log"
+    else
+        END="$(date +%s)"
+        printf "FAILED (%ds) — log: /tmp/swift-model-stress-${i}.log\n" "$((END - START))"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+    fi
+done
+
+echo ""
+echo "Stress loop complete: ${FAIL_COUNT}/${LOOP_COUNT} iterations failed."
+exit "${FAIL_COUNT}"

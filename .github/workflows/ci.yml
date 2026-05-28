@@ -11,44 +11,130 @@ env:
 
 jobs:
   macos:
-    name: macOS
+    name: macOS (${{ matrix.mode }})
     runs-on: macos-15
-    timeout-minutes: 7
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: parallel
+            flag: --parallel
+          - mode: serial
+            flag: --no-parallel
     steps:
       - uses: actions/checkout@v6
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest
-      - name: Build and test
-        # Run in parallel to exercise concurrent behaviour and catch races.
-        run: swift test --parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks
+      - name: Build and test (${{ matrix.mode }})
+        # Both modes are exercised:
+        #
+        # • `--parallel` validates the framework's claim that tests are
+        #   parallel-safe — a real differentiator vs. e.g. TCA's enforced
+        #   `@MainActor`. Under contention on a 3-core runner, settle's
+        #   `.deferential` priority defers the quiet-window check to
+        #   `.background` QoS, so the wait correctly extends to match
+        #   actual pool load instead of failing on wall-clock.
+        #
+        # • `--no-parallel` is the deterministic regression gate. It was
+        #   what caught the OR-path race fixed in 497c2ab, which only
+        #   manifested on serialized CI. Keep it for that reason; the
+        #   cost is small (one extra job, no extra test code).
+        #
+        # `fail-fast: false` so a serial-only flake doesn't cancel the
+        # parallel job's signal (and vice versa).
+        #
+        # `SWIFT_MODEL_TIMEOUT_SCALE=3` multiplies all test-infrastructure
+        # budgets (expect 5 s → 15 s; in-test settle 5 s → 15 s; cleanup
+        # settle 25 s → 75 s; trait cap 30 s → 90 s; meta-test bounds
+        # scale with budget). The small CI runners can stall `.background`
+        # QoS callbacks for many seconds under saturation; locally tests
+        # use scale=1 (default) for fast failure feedback.
+        #
+        # Benchmarks live in `SwiftModelBenchmarkTests` (split off from
+        # `SwiftModelTests`) — skipped from regular CI runs. Run them
+        # on-demand via `swift test --filter SwiftModelBenchmarkTests`
+        # or the `swift-model-benchmarks` Xcode test plan.
+        env:
+          SWIFT_MODEL_TIMEOUT_SCALE: "3"
+        run: swift test ${{ matrix.flag }} --skip SwiftModelBenchmarkTests
 
   linux:
-    name: Linux
+    name: Linux (${{ matrix.mode }})
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 12
     container:
-      image: swift:6.2
+      image: swift:6.3.0
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: parallel
+            flag: --parallel
+          - mode: serial
+            flag: --no-parallel
     steps:
       - uses: actions/checkout@v6
       - name: Cache Swift build artifacts
         uses: actions/cache@v5
         with:
           path: .build
-          key: ${{ runner.os }}-swift-6.2-${{ hashFiles('Package.resolved') }}
+          # `Package.resolved` isn't committed (no `hashFiles` input there), so
+          # we hash `Package.swift` instead — that's what determines the
+          # resolved dependency graph. Without this, every job hashed to the
+          # same key and a stale `.build/workspace-state.json` from a previous
+          # resolve (e.g. an older `swift-custom-dump` revision with a
+          # different trait declaration) survived across runs and produced
+          # spurious trait-resolution errors. The `v2-` prefix is a manual
+          # cache-bust — bump it whenever a stale-cache failure recurs.
+          # `restore-keys` is intentionally narrowed to the Package.swift hash
+          # too so partial-prefix matches can't pull in a workspace state from
+          # an older manifest. With this scheme, every Package.swift change
+          # forces a full re-resolve (the build is incremental anyway).
+          # Mode is part of the key so parallel/serial don't fight over
+          # build artifacts (different test ordering can trigger different
+          # incremental rebuild patterns).
+          key: ${{ runner.os }}-swift-6.3-${{ matrix.mode }}-v2-${{ hashFiles('Package.swift') }}
           restore-keys: |
-            ${{ runner.os }}-swift-6.2-
-      - name: Build and test
-        # Run tests serially (--no-parallel) to avoid cooperative thread-pool saturation
-        # on the 2-vCPU Linux runner. Parallel race-condition coverage is provided by macOS.
-        run: swift test --no-parallel --skip MemoizePerformanceTests --skip CoalescingBenchmarks
+            ${{ runner.os }}-swift-6.3-${{ matrix.mode }}-v2-${{ hashFiles('Package.swift') }}
+      - name: Build and test (${{ matrix.mode }})
+        # See the macOS job for the dual-mode rationale and
+        # `SWIFT_MODEL_TIMEOUT_SCALE` justification.
+        env:
+          SWIFT_MODEL_TIMEOUT_SCALE: "3"
+        run: swift test ${{ matrix.flag }} --skip SwiftModelBenchmarkTests
 
   android:
     name: Android (aarch64)
-    # Run on Linux: canImport(ObjectiveC/AppKit/UIKit) is false on Linux, which
-    # correctly matches the Android target and avoids false-positive compilation
-    # errors that occur when cross-compiling from macOS (where those checks
-    # evaluate against the macOS host instead of the Android target).
+    # Compile-only cross-compile check for aarch64-unknown-linux-android28.
+    # No test execution on Android — see the comment block below for why.
+    #
+    # History:
+    #   • `13961d6` switched this job to `skiptools/swift-android-action@v2`,
+    #     which builds + pushes test binaries to an emulator and runs them.
+    #     That worked at the time but consistently fails on this branch
+    #     against Swift 6.3 with errors of the form:
+    #       error: Failed opening
+    #       `.build/<triple>/debug/index/store/v5/units/<File>.swift.o-<hash>`
+    #       No such file or directory
+    #     emitted while generating `all-discovered-tests.swift`. The Swift
+    #     6.3 cross-compiler writes index units to the HOST store
+    #     (`x86_64-unknown-linux-gnu`), but SwiftPM's package-level
+    #     test-discovery looks for them in the TARGET store
+    #     (`x86_64-unknown-linux-android28`) — they're never found.
+    #   • The manual workaround below (seed the target store from the host
+    #     store before cross-compiling) is what was working pre-`13961d6`.
+    #     We've restored it. Once Swift's cross-compiler is fixed to write
+    #     units to the target store directly, this whole compile-only job
+    #     can be replaced again by `swift-android-action` for real test
+    #     execution on the emulator.
+    #
+    # Run on Linux: canImport(ObjectiveC/AppKit/UIKit) is false on Linux,
+    # which correctly matches the Android target and avoids false-positive
+    # compilation errors that occur when cross-compiling from macOS (where
+    # those checks evaluate against the macOS host instead of the Android
+    # target).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     container:
@@ -126,12 +212,41 @@ jobs:
             --checksum 9fa4016ee632c7e9e906608ec3b55cf13dfc4dff44e47574c5af58064dc33fd9
 
       - name: Build SwiftModel for WASM (compile check)
-        # Full test execution is blocked by third-party dependencies:
-        # IssueReportingTestSupport (xctest-dynamic-overlay) is type:.dynamic,
-        # and SnapshotTesting uses Apple-only types — both unsupported on WASM.
-        # We compile-check the main library target only, consistent with the
-        # Android job which also omits test execution.
+        # `SWIFTPM_TARGET_WASI=1` tells `Package.swift` to drop every test
+        # target except `SwiftModelTests` — see the manifest comment at the
+        # bottom of `Package.swift`. The lever exists because WASI's no-
+        # dynamic-libraries rule made the package's test-executable link fail
+        # whenever `IssueReportingTestSupport` (a `type:.dynamic` product)
+        # was reachable from the test graph.
+        env:
+          SWIFTPM_TARGET_WASI: "1"
         run: |
           swift build \
             --swift-sdk swift-6.3-RELEASE_wasm \
             --target SwiftModel
+
+      - name: Build SwiftModelTests for WASM (compile check)
+        # See the previous step for `SWIFTPM_TARGET_WASI` rationale.
+        env:
+          SWIFTPM_TARGET_WASI: "1"
+        run: |
+          swift build \
+            --swift-sdk swift-6.3-RELEASE_wasm \
+            --target SwiftModelTests
+
+      # Actually running the WASM test bundle is still blocked at the
+      # link stage by SwiftPM auto-materialising the
+      # `IssueReportingTestSupport` (`type:.dynamic`) product into any test
+      # build plan, regardless of platform conditions on consumer-side
+      # target deps. The workaround needs xctest-dynamic-overlay's manifest
+      # to drop the product when an env signal is set; that change has been
+      # prepared on the fork branch
+      #   https://github.com/mansbernhardt/swift-issue-reporting/tree/suppress-dynamic-on-wasi
+      # but can't be wired in here today because the fork's URL basename
+      # is `swift-issue-reporting` and SwiftPM derives package identity
+      # from URL basename — pulling the fork creates a duplicate-product
+      # identity conflict with the upstream `xctest-dynamic-overlay`
+      # identity that comes in transitively via swift-clocks etc.
+      #
+      # Open the upstream PR on pointfreeco/swift-issue-reporting; once
+      # merged + released, we get the env lever without an identity rename.

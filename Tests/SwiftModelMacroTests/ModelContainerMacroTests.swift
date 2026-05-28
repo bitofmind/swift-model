@@ -29,7 +29,7 @@ struct ModelContainerMacroTests {
             }
 
             extension Container: SwiftModel.ModelContainer {
-                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     visitor.visitStatically(at: \.count)
                     visitor.visitStatically(at: \.model)
                 }
@@ -60,7 +60,7 @@ struct ModelContainerMacroTests {
             }
 
             extension Container: SwiftModel.ModelContainer {
-                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     switch self {
                     case .empty:
                         break
@@ -186,7 +186,7 @@ struct ModelContainerMacroTests {
             }
 
             extension Nav: SwiftModel.ModelContainer {
-                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     switch self {
                     case .home:
                         break
@@ -270,7 +270,7 @@ struct ModelContainerMacroTests {
             }
 
             extension Nav: SwiftModel.ModelContainer {
-                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     switch self {
                     case let .detail(model: value1):
                         visitor.visitStatically(at: path(caseName: "detail", value: value1) { root in
@@ -353,7 +353,7 @@ struct ModelContainerMacroTests {
             }
 
             extension Nav: SwiftModel.ModelContainer {
-                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     switch self {
                     case let .detail(value1):
                         visitor.visitStatically(at: path(caseName: "detail", value: value1) { root in
@@ -413,7 +413,7 @@ struct ModelContainerMacroTests {
             }
 
             extension Nav: SwiftModel.ModelContainer {
-                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     switch self {
                     case .home:
                         break
@@ -477,7 +477,7 @@ struct ModelContainerMacroTests {
             }
 
             extension Nav: SwiftModel.ModelContainer {
-                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     switch self {
                     case let .detail(value1):
                         visitor.visitStatically(at: path(caseName: "detail", value: value1) { root in
@@ -536,7 +536,7 @@ struct ModelContainerMacroTests {
             }
 
             extension Nav: SwiftModel.ModelContainer {
-                public func visit(with visitor: inout ContainerVisitor<Self>) {
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
                     switch self {
                     case .home:
                         break

@@ -1,6 +1,18 @@
-#if canImport(Testing) && compiler(>=6)
+#if canImport(Testing) && compiler(>=6) && !os(Android)
+import Foundation
 import Testing
 import IssueReporting
+#if canImport(Dispatch)
+import Dispatch
+#endif
+
+private func monotonicNanoseconds() -> UInt64 {
+    #if canImport(Dispatch)
+    return DispatchTime.now().uptimeNanoseconds
+    #else
+    return UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+    #endif
+}
 
 // MARK: - Global expect / require / settle / withExhaustivity
 
@@ -17,6 +29,18 @@ import IssueReporting
 ///     await expect { model.count == 1 }
 /// }
 /// ```
+///
+/// `expect` is **purely reactive**: it resolves the moment the predicate first
+/// becomes true. If the predicate happens to be satisfied by the model's
+/// *initial* state — before an async chain triggered by an earlier write has
+/// run — it resolves immediately on that initial match. The next line of your
+/// test then runs while the chain may still be in flight.
+///
+/// When that matters — i.e. when a *next* user action's behaviour depends on
+/// the chain having completed (e.g. a guard reading a flag the chain
+/// transiently writes) — use `settle { … }` instead. `settle` waits for the
+/// model to become quiet *and* for your predicate to hold, which guarantees
+/// the chain has finished before you proceed.
 ///
 /// > Important: Must be called inside a `@Test(.modelTesting)` function. Calling outside
 ///   a model testing scope reports an issue.
@@ -83,9 +107,20 @@ public func expect(
 
 // MARK: - settle
 
-/// Waits for the model to settle — all activation tasks enter their body, the model
-/// becomes idle (no state changes for one scheduling round) — then resets selected
-/// exhaustivity categories so subsequent `expect {}` calls start from a clean baseline.
+/// Waits for the model to become quiet — every spawned task body has started and
+/// no writes, events, or probe calls have occurred for a short debounce window —
+/// then resets selected exhaustivity categories so subsequent `expect {}` calls
+/// start from a clean baseline.
+///
+/// `settle` is the **phase-boundary** verb. Use it when you want to separate one
+/// chapter of behaviour (e.g. activation, or a previous user action's full
+/// settle) from what you're about to assert, so the next `expect` doesn't see
+/// state changes that belong to the previous chapter as "unasserted modifications".
+///
+/// Contrast with `expect`, which resolves as soon as its predicate is true plus
+/// any spawned task bodies have started — it does *not* wait for the world to
+/// become quiet, and it does *not* reset the exhaustivity baseline. Use `expect`
+/// for assertions; reach for `settle` when you need a clean tracking slate.
 ///
 /// Use `settle()` without predicates after anchoring to skip past activation side effects:
 ///
@@ -241,104 +276,6 @@ public func require<T>(
         line: line,
         column: column
     )
-}
-
-// MARK: - Deprecated overloads
-
-/// - Deprecated: Use `settle { }` instead.
-@available(*, deprecated, renamed: "settle")
-public struct ExpectMode: Sendable {
-    let isSettling: Bool
-    public static let settling = ExpectMode(isSettling: true)
-}
-
-@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
-public func expect(
-    timeoutNanoseconds timeout: UInt64,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column,
-    @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result
-) async {
-    await expect(fileID: fileID, filePath: filePath, line: line, column: column, builder)
-}
-
-@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
-@_disfavoredOverload
-public func expect(
-    _ predicate: @escaping @Sendable @autoclosure () -> Bool,
-    timeoutNanoseconds timeout: UInt64,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column
-) async {
-    await expect(predicate(), fileID: fileID, filePath: filePath, line: line, column: column)
-}
-
-@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
-public func expect(
-    _ predicate: TestPredicate,
-    timeoutNanoseconds timeout: UInt64,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column
-) async {
-    await expect(predicate, fileID: fileID, filePath: filePath, line: line, column: column)
-}
-
-@available(*, deprecated, message: "Use settle { } instead of expect(.settling) { }.")
-public func expect(
-    _ mode: ExpectMode,
-    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column,
-    @AssertBuilder _ builder: @Sendable () -> AssertBuilder.Result
-) async {
-    await settle(fileID: fileID, filePath: filePath, line: line, column: column, builder)
-}
-
-@available(*, deprecated, message: "Use settle(_:) instead of expect(.settling, predicate).")
-@_disfavoredOverload
-public func expect(
-    _ mode: ExpectMode,
-    _ predicate: @escaping @Sendable @autoclosure () -> Bool,
-    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column
-) async {
-    await settle(predicate(), fileID: fileID, filePath: filePath, line: line, column: column)
-}
-
-@available(*, deprecated, message: "Use settle(_:) instead of expect(.settling, predicate).")
-public func expect(
-    _ mode: ExpectMode,
-    _ predicate: TestPredicate,
-    timeoutNanoseconds timeout: UInt64 = 1_000_000_000,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column
-) async {
-    await settle(predicate, fileID: fileID, filePath: filePath, line: line, column: column)
-}
-
-@available(*, deprecated, message: "Timeout is no longer needed. Remove the timeoutNanoseconds parameter.")
-public func require<T>(
-    _ expression: @escaping @Sendable @autoclosure () -> T?,
-    timeoutNanoseconds timeout: UInt64,
-    fileID: StaticString = #fileID,
-    filePath: StaticString = #filePath,
-    line: UInt = #line,
-    column: UInt = #column
-) async throws -> T {
-    try await require(expression(), fileID: fileID, filePath: filePath, line: line, column: column)
 }
 
 /// Runs `body` with exhaustivity set by the given modifier for the active `.modelTesting` scope.
@@ -508,13 +445,8 @@ private func _withModelTestingImpl(
         try await _ModelTestingLocals.$scope.withValue(pending) {
             try await body()
         }
-        // After the body completes, run exhaustion checks and wait for all background
-        // teardown work (onCancel callbacks, stream finalizations) to finish so that
-        // post-scope assertions see the final state. Both run inside the task-local
-        // scope so any backgroundCall work from onRemoval() uses the per-test queue.
         if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
             await concrete.checkExhaustion(at: fl)
-            await concrete.waitForTeardown()
         }
     }
 }
@@ -541,10 +473,6 @@ public struct ModelTestingTrait: Sendable {
     }
 }
 
-/// Backward-compatible typealias — removes the need for callers to update any explicit type references.
-@available(*, deprecated, renamed: "ModelTestingTrait")
-public typealias _ModelTestingTrait = ModelTestingTrait
-
 #if swift(>=6.1)
 extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
     public var isRecursive: Bool { true }
@@ -556,25 +484,224 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
     ) async throws {
         // Compose with any enclosing scope's exhaustivity so nested traits stack correctly:
         // @Suite(.modelTesting(.removing(.events)))  → .full − .events
-        // @Test(.modelTesting(.removing(.tasks)))    → (.full − .events) − .tasks
+        // @Test(.modelTesting(.removing(.tasks))) → (.full − .events) − .tasks
         let parentExhaustivity = _ModelTestingLocals.scope?.exhaustivity ?? .full
         let resolvedExhaustivity = modifier.apply(to: parentExhaustivity)
         let pending = _PendingModelTestScope(exhaustivity: resolvedExhaustivity, dependencies: dependencies)
         // Give each test its own BackgroundCallQueue so parallel tests cannot observe
         // each other's in-flight Observed pipeline updates.
         let testQueue = BackgroundCallQueue()
+        let testTag = test.name
         try await _BackgroundCallLocals.$queue.withValue(testQueue) {
-            try await _ModelTestingLocals.$scope.withValue(pending) {
-                try await function()
-            }
-            // After the test body completes, run exhaustion check (still inside the
-            // test-local queue scope so any teardown backgroundCall work uses testQueue).
-            if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
-                await concrete.checkExhaustion(at: fl)
+            // Per-test wall-clock cap.
+            //
+            // Races the test body + checkExhaustion against a kernel timer. On
+            // timeout the body task is cancelled — all wait primitives use
+            // `withTaskCancellationHandler` to resume parked continuations on
+            // cancellation, so the body actually unwinds rather than hanging
+            // indefinitely while we just record an issue.
+            //
+            // A correct test under any load completes well under the cap.
+            // Hitting it means: deadlock, runaway loop, or a contract-
+            // violating predicate that doesn't react to model state. In all
+            // three the test should fail explicitly rather than hang.
+            try await withoutActuallyEscaping(function) { escapingFunction in
+                try await _withTestTimeout(seconds: ModelTestingTraitOptions.testWallClockSeconds, testTag: testTag) {
+                    try await _ModelTestingLocals.$scope.withValue(pending) {
+                        try await escapingFunction()
+                    }
+                    // After the test body completes, run exhaustion check (still inside the
+                    // test-local queue scope so any teardown backgroundCall work uses testQueue).
+                    if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
+                        await concrete.checkExhaustion(at: fl)
+                    }
+                }
             }
         }
     }
 }
+
+// `ModelTestingTraitOptions` is defined in
+// `Sources/SwiftModel/Internal/ModelTestingTraitOptions.swift` so it can be
+// referenced from non-trait files (e.g. `WaitUntilCallback.swift`) that
+// must compile on platforms without `swift-testing` (Android, WASM).
+
+/// Races `body` against a per-test wall-clock timer. Whichever finishes first
+/// wins; the other is cancelled.
+///
+/// **Cancellation propagation**: when the timer fires, `cancelAll()` cancels
+/// the body task. The body's wait primitives (`TestAccess.awaitPredicate`,
+/// `TestAccess.awaitQuietWindow`, `callQueueWaitUntilIdle`,
+/// `callQueueWaitForCurrentItems`) all use `withTaskCancellationHandler` to
+/// resume their parked continuations on cancellation — so the body actually
+/// unwinds rather than hanging while we record an issue.
+///
+/// **Timer source**: uses `GlobalTickScheduler` (GCD-backed) instead of
+/// `Task.sleep`. Task.sleep is scheduled on the Swift cooperative pool, which
+/// can be starved when many parallel tests fan out hundreds of tasks — in
+/// which case the trait cap silently fails to fire and a hung test runs
+/// indefinitely. GCD timers fire from their own thread pool, immune to
+/// cooperative-pool saturation.
+///
+/// On timeout, calls `Issue.record(_:)` so the failure surfaces in the
+/// swift-testing report, then throws `_TestTimeoutError` to abort.
+///
+/// `package` so the test target can drive this directly to validate the
+/// safety net (`Tests/SwiftModelTests/ReactiveWaitInfrastructureTests.swift`).
+/// Set `reportIssueOnTimeout: false` from validation tests so the
+/// `reportIssue(_:)` call doesn't pollute the test's own issue list.
+@Sendable
+package func _withTestTimeout<R: Sendable>(
+    seconds: Double,
+    testTag: String,
+    reportIssueOnTimeout: Bool = true,
+    fileID: StaticString = #fileID,
+    filePath: StaticString = #filePath,
+    line: UInt = #line,
+    column: UInt = #column,
+    _ body: @Sendable @escaping () async throws -> R
+) async throws -> R {
+    let deadlineNs = monotonicNanoseconds() + UInt64(seconds * 1_000_000_000)
+    return try await withThrowingTaskGroup(of: _TimedResult<R>.self) { group in
+        group.addTask {
+            let result = try await body()
+            return .body(result)
+        }
+        group.addTask {
+            await _parkUntilDeadlineOrCancel(deadlineNs: deadlineNs)
+            return .timeout
+        }
+        guard let first = try await group.next() else {
+            // Unreachable: at least one child task always returns
+            throw CancellationError()
+        }
+        group.cancelAll()
+        switch first {
+        case .body(let value):
+            return value
+        case .timeout:
+            if reportIssueOnTimeout {
+                reportIssue(
+                    "[TRAIT timeout] test=\"\(testTag)\" exceeded \(seconds)s wall-clock cap. " +
+                    "A correct test should complete in milliseconds even under heavy CI load. " +
+                    "Hitting this cap surfaces a real bug: deadlock, runaway loop, or a " +
+                    "predicate that doesn't react to model state (contract violation).",
+                    fileID: fileID, filePath: filePath, line: line, column: column
+                )
+            }
+            throw _TestTimeoutError(testTag: testTag, seconds: seconds)
+        }
+    }
+}
+
+package enum _TimedResult<T: Sendable>: Sendable {
+    case body(T)
+    case timeout
+}
+
+package struct _TestTimeoutError: Error, Equatable {
+    package let testTag: String
+    package let seconds: Double
+}
+
+#if canImport(Dispatch)
+/// Park the calling Task until either:
+///   • the deadline elapses (GlobalTickScheduler fires) — returns
+///   • the Task is cancelled — returns
+///
+/// Used by `_withTestTimeout` to wait out the wall-clock cap on a
+/// GCD-backed timer, NOT `Task.sleep`. The cooperative pool can be
+/// starved by parallel test fan-out (each test starts ~70 in-process
+/// tasks; 100 parallel tests = 7000 tasks competing for ~10 cooperative
+/// threads). When that happens, `Task.sleep` doesn't fire — so the
+/// trait cap silently doesn't enforce its bound and hung tests can
+/// run indefinitely. GCD has its own thread pool, unaffected by
+/// cooperative saturation.
+@Sendable
+private func _parkUntilDeadlineOrCancel(deadlineNs: UInt64) async {
+    // Shared state across the continuation body, the timer callback,
+    // and the cancellation handler. Class so all three can capture by
+    // reference. NSLock protects the fields — short critical sections,
+    // no async work inside.
+    final class State: @unchecked Sendable {
+        var cont: CheckedContinuation<Void, Never>?
+        var cancel: (@Sendable () -> Void)?
+        var resumed: Bool = false
+    }
+    let state = State()
+    let lock = NSLock()
+
+    await withTaskCancellationHandler {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            // If the task is already cancelled, short-circuit.
+            let immediateResume = lock.withLock { () -> Bool in
+                if state.resumed { return true }  // defensive
+                if Task.isCancelled {
+                    state.resumed = true
+                    return true
+                }
+                state.cont = cont
+                return false
+            }
+            if immediateResume {
+                cont.resume()
+                return
+            }
+            // Register the timer. The callback resumes the continuation
+            // exactly once. The cancellation handler (below) also resumes
+            // exactly once — `state.resumed` ensures at-most-once.
+            let cancel = GlobalTickScheduler.shared.schedule(deadlineNs: deadlineNs) {
+                let toResume = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                    guard !state.resumed, let c = state.cont else { return nil }
+                    state.resumed = true
+                    state.cont = nil
+                    state.cancel = nil
+                    return c
+                }
+                toResume?.resume()
+            }
+            // Race: cancellation could have fired before we got here.
+            // Store the cancel handle and re-check. If onCancel already
+            // ran (state.resumed == true), call cancel immediately.
+            let needsImmediateCancel = lock.withLock { () -> Bool in
+                if state.resumed {
+                    // onCancel ran between our isCancelled check and now.
+                    // We still need to release the scheduler entry.
+                    return true
+                }
+                state.cancel = cancel
+                return false
+            }
+            if needsImmediateCancel {
+                cancel()
+            }
+        }
+    } onCancel: {
+        let (toResume, cancel) = lock.withLock { () -> (CheckedContinuation<Void, Never>?, (@Sendable () -> Void)?) in
+            if state.resumed { return (nil, nil) }
+            let c = state.cont
+            let k = state.cancel
+            state.cont = nil
+            state.cancel = nil
+            state.resumed = true
+            return (c, k)
+        }
+        cancel?()
+        toResume?.resume()
+    }
+}
+#else
+@Sendable
+private func _parkUntilDeadlineOrCancel(deadlineNs: UInt64) async {
+    // Fallback for platforms without Dispatch (WASM): cooperative-pool
+    // Task.sleep. WASM tests don't run the parallel-saturation scenarios
+    // that motivated the GCD-backed timer.
+    let now = monotonicNanoseconds()
+    let delayNs = deadlineNs > now ? deadlineNs - now : 0
+    try? await Task.sleep(nanoseconds: delayNs)
+}
+#endif
+
 #else
 extension ModelTestingTrait: TestTrait, SuiteTrait {
     public var isRecursive: Bool { true }
@@ -582,7 +709,7 @@ extension ModelTestingTrait: TestTrait, SuiteTrait {
     public func prepare(for test: Test) async throws {
         // On Swift 6.0 TestScoping.provideScope is not available.
         // The trait is registered but cannot wrap the test body.
-        // Users should use andTester() for exhaustion checking on Swift 6.0.
+        // Users should use withModelTesting { } for exhaustion checking on Swift 6.0.
     }
 }
 #endif
@@ -592,7 +719,7 @@ extension Trait where Self == ModelTestingTrait {
     ///
     /// When applied to a `@Test` or `@Suite`, calling `withAnchor()` inside the test body
     /// automatically connects the model to the testing infrastructure. Use the global
-    /// `expect { }` function instead of `tester.assert { }`:
+    /// `expect { }` function for exhaustive assertions:
     ///
     /// ```swift
     /// @Test(.modelTesting) func example() async {
@@ -627,7 +754,7 @@ extension Trait where Self == ModelTestingTrait {
     ///
     /// When applied to a `@Test` or `@Suite`, calling `withAnchor()` inside the test body
     /// automatically connects the model to the testing infrastructure. Use the global
-    /// `expect { }` function instead of `tester.assert { }`:
+    /// `expect { }` function for exhaustive assertions:
     ///
     /// ```swift
     /// @Test(.modelTesting) func example() async {

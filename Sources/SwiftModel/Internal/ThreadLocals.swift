@@ -3,7 +3,7 @@ import Foundation
 final class ThreadLocals: @unchecked Sendable {
     var postTransactions: [(inout [() -> Void]) -> Void]? = nil
     var forceDirectAccess = false
-    var didReplaceModelWithDestructedOrFrozenCopy: () -> Void = {}
+    var didReplaceModelWithDestructedOrFrozenCopy = false
     var includeImplicitIDInMirror = false
     var includeChildrenInMirror = false
     /// When non-nil, `ModelContext.mirror(of:children:)` operates in shallow snapshot mode.
@@ -36,6 +36,11 @@ final class ThreadLocals: @unchecked Sendable {
     /// Set by `Context.willAccessPreferenceValue` before invoking the TestAccess closure,
     /// avoiding re-entry into `preferenceValue` (which would acquire child locks and deadlock).
     var precomputedPreferenceValue: Any? = nil
+    /// When non-nil, the TestAccess `willAccess`/`didModify` closures for a context/preference
+    /// storage path (_metadata / _preference stub subscripts) should use this pre-computed value
+    /// instead of calling the `fatalError()` stub getter on `M._ModelState`.
+    /// Set by `Context.willAccessStorage`/`didModifyStorage` before invoking the TestAccess closure.
+    var precomputedStorageValue: Any? = nil
     /// The human-readable property name of the context or preference storage key currently
     /// being accessed/modified. Set by `Context<M>` around typed storage path calls so
     /// `TestAccess` can use it in `debugInfo` messages (e.g. `"context.isDarkMode"`)
@@ -68,8 +73,121 @@ final class ThreadLocals: @unchecked Sendable {
     /// path within one transaction can be coalesced into a single `valueUpdates` entry.
     /// Zero means the write occurred outside any transaction.
     var currentTransactionID: UInt = 0
+    /// `true` while a debug-side `customDump` is walking a model value (e.g. inside
+    /// `emitDebugTrigger`'s `dumpForDebug`, or the initial-value capture in
+    /// `ViewAccess.willAccess`). Read by `ViewAccess.willAccess` to skip BOTH
+    /// dependency registration *and* `captureAccessStack` capture for property reads
+    /// originating from the dump itself — otherwise every `.withValue` emit walks the
+    /// model tree, registers each traversed property as a tracked dep, and pollutes
+    /// the captured access-stack with the dump path (not user code). Scoped via
+    /// `threadLocals.withValue(true, at: \.isInsideDebugDump) { … }` at every dump
+    /// site that runs through stamped `ViewAccess`. Has no effect outside `#if DEBUG`.
+    var isInsideDebugDump = false
+
+    /// `true` while memoize's **dirty-recompute** path is calling `produce()`
+    /// directly (not through `update()`'s `observe()` wrap). Read by
+    /// `Context.willAccessDirect` and `Context.willAccessSyntheticPath` to skip
+    /// BOTH the swift-model `ModelAccess.willAccess` dispatch and Apple's
+    /// `registrar.access(...)` — so reads inside the synchronous dirty recompute
+    /// don't leak to whatever outer observation is active (a SwiftUI body's
+    /// `withObservationTracking`, a `ViewAccess` from `$model.debug`, a debug
+    /// collector, etc.).
+    ///
+    /// Memoize's *own* dependency tracking is unaffected because the dirty-
+    /// recompute branch doesn't need to re-track: the AccessCollector path's
+    /// onModify subscriptions stay live across recomputes, and the
+    /// `withObservationTracking` path re-tracks via the async `performUpdate`
+    /// (which goes through `observe()`, not this flag). The cache-miss /
+    /// first-access path also goes through `observe()` and isn't flagged.
+    var isInsideMemoizeProduce = false
+
+    /// Sibling of `isInsideMemoizeProduce`, set during the *async* memoize
+    /// `observe()` path (registrar / `withObservationTracking` branch). Unlike
+    /// `isInsideMemoizeProduce`, this flag only suppresses the SwiftModel-side
+    /// `ViewAccess`/`TestAccess`/`DebugAccessCollector` dispatch — Apple's
+    /// `registrar.access(...)` calls upstream still run so memoize's own
+    /// `withObservationTracking` continues to capture the inner reads.
+    ///
+    /// Without this, every read inside the memoize body still fires through the
+    /// model value's stamped access (the `accessBox._reference?.access` branch
+    /// of `Context.willAccessDirect`, which `usingActiveAccess(nil)` does NOT
+    /// clear). On a debug-tracked view the parent's `ViewAccess` then registers
+    /// dependencies for whatever the memoize body touches and the trigger log
+    /// attributes those reads to the parent — the very leakage the memoize
+    /// is supposed to prevent.
+    var isInsideMemoizeObserve = false
+
+    /// When non-nil, `ObservationTracking.onObservedChange` defers its
+    /// `backgroundCallQueue(performUpdate)` enqueue into this array instead
+    /// of enqueuing inline. Used by all write paths (`Context.subscript._modify`,
+    /// `Context.stateTransaction`, `Context.transaction(at:...)` and
+    /// `Context.transaction(writeLockHolder:_:)`) to ensure that `performUpdate`
+    /// does not start running on the cooperative pool until after the writer's
+    /// lock-held + post-callback phases have completed.
+    ///
+    /// **The race this closes** — the `withObservationTracking` observation path
+    /// has two listeners that both schedule `performUpdate` on the same writer:
+    ///
+    ///   1. Apple's `withObservationTracking.onChange` (one-shot) — fires
+    ///      synchronously inside `invokeDidModifyDirect` (registrar.willSet
+    ///      callback dispatch) while the writer holds the context lock.
+    ///   2. The shadow `AccessCollector` (gap-race detector, persistent
+    ///      per-(context, path) subscription) — registered as a `context.onModify`
+    ///      modifyCallback; fires as a *post-callback* via `runPostLockCallbacks`
+    ///      *after* the writer releases the lock.
+    ///
+    /// Both call `onObservedChange`, which dedups via a shared `hasPendingUpdate`
+    /// flag. If `performUpdate` starts running on the cooperative pool between
+    /// Apple's onChange and the shadow's post-callback (a tight window that opens
+    /// the moment Apple's onChange enqueues), it can clear `hasPendingUpdate=false`
+    /// (it must clear BEFORE the next `observe()` re-registration to avoid losing
+    /// the next write — see the comment in `performUpdate`). The shadow's
+    /// post-callback then reads the just-cleared flag and schedules a duplicate
+    /// `performUpdate` for the same write Apple already handled.
+    ///
+    /// Deferring the enqueue serialises both schedules against the writer's
+    /// lock-held + post-callback window — by the time `performUpdate` can start,
+    /// every `onObservedChange` for the current write has already made its dedup
+    /// decision against the same `hasPendingUpdate` snapshot. This matches what
+    /// the `AccessCollector` observation path already does naturally: its
+    /// `onModify` returns the `backgroundCallQueue(performUpdate)` as a
+    /// post-callback that `runPostLockCallbacks` invokes after lock release, so
+    /// `performUpdate` never starts mid-write.
+    ///
+    /// Drained on the same thread, at the end of the outermost write, after the
+    /// lock has been released and `runPostLockCallbacks` has finished. Nested
+    /// writes share the outer scope's array — they append but don't drain. Items
+    /// are invoked in registration order.
+    var lockHeldBackgroundCalls: [() -> Void]? = nil
+
+    /// When non-nil, `Context.willAccessDirect` ALSO dispatches `willAccess`
+    /// to this collector (in addition to the existing `activeAccess` / Apple
+    /// registrar paths), giving observe()'s gap-race fix a way to register
+    /// per-(context, path) `context.onModify` subscriptions synchronously
+    /// with each read.
+    ///
+    /// Set by `ObservationTracking.observe()` for the `withObservationTracking`
+    /// branch only. Outside that scope this is `nil` and incurs zero cost.
+    /// Dispatched separately from `ModelAccess.active` because that task-local
+    /// is intentionally kept `nil` inside observe() (see the comment block in
+    /// `observe()` for why) — overriding it would inadvertently suppress
+    /// Apple's `registrar.access(...)` via the
+    /// `!(isInsideAsyncPerformUpdate && cachedActive != nil)` guard.
+    var gapShadowCollector: ModelAccess? = nil
+
+    var pendingStack = _PendingStackBox()
 
     fileprivate init() {}
+
+    deinit {
+        // Defensively clear the pending stack on thread exit. GCD threads can be
+        // recycled many times across tests before the OS terminates them; any stale
+        // pre-anchor Reference left in `latest` is released here explicitly rather
+        // than as part of the implicit _PendingStackBox field release. `stack` is
+        // also cleared to drain any incomplete model-init entries.
+        pendingStack.latest = nil
+        pendingStack.stack.removeAll()
+    }
 
     func withValue<Value, T>(_ value: Value, at path: ReferenceWritableKeyPath<ThreadLocals, Value>, perform: () throws -> T) rethrows -> T {
         let prevValue = self[keyPath: path]

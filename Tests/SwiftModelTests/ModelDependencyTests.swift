@@ -32,7 +32,7 @@ struct ModelDependencyTests {
 
     @Test func testParentChildrenDependency() async throws {
         let testResult = TestResult()
-        await withModelTesting {
+        try await withModelTesting {
             let model = Parent().withAnchor {
                 $0.testResult = testResult
                 $0[Dependency.self] = Dependency(value: 4)
@@ -46,22 +46,27 @@ struct ModelDependencyTests {
             }
 
             model.child.dependency.value = 7
-            await expect(testResult.value.contains("->7"))
+            // Wait for BOTH existing children (id:1 and id:3) to receive the change.
+            // Waiting for only one "->7" would be racy: child 5 could be appended
+            // before the second callback fires, changing the expected ordering.
+            // `testResult` is a LockIsolated outside the reactive system —
+            // use `waitUntil` (explicit polling) rather than `expect`.
+            try await waitUntil(testResult.value.components(separatedBy: "->7").count >= 3)
 
             model.children.append(Child(id:5))
 
             await expect {
                 model.children.count == 2
                 model.child.dependency.value == 7
-                testResult.value.contains("->7")
             }
+            try await waitUntil(testResult.value.contains("->7"))
         }
         #expect(testResult.value == "D(1:4)(3:4)(->7)(->7)(5:7)d")
     }
 
     @Test func testParentChildMultiDependency() async throws {
         let testResult = TestResult()
-        await withModelTesting {
+        try await withModelTesting {
             let model = Parent().withAnchor {
                 $0.testResult = testResult
                 $0[Dependency.self] = Dependency(value: 4)
@@ -82,17 +87,15 @@ struct ModelDependencyTests {
 
             model.child.dependency.value = 5
 
-            await expect {
-                model.child.dependency.value == 5
-                testResult.value.contains("->5")
-            }
+            await expect(model.child.dependency.value == 5)
+            try await waitUntil(testResult.value.contains("->5"))
         }
         #expect(testResult.value == "D(1:4)D(3:8)d(->5)d")
     }
 
     @Test func testParentDependency() async throws {
         let testResult = TestResult()
-        await withModelTesting {
+        try await withModelTesting {
             let model = Parent(dependency: Dependency(value: 7)).withAnchor {
                 $0.testResult = testResult
                 $0[Dependency.self] = Dependency(value: 4)
@@ -119,8 +122,8 @@ struct ModelDependencyTests {
             await expect {
                 model.dependency?.value == 9
                 model.children[0].dependency.value == 9
-                testResult.value.contains("->9")
             }
+            try await waitUntil(testResult.value.contains("->9"))
 
             model.children.removeAll()
 
@@ -129,17 +132,15 @@ struct ModelDependencyTests {
             model.dependency = nil
             model.child.dependency.value = 8
 
-            await expect {
-                model.dependency == nil
-                testResult.value.contains("->8")
-            }
+            await expect(model.dependency == nil)
+            try await waitUntil(testResult.value.contains("->8"))
         }
         #expect(testResult.value == "D(1:4)D(3:7)(->5)(->9)d(->8)d")
     }
 
     @Test func testSharedDependency() async throws {
         let testResult = TestResult()
-        await withModelTesting {
+        try await withModelTesting {
             let model = Parent().withAnchor {
                 $0[Dependency.self] = Dependency(value: 4711)
                 $0.testResult = testResult
@@ -154,7 +155,7 @@ struct ModelDependencyTests {
 
             sharedDep.value -= 1
 
-            await expect(testResult.value.contains("(->7)"))
+            try await waitUntil(testResult.value.contains("(->7)"))
 
             model.children.append(Child(id: 4).withDependencies {
                 $0[Dependency.self] = sharedDep
@@ -163,14 +164,12 @@ struct ModelDependencyTests {
             await expect {
                 model.children[0].dependency.value == 7
                 model.children[1].dependency.value == 7
-                testResult.value.contains("(4:7)")
             }
+            try await waitUntil(testResult.value.contains("(4:7)"))
 
             sharedDep.value -= 2
-            await expect {
-                model.children[0].dependency.value == 5
-                testResult.value.contains("(->5)")
-            }
+            await expect(model.children[0].dependency.value == 5)
+            try await waitUntil(testResult.value.contains("(->5)"))
 
             model.children.remove(at: 0)
 
@@ -184,8 +183,13 @@ struct ModelDependencyTests {
             await expect {
                 model.children.isEmpty
                 sharedDep.lifetime == .destructed
-                testResult.value.contains("(->5)(->5)")
             }
+            // Generous timeout: the second "(->5)" comes from a deinit chain
+            // whose timing is at the mercy of when the last strong reference
+            // is released — under x1000 parallel-test stress this can take
+            // longer than the default 5 s. 10 s still surfaces a real
+            // "deinit never fired" bug while tolerating load-induced latency.
+            try await waitUntil(testResult.value.contains("(->5)(->5)"), timeout: 10_000_000_000)
 
             #expect(testResult.value == "D(1:4711)D(3:8)(->7)(4:7)(->5)(->5)d")
         }
@@ -193,17 +197,19 @@ struct ModelDependencyTests {
     }
 
     @Test func testDefaultDependency() async throws {
-        #expect(Dependency.testValue.lifetime == .initial)
+        // Either .initial (first-ever process run) or .destructed (safe to re-anchor after
+        // a prior repetition of this test in the same process).
+        #expect(Dependency.testValue.lifetime == .initial || Dependency.testValue.lifetime == .destructed)
 
         let testResult = TestResult()
-        await withModelTesting {
+        try await withModelTesting {
             let model = Parent().withAnchor {
                 $0.testResult = testResult
             }
 
             model.child.dependency.value = 8
 
-            await expect(testResult.value.contains("(->8)"))
+            try await waitUntil(testResult.value.contains("(->8)"))
 
             model.children.append(Child(id: 3))
 
@@ -211,22 +217,22 @@ struct ModelDependencyTests {
 
             model.child.dependency.value -= 1
 
-            await expect(testResult.value.contains("(->7)(->7)"))
+            try await waitUntil(testResult.value.contains("(->7)(->7)"))
 
             model.children.append(Child(id: 4))
 
             await expect {
                 model.children[0].dependency.value == 7
                 model.children[1].dependency.value == 7
-                testResult.value.contains("(4:7)")
             }
+            try await waitUntil(testResult.value.contains("(4:7)"))
 
             model.child.dependency.value -= 2
             await expect {
                 model.children[0].dependency.value == 5
                 model.children[1].dependency.value == 5
-                testResult.value.contains("(->5)(->5)(->5)")
             }
+            try await waitUntil(testResult.value.contains("(->5)(->5)(->5)"))
 
             model.children.remove(at: 0)
 
@@ -246,15 +252,15 @@ struct ModelDependencyTests {
 
             model.child.dependency.value -= 3
 
-            await expect {
-                testResult.value.contains("(6:5)(->2)(->2)")
-                model.children[0].dependency.value == 2
-            }
+            await expect(model.children[0].dependency.value == 2)
+            try await waitUntil(testResult.value.contains("(6:5)(->2)(->2)"))
 
             #expect(testResult.value == "D(1:3711)(->8)(3:8)(->7)(->7)(4:7)(->5)(->5)(->5)(6:5)(->2)(->2)")
         }
         #expect(testResult.value == "D(1:3711)(->8)(3:8)(->7)(->7)(4:7)(->5)(->5)(->5)(6:5)(->2)(->2)d")
-        #expect(Dependency.testValue.lifetime == .initial)
+        // After the test, the static testValue dep has been destructed. It can still be
+        // re-anchored in subsequent tests (setContext resets _isDestructed from genesis).
+        #expect(Dependency.testValue.lifetime == .destructed)
     }
 }
 

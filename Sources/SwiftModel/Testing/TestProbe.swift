@@ -31,6 +31,13 @@ public final class TestProbe: @unchecked Sendable {
     let name: String?
     private let lock = NSRecursiveLock()
     private var _values: [Any] = []
+    // Set by `TestAccess.install(_:)` so probe calls can fire
+    // `_noteActivity` and wake parked `expect` / `require` calls. Without
+    // this, predicates like `await expect { probe.wasCalled(...) }`
+    // wouldn't react when the probe is called from a non-tracked code
+    // path (a `forEach` callback, a memoize update, an async task that
+    // does no model write before calling the probe).
+    private var _activityNotifier: (@Sendable () -> Void)?
 
     /// Creates a probe, optionally named for clearer failure messages.
     ///
@@ -39,6 +46,15 @@ public final class TestProbe: @unchecked Sendable {
     public init(_ name: String? = nil) {
         self.name = name
         autoInstallIfNeeded()
+    }
+
+    func _setActivityNotifier(_ notifier: @escaping @Sendable () -> Void) {
+        lock { _activityNotifier = notifier }
+    }
+
+    fileprivate func _fireActivity() {
+        let notifier: (@Sendable () -> Void)? = lock { _activityNotifier }
+        notifier?()
     }
 }
 
@@ -68,6 +84,7 @@ public extension TestProbe {
             _values.append((repeat each value))
         }
         autoInstallIfNeeded()
+        _fireActivity()
     }
 
     /// Allows the probe to be used directly as a closure (e.g. `onSave: probe`).
@@ -77,30 +94,12 @@ public extension TestProbe {
             _values.append((repeat each value))
         }
         autoInstallIfNeeded()
+        _fireActivity()
     }
 
     private func autoInstallIfNeeded() {
         guard let scope = _ModelTestingLocals.scope else { return }
         scope.install([self])
-    }
-
-    /// Registers this probe with the active `.modelTesting` test scope.
-    ///
-    /// - Note: This method is deprecated. Probes auto-register at `init` time and on every call,
-    ///   so explicit `install()` is never needed.
-    @available(*, deprecated, message: "TestProbe auto-installs on creation and on every call. Explicit install() is no longer needed.")
-    func install(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
-        _install(fileID: fileID, filePath: filePath, line: line, column: column)
-    }
-
-    /// Internal non-deprecated entry point used by tests that need to exercise the
-    /// `install()` code path without triggering a deprecation warning at the call site.
-    func _install(fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) {
-        if _ModelTestingLocals.scope == nil {
-            reportIssue("install() must be called inside a @Test(.modelTesting) test function", fileID: fileID, filePath: filePath, line: line, column: column)
-            return
-        }
-        autoInstallIfNeeded()
     }
 
     /// The number of times the probe has been called.
@@ -109,7 +108,7 @@ public extension TestProbe {
     /// `true` if the probe has never been called.
     var isEmpty: Bool { values.isEmpty }
 
-    /// Asserts — inside a `tester.assert { }` or `expect { }` block — that the probe was called
+    /// Asserts — inside an `expect { }` block — that the probe was called
     /// with the given arguments. Matching uses `customDump` equality, so you get a readable diff on failure.
     ///
     /// ```swift
@@ -118,7 +117,7 @@ public extension TestProbe {
     /// }
     /// ```
     ///
-    /// > Important: This method must be called inside a `ModelTester.assert` or `expect { }` builder block.
+    /// > Important: This method must be called inside an `expect { }` builder block.
     ///   Calling it outside will report an issue and return `false`.
     func wasCalled<each S>(with value: repeat each S, filePath: StaticString = #filePath, line: UInt = #line) -> Bool {
         guard let context = TesterAssertContextBase.assertContext else {

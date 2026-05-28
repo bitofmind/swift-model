@@ -82,6 +82,10 @@ extension VariableDeclSyntax {
         !isComputed && isInstance && !isImmutable && identifier != nil
     }
 
+    var isValid: Bool {
+        !hasMacroApplication("_ModelIgnored") && !hasMacroApplication("ModelDependency")
+    }
+
     /// True when the getter is `private` or `fileprivate` (not merely the setter).
     ///
     /// `private(set) var x` has an accessible getter — only the setter is restricted,

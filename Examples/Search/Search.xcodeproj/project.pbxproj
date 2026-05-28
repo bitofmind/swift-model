@@ -270,6 +270,7 @@
 					"-weak_framework",
 					Testing,
 				);
+				OTHER_SWIFT_FLAGS = "-default-isolation MainActor";
 				PRODUCT_BUNDLE_IDENTIFIER = swift.model.Search;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -367,6 +368,7 @@
 					"-weak_framework",
 					Testing,
 				);
+				OTHER_SWIFT_FLAGS = "-default-isolation MainActor";
 				PRODUCT_BUNDLE_IDENTIFIER = swift.model.Search;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";

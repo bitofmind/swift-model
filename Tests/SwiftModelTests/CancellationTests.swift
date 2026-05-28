@@ -124,12 +124,12 @@ struct CancellationTests {
             .cancel(for: CancelKey.one, cancelInFlight: true)
 
             // onCancel { count += 1 } fires synchronously when cancelInFlight cancels the task
-            try await waitUntil(count == 1, timeout: 60_000_000_000)
+            try await waitUntil($count.value == 1, timeout: 60_000_000_000)
 
             model.cancelAll(for: CancelKey.one)
 
             // Wait for the final cancellation handler to complete
-            try await waitUntil(count == 4, timeout: 60_000_000_000)
+            try await waitUntil($count.value == 4, timeout: 60_000_000_000)
         }
 
         #expect(count == 4)
@@ -165,7 +165,7 @@ struct CancellationTests {
             let (stream, cont) = AsyncThrowingStream<Int, Error>.makeStream()
             model.forEach(stream) { _ in } catch: { _ in $caught.wrappedValue = true }
             cont.finish(throwing: TestError())
-            try await waitUntil(caught)
+            try await waitUntil($caught.value)
         }
         #expect(reporter.messages.isEmpty)
     }
@@ -200,7 +200,7 @@ struct CancellationTests {
                 throw TestError()
             }
             cont.yield(1)
-            try await waitUntil(operationRanCount == 1)
+            try await waitUntil($operationRanCount.value == 1)
             cont.finish()
         }
         // abortIfOperationThrows: false (default) — errors are intentionally swallowed

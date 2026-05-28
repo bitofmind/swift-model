@@ -10,7 +10,7 @@ struct ObserveModificationTests {
     // MARK: - Basic emission
 
     /// Mutating a property emits from observeModifications().
-    @Test func testEmitsOnPropertyMutation() async {
+    @Test func testEmitsOnPropertyMutation() async throws {
         let testResult = TestResult()
         let model = TrackedModel().withAnchor {
             $0.testResult = testResult
@@ -20,14 +20,12 @@ struct ObserveModificationTests {
 
         model.count = 1
 
-        await expect {
-            model.count == 1
-            testResult.value.contains("modified")
-        }
+        await expect(model.count == 1)
+        try await waitUntil(testResult.value.contains("modified"))
     }
 
     /// A single mutation emits exactly once.
-    @Test func testSingleMutationEmitsOnce() async {
+    @Test func testSingleMutationEmitsOnce() async throws {
         let testResult = TestResult()
         let model = TrackedModel().withAnchor {
             $0.testResult = testResult
@@ -37,14 +35,12 @@ struct ObserveModificationTests {
 
         model.count = 42
 
-        await expect {
-            model.count == 42
-            testResult.value.components(separatedBy: "modified").count - 1 == 1
-        }
+        await expect(model.count == 42)
+        try await waitUntil(testResult.value.components(separatedBy: "modified").count - 1 == 1)
     }
 
     /// Each individual mutation outside a transaction produces its own emission.
-    @Test func testEachMutationEmitsSeparately() async {
+    @Test func testEachMutationEmitsSeparately() async throws {
         let testResult = TestResult()
         let model = TrackedModel().withAnchor {
             $0.testResult = testResult
@@ -56,17 +52,15 @@ struct ObserveModificationTests {
         model.count = 2
         model.count = 3
 
-        await expect {
-            model.count == 3
-            // Three separate mutations → three emissions
-            testResult.value.components(separatedBy: "modified").count - 1 == 3
-        }
+        await expect(model.count == 3)
+        // Three separate mutations → three emissions
+        try await waitUntil(testResult.value.components(separatedBy: "modified").count - 1 == 3)
     }
 
     // MARK: - Descendant propagation
 
     /// Mutations in a child model are also visible from the parent's observeModifications().
-    @Test func testEmitsForDescendantMutation() async {
+    @Test func testEmitsForDescendantMutation() async throws {
         let testResult = TestResult()
         let model = ParentTrackedModel().withAnchor {
             $0.testResult = testResult
@@ -76,16 +70,14 @@ struct ObserveModificationTests {
 
         model.child.count = 42
 
-        await expect {
-            model.child.count == 42
-            testResult.value.contains("parent-modified")
-        }
+        await expect(model.child.count == 42)
+        try await waitUntil(testResult.value.contains("parent-modified"))
     }
 
     // MARK: - Scope filtering
 
     /// `scope: .self` — only this model's own changes trigger; child changes do not.
-    @Test func testScopeSelfOnlyEmitsForSelf() async {
+    @Test func testScopeSelfOnlyEmitsForSelf() async throws {
         let testResult = TestResult()
         let model = ScopeFilterModel(scope: .self).withAnchor {
             $0.testResult = testResult
@@ -96,10 +88,8 @@ struct ObserveModificationTests {
         // Mutate the model itself — should emit
         model.value = 1
 
-        await expect {
-            model.value == 1
-            testResult.value.contains("scope-hit")
-        }
+        await expect(model.value == 1)
+        try await waitUntil(testResult.value.contains("scope-hit"))
 
         let countBefore = testResult.value.components(separatedBy: "scope-hit").count
 
@@ -114,7 +104,7 @@ struct ObserveModificationTests {
     }
 
     /// `scope: .children` — direct child changes trigger; self and grandchild changes do not.
-    @Test func testScopeChildrenEmitsForDirectChildren() async {
+    @Test func testScopeChildrenEmitsForDirectChildren() async throws {
         let testResult = TestResult()
         let model = ScopeFilterModel(scope: .children).withAnchor {
             $0.testResult = testResult
@@ -125,10 +115,8 @@ struct ObserveModificationTests {
         // Mutate a direct child — should emit
         model.child.count = 10
 
-        await expect {
-            model.child.count == 10
-            testResult.value.contains("scope-hit")
-        }
+        await expect(model.child.count == 10)
+        try await waitUntil(testResult.value.contains("scope-hit"))
 
         let countBefore = testResult.value.components(separatedBy: "scope-hit").count
 
@@ -142,29 +130,25 @@ struct ObserveModificationTests {
     }
 
     /// `scope: [.self, .descendants]` (default) — both self and all descendants trigger.
-    @Test func testDefaultScopeEmitsSelfAndDescendants() async {
+    @Test func testDefaultScopeEmitsSelfAndDescendants() async throws {
         let testResult = TestResult()
         let model = ParentTrackedModel().withAnchor {
             $0.testResult = testResult
         }
 
         model.value = 1
-        await expect {
-            model.value == 1
-            testResult.value.contains("parent-modified")
-        }
+        await expect(model.value == 1)
+        try await waitUntil(testResult.value.contains("parent-modified"))
 
         model.child.count = 42
-        await expect {
-            model.child.count == 42
-            testResult.value.components(separatedBy: "parent-modified").count - 1 == 2
-        }
+        await expect(model.child.count == 42)
+        try await waitUntil(testResult.value.components(separatedBy: "parent-modified").count - 1 == 2)
     }
 
     // MARK: - Kind filtering
 
     /// `kinds: .properties` — property changes emit; environment changes do not.
-    @Test func testKindsPropertiesSkipsEnvironment() async {
+    @Test func testKindsPropertiesSkipsEnvironment() async throws {
         let testResult = TestResult()
         let model = KindFilterModel(kinds: .properties).withAnchor {
             $0.testResult = testResult
@@ -172,10 +156,8 @@ struct ObserveModificationTests {
 
         // Property change — should emit
         model.value = 1
-        await expect {
-            model.value == 1
-            testResult.value.contains("kind-hit")
-        }
+        await expect(model.value == 1)
+        try await waitUntil(testResult.value.contains("kind-hit"))
 
         let countBefore = testResult.value.components(separatedBy: "kind-hit").count
 
@@ -189,7 +171,7 @@ struct ObserveModificationTests {
     }
 
     /// `kinds: .environment` — environment changes emit; property changes do not.
-    @Test func testKindsEnvironmentSkipsProperties() async {
+    @Test func testKindsEnvironmentSkipsProperties() async throws {
         let testResult = TestResult()
         let model = KindFilterModel(kinds: .environment).withAnchor {
             $0.testResult = testResult
@@ -208,16 +190,14 @@ struct ObserveModificationTests {
 
         // Environment change — should emit
         model.node.local.testEnvValue = "env-value"
-        await expect {
-            model.node.local.testEnvValue == "env-value"
-            testResult.value.contains("kind-hit")
-        }
+        await expect(model.node.local.testEnvValue == "env-value")
+        try await waitUntil(testResult.value.contains("kind-hit"))
     }
 
     // MARK: - Model-type predicate
 
     /// `where:` predicate filters to the specified model type.
-    @Test func testPredicateFiltersToModelType() async {
+    @Test func testPredicateFiltersToModelType() async throws {
         let testResult = TestResult()
         let model = PredicateFilterModel().withAnchor {
             $0.testResult = testResult
@@ -227,10 +207,8 @@ struct ObserveModificationTests {
 
         // Mutation in the child (predicate accepts only ChildModel)
         model.child.count = 1
-        await expect {
-            model.child.count == 1
-            testResult.value.contains("predicate-hit")
-        }
+        await expect(model.child.count == 1)
+        try await waitUntil(testResult.value.contains("predicate-hit"))
 
         let countBefore = testResult.value.components(separatedBy: "predicate-hit").count
 
@@ -244,7 +222,7 @@ struct ObserveModificationTests {
     // MARK: - excludeFromModifications
 
     /// An excluded property does NOT trigger observeModifications() on an ancestor.
-    @Test func testExcludedPropertyDoesNotTrigger() async {
+    @Test func testExcludedPropertyDoesNotTrigger() async throws {
         let testResult = TestResult()
         let model = ExclusionModel().withAnchor {
             $0.testResult = testResult
@@ -263,14 +241,12 @@ struct ObserveModificationTests {
 
         // Mutate the non-excluded property — should trigger
         model.important = 7
-        await expect {
-            model.important == 7
-            testResult.value.contains("exclude-hit")
-        }
+        await expect(model.important == 7)
+        try await waitUntil(testResult.value.contains("exclude-hit"))
     }
 
     /// Excluded property on a child model does not trigger the parent's observeModifications().
-    @Test func testExcludedPropertyOnChildDoesNotTriggerParent() async {
+    @Test func testExcludedPropertyOnChildDoesNotTriggerParent() async throws {
         let testResult = TestResult()
         let model = ExclusionParentModel().withAnchor {
             $0.testResult = testResult
@@ -289,10 +265,8 @@ struct ObserveModificationTests {
 
         // Mutate non-excluded child property — should trigger parent observer
         model.child.important = 5
-        await expect {
-            model.child.important == 5
-            testResult.value.contains("parent-exclude-hit")
-        }
+        await expect(model.child.important == 5)
+        try await waitUntil(testResult.value.contains("parent-exclude-hit"))
     }
 
     // MARK: - Dirty-tracking pattern
