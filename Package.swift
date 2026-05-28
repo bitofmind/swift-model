@@ -106,39 +106,16 @@ let package = Package(
         // the array literal — PackageDescription rejects `#if` directives
         // between array elements.
         swiftDependenciesPackage,
-        // Fork pinned at the revision that gates the FoundationNetworking import and the
-        // two FoundationNetworking-typed CustomDump conformances (`NSURLRequest:
-        // CustomDumpRepresentable`, `URLRequest.NetworkServiceType:
-        // CustomDumpStringConvertible`) behind a package trait. Default-on, we override
-        // to `traits: []` to skip them — saves ~16 MB `libFoundationNetworking.so` from
-        // Android cross-compile consumers' bridge `DT_NEEDED`.
-        //
-        // We pin to an explicit revision rather than `branch: "android-support"` because:
-        //   1. `swift-snapshot-testing` brings in `swift-custom-dump` via the upstream
-        //      URL without specifying traits. SwiftPM resolves the two URLs to a single
-        //      package identity (`swift-custom-dump`) and *unions* the requested traits
-        //      across consumers, so snapshot-testing's default-on `FoundationNetworking`
-        //      trait wins — our `traits: []` is effectively a no-op until the upstream
-        //      PR is merged + tagged.
-        //   2. With the trait effectively forced-on, the only thing keeping WASM (which
-        //      has no `URLRequest`) compiling was the `#if !os(WASI)` source guard. The
-        //      PR-review cycle on the fork's `android-support` branch dropped that guard
-        //      in favour of relying purely on the (unioned-on) trait gate. Newer
-        //      revisions therefore break WASM builds.
-        //
-        // 0fc8018b2903e6ce471eb458ab23f8fc0ba6fdf6 is the latest commit on the
-        // fork's PR branch (pointfreeco/swift-custom-dump#164). Keeps the
-        // `#if !os(WASI)` guard and the trait-gated `FoundationNetworking`
-        // import; the trait name matches what upstream `swift-snapshot-testing`
-        // now expects (`FoundationNetworking`, not the old `Networking`), so
-        // SwiftPM's identity-unification of the two `swift-custom-dump`
-        // references resolves cleanly. Bump when the upstream PR merges and the
-        // fork can be retired in favour of a tagged `pointfreeco/` release.
-        .package(
-            url: "https://github.com/mansbernhardt/swift-custom-dump",
-            revision: "0fc8018b2903e6ce471eb458ab23f8fc0ba6fdf6",
-            traits: []
-        ),
+        // swift-custom-dump 1.6.0 (2026-05-26) shipped the
+        // `#if FoundationNetworking && canImport(FoundationNetworking)` guards
+        // we previously carried on a fork (pointfreeco/swift-custom-dump#164).
+        // The `canImport` arm keeps WASM (no `FoundationNetworking` module)
+        // and Android (no module unless the bridge pulls it) compiling, and
+        // `swift-snapshot-testing` already unions the `FoundationNetworking`
+        // trait on across the shared `swift-custom-dump` identity — so a plain
+        // version pin resolves cleanly. (History: the fork existed only because
+        // upstream hadn't tagged the fix yet.)
+        .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.6.0"),
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "600.0.0"),
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.6.0"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.6"),
