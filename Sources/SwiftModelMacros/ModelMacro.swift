@@ -22,16 +22,6 @@ private func inferType(from expr: ExprSyntax) -> String? {
     return nil
 }
 
-/// Returns true if the type syntax represents a function type (possibly wrapped in attributes).
-private func isFunctionType(_ type: TypeSyntax?) -> Bool {
-    guard let type else { return false }
-    if type.is(FunctionTypeSyntax.self) { return true }
-    if let attributed = type.as(AttributedTypeSyntax.self) {
-        return attributed.baseType.is(FunctionTypeSyntax.self)
-    }
-    return false
-}
-
 /// Returns the default value string for a parameter, considering the type and initializer.
 /// Optionals default to `nil` when no explicit initializer is provided (matching memberwise init).
 private func defaultValue(typeAnnotation: TypeSyntax?, initExpr: String?) -> String? {

@@ -210,3 +210,37 @@ extension DeclGroupSyntax {
         }
     }
 }
+
+/// Returns true if the type syntax denotes a function type, looking through
+/// attributes (`@Sendable`/`@escaping`), `Optional` wrappers, and a single-element
+/// parenthesised tuple (`((X) -> Y)`).
+///
+/// Used to give function-typed `@Model` properties a plain `get` accessor instead
+/// of the usual `_read` coroutine — see `makeGetSet` in `ModelTrackedMacro` for why.
+func isFunctionType(_ type: TypeSyntax?) -> Bool {
+    guard let type else { return false }
+    if type.is(FunctionTypeSyntax.self) { return true }
+    if let attributed = type.as(AttributedTypeSyntax.self) {
+        return isFunctionType(attributed.baseType)
+    }
+    if let optional = type.as(OptionalTypeSyntax.self) {
+        return isFunctionType(optional.wrappedType)
+    }
+    if let iuo = type.as(ImplicitlyUnwrappedOptionalTypeSyntax.self) {
+        return isFunctionType(iuo.wrappedType)
+    }
+    // A parenthesised function type parses as a one-element tuple, e.g. `((X) -> Y)`.
+    if let tuple = type.as(TupleTypeSyntax.self), tuple.elements.count == 1,
+       let only = tuple.elements.first {
+        return isFunctionType(only.type)
+    }
+    return false
+}
+
+extension VariableDeclSyntax {
+    /// True when the (explicitly annotated) stored-property type is a function type.
+    /// Inferred closure properties (`var cb = { ... }`) have no annotation and report `false`.
+    var hasFunctionType: Bool {
+        isFunctionType(bindings.first?.typeAnnotation?.type)
+    }
+}
