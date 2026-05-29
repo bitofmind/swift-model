@@ -12,17 +12,56 @@ import SwiftSyntaxMacros
 ///
 /// Both write paths include a pending-state guard (`_storePendingIfNeeded`) for user-written
 /// inits where the setter fires instead of the init accessor.
+///
+/// `isFunctionType` properties get a plain `get` instead of `_read` **when this macro plugin
+/// is built with Swift 6.3**: swift-frontend 6.3 SIGSEGVs during IRGen when emitting a `_read`
+/// (yield-once) coroutine that yields a *function value by value* whose parameter is passed
+/// indirectly by the Swift calling convention (an aggregate of >4 fields). This is a
+/// platform-general `-Onone` bug — reproduced on both `aarch64-unknown-linux-android28` and
+/// `arm64-apple-macosx` debug builds (optimised builds inline the coroutine away and don't
+/// crash, which is why it first surfaced only in Imagien's debug Android cross-compile).
+/// A plain `get` (which returns a copy of the closure — trivial for a 2-word value) sidesteps it;
+/// it calls the same `_$modelSource[read:]` subscript, so observation is unchanged, and the write
+/// path (`_modify`, which yields an *address*, not a value) is unaffected.
+///
+/// The carve-out is gated on `#if compiler(>=6.4)` — i.e. on the Swift version, not the platform.
+/// It can't be scoped per-target anyway (the macro runs on the host and can't see the target, and
+/// `#if` can't switch between accessor *kinds* inside an accessor block), and it shouldn't be:
+/// the bug isn't Android-specific, so the `get` correctly applies on every platform under 6.3
+/// (harmless — a closure copy is ~free). Under Swift 6.4+ we emit `_read` again, unconditionally:
+/// if the bug was fixed this restores borrow-without-copy uniformly; if it regressed, debug builds
+/// crash here and surface it, rather than the workaround being carried silently forever. Delete
+/// this gate (and `isFunctionType`) once 6.3 support is dropped or the fix is confirmed.
 private func makeGetSet(
     identifier: String,
     didSet: CodeBlockItemListSyntax?,
-    willSet: CodeBlockItemListSyntax?
+    willSet: CodeBlockItemListSyntax?,
+    isFunctionType: Bool
 ) -> [AccessorDeclSyntax] {
-    let readAccessor: AccessorDeclSyntax =
+    let readCoroutine: AccessorDeclSyntax =
     """
     _read {
         yield _$modelSource[read: \\_State.\(raw: identifier), access: _$modelAccess]
     }
     """
+
+    let readAccessor: AccessorDeclSyntax
+    #if compiler(>=6.4)
+    // Swift 6.4+: emit the coroutine unconditionally (function types included). `isFunctionType`
+    // is intentionally unused here — the carve-out below only exists for the 6.3 compiler bug.
+    readAccessor = readCoroutine
+    #else
+    if isFunctionType {
+        readAccessor =
+        """
+        get {
+            _$modelSource[read: \\_State.\(raw: identifier), access: _$modelAccess]
+        }
+        """
+    } else {
+        readAccessor = readCoroutine
+    }
+    #endif
 
     let writeAccessor: AccessorDeclSyntax
     if didSet != nil || willSet != nil {
@@ -164,7 +203,7 @@ public struct ModelTrackedMacro: AccessorMacro, PeerMacro {
             """
         }
 
-        return [initAccessor] + makeGetSet(identifier: identifier, didSet: didSet, willSet: willSet)
+        return [initAccessor] + makeGetSet(identifier: identifier, didSet: didSet, willSet: willSet, isFunctionType: property.hasFunctionType)
     }
 
     public static func expansion<C: MacroExpansionContext, D: DeclSyntaxProtocol>(

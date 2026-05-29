@@ -152,6 +152,118 @@ struct ModelMacroTests {
         }
     }
 
+    // The `get`-for-function-types carve-out is gated on Swift 6.3 (see ModelTrackedMacro.makeGetSet);
+    // under 6.4+ the macro emits `_read` again, so this expectation only holds while built with 6.3.
+    #if !compiler(>=6.4)
+    /// Function-typed stored properties get a plain `get` read accessor instead of `_read`.
+    ///
+    /// swift-frontend 6.3 SIGSEGVs during IRGen when emitting a `_read` (yield-once) coroutine
+    /// that yields a function value by value whose parameter is passed indirectly — a platform-general
+    /// `-Onone` bug (Apple + Android debug). The plain `get` (a copy) sidesteps it; the `nonmutating
+    /// _modify` write path — which yields an address, not a value — is unchanged. See `ModelTrackedMacro.makeGetSet`.
+    @Test func testModelClosureProperty() {
+        assertMacro {
+            """
+            @Model struct MyModel {
+                var handler: @Sendable () -> Void = {}
+            }
+            """
+        } expansion: {
+            #"""
+            struct MyModel {
+                var handler: @Sendable () -> Void {
+                    @storageRestrictions(initializes: _$modelAccess, _$modelSource)
+                    init(newValue) {
+                        _$modelAccess = _ModelAccessBox()
+                        _ModelSourceBox<Self>._threadLocalStoreFirst(\.handler, newValue)
+                        _$modelSource = ._popFromThreadLocal(Self._makeState)
+                    }
+                    get {
+                        _$modelSource[read: \_State.handler, access: _$modelAccess]
+                    }
+                    nonmutating _modify {
+                        yield &_$modelSource[write: \_State.handler, access: _$modelAccess]
+                    }
+                }
+
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                    visitor.visitStatically(statePath: \.handler)
+                }
+
+                public nonisolated struct _State: _ModelStateType {
+                    var handler: @Sendable () -> Void = {
+                    }
+                }
+
+                public typealias _ModelState = _State
+
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                    _State(handler: pending.value(for: \.handler, default: {
+                            }))
+                }
+
+                private nonisolated var _modelState: _State {
+                    get {
+                        _$modelSource._modelState
+                    }
+                    nonmutating set {
+                        _$modelSource._modelState = newValue
+                    }
+                }
+
+                private var _$modelAccess: _ModelAccessBox = _ModelAccessBox()
+
+                private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
+
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                    \Self._modelState
+                }
+
+                private nonisolated var _$modelContext: ModelContext<Self> {
+                    get {
+                        ModelContext(_access: _$modelAccess, _source: _$modelSource)
+                    }
+                }
+
+                public nonisolated var _context: ModelContextAccess<Self> {
+                    ModelContextAccess(_$modelContext)
+                }
+
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                    _$modelAccess = update._$modelContext._access
+                    _$modelSource = update._$modelContext._source
+                }
+            }
+
+            nonisolated extension MyModel: SwiftModel.Model {
+            }
+
+            nonisolated extension MyModel: @unchecked Sendable {
+            }
+
+            nonisolated extension MyModel: Identifiable {
+            }
+
+            nonisolated extension MyModel: CustomReflectable {
+                public var customMirror: Mirror {
+                    node.mirror(of: self, children: [("handler", handler as Any)])
+                }
+            }
+
+            nonisolated extension MyModel: CustomStringConvertible, CustomDebugStringConvertible {
+                public var description: String {
+                    node.description(of: self)
+                }
+                public var debugDescription: String {
+                    description
+                }
+            }
+            """#
+        }
+    }
+
+    #endif // !compiler(>=6.4)
+
     /// Model with an explicit type annotation but no default (requires user init).
     @Test func testModelCustomInit() {
         assertMacro {
