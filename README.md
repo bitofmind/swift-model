@@ -35,40 +35,19 @@ Composable models for SwiftUI — struct-based, automatic async lifetime, exhaus
 .package(url: "https://github.com/bitofmind/swift-model", from: "1.0.0")
 ```
 
-**Xcode app targets:** SwiftModel references `Testing.framework` symbols at compile time (Xcode 16+). Without a weak link the app crashes at launch outside a test context with `Library not loaded: @rpath/Testing.framework/Testing`. Add this to your **app target's** build settings, regardless of whether you use SPM or xcodeproj to structure your project:
+**Xcode app targets** need one extra build setting on the **app target** (not the test target):
 
 ```
 OTHER_LDFLAGS = $(inherited) -weak_framework Testing
 ```
 
-**`swift build` / `swift test`** (command-line, no Xcode): no extra configuration required.
-
-If you also use app-hosted tests with `BUNDLE_LOADER`, one additional setting is required — see [Xcodeproj setup](Docs/Testing.md#xcodeproj-setup) in Testing.md.
+Without it the app crashes at launch outside a test context (`Library not loaded: @rpath/Testing.framework/Testing`), because SwiftModel references `Testing.framework` symbols at compile time. Command-line `swift build` / `swift test` need no extra setup; app-hosted tests using `BUNDLE_LOADER` need one more setting — see [Xcode setup](Docs/Testing.md#xcodeproj-setup).
 
 ## The core loop
 
-### Define a model
+The `SearchModel` above is a complete feature. `@Model` gives the struct observable storage and a `node` interface for async work, dependencies, and its place in the model hierarchy. `node.task(id:)` watches a value expression and restarts the async task whenever it changes, cancelling any in-flight one first; `node.gitHubClient` resolves a dependency through a keypath — the same one you override in tests and previews. (`task(id:)` builds on `Observed`, which tracks any Swift value expression, not just simple properties, and works from iOS 14 — Apple's similar `Observations` arrived in iOS 26.)
 
-```swift
-import SwiftModel
-
-@Model struct SearchModel {
-    var query   = ""
-    var results: [Repo] = []
-
-    func onActivate() {
-        // Cancel-in-flight. With a plain @Observable class you'd need a stored
-        // Task, [weak self] in every closure, and a deinit for cleanup. Here it's one line.
-        node.task(id: query) { query in
-            results = (try? await node.gitHubClient.search(query)) ?? []
-        }
-    }
-}
-```
-
-`@Model` gives the struct observable storage, a `node` interface for async work and dependencies, and everything needed to participate in the model hierarchy. `node.task(id:)` watches any value expression and restarts the async task whenever it changes — cancelling the previous in-flight task first. Under the hood it uses `Observed { query }`, which tracks any Swift value expression and emits whenever its result changes — not just simple properties. (Apple added a similar `Observations` type in iOS 26; `Observed` works from iOS 14.)
-
-`node.gitHubClient` accesses the `GitHubClient` dependency via a `DependencyValues` keypath — the same keypath used to override it in tests and previews, with no change to the model itself.
+Here's the rest of the loop — a view and a test.
 
 ### Connect it to a view
 
@@ -113,19 +92,7 @@ import SwiftModel
 
 `expect { }` waits for all predicates to become true, settles async work, and fails if the model changed anything you didn't assert.
 
-Compare to TCA, where tests encode the full action sequence:
-
-```swift
-// TCA
-await store.send(.factButtonTapped) { $0.isLoading = true }
-await store.receive(\.factResponse) { $0.fact = "42 is a great number" }
-
-// SwiftModel
-model.factButtonTapped()
-await expect { model.fact == "42 is a great number" }
-```
-
-Rename a method or split an async effect — the test keeps passing as long as the outcome is the same. See [Testing](Docs/Testing.md) for the full comparison.
+Because tests assert the *outcome* — not the sequence of steps that produced it — you can rename a method, split an async effect, or move work to a helper and the test keeps passing, as long as the final state is the same. See [Testing](Docs/Testing.md).
 
 ## Why @Model and not just @Observable?
 
@@ -150,19 +117,13 @@ Rename a method or split an async effect — the test keeps passing as long as t
 
 `GitHubClient.live` is hardcoded — there is no clean path to inject a test double.
 
-| | `@Observable` class | SwiftModel `@Model` |
-|---|---|---|
-| **Async task lifetime** | Manual `Task`; you manage cancellation | `node.task` cancels automatically when the model is removed |
-| **Self references** | `[weak self]` required in every async closure | Not needed — and not allowed; the compiler rejects it on structs |
-| **Testing** | No built-in harness; roll your own | `expect { }` exhaustively asserts state, events, and running tasks |
-| **Dependency injection** | Global `@Environment` only | Per-model overrides at any hierarchy level |
-| **Minimum iOS** | iOS 17 | iOS 14 |
+With `@Model` that scaffolding disappears: `node.task` is cancelled automatically when the model is removed, `[weak self]` is unnecessary (and rejected by the compiler on a struct), dependencies are injectable at any level, and the testing harness is built in. It also runs back to **iOS 14**, where `@Observable` requires iOS 17.
 
 ## How it compares
 
 | | `@Observable` / MVVM | TCA | **SwiftModel** |
 |---|---|---|---|
-| Boilerplate | Low | Very high | **Low** |
+| Boilerplate | Low | High | **Low** |
 | Retain cycles | Manual `[weak self]` | Low | **None — structural guarantee** |
 | Exhaustive testing | No | Yes (action-ordered) | **Yes (state-focused)** |
 | Refactor-resilient tests¹ | — | No | **Yes** |
@@ -173,15 +134,15 @@ Rename a method or split an async effect — the test keeps passing as long as t
 | Context propagation | View `@Environment` only | None | **Model-layer environment + preferences** |
 | Shared state | Manual | `@Shared` (value sync) | **Model dependency (live instance)** |
 | Thread safety | `@MainActor` discipline | `@MainActor` discipline | **Lock-based, any thread** |
-| Learning curve | Minimal | Very steep | **Moderate** |
+| Learning curve | Minimal | Steep | **Moderate** |
 
-¹ TCA tests encode action sequences — renaming a case or splitting an effect breaks tests even when visible behaviour is unchanged. SwiftModel tests assert final state only.
+¹ SwiftModel tests assert final state, so restructuring internals — renaming a method, splitting an effect — leaves them passing. Action-sequence tests (as in TCA) deliberately encode those steps instead: a different trade-off, not a flaw.
 
 ## What's in the box
 
 **[Models and composition](Docs/Models.md)** — `@Model` macro, child models, optional and collection composition, `@ModelContainer` for navigation enums and reusable wrappers.
 
-**[Async lifetime](Docs/Lifecycle.md)** — `node.task`, `node.task(id:)` for restart-on-change, `node.onChange(of:)` for old/new value transitions, `node.forEach`, reactive streams with `Observed`, `onActivate`, `withActivation` for composable behaviour injection, `observeModifications`, transactions, and cancellation groups.
+**[Async lifetime](Docs/Lifecycle.md)** — `node.task` and restart-on-change `task(id:)`, value transitions with `onChange(of:)`, reactive streams with `Observed`, `observeModifications`, transactions, cancellation groups, and `withActivation` for injecting behaviour from the outside.
 
 **[Dependency injection](Docs/Dependencies.md)** — `@ModelDependency`, per-model and per-hierarchy overrides, preview values, and test overrides at the anchor site.
 

@@ -2,11 +2,11 @@
 
 ## Undo and Redo
 
-SwiftModel has built-in support for undo/redo via `node.trackUndo()`. Call it from `onActivate()` to register which properties participate in the undo stack. Each modification to a tracked property automatically pushes an entry onto a ``ModelUndoStack`` (or any custom ``UndoBackend``), and undoing restores the model to its previous state as a single atomic transaction.
+SwiftModel has built-in undo/redo via `node.trackUndo()`. Call it from `onActivate()` to register which properties participate; each change to a tracked property pushes an entry, and undoing restores the previous state as one atomic transaction.
 
-### Basic setup
+### Setup and scope
 
-Inject a `ModelUndoStack` as the `undoSystem` dependency when anchoring, then call `trackUndo()` from `onActivate()`:
+Inject a backend (`ModelUndoStack`, or any `UndoBackend`) as the `undoSystem` dependency, then track:
 
 ```swift
 @Model struct EditorModel {
@@ -14,97 +14,32 @@ Inject a `ModelUndoStack` as the `undoSystem` dependency when anchoring, then ca
     var body = ""
 
     func onActivate() {
-        node.trackUndo()  // all tracked properties participate in undo
+        node.trackUndo()   // all tracked properties participate
     }
 }
 
-// At the call site:
 let stack = ModelUndoStack()
-let model = EditorModel().withAnchor {
-    $0.undoSystem.backend = stack
-}
-
+let model = EditorModel().withAnchor { $0.undoSystem.backend = stack }
 stack.undo()
 stack.redo()
 ```
 
-### Selective tracking
+Track a subset by listing paths (`node.trackUndo(\.items)`) or excluding them (`node.trackUndo(excluding: \.searchQuery)`) — useful for keeping ephemeral fields like a search box out of the history. Each model owns its own properties: a child that should be undoable calls `trackUndo` in its *own* `onActivate()`.
 
-There are two ways to track only a subset of properties:
+### Wiring to the UI
 
-**Track specific paths** — pass the key paths you want to track:
-
-```swift
-@Model struct TodoListModel {
-    var items: [TodoItem] = []
-    var newItemTitle = ""   // ephemeral — not part of undo history
-
-    func onActivate() {
-        node.trackUndo(\.items)  // only item changes are undoable
-    }
-}
-```
-
-**Exclude specific paths** — track everything except the listed key paths:
+`node.undoSystem` exposes `canUndo` / `canRedo` as observable properties, so buttons enable and disable reactively:
 
 ```swift
-@Model struct EditorModel {
-    var title = ""
-    var body = ""
-    var searchQuery = ""   // ephemeral search field
-
-    func onActivate() {
-        node.trackUndo(excluding: \.searchQuery)  // all except searchQuery
-    }
-}
+Button { model.node.undoSystem.undo() } label: { Label("Undo", systemImage: "arrow.uturn.backward") }
+    .disabled(!model.node.undoSystem.canUndo)
+    .keyboardShortcut("z", modifiers: .command)
 ```
 
-**Child model tracking** — each model is responsible for its own properties. Child models that should participate in undo must call `trackUndo` in their own `onActivate`:
+To hook into the system Edit menu (Cmd-Z / Cmd-Shift-Z) on macOS and iOS, use `UndoManagerBackend` driven by SwiftUI's environment `UndoManager` instead of a standalone `ModelUndoStack`:
 
 ```swift
-@Model struct TodoItem {
-    var title: String
-    var isDone: Bool = false
-
-    func onActivate() {
-        node.trackUndo(\.title, \.isDone)  // tracked by the child itself
-    }
+.task(id: undoManager.map(ObjectIdentifier.init)) {
+    model.node.undoSystem.backend = undoManager.map(UndoManagerBackend.init)
 }
 ```
-
-### Observable canUndo / canRedo
-
-`ModelUndoSystem` exposes `canUndo` and `canRedo` as observable model properties that update reactively as the stack changes. Wire them directly in your view:
-
-```swift
-Button { model.node.undoSystem.undo() } label: {
-    Label("Undo", systemImage: "arrow.uturn.backward")
-}
-.disabled(!model.node.undoSystem.canUndo)
-.keyboardShortcut("z", modifiers: .command)
-
-Button { model.node.undoSystem.redo() } label: {
-    Label("Redo", systemImage: "arrow.uturn.forward")
-}
-.disabled(!model.node.undoSystem.canRedo)
-.keyboardShortcut("z", modifiers: [.command, .shift])
-```
-
-### System UndoManager integration
-
-For macOS and iOS apps that want Cmd+Z / Cmd+Shift+Z wired to the system Edit menu automatically, use `UndoManagerBackend` instead of `ModelUndoStack`:
-
-```swift
-struct TodoListView: View {
-    @ObservedModel var model: TodoListModel
-    @Environment(\.undoManager) var undoManager
-
-    var body: some View {
-        TodoListContent(model: model)
-            .task(id: undoManager.map(ObjectIdentifier.init)) {
-                model.node.undoSystem.backend = undoManager.map(UndoManagerBackend.init)
-            }
-    }
-}
-```
-

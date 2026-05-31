@@ -2,7 +2,7 @@
 
 > A Swift library for composing models that drive SwiftUI views. Models are value-type structs with reference semantics — powerful, testable, and free of retain cycles.
 
-SwiftModel takes inspiration from The Composable Architecture but removes the reducer/action/effect indirection. Methods are actions. Async work is plain `async`/`await` managed by the runtime. Testing is exhaustive by default.
+In SwiftModel, model methods *are* your actions — there is no separate reducer, action enum, or effect type. Async work is plain `async`/`await` managed by the runtime, and testing is exhaustive by default.
 
 ---
 
