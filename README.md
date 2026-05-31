@@ -148,13 +148,11 @@ With `@Model` that scaffolding disappears: `node.task` is cancelled automaticall
 
 **[Navigation](Docs/Navigation.md)** — modal sheets, navigation stacks, and deep links driven by model state. No extra libraries required.
 
-**[Events](Docs/Events.md)** — typed events that travel up or down the model hierarchy. Composable with model-scoped `Event` types.
+**[The model hierarchy](Docs/Hierarchy.md)** — typed events up and down the tree, top-down environment and bottom-up preferences, and `mapHierarchy` / `reduceHierarchy` for querying state across any region.
 
 **[Testing](Docs/Testing.md)** — `expect { }`, `settle()`, `require()`, `TestProbe`, exhaustivity control per category, time-control with `TestClock`, and `withModelTesting` for non-trait contexts.
 
 **[Debugging](Docs/Debugging.md)** — `withDebug()`, diff styles, trigger tracing, and `DebugOptions` for `memoize`, `Observed`, and `observeModifications`.
-
-**[Hierarchy and preferences](Docs/HierarchyAndPreferences.md)** — top-down environment propagation, bottom-up preference aggregation, local node storage, and `mapHierarchy` for tree queries.
 
 **[Undo and redo](Docs/Undo.md)** — `node.trackUndo()` with selective key-path tracking, `UndoManager` integration, and observable `canUndo` / `canRedo`.
 

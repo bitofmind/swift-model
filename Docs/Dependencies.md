@@ -93,7 +93,7 @@ func onActivate() {
 }
 ```
 
-Its `onActivate()` runs once when first accessed and it deactivates when the last host is removed; all hosts share the same context. A couple of routing notes follow from it being off the normal parent chain: events *to* a dependency need `.dependencies` in the relation (`node.send(.refresh, to: [.self, .children, .dependencies])`), and `mapHierarchy` / `reduceHierarchy` only visit dependency models when you include `.dependencies`. See [Events](Events.md) and [Hierarchy and preferences](HierarchyAndPreferences.md).
+Its `onActivate()` runs once when first accessed and it deactivates when the last host is removed; all hosts share the same context. A couple of routing notes follow from it being off the normal parent chain: events *to* a dependency need `.dependencies` in the relation (`node.send(.refresh, to: [.self, .children, .dependencies])`), and `mapHierarchy` / `reduceHierarchy` only visit dependency models when you include `.dependencies`. See [The model hierarchy](Hierarchy.md).
 
 ### Swift 6.2 — `defaultIsolation: MainActor`
 
