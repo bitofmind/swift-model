@@ -2,13 +2,13 @@
 
 ## Dependencies
 
-Models access external services — network clients, persistence, clocks — through a typed dependency system similar to SwiftUI's `@Environment`. Dependencies are resolved at the model's position in the hierarchy, making them trivial to override per-test, per-preview, or per-model-subtree.
+Models reach external services — network clients, persistence, clocks — through a typed dependency system, resolved at the model's position in the hierarchy. That positioning is what makes dependencies trivial to override per-test, per-preview, or per-subtree.
 
-> SwiftModel integrates with [swift-dependencies](https://github.com/pointfreeco/swift-dependencies) by Point-Free, which means the growing ecosystem of community-built dependency wrappers conforms out of the box.
+> SwiftModel integrates with [swift-dependencies](https://github.com/pointfreeco/swift-dependencies) by Point-Free, so the growing ecosystem of community-built dependency wrappers works out of the box.
 
-### Defining a dependency
+### Defining and accessing a dependency
 
-Conform your dependency type to `DependencyKey` to provide a live default, then extend `DependencyValues` for convenient keypath access:
+Conform a type to `DependencyKey` for its live default, then extend `DependencyValues` for keypath access:
 
 ```swift
 import Dependencies
@@ -18,12 +18,7 @@ struct FactClient {
 }
 
 extension FactClient: DependencyKey {
-    static let liveValue = FactClient(
-        fetch: { number in
-            let (data, _) = try await URLSession.shared.data(from: URL(string: "http://numbersapi.com/\(number)")!)
-            return String(decoding: data, as: UTF8.self)
-        }
-    )
+    static let liveValue = FactClient(fetch: { number in /* … real call … */ })
 }
 
 extension DependencyValues {
@@ -34,25 +29,15 @@ extension DependencyValues {
 }
 ```
 
-Access the dependency via `node`:
+Access it from inside the model via `node`:
 
 ```swift
 let fact = try await node.factClient.fetch(count)
 ```
 
-> `node` is the model implementor's interface to the SwiftModel runtime. It provides access to dependencies, async tasks, events, cancellations, memoization, and hierarchy queries. It is intended to be used from within a model's own implementation — in `onActivate()`, in methods, and in extensions — not by external consumers of the model.
+> `node` is the model's own interface to the runtime — dependencies, tasks, events, memoization, hierarchy queries. Use it from inside the model's implementation (`onActivate()`, methods, extensions), not from external consumers.
 
-### Declaring dependencies on a model
-
-For dependencies that should be visible at the struct level — for example, when you want the dependency to appear in the memberwise initialiser — use `@ModelDependency`:
-
-```swift
-@Model struct CounterModel {
-    @ModelDependency var factClient: FactClient
-}
-```
-
-When the property type is a protocol or abstract type with no `DependencyKey` conformance of its own, pass a keypath argument to identify it via `DependencyValues`:
+If you want a dependency to appear in the memberwise initialiser, declare it on the struct with `@ModelDependency` (pass a keypath when the type has no `DependencyKey` of its own):
 
 ```swift
 @Model struct TimerModel {
@@ -60,52 +45,37 @@ When the property type is a protocol or abstract type with no `DependencyKey` co
 }
 ```
 
-For most cases, `node.factClient` and `node.continuousClock` are simpler — no property declaration needed.
+For most cases, `node.factClient` / `node.continuousClock` are simpler — no property needed.
 
-### Overriding Dependencies
+### Overriding
 
-When anchoring your root model you can provide a trailing closure where you can override default dependencies. This is especially useful for testing and previews.
+Override defaults in a trailing closure when anchoring — the main path for tests and previews. Descendants inherit their parent's dependencies, and you can re-override a subtree with `withDependencies`:
 
 ```swift
 let model = AppModel().withAnchor {
-  $0.factClient.fetch = { "\($0) is a great number!" }
+    $0.factClient.fetch = { "\($0) is a great number!" }
 }
-```
 
-Any descendant models will inherit its parent's dependencies.
-
-You can also override a child model's dependencies (and its descendants) using the `withDependencies()` modifier:
-
-```swift
 appModel.factPrompt = FactPromptModel(...).withDependencies {
-  $0.factClient.fetch = { "\($0) is a great number!" }
+    $0.factClient.fetch = { "\($0) is a great number!" }
 }
 ```
 
-### Model Dependency
+### Models as dependencies
 
-A `@Model` type can also be used as a dependency by conforming to `DependencyKey`. When accessed via `@ModelDependency` (or `node[Dep.self]`), SwiftModel integrates it into the context hierarchy as a shared model — one instance, shared across all consumers.
+A `@Model` type can itself be a dependency. Conform it to `DependencyKey` and SwiftModel integrates it into the hierarchy as a **shared model** — one live instance across all consumers, with full lifecycle:
 
 ```swift
 @Model struct AnalyticsService {
-    var isEnabled: Bool = true
-
-    func track(_ event: String) { ... }
+    var isEnabled = true
+    func track(_ event: String) { … }
 }
 
 extension AnalyticsService: DependencyKey {
     static let liveValue = AnalyticsService()
-    static let testValue = AnalyticsService()  // used automatically in tests
+    static let testValue = AnalyticsService()   // used automatically in tests
 }
 
-@Model struct FeatureModel {
-    @ModelDependency var analytics: AnalyticsService
-}
-```
-
-Alternatively — and in practice the most convenient approach — extend `DependencyValues` just like you would for a plain dependency:
-
-```swift
 extension DependencyValues {
     var analyticsService: AnalyticsService {
         get { self[AnalyticsService.self] }
@@ -114,82 +84,27 @@ extension DependencyValues {
 }
 ```
 
-This lets every model access the dependency directly via `node`, with no `@ModelDependency` property needed:
+Because it's a real model, host models can observe its properties and exchange events with it, just like any child:
 
 ```swift
 func onActivate() {
     node.analyticsService.track("app_launched")
-    node.forEach(Observed { node.analyticsService.isEnabled }) { isEnabled in
-        // react to changes
-    }
+    node.forEach(Observed { node.analyticsService.isEnabled }) { isEnabled in … }
 }
 ```
 
-Overriding works the same way, using either the key path or the subscript form:
-
-```swift
-let model = AppModel().withAnchor {
-    $0.analyticsService = AnalyticsService(isEnabled: false)  // key path
-    // or: $0[AnalyticsService.self] = AnalyticsService(isEnabled: false)
-}
-```
-
-**Lifecycle.** The dependency model's `onActivate()` is called when it is first accessed by any model in the hierarchy. It is deactivated when the last host model is removed. Multiple models that access the same dependency type receive the same shared context — `onActivate()` runs once and `onCancel` fires once.
-
-**Observation.** A host model can observe properties of the dependency model via `Observed`, exactly as it would observe any child model's properties:
-
-```swift
-func onActivate() {
-    node.forEach(Observed { analytics.isEnabled }) { isEnabled in
-        // fires whenever analytics.isEnabled changes
-    }
-}
-```
-
-**Events from the dependency.** Events sent by the dependency model with the default `to: [.self, .ancestors]` travel up to the host model's event listeners, because the dependency context has the host as a parent.
-
-**Events to the dependency.** The default `node.send(event)` relation `[.self, .ancestors]` does **not** reach dependency models. To deliver an event to a dependency, you must include both `.children` and `.dependencies` in the relation:
-
-```swift
-node.send(MyEvent.refresh, to: [.self, .children, .dependencies])
-```
-
-**Hierarchy traversal.** `reduceHierarchy` and `mapHierarchy` do not visit dependency models by default. Include `.dependencies` alongside `.descendants` or `.children` to traverse them:
-
-```swift
-let services = node.mapHierarchy(for: [.self, .descendants, .dependencies]) {
-    $0 as? AnalyticsService
-}
-```
+Its `onActivate()` runs once when first accessed and it deactivates when the last host is removed; all hosts share the same context. A couple of routing notes follow from it being off the normal parent chain: events *to* a dependency need `.dependencies` in the relation (`node.send(.refresh, to: [.self, .children, .dependencies])`), and `mapHierarchy` / `reduceHierarchy` only visit dependency models when you include `.dependencies`. See [The model hierarchy](Hierarchy.md).
 
 ### Swift 6.2 — `defaultIsolation: MainActor`
 
-Xcode 26 creates new projects with `defaultIsolation: MainActor`, isolating every declaration by default. SwiftModel uses a lock, not actor isolation, so a few targeted `nonisolated` annotations are needed where the setting would otherwise inject `@MainActor`:
-
-**Domain structs and dependency types:**
+Xcode 26 may create projects with `defaultIsolation: MainActor`, which isolates every declaration. SwiftModel relies on its lock rather than actor isolation, so you don't *need* this setting for safety — but if it's on, mark your domain structs, dependency types, `DependencyKey` conformances, and `DependencyValues` accessors `nonisolated` so they stay reachable from nonisolated test targets:
 
 ```swift
-// Without nonisolated, let/var accessors become @MainActor-isolated,
-// breaking cross-module access from nonisolated test targets.
-nonisolated struct Repo: Sendable { let name: String; let owner: String }
 nonisolated struct FactClient { var fetch: @Sendable (Int) async throws -> String }
-```
 
-**`DependencyKey` conformance and `DependencyValues` accessor:**
-
-```swift
 nonisolated extension FactClient: DependencyKey {
     static let liveValue = FactClient(...)
 }
-
-extension DependencyValues {
-    nonisolated var factClient: FactClient {
-        get { self[FactClient.self] }
-        set { self[FactClient.self] = newValue }
-    }
-}
 ```
 
-Any private helper types inside `liveValue` closures that appear in a `nonisolated` context (e.g. `Decodable` structs for JSON parsing) need the same treatment.
-
-> You don't need `defaultIsolation: MainActor` in a SwiftModel module for safety — model state is protected by SwiftModel's internal lock regardless of actor isolation. If Xcode 26 added it automatically, the patterns above are all that's needed.
+Any private helper types inside `liveValue` closures (e.g. `Decodable` structs) need the same treatment.

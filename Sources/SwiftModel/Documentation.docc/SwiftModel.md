@@ -1,6 +1,6 @@
 # ``SwiftModel``
 
-Composable value-type models for SwiftUI. The structured architecture of TCA without reducers, action enums, or effect indirection.
+Composable value-type models for SwiftUI — plain structs with observation, async lifetime, dependency injection, and exhaustive testing built in.
 
 ## Overview
 
@@ -35,7 +35,7 @@ Key properties:
 Add SwiftModel to your `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/bitofmind/swift-model", from: "0.10.0")
+.package(url: "https://github.com/bitofmind/swift-model", from: "1.0.0")
 ```
 
 Declare a model, a view, and an entry point:
