@@ -7,7 +7,7 @@
 [![Android build](https://img.shields.io/github/actions/workflow/status/bitofmind/swift-model/ci.yml?branch=main&label=Android%20build)](https://github.com/bitofmind/swift-model/actions/workflows/ci.yml)
 [![WASM build](https://img.shields.io/github/actions/workflow/status/bitofmind/swift-model/ci.yml?branch=main&label=WASM%20build)](https://github.com/bitofmind/swift-model/actions/workflows/ci.yml)
 
-Composable models for SwiftUI — struct-based, automatic async lifetime, exhaustive testing, and dependency injection from iOS 14.
+Composable models for SwiftUI — plain structs with automatic async lifetime, a live model hierarchy that carries dependencies and events, and exhaustive testing, with fine-grained observation from iOS 14.
 
 ```swift
 @Model struct SearchModel {
@@ -15,8 +15,8 @@ Composable models for SwiftUI — struct-based, automatic async lifetime, exhaus
     var results: [Repo] = []
 
     func onActivate() {
-        // Cancel-in-flight: each new query cancels the previous search.
-        // No stored Task. No [weak self]. Cancelled automatically when removed.
+        // Runs when the model goes live; restarts on each new query,
+        // cancelling the previous search — and stops when the model is removed.
         node.task(id: query) { query in
             results = (try? await node.gitHubClient.search(query)) ?? []
         }
@@ -24,10 +24,10 @@ Composable models for SwiftUI — struct-based, automatic async lifetime, exhaus
 }
 ```
 
-- **No retain cycles.** Closures that capture `self` capture a struct value with a weak context reference — the cycle that requires `[weak self]` in `@Observable` classes can't form.
-- **Lifetime-tied tasks.** `node.task` and `node.forEach` are cancelled when the model is removed. No stored `Task`, no `deinit`, no manual cleanup.
-- **Exhaustive tests.** Any state change you didn't assert is a test failure. Refactor freely — tests check *what changed*, not *how you got there*.
-- **Dependency injection anywhere.** Override per model, per hierarchy level, or per test — with a trailing closure at the call site.
+- **Async work that cleans up after itself.** `node.task` and `node.forEach` start when the model goes live and are cancelled when it's removed — no stored `Task`, no `deinit`, no manual teardown to forget.
+- **A live model hierarchy.** Every model knows its place in the tree, and that's how it reaches `node`'s tools: dependencies resolved by position, typed events up and down, top-down environment, bottom-up preferences.
+- **Exhaustive tests, no setup.** Drive the model, assert the outcome — any state change you didn't assert fails the test. Tests check *what changed*, not *how you got there*, so refactors don't break them.
+- **Structurally safe.** Models are structs, so retain cycles can't form and `[weak self]` is never needed — one less thing to think about, guaranteed by the compiler.
 
 ## Install
 
@@ -96,28 +96,7 @@ Because tests assert the *outcome* — not the sequence of steps that produced i
 
 ## Why @Model and not just @Observable?
 
-`@Observable` handles reactive state well. It leaves the rest to you. Here's the same model written with `@Observable`:
-
-```swift
-@Observable class SearchModel {
-    var query = "" { didSet { scheduleSearch() } }
-    var results: [Repo] = []
-    private var searchTask: Task<Void, Never>?
-
-    private func scheduleSearch() {
-        searchTask?.cancel()
-        searchTask = Task { [weak self] in   // forget this → retain cycle
-            guard !Task.isCancelled, let self else { return }
-            self.results = (try? await GitHubClient.live.search(self.query)) ?? []
-        }
-    }
-    deinit { searchTask?.cancel() }          // forget this → tasks outlive the view
-}
-```
-
-`GitHubClient.live` is hardcoded — there is no clean path to inject a test double.
-
-With `@Model` that scaffolding disappears: `node.task` is cancelled automatically when the model is removed, `[weak self]` is unnecessary (and rejected by the compiler on a struct), dependencies are injectable at any level, and the testing harness is built in. It also runs back to **iOS 14**, where `@Observable` requires iOS 17.
+`@Observable` gives you reactive state. Everything *around* it you still build and maintain by hand: starting and cancelling async work as the model comes and goes, resolving dependencies, routing events and shared values through the hierarchy, and keeping all of it testable. `@Model` folds those into the model itself — `onActivate` and `node.task` tie async work to the model's lifetime, `node` resolves dependencies and routes events by position in the tree, and the test harness is built in. And `@ObservedModel` gives plain SwiftUI views fine-grained, per-property observation back to **iOS 14** — where `@Observable` needs 17. The table below has the point-by-point comparison.
 
 ## How it compares
 
@@ -134,9 +113,12 @@ With `@Model` that scaffolding disappears: `node.task` is cancelled automaticall
 | Context propagation | View `@Environment` only | None | **Model-layer environment + preferences** |
 | Shared state | Manual | `@Shared` (value sync) | **Model dependency (live instance)** |
 | Thread safety | `@MainActor` discipline | `@MainActor` discipline | **Lock-based, any thread** |
+| Fine-grained observation | iOS 17+ | iOS 16 needs view wrappers² | **iOS 14+, in plain views** |
 | Learning curve | Minimal | Steep | **Moderate** |
 
 ¹ SwiftModel tests assert final state, so restructuring internals — renaming a method, splitting an effect — leaves them passing. Action-sequence tests (as in TCA) deliberately encode those steps instead: a different trade-off, not a flaw.
+
+² On iOS 16 and earlier, TCA observes state via the [swift-perception](https://github.com/pointfreeco/swift-perception) back-port, which requires wrapping view bodies in `WithPerceptionTracking`. SwiftModel needs no body wrapper; the one exception is model reads inside lazy `@ViewBuilder` closures (`.sheet`, `NavigationStack` destinations) on iOS 16, which use a `ModelScope`.
 
 ## What's in the box
 
