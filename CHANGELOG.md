@@ -8,6 +8,21 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [1.0.1] — Packaging fix: stable `swift-dependencies` pin
+
+### Fixed
+
+- **`swift-dependencies` is now referenced by a version requirement (`from: "1.13.0"`) instead of `branch: "main"`.** Depending on it by branch made `swift-model` itself an *unstable-version* package, so any downstream project that required `swift-model` by a stable version (e.g. `from: "1.0.0"`) failed to resolve with:
+
+  ```
+  'swift-model' is required using a stable-version but 'swift-model'
+  depends on an unstable-version package 'swift-dependencies'
+  ```
+
+  swift-dependencies 1.13.0 ships the trait-aware manifest the branch pin was waiting for, so the dependency can now point at a tagged release. The `#if swift(>=6.3)` gate around the `traits: ["Foundation", "Clocks"]` override is retained: 1.13.0 still ships the `Package@swift-6.0.swift` shadow manifest (no traits), which SE-0152 selects on toolchains < 6.3, where a `traits:` override would be a hard error. No source or API changes.
+
+---
+
 ## [1.0.0] — `@Model` Layout Redesign, Performance Overhaul + API Cleanup
 
 ### Changed
@@ -453,7 +468,8 @@ All APIs that were deprecated in prior releases have been removed:
 - `_printChanges()` / `_withPrintChanges()` — debug-build state change printing.
 - Example apps: `CounterFact`, `Standups`, `TodoList`.
 
-[Unreleased]: https://github.com/bitofmind/swift-model/compare/1.0.0...HEAD
+[Unreleased]: https://github.com/bitofmind/swift-model/compare/1.0.1...HEAD
+[1.0.1]: https://github.com/bitofmind/swift-model/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/bitofmind/swift-model/compare/0.14.0...1.0.0
 [0.14.0]: https://github.com/bitofmind/swift-model/compare/0.13.1...0.14.0
 [0.13.1]: https://github.com/bitofmind/swift-model/compare/0.13.0...0.13.1
