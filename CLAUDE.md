@@ -180,11 +180,17 @@ When investigating new load flakes, check first whether the test matches this pa
 
 ## Building and testing with MCP
 
-**ALWAYS use the xcode-tools MCP server for building and running tests. Never fall back to `swift build` or `swift test` in Bash.**
+**Prefer the xcode MCP (`mcp__xcode__*`) for building and running tests — try it first.** It gives the richest inline diagnostics (compiler issues, test results, build logs). It is *preferred, not mandatory*: when its build/test tools hang or error, fall back rather than treating the MCP as the only option.
 
 - Use `BuildProject` to build.
 - Use `RunAllTests` to run the full suite, or `RunSomeTests` for specific tests.
 - **If a test target returns 0 results, it means it failed to compile — immediately call `GetBuildLog` to see the errors.**
+
+**Fallback rule — when a build/test MCP tool errors or times out, switch; don't retry.** The bridge drives Xcode over AppleEvents (macOS Automation permission), which can wedge — a common trigger is a stale "Allow access" dialog after an Xcode restart. Re-calling the same tool just hangs again (~60 s per timeout) and can wedge the whole bridge. Instead:
+
+- This is a pure SwiftPM package (no `.xcodeproj`/`.xcworkspace` on disk), so the `mcp__xcodebuild__*` Xcode-target tools (`build_macos`/`test_macos`/`build_sim`) don't apply here. Fall straight back to the Bash commands in **[Build & test](#build--test)** above — `scripts/test`, `swift build`, `swift test` — which is exactly what CI runs and gives the same compile/test signal.
+- `mcp__xcode__*`'s **read-only** tools (file reads, search, `GetBuildLog`, `XcodeListNavigatorIssues`, `XcodeRefreshCodeIssuesInFile`) are unaffected by the AppleEvent hang and stay reliable; only the build/test/preview tools are at risk. If the whole bridge is down, fall back to `Read`/`Grep`.
+- For a pure dependency/manifest change, `swift package resolve` is the targeted check — it validates resolution without a full build or test run.
 
 ### Reading test output
 
