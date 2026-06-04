@@ -1,8 +1,11 @@
 // swift-tools-version:6.1
 // Bumped from 6.0 to 6.1 for the `traits:` parameter on `.package(...)`, used by
-// swift-custom-dump below. swift-dependencies does NOT use traits here — it still ships
-// a `Package@swift-6.0.swift` shadow manifest that SE-0152 always selects over the
-// traits-aware `Package.swift`; any `traits:` override would be a hard error.
+// swift-custom-dump below (unconditionally) and swift-dependencies (only on
+// `swift(>=6.3)` — see the gate further down). swift-dependencies can't take an
+// unconditional `traits:` override: it still ships a `Package@swift-6.0.swift`
+// shadow manifest that SE-0152 selects on toolchains < 6.3 over the traits-aware
+// `Package.swift`, and that shadow declares no traits — so a `traits:` override
+// against it is a hard error.
 import Foundation
 import PackageDescription
 import CompilerPluginSupport
@@ -32,19 +35,23 @@ import CompilerPluginSupport
 // The WASM job uses 6.3, so it still gets the trait-gated,
 // CombineSchedulers-free tree.
 //
-// Retire this `#if` (and switch back to a tagged release) once
-// swift-dependencies drops the shadow manifest in `main` and cuts a tag ≥
-// PR #406.
+// swift-dependencies 1.13.0 shipped the trait-aware manifest (PR #406), so we
+// now pin a tagged release instead of `main`. The `#if swift(>=6.3)` gate must
+// stay, though: 1.13.0 STILL ships the `Package@swift-6.0.swift` shadow
+// manifest (no traits, unconditional CombineSchedulers), which SE-0152 selects
+// on toolchains < 6.3 — setting `traits:` against that manifest is a hard
+// error. Retire this `#if` only once swift-dependencies drops the shadow
+// manifest and cuts a tag without it.
 #if swift(>=6.3)
 let swiftDependenciesPackage: Package.Dependency = .package(
     url: "https://github.com/pointfreeco/swift-dependencies",
-    branch: "main",
+    from: "1.13.0",
     traits: ["Foundation", "Clocks"]
 )
 #else
 let swiftDependenciesPackage: Package.Dependency = .package(
     url: "https://github.com/pointfreeco/swift-dependencies",
-    branch: "main"
+    from: "1.13.0"
 )
 #endif
 
