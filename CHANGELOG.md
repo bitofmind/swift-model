@@ -8,6 +8,20 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [1.0.2] — Linux `SIGSEGV` workaround + `settle()` budget-cap enforcement
+
+### Fixed
+
+- **Intermittent Linux `SIGSEGV` in `ContainerVisitor` state dispatch.** `ContainerVisitor._dispatchStatePath` ran `modelVisitor as? any _ModelStateVisitor` on every `_ModelState`-level visit, purely to detect the lone `InstallUndoVisitor` conformer. That runtime existential check routes through `swift_conformsToProtocol`, which intermittently null-dereferenced inside `libswiftCore` (`swift_conformsToProtocolMaybeInstantiateSuperclasses`) on the `Linux (serial)` CI job when the conformance cache raced first-time instantiation — the same Linux runtime-cast failure family already worked around in 7a59f42 and a847c79. The cast is replaced with witness-table dispatch on `ModelVisitor`: a `_isModelStateVisitor` discriminator (default `false`) and a `_visitModelStatePath` requirement (default no-op). Dispatch now goes directly off the `V` conformance record `ContainerVisitor` already holds — no `swift_conformsToProtocol`, no `swift_dynamicCast`, and cheaper than the per-property conformance scan it replaces. `InstallUndoVisitor` opts in via `_isModelStateVisitor`; the now-unused internal `_ModelStateVisitor` protocol is removed. Behaviour-identical.
+
+- **In-test `settle()` now enforces its total-budget cap under `.background` starvation.** `settle()` arms its quiet-window deadline with `.deferential` priority, whose `GlobalTickScheduler` callback hops to `DispatchQueue.global(qos: .background)` before running — and the settle total-budget cap (`pastBudget`) lives *inside* that callback. On a saturated CI host the `.background` slot may never get scheduled within the budget, so the cap never tripped: `settle()` instead unblocked ~30 s later at the `.modelTesting` trait wall-clock cap, surfacing a misleading `settle() timed out: model still has active tasks.` against an empty active-task list. Debounced `.deferential` entries now arm a *second* scheduler entry at the fixed total-budget deadline with `.responsive` priority, which runs inline on the timer's `.userInitiated` queue and is never starved by `.background`, so the cap always trips on time regardless of pool load. Whichever entry fires first resolves the pending wait; the other becomes a no-op. `.predicate` and cleanup-settle entries were already `.responsive` and are unaffected.
+
+### Internal
+
+- **`GlobalTickScheduler` is now injectable into `TestAccess`** (defaulting to `.shared`, threaded through `ModelTester.init`) and `_drivenTick` gains a `fireDeferential:` flag that can hold expired `.deferential` entries pending while firing `.responsive` ones inline. This lets `SettleBudgetCapStarvationTests` model an infinitely-starved `.background` slot with a per-test manual scheduler — no real GCD timer and no process-global `.background` queue — making the budget-cap regression coverage deterministic and fully parallel-safe. Production and all existing tests keep using `.shared` unchanged; the change is purely additive.
+
+---
+
 ## [1.0.1] — Packaging fix: stable `swift-dependencies` pin
 
 ### Fixed
