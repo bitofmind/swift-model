@@ -340,6 +340,31 @@ final class GlobalTickScheduler: @unchecked Sendable {
         return expired
     }
 
+    /// Like `evaluateTickLocked`, but fires only the expired `.responsive`
+    /// entries; expired `.deferential` entries are LEFT pending. Must be
+    /// called while holding `lock`.
+    ///
+    /// This models the production starvation case faithfully: when a
+    /// `.deferential` callback's `.background` slot never runs, the entry's
+    /// deadline has elapsed but its callback is never delivered — exactly
+    /// "expired, still pending, never fired." Test-only, via
+    /// `_drivenTick(nowNs:fireDeferential:)`.
+    fileprivate func evaluateTickResponsiveOnlyLocked(nowNs: UInt64) -> [Entry] {
+        var fired: [Entry] = []
+        var remaining: [Entry] = []
+        // `pending` is sorted ascending; iterating in order and rebuilding
+        // `remaining` preserves that invariant for the entries we keep.
+        for entry in pending {
+            if entry.deadlineNs <= nowNs, entry.priority == .responsive {
+                fired.append(entry)
+            } else {
+                remaining.append(entry)
+            }
+        }
+        pending = remaining
+        return fired
+    }
+
     // MARK: - Test introspection
 
     /// Number of currently-pending callbacks. Test-only.
@@ -353,10 +378,19 @@ final class GlobalTickScheduler: @unchecked Sendable {
     /// the lock) so side-effects observable to the test happen as in
     /// production. Pair with `init(manualOnly: true)` so no real GCD
     /// timer races your driven ticks.
+    ///
+    /// Pass `fireDeferential: false` to deliver only the expired
+    /// `.responsive` callbacks and leave expired `.deferential` entries
+    /// pending — simulating an infinitely-starved `.background` queue
+    /// where the `.deferential` slot never runs. Used to test that
+    /// settle's `.responsive` budget-cap backstop resolves a wait even
+    /// when its primary `.deferential` deadline is starved.
     @discardableResult
-    func _drivenTick(nowNs: UInt64) -> Int {
+    func _drivenTick(nowNs: UInt64, fireDeferential: Bool = true) -> Int {
         let toFire: [Entry] = lock.withLock {
-            evaluateTickLocked(nowNs: nowNs)
+            fireDeferential
+                ? evaluateTickLocked(nowNs: nowNs)
+                : evaluateTickResponsiveOnlyLocked(nowNs: nowNs)
         }
         for entry in toFire {
             entry.callback()
@@ -405,7 +439,7 @@ final class GlobalTickScheduler: @unchecked Sendable {
     var _pendingCount: Int { 0 }
 
     @discardableResult
-    func _drivenTick(nowNs _: UInt64) -> Int { 0 }
+    func _drivenTick(nowNs _: UInt64, fireDeferential _: Bool = true) -> Int { 0 }
 }
 
 #endif

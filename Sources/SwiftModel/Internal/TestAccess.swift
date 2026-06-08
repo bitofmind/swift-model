@@ -384,10 +384,19 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         var context: AnyContext
     }
 
-    init(model: Root, dependencies: @escaping (inout ModelDependencies) -> Void, fileAndLine: FileAndLine) {
+    /// The deadline scheduler backing every `expect` / `settle` wait.
+    /// Defaults to the process-global `GlobalTickScheduler.shared`;
+    /// injectable so validation tests can drive deadlines with a
+    /// `manualOnly` instance (controlled `now`, no real GCD timer, no
+    /// process-global `.background` queue) instead of racing — or
+    /// polluting — the shared one.
+    let tickScheduler: GlobalTickScheduler
+
+    init(model: Root, dependencies: @escaping (inout ModelDependencies) -> Void, fileAndLine: FileAndLine, tickScheduler: GlobalTickScheduler = .shared) {
         expectedState = model.frozenCopy
         lastState = model.frozenCopy
         self.fileAndLine = fileAndLine
+        self.tickScheduler = tickScheduler
         context = Context(model: model, lock: NSRecursiveLock(), dependencies: dependencies, parent: nil)
 
         super.init(useWeakReference: true)
@@ -963,7 +972,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         pending.deadlineCancel?()
                         pending.deadlineNs = newDeadline
                         let entryId = pending.id
-                        pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
+                        pending.deadlineCancel = tickScheduler.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
                             self?._fireDeadline(pendingId: entryId)
                         }
                         _settleTrace("rearm:debounce id=\(pending.id) newDeadlineInMs=\((Int64(bitPattern: newDeadline) &- Int64(bitPattern: now)) / 1_000_000)")
@@ -1003,7 +1012,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     pending.deadlineCancel?()
                     pending.deadlineNs = newDeadline
                     let entryId = pending.id
-                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
+                    pending.deadlineCancel = tickScheduler.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
                         self?._fireDeadline(pendingId: entryId)
                     }
                 }
@@ -1235,7 +1244,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         priority: priority,
                         continuation: cont
                     )
-                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: initialDeadlineNs, priority: priority) { [weak self] in
+                    pending.deadlineCancel = tickScheduler.schedule(deadlineNs: initialDeadlineNs, priority: priority) { [weak self] in
                         self?._fireDeadline(pendingId: id)
                     }
                     // Budget-cap backstop: for debounced `.deferential`
@@ -1251,7 +1260,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     // `.predicate` and cleanup-settle entries are already
                     // `.responsive`, so they need no backstop.
                     if priority == .deferential, initialDeadlineNs < totalBudgetEndNs {
-                        pending.budgetCapCancel = GlobalTickScheduler.shared.schedule(deadlineNs: totalBudgetEndNs, priority: .responsive) { [weak self] in
+                        pending.budgetCapCancel = tickScheduler.schedule(deadlineNs: totalBudgetEndNs, priority: .responsive) { [weak self] in
                             self?._fireDeadline(pendingId: id)
                         }
                     }
@@ -1344,7 +1353,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
                     pending.deadlineNs = newDeadline
                     let entryId = pending.id
-                    pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
+                    pending.deadlineCancel = tickScheduler.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
                         self?._fireDeadline(pendingId: entryId)
                     }
                     _settleTrace("fireDeadline:retryPendingStart id=\(pendingId)")
@@ -1409,7 +1418,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
                 pending.deadlineNs = newDeadline
                 let entryId = pending.id
-                pending.deadlineCancel = GlobalTickScheduler.shared.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
+                pending.deadlineCancel = tickScheduler.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
                     self?._fireDeadline(pendingId: entryId)
                 }
                 pending.bgIdleCancel = nil
