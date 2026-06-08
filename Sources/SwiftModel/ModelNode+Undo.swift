@@ -135,8 +135,12 @@ public extension ModelNode {
 /// - `only == nil, excluding == nil`:  install for all fields (zero-arg `trackUndo()`)
 /// - `only != nil`:                    install only for fields whose backing path is in `only`
 /// - `excluding != nil`:               install for all fields except those in `excluding`
-private struct InstallUndoVisitor<M: Model>: ModelVisitor, _ModelStateVisitor {
+private struct InstallUndoVisitor<M: Model>: ModelVisitor {
     typealias State = M
+
+    // Opt into `_ModelState`-level witness-table dispatch from `ContainerVisitor`. See
+    // `ModelVisitor._isModelStateVisitor` for why this replaced the old `as? any _ModelStateVisitor`.
+    var _isModelStateVisitor: Bool { true }
 
     let context: Context<M>
     let backend: any UndoBackend
@@ -170,9 +174,9 @@ private struct InstallUndoVisitor<M: Model>: ModelVisitor, _ModelStateVisitor {
         return true
     }
 
-    mutating func _visitStatePath<N: Model, T>(_ statePath: WritableKeyPath<N._ModelState, T>, forState _: N.Type) {
+    mutating func _visitModelStatePath<N: Model, T>(_ statePath: WritableKeyPath<N._ModelState, T>, forState _: N.Type) {
         // ContainerVisitor always calls with N == M (V.State == the model this visitor was
-        // created for), so the unsafeBitCast from WritableKeyPath<N._ModelState, T> to
+        // created for), so the unsafeDowncast from WritableKeyPath<N._ModelState, T> to
         // WritableKeyPath<M._ModelState, T> is safe.
         let typedPath = unsafeDowncast(statePath, to: WritableKeyPath<M._ModelState, T>.self)
         guard shouldInstall(statePath: typedPath) else { return }
