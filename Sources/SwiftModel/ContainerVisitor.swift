@@ -300,8 +300,8 @@ public extension ContainerVisitor where V.State: Model {
     /// `ModelContainer` (e.g. `Array<@Model>`) whose elements conform to `Model & Identifiable`.
     /// Resolves the ambiguity between `T: ModelContainer` and the `C: MutableCollection where
     /// C.Element: Model & Identifiable` overload above.
-    /// Routes via `_dispatchCollectionStatePath` — for `_ModelStateVisitor` types (e.g.
-    /// `InstallUndoVisitor`) this calls `_visitStatePath` so undo is registered; for other
+    /// Routes via `_dispatchCollectionStatePath` — for `_isModelStateVisitor` types (e.g.
+    /// `InstallUndoVisitor`) this calls `_visitModelStatePath` so undo is registered; for other
     /// visitors (e.g. `AnchorVisitor`) it falls through to `visitCollection(statePath:)`
     /// (sentinel-keyed). A lazy element-path maker is registered in `visitCollection` so that
     /// `rootPaths` still yields element-level paths for TestAccess/undo observation.
@@ -346,18 +346,19 @@ public extension ContainerVisitor where V.State: Model {
     }
 }
 
-// MARK: - _ModelStateVisitor runtime dispatch helpers
+// MARK: - _ModelState-level dispatch helpers
 
 private extension ContainerVisitor where V.State: Model {
-    /// Dispatches a statePath visit to the concrete visitor via the `_ModelStateVisitor`
-    /// witness table when available, falling back to the extension-method default otherwise.
+    /// Dispatches a statePath visit to the concrete visitor's `_visitModelStatePath` override when
+    /// it is a `_isModelStateVisitor` (e.g. `InstallUndoVisitor`), falling back to the
+    /// `visit(statePath:)` composition otherwise.
     ///
-    /// Swift extension methods on generic type parameters (`V`) always use static dispatch
-    /// to the protocol extension default — they cannot dispatch to `V`'s own override.
-    /// Casting to `any _ModelStateVisitor` (a non-parameterized existential, compatible with
-    /// macOS 11+) opens the existential and calls through the witness table, enabling concrete
-    /// visitors like `InstallUndoVisitor` to intercept `_ModelState`-level paths without
-    /// protocol-requirement changes to the macro-generated `visit(with:)` constraint.
+    /// Both `_isModelStateVisitor` and `_visitModelStatePath` are `ModelVisitor` witness-table
+    /// requirements, dispatched directly off the conformance record `ContainerVisitor` already holds
+    /// for `V`. This deliberately avoids the former `modelVisitor as? any _ModelStateVisitor`
+    /// runtime existential check, whose `swift_conformsToProtocol` lookup null-dereferenced inside
+    /// `libswiftCore` on Linux when the conformance cache raced first-time instantiation. See
+    /// `ModelVisitor._isModelStateVisitor` for the full story.
     ///
     /// The constrained overloads below (`T: Model`, `T: ModelContainer`) preserve the type
     /// constraint so that, in the fallback branch, Swift selects the matching constrained
@@ -367,46 +368,42 @@ private extension ContainerVisitor where V.State: Model {
     /// `AnchorVisitor` relies on to create child contexts. The constrained overloads ensure
     /// child models and containers are correctly anchored during `withContextAdded` traversal.
     mutating func _dispatchStatePath<T>(_ statePath: WritableKeyPath<V.State._ModelState, T>) {
-        if var sv = modelVisitor as? any _ModelStateVisitor {
-            sv._visitStatePath(statePath, forState: V.State.self)
-            if let updated = sv as? V { modelVisitor = updated }
+        if modelVisitor._isModelStateVisitor {
+            modelVisitor._visitModelStatePath(statePath, forState: V.State.self)
         } else {
             modelVisitor.visit(statePath: statePath)
         }
     }
 
     mutating func _dispatchStatePath<T: Model>(_ statePath: WritableKeyPath<V.State._ModelState, T>) {
-        if var sv = modelVisitor as? any _ModelStateVisitor {
-            sv._visitStatePath(statePath, forState: V.State.self)
-            if let updated = sv as? V { modelVisitor = updated }
+        if modelVisitor._isModelStateVisitor {
+            modelVisitor._visitModelStatePath(statePath, forState: V.State.self)
         } else {
             modelVisitor.visit(statePath: statePath)
         }
     }
 
     mutating func _dispatchStatePath<T: ModelContainer>(_ statePath: WritableKeyPath<V.State._ModelState, T>) {
-        if var sv = modelVisitor as? any _ModelStateVisitor {
-            sv._visitStatePath(statePath, forState: V.State.self)
-            if let updated = sv as? V { modelVisitor = updated }
+        if modelVisitor._isModelStateVisitor {
+            modelVisitor._visitModelStatePath(statePath, forState: V.State.self)
         } else {
             modelVisitor.visit(statePath: statePath)
         }
     }
 
     mutating func _dispatchStatePath<T>(_ statePath: WritableKeyPath<V.State._ModelState, T>, visibility: PropertyVisibility) {
-        if var sv = modelVisitor as? any _ModelStateVisitor {
-            sv._visitStatePath(statePath, forState: V.State.self, visibility: visibility)
-            if let updated = sv as? V { modelVisitor = updated }
+        if modelVisitor._isModelStateVisitor {
+            modelVisitor._visitModelStatePath(statePath, forState: V.State.self, visibility: visibility)
         } else {
             modelVisitor.visit(statePath: statePath, visibility: visibility)
         }
     }
 
-    /// Dispatches a collection `statePath` visit correctly for both `_ModelStateVisitor` and
+    /// Dispatches a collection `statePath` visit correctly for both `_isModelStateVisitor` and
     /// standard visitors.
     ///
-    /// - For `_ModelStateVisitor` types (e.g. `InstallUndoVisitor`): calls `_visitStatePath` so
-    ///   the concrete visitor can register undo/observation for the collection property itself.
+    /// - For `_isModelStateVisitor` types (e.g. `InstallUndoVisitor`): calls `_visitModelStatePath`
+    ///   so the concrete visitor can register undo/observation for the collection property itself.
     /// - For all other visitors (e.g. `AnchorVisitor`): calls `visitCollection(statePath:)` which
     ///   uses sentinel-keyed child registration (no per-element allocations).
     ///
@@ -414,9 +411,8 @@ private extension ContainerVisitor where V.State: Model {
     /// cursor-keyed path while still keeping `InstallUndoVisitor` working correctly.
     mutating func _dispatchCollectionStatePath<C: MutableCollection & Sendable>(_ statePath: WritableKeyPath<V.State._ModelState, C>)
         where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
-        if var sv = modelVisitor as? any _ModelStateVisitor {
-            sv._visitStatePath(statePath, forState: V.State.self)
-            if let updated = sv as? V { modelVisitor = updated }
+        if modelVisitor._isModelStateVisitor {
+            modelVisitor._visitModelStatePath(statePath, forState: V.State.self)
         } else {
             modelVisitor.visitCollection(statePath: statePath)
         }
