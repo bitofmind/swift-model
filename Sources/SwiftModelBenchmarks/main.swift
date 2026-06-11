@@ -30,6 +30,9 @@ if loopMode {
 func runAll() {
     benchActivation()
     benchPropertyAccess()
+    benchReadPath()
+    benchModelScan()
+    benchParallelReads()
     benchPropertyAccessWithObserver()
     benchEventDispatch()
     benchHierarchyMutation()

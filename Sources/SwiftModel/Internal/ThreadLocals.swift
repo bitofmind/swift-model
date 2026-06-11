@@ -3,6 +3,21 @@ import Foundation
 final class ThreadLocals: @unchecked Sendable {
     var postTransactions: [(inout [() -> Void]) -> Void]? = nil
     var forceDirectAccess = false
+    /// Set by the public `withUntrackedModelReads { }` scope. While `true`, the
+    /// `_ModelSourceBox` read subscripts skip `willAccessDirect` entirely (no
+    /// ObservationRegistrar access, no `ModelAccess.willAccess` dispatch, no child
+    /// access stamping) and `willAccessSyntheticPath` / `ModelContext.willAccess`
+    /// return early — so reads register no observation dependencies anywhere.
+    ///
+    /// Unlike `forceDirectAccess`, reads still route through the context subscript
+    /// and therefore still take the context lock — untracked reads stay memory-safe
+    /// against concurrent writers; only the observation machinery is bypassed.
+    ///
+    /// Framework-driven dependency collection (`update()` in ObservationTracking,
+    /// used by `node.memoize` and `Observed`) explicitly clears this flag around its
+    /// `access()` evaluations so that a memoize/observer set up inside an untracked
+    /// scope still registers its own dependencies.
+    var untrackedReads = false
     var didReplaceModelWithDestructedOrFrozenCopy = false
     var includeImplicitIDInMirror = false
     var includeChildrenInMirror = false

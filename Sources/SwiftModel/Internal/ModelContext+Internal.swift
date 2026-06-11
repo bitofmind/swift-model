@@ -166,7 +166,10 @@ extension ModelContext {
         // `ViewAccess` (reached here via the stamped-access fall-through that
         // `usingActiveAccess(nil)` cannot clear) must not accumulate them too.
         // See `ThreadLocals.isInsideMemoizeObserve`.
-        if threadLocals.isInsideMemoizeObserve { return nil }
+        // Also suppress inside a `withUntrackedModelReads` scope — no dependency
+        // registration for synthetic-path reads (memoize/environment/preference).
+        let tl = threadLocals
+        if tl.isInsideMemoizeObserve || tl.untrackedReads { return nil }
         guard let activeAccess, let context else { return nil }
         return activeAccess.willAccess(from: context, at: path)
     }

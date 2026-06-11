@@ -111,6 +111,11 @@ import Testing
 ### Observation
 
 - ``Observed``
+- ``withUntrackedModelReads(_:)``
+
+### Performance
+
+- <doc:Performance>
 
 ### Events
 

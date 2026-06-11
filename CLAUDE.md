@@ -68,6 +68,32 @@ The project uses Swift 6 (`swiftLanguageModes: [.v6]`). All code must be strict-
 - **`ModelAccess`**: Base class for all observation/access strategies (SwiftUI's `@Observable`, test access, etc.).
 - **`ModelTester`**: Test harness. Wraps a model with `TestAccess` and exhaustively tracks state changes, events, tasks, and probe calls. Created via `ModelTester(model, ...)` (requires `@testable import`) or anchored via `withAnchor()` inside `@Test(.modelTesting)` (public API).
 - **`ModelOption`**: **Internal** `OptionSet` (not public API). Used only in tests via `@testable import` to enable specific behaviours like `disableObservationRegistrar` or `disableMemoizeCoalescing`.
+
+## Read-path performance
+
+A tracked `@Model` property read on an anchored model costs ~0.5–1 μs even in
+Release — registrar access, observer-KP resolution, context lock, key-path
+projection, all across non-inlined module boundaries. This is the scaling
+constant for any O(N) traversal in client apps. Key facts:
+
+- **`withUntrackedModelReads { }`** (public) skips all observation work for
+  reads inside the scope but keeps the context lock (memory-safe vs concurrent
+  writers). `threadLocals.untrackedReads` is the flag; the gates live in the
+  `_ModelSourceBox` read subscripts, `willAccessSyntheticPath`, and
+  `ModelContext.willAccess`. `update()` in `ObservationTracking.swift` clears
+  the flag around `access()` so memoize/`Observed` dependency collection never
+  inherits a caller's untracked scope. Don't add new read paths without
+  considering this flag.
+- **Observer-KP resolution** (`_stateObserverKP` in `ModelSourceBox.swift`) has
+  an identity-keyed striped fast path (no `KeyPath.hashValue` on warm reads)
+  with a structural `hashValue` fallback. Entries retain their key-path object
+  for ABA safety — read the doc comment before changing it.
+- **Benchmarks**: `swift run -c release SwiftModelBenchmarks` (sections 2/2b/2c/2d;
+  run the binary with `DYLD_FRAMEWORK_PATH=$(xcode-select -p)/Platforms/MacOSX.platform/Developer/Library/Frameworks`
+  if launching directly) and `swift test --filter SwiftModelBenchmarkTests.ReadPathBenchmarks`
+  (ratio assertions). Profile in Release: Debug (`-Onone`) numbers overstate
+  read + value-compute costs ~10–30x.
+
 ## Platform guards
 
 - `#if canImport(SwiftUI)` — gates all SwiftUI-specific code in `Sources/SwiftModel/SwiftUI/`.

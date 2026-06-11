@@ -155,6 +155,93 @@ func _cachedStateObserverKP<State>(
     _stateObserverKPCacheStorage.getOrInsert(_StateObserverKPKey(contextID: contextID, propID: propID), make: make)
 }
 
+// MARK: - Identity-keyed observer-KP fast path
+
+/// First-level cache in front of `_cachedStateObserverKP`, keyed by the *identity*
+/// of the state key-path object instead of its structural `hashValue`.
+///
+/// The macro-generated accessors pass key-path LITERALS, which the Swift runtime
+/// interns per call site (argument-free key-path patterns are instantiated once and
+/// cached in the pattern), so on the hot path the same `WritableKeyPath` object
+/// arrives on every read/write of a property. Keying by object identity replaces the
+/// per-access `KeyPath.hashValue` — a structural hash over the whole key-path buffer
+/// — with hashing two pointer-sized integers.
+///
+/// Misses fall back to the structural cache (`_cachedStateObserverKP`), which
+/// canonicalizes by `hashValue` so that dynamically-constructed (appended) key paths
+/// — never the same object across sites — still resolve to the same observer KP as
+/// their literal twins.
+///
+/// **ABA safety**: each entry retains the key-path object it is keyed by, so a key
+/// path's address can never be reused while its entry is alive — and since the key
+/// path object determines `State`, a hit can be `unsafeDowncast` without a dynamic
+/// cast. Context addresses (`contextID`) are *not* retained: a recycled context
+/// address paired with the same key-path object deterministically produces a
+/// structurally-equal observer KP (same `contextID` bits, same structural `propID`),
+/// so a stale entry is indistinguishable from a fresh computation. (The structural
+/// cache has accepted the same context-address recycling since its introduction.)
+///
+/// **Bounding**: a stripe that reaches `_identityStripeCapacity` is cleared
+/// (releasing its retained key paths) and rebuilt on demand. Literal key paths
+/// re-add cheaply; pathological producers of unique key-path objects (e.g. generic
+/// `@Model` types, where the runtime cannot intern the literal pattern) degrade to
+/// the structural fallback plus periodic stripe churn instead of unbounded growth.
+///
+/// **Striping**: 16 lock stripes selected by key bits keep this process-global cache
+/// from serializing every tracked read/write in the process on a single lock.
+private struct _StateObserverKPIdentityKey: Hashable {
+    let contextID: UInt
+    let keyPathID: UInt
+}
+
+private final class _StateObserverKPIdentityStripe: @unchecked Sendable {
+    let lock = NSLock()
+    var entries: [_StateObserverKPIdentityKey: (keyPath: AnyObject, observerKP: AnyObject)] = [:]
+}
+
+private let _identityStripeCount = 16
+private let _identityStripeCapacity = 1024
+private let _identityStripes: [_StateObserverKPIdentityStripe] = (0..<_identityStripeCount).map { _ in
+    _StateObserverKPIdentityStripe()
+}
+
+@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+func _stateObserverKP<State>(
+    contextID: UInt,
+    statePath: PartialKeyPath<State>
+) -> KeyPath<_StateObserver<State>, AnyHashable> {
+    let keyPathID = UInt(bitPattern: ObjectIdentifier(statePath))
+    let key = _StateObserverKPIdentityKey(contextID: contextID, keyPathID: keyPathID)
+    // Heap objects are ≥16-byte aligned; shift past the alignment zeros before
+    // picking stripe bits so distinct contexts/key paths spread across stripes.
+    let stripe = _identityStripes[Int(truncatingIfNeeded: (contextID ^ keyPathID) >> 4) & (_identityStripeCount - 1)]
+
+    stripe.lock.lock()
+    if let entry = stripe.entries[key] {
+        let observerKP = entry.observerKP
+        stripe.lock.unlock()
+        // Safe without a dynamic cast: the entry retains its key-path object, and the
+        // key-path object determines `State` — see the ABA-safety note above.
+        return unsafeDowncast(observerKP, to: KeyPath<_StateObserver<State>, AnyHashable>.self)
+    }
+    stripe.lock.unlock()
+
+    // Miss: resolve through the structural cache so appended/synthetic key paths
+    // canonicalize to the same observer KP as their literal twins.
+    let propID = UInt(bitPattern: statePath.hashValue)
+    let observerKP: KeyPath<_StateObserver<State>, AnyHashable> = _cachedStateObserverKP(contextID: contextID, propID: propID) {
+        \_StateObserver<State>[contextID: contextID, propID: propID]
+    }
+
+    stripe.lock.lock()
+    if stripe.entries.count >= _identityStripeCapacity {
+        stripe.entries.removeAll(keepingCapacity: true)
+    }
+    stripe.entries[key] = (statePath, observerKP)
+    stripe.lock.unlock()
+    return observerKP
+}
+
 // MARK: - _ModelStateType
 
 /// Default `_ModelState` for `Model` types without any tracked `var` properties (non-macro types
@@ -435,11 +522,17 @@ extension _ModelSourceBox {
     @_disfavoredOverload
     public subscript<T>(read statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
         _read {
-            if threadLocals.forceDirectAccess || _isLive {
+            let tl = threadLocals
+            if tl.forceDirectAccess || _isLive {
                 yield self[dynamicMember: statePath]
             } else if let context = reference.context {
-                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox)
-                yield context[statePath: statePath, observeCallback: callback]
+                if tl.untrackedReads {
+                    // withUntrackedModelReads scope: lock-protected raw read, no observation.
+                    yield context[statePath: statePath, observeCallback: nil]
+                } else {
+                    let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox)
+                    yield context[statePath: statePath, observeCallback: callback]
+                }
             } else {
                 yield self[dynamicMember: statePath]
             }
@@ -448,10 +541,16 @@ extension _ModelSourceBox {
 
     public subscript<T: Model>(read statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
         get {
-            let access = accessBox._reference?.access ?? ModelAccess.current
-            if threadLocals.forceDirectAccess || _isLive {
+            let tl = threadLocals
+            if tl.forceDirectAccess || _isLive {
                 return self[dynamicMember: statePath]
             } else if let context = reference.context {
+                if tl.untrackedReads {
+                    // withUntrackedModelReads scope: lock-protected raw read,
+                    // no observation, no child access stamping.
+                    return context[statePath: statePath, observeCallback: nil]
+                }
+                let access = accessBox._reference?.access ?? ModelAccess.current
                 let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox)
                 let value: T = context[statePath: statePath, observeCallback: callback]
                 return value.withAccessIfPropagateToChildren(access)
@@ -463,17 +562,24 @@ extension _ModelSourceBox {
 
     public subscript<T: ModelContainer>(read statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
         _read {
-            let access = accessBox._reference?.access ?? ModelAccess.current
-            let deepAccess = access.flatMap { $0.shouldPropagateToChildren ? $0 : nil }
-            if threadLocals.forceDirectAccess || _isLive {
+            let tl = threadLocals
+            if tl.forceDirectAccess || _isLive {
                 yield self[dynamicMember: statePath]
             } else if let context = reference.context {
-                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox)
-                let value: T = context[statePath: statePath, observeCallback: callback]
-                if let deepAccess {
-                    yield value.withDeepAccess(deepAccess)
+                if tl.untrackedReads {
+                    // withUntrackedModelReads scope: lock-protected raw read,
+                    // no observation, no deep access stamping.
+                    yield context[statePath: statePath, observeCallback: nil]
                 } else {
-                    yield value
+                    let access = accessBox._reference?.access ?? ModelAccess.current
+                    let deepAccess = access.flatMap { $0.shouldPropagateToChildren ? $0 : nil }
+                    let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox)
+                    let value: T = context[statePath: statePath, observeCallback: callback]
+                    if let deepAccess {
+                        yield value.withDeepAccess(deepAccess)
+                    } else {
+                        yield value
+                    }
                 }
             } else {
                 yield self[dynamicMember: statePath]
@@ -489,10 +595,16 @@ extension _ModelSourceBox {
     public subscript<C: MutableCollection>(read statePath: WritableKeyPath<M._ModelState, C>, access accessBox: _ModelAccessBox) -> C
         where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
         get {
-            let access = accessBox._reference?.access ?? ModelAccess.current
-            if threadLocals.forceDirectAccess || _isLive {
+            let tl = threadLocals
+            if tl.forceDirectAccess || _isLive {
                 return self[dynamicMember: statePath]
             } else if let context = reference.context {
+                if tl.untrackedReads {
+                    // withUntrackedModelReads scope: lock-protected raw read,
+                    // no observation, no per-element access stamping.
+                    return context[statePath: statePath, observeCallback: nil]
+                }
+                let access = accessBox._reference?.access ?? ModelAccess.current
                 let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox)
                 let value: C = context[statePath: statePath, observeCallback: callback]
                 guard let access, access.shouldPropagateToChildren else { return value }
@@ -603,7 +715,7 @@ extension _ModelSourceBox {
     public subscript<T: Model>(write statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
         get { self[read: statePath, access: accessBox] }
         nonmutating _modify {
-            guard let context = _modifyContext(accessBox: accessBox) else {
+            guard _modifyContext(accessBox: accessBox) != nil else {
                 // Pre-anchor or live: yield directly into state storage, bypassing the getter.
                 // The getter reads reference.state[keyPath:] which traps on zero-initialized
                 // @Model fields — _zeroInit() produces a bit pattern that is invalid for the
