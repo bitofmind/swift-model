@@ -776,9 +776,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // its reads must not leak to whatever outer observation is currently active
         // (SwiftUI body's `withObservationTracking`, a `ViewAccess` from
         // `$model.debug`, etc.). See `ThreadLocals.isInsideMemoizeProduce`.
-        if threadLocals.isInsideMemoizeProduce { return }
+        // Also skip inside a `withUntrackedModelReads` scope — synthetic-path reads
+        // (memoize keys, environment, preference, parents) register no dependencies there.
+        let tl = threadLocals
+        if tl.isInsideMemoizeProduce || tl.untrackedReads { return }
         guard useObservationRegistrar,
-              !(threadLocals.isInsideAsyncPerformUpdate && ModelAccess.active != nil) else { return }
+              !(tl.isInsideAsyncPerformUpdate && ModelAccess.active != nil) else { return }
         let observer = _StateObserver<M._ModelState>()
         if useMainThreadObservation, isOnMainThread {
             mainObservationRegistrarMakingIfNeeded.access(observer, keyPath: kp)
@@ -845,18 +848,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar,
            !(threadLocals.isInsideAsyncPerformUpdate && cachedActive != nil) {
             let observer = _StateObserver<M._ModelState>()
-            // Cache the KP to avoid a heap allocation on every read.
-            // `_swift_getKeyPath` for a subscript KP allocates (~1.7 μs);
-            // caching by (contextID, propID) gives O(1) warm-path reads at ~15-20 ns.
-            // Use hashValue (structural key path equality) instead of ObjectIdentifier
-            // (pointer identity) so that dynamically-constructed key paths — which Swift
-            // produces via appending and are never the same object across sites — still
-            // yield the same propID and therefore the same cached observerKP.
+            // Cached KP avoids a heap allocation on every read (`_swift_getKeyPath`
+            // for a subscript KP allocates, ~1.7 μs). `_stateObserverKP` resolves via
+            // an identity-keyed fast path (no structural KeyPath.hashValue on warm
+            // reads) with a hashValue-keyed structural fallback for appended key
+            // paths — see the doc comment at `_stateObserverKP`.
             let contextID = UInt(bitPattern: ObjectIdentifier(self))
-            let propID = UInt(bitPattern: (statePath as PartialKeyPath<M._ModelState>).hashValue)
-            let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = _cachedStateObserverKP(contextID: contextID, propID: propID) {
-                \_StateObserver<M._ModelState>[contextID: contextID, propID: propID]
-            }
+            let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = _stateObserverKP(contextID: contextID, statePath: statePath)
             if useMainThreadObservation, isOnMainThread {
                 mainObservationRegistrarMakingIfNeeded.access(observer, keyPath: observerKP)
             } else {
@@ -905,10 +903,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             let observer = _StateObserver<M._ModelState>()
             // Use cached KP to avoid per-write _swift_getKeyPath allocation (same rationale as willAccessDirect).
             let contextID = UInt(bitPattern: ObjectIdentifier(self))
-            let propID = UInt(bitPattern: (statePath as PartialKeyPath<M._ModelState>).hashValue)
-            nonisolated(unsafe) let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = _cachedStateObserverKP(contextID: contextID, propID: propID) {
-                \_StateObserver<M._ModelState>[contextID: contextID, propID: propID]
-            }
+            nonisolated(unsafe) let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = _stateObserverKP(contextID: contextID, statePath: statePath)
             let sendableStatePath: (WritableKeyPath<M._ModelState, T> & Sendable)? = activeAccess != nil ? unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self) : nil
             let useMain = useMainThreadObservation
 

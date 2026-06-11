@@ -162,7 +162,8 @@ let package = Package(
                 ),
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
                 .product(name: "IdentifiedCollections", package: "swift-identified-collections"),
-            ]
+            ],
+            exclude: ["TESTING.md"]
         ),
         // Split off from `SwiftModelTests` so we can:
         //   • Skip these on regular CI runs by simply not naming the target (instead

@@ -169,9 +169,18 @@ internal func update<T: Sendable>(
     useCoalescing: Bool = false,
     didModify: (@Sendable (Bool) -> Void)? = nil,
     backgroundCallQueue: BackgroundCallQueue = backgroundCall,
-    access: @Sendable @escaping () -> T,
+    access rawAccess: @Sendable @escaping () -> T,
     onUpdate: @Sendable @escaping (T) -> Void
 ) -> (cancel: @Sendable () -> Void, forceNextUpdate: @Sendable () -> Void) {
+    // Dependency-collection evaluations must never inherit a caller's
+    // `withUntrackedModelReads` scope: a memoize or `Observed` whose first access
+    // happens inside such a scope would otherwise register no dependencies and go
+    // permanently stale. Clearing applies only to the inherited scope — an explicit
+    // `withUntrackedModelReads` *inside* the access body still works.
+    let access: @Sendable () -> T = {
+        let tl = threadLocals
+        return tl.untrackedReads ? tl.withValue(false, at: \.untrackedReads, perform: rawAccess) : rawAccess()
+    }
     // Versioning for stale update detection
     // `index` is incremented before each recomputation to invalidate in-flight updates
     let last = LockIsolated((value: T?.none, index: 0))

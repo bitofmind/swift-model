@@ -1,6 +1,7 @@
 import SwiftModel
 import IdentifiedCollections
 import Foundation
+import Observation  // For `withObservationTracking` used by the read-path benchmarks.
 import Dependencies  // For `DependencyKey` / `DependencyValues` used by the dep-override benchmark.
 
 // A custom dep key used solely by the "anchor (with dependency override)" benchmark below.
@@ -69,6 +70,144 @@ func benchPropertyAccess() {
     }
 
     withExtendedLifetime(readAnchor) {}
+}
+
+// MARK: - 2b. Read path variants (tracked vs untracked vs raw)
+
+/// Per-read cost across observation modes. The interesting comparisons:
+///   raw struct          — lower bound (no SwiftModel involved)
+///   tracked, no listener — the default cost every `@Model` property read pays
+///   tracked, inside withObservationTracking — what a SwiftUI body read pays
+///   untracked            — `withUntrackedModelReads`: lock-protected raw state read
+func benchReadPath() {
+    printHeader("2b. Read path (tracked vs untracked vs raw)")
+
+    struct RawCounter { var count = 0 }
+    let raw = RawCounter()
+    measure("raw struct read", iterations: 1_000_000) {
+        blackhole &+= raw.count
+    }
+
+    let (counter, anchor) = BenchCounter().returningAnchor()
+
+    measure("tracked read (no listener)", iterations: 1_000_000) {
+        blackhole &+= counter.count
+    }
+
+    if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+        // One tracking scope around all reads — models a body/scan that reads
+        // repeatedly while SwiftUI's withObservationTracking is active.
+        _ = withObservationTracking {
+            measure("tracked read (inside withObservationTracking)", iterations: 1_000_000) {
+                blackhole &+= counter.count
+            }
+        } onChange: {}
+    }
+
+    // Scope entered once, reads inside — the intended bulk-scan shape.
+    _ = withUntrackedModelReads {
+        measure("untracked read (inside scope)", iterations: 1_000_000) {
+            blackhole &+= counter.count
+        }
+    }
+
+    // Scope per read — shows the enter/exit overhead of the scope itself.
+    measure("withUntrackedModelReads { single read }", iterations: 1_000_000) {
+        blackhole &+= withUntrackedModelReads { counter.count }
+    }
+
+    withExtendedLifetime(anchor) {}
+}
+
+// MARK: - 2c. O(N) scan over live child models
+
+/// The client-app workload that motivated `withUntrackedModelReads`: an O(N)
+/// traversal reading a couple of properties from each of N live child models
+/// (hit-testing, snapping, validation passes). n=120 matches the editor probe
+/// scenario this was first measured in.
+func benchModelScan() {
+    printHeader("2c. O(N) scan over live child models (n=120, 2 properties each)")
+
+    var items: IdentifiedArrayOf<BenchItem> = []
+    for i in 0..<120 { items.append(BenchItem(id: i, value: i, label: "seg\(i)")) }
+    let (list, anchor) = BenchList(items: items).returningAnchor()
+
+    measure("tracked scan (no listener)", iterations: 2_000) {
+        for item in list.items { blackhole &+= item.value &+ item.label.count }
+    }
+
+    measure("untracked scan", iterations: 2_000) {
+        withUntrackedModelReads {
+            for item in list.items { blackhole &+= item.value &+ item.label.count }
+        }
+    }
+
+    // Pre-extracted value snapshot — the workaround apps used before
+    // withUntrackedModelReads existed. Lower bound for any scan.
+    let snapshot: [(Int, String)] = withUntrackedModelReads { list.items.map { ($0.value, $0.label) } }
+    measure("value-snapshot scan", iterations: 2_000) {
+        for (value, label) in snapshot { blackhole &+= value &+ label.count }
+    }
+
+    if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+        // NOTE: each iteration installs a fresh withObservationTracking registration
+        // that never fires; registrar state grows over the run. Kept last and at
+        // moderate iteration counts on purpose.
+        measure("tracked scan (inside withObservationTracking)", iterations: 2_000) {
+            withObservationTracking {
+                for item in list.items { blackhole &+= item.value &+ item.label.count }
+            } onChange: {}
+        }
+    }
+
+    withExtendedLifetime(anchor) {}
+}
+
+// MARK: - 2d. Parallel tracked reads (lock-contention probe)
+
+/// Eight threads reading concurrently. With distinct models this probes
+/// process-global serialization points in the read path (e.g. the observer-KP
+/// cache lock) — perfect scaling shows the single-thread cost, full
+/// serialization shows ~8x. With one shared model all threads serialize on
+/// that model's context lock regardless, which bounds what any cache-level
+/// improvement can show.
+func benchParallelReads() {
+    printHeader("2d. Parallel tracked reads (8 threads)")
+
+    let threads = 8
+    let perThread = 200_000
+
+    var anchors: [Any] = []
+    var models: [BenchCounter] = []
+    for _ in 0..<threads {
+        let (model, anchor) = BenchCounter().returningAnchor()
+        models.append(model)
+        anchors.append(anchor)
+    }
+    for model in models { blackhole &+= model.count }  // warmup
+
+    let distinctModels = models
+    let startDistinct = DispatchTime.now().uptimeNanoseconds
+    DispatchQueue.concurrentPerform(iterations: threads) { i in
+        let model = distinctModels[i]
+        var sink = 0
+        for _ in 0..<perThread { sink &+= model.count }
+        blackhole &+= sink
+    }
+    let elapsedDistinct = DispatchTime.now().uptimeNanoseconds &- startDistinct
+    printResult(BenchmarkResult(name: "8-thread tracked read (distinct models)", iterations: perThread, nanos: elapsedDistinct))
+
+    let shared = models[0]
+    let startShared = DispatchTime.now().uptimeNanoseconds
+    DispatchQueue.concurrentPerform(iterations: threads) { _ in
+        var sink = 0
+        for _ in 0..<perThread { sink &+= shared.count }
+        blackhole &+= sink
+    }
+    let elapsedShared = DispatchTime.now().uptimeNanoseconds &- startShared
+    printResult(BenchmarkResult(name: "8-thread tracked read (one shared model)", iterations: perThread, nanos: elapsedShared))
+
+    withExtendedLifetime(anchors) {}
 }
 
 // MARK: - 3. Property access with observer
