@@ -316,16 +316,16 @@ extension _ModelStateType {
 @dynamicMemberLookup
 public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
     /// Two-case enum that packs into 8 bytes via spare pointer bits.
-    private enum _Mode {
+    @usableFromInline enum _Mode {
         case live(Context<M>.Reference)    // bypass context routing (internal direct-access)
         case regular(Context<M>.Reference) // normal routing
     }
-    private var _mode: _Mode
+    @usableFromInline var _mode: _Mode
 
-    var reference: Context<M>.Reference {
+    @inlinable var reference: Context<M>.Reference {
         switch _mode { case .live(let r), .regular(let r): return r }
     }
-    var _isLive: Bool {
+    @inlinable var _isLive: Bool {
         if case .live = _mode { return true }
         return false
     }
@@ -521,6 +521,7 @@ extension _ModelSourceBox {
 
     @_disfavoredOverload
     public subscript<T>(read statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
+        @inlinable
         _read {
             let tl = threadLocals
             if tl.forceDirectAccess || _isLive {

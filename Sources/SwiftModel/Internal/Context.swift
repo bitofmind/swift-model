@@ -5,6 +5,7 @@ import IssueReporting
 import CustomDump
 import Observation
 
+@usableFromInline
 final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
     private var modifyCallbacksStore: [PartialKeyPath<M._ModelState>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]]?
@@ -21,7 +22,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             }
         }
     }
-    let reference: Reference
+    @usableFromInline let reference: Reference
     /// The generation of `reference` at the time this context called `setContext`.
     /// Used by `deinit` to avoid niling `_stateHolder` when a newer context has
     /// re-anchored the same Reference (e.g. a `static let testValue` model reused
@@ -731,7 +732,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     /// Reads a property directly from Reference._state, bypassing readModel indirection.
     /// The `observeCallback` is the result of `activeAccess.willAccess(from:at:)`.
+    @usableFromInline
     subscript<T>(statePath statePath: WritableKeyPath<M._ModelState, T>, observeCallback callback: (() -> Void)?) -> T {
+        @inlinable
         _read {
             lock.lock()
             // Materialize the value into a local before yielding so that the dynamic
@@ -831,6 +834,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     ///
     /// Uses `_StateObserver` for registrar calls (no Model instance needed).
     /// Uses `_StateObserver` for registrar calls; delegates to `activeAccess.willAccess/didModify(from:at:)` for TestAccess.
+    @usableFromInline
     func willAccessDirect<T>(statePath: WritableKeyPath<M._ModelState, T>, accessBox: _ModelAccessBox) -> (() -> Void)? {
         // Skip everything while memoize's dirty-recompute is running `produce()` —
         // its reads must not leak to whatever outer observation is currently active
@@ -1704,6 +1708,7 @@ extension Context {
     /// All copies of a model (pending and live) share the same Reference from creation.
     /// When `Context.init` calls `setContext`, all those copies immediately see the context
     /// via `ref._context` — no forwarding indirection needed.
+    @usableFromInline
     final class Reference: @unchecked Sendable {
         let modelID: ModelID
         private let lock = NSRecursiveLock()
@@ -1727,10 +1732,10 @@ extension Context {
         private var _lazyContextCreator: (() -> Context<M>?)?
         /// Live/lastSeen/snapshot state. Non-optional — always holds a valid value.
         /// After `clear()`, replaced with genesis state to release live-model references.
-        var state: M._ModelState
+        @usableFromInline var state: M._ModelState
         /// True after `clear()`. Reads from a cleared reference will reportIssue and
         /// return a genesis fallback.
-        var _stateCleared: Bool = false
+        @usableFromInline var _stateCleared: Bool = false
         /// Genesis state captured at the first `setContext` call (post-`withContextAdded`).
         /// All property values are correct at that point (no self-referencing closures yet).
         /// Used to restore `state` when re-anchoring a static dependency model, and as a
@@ -1738,9 +1743,9 @@ extension Context {
         /// every anchored model, so boxing would only add malloc overhead with no saving.
         /// Initialized to `state` in Reference.init as a safe placeholder (never read until
         /// _hasGenesis = true, at which point setContext overwrites it with the correct value).
-        var _genesisState: M._ModelState
+        @usableFromInline var _genesisState: M._ModelState
         /// True once genesis has been captured (set in `setContext` on first anchor).
-        var _hasGenesis: Bool = false
+        @usableFromInline var _hasGenesis: Bool = false
         /// Incremented by `_ModelSourceBox.subscript[write:access:]._modify` whenever a tracked
         /// property is mutated on a pre-anchor Reference. Used by `Context.init` to detect whether
         /// a stored child's dep closure performed a read-modify-write on a dep model inherited from
@@ -1811,6 +1816,7 @@ extension Context {
             }
         }
 
+        @usableFromInline
         var context: Context<M>? {
             lock { _context }
         }

@@ -39,6 +39,7 @@
 ///   dependencies correctly — only the *caller's* dependency registration is skipped.
 /// - The scope is thread-local and re-entrant. It does not propagate into tasks
 ///   spawned inside `body`.
+@inlinable
 public func withUntrackedModelReads<T>(_ body: () throws -> T) rethrows -> T {
     // Direct field access instead of `threadLocals.withValue(_:at:)` — the
     // ReferenceWritableKeyPath-based helper costs ~2 μs per scope in Release,

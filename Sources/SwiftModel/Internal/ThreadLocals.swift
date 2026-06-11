@@ -1,8 +1,9 @@
 import Foundation
 
+@usableFromInline
 final class ThreadLocals: @unchecked Sendable {
     var postTransactions: [(inout [() -> Void]) -> Void]? = nil
-    var forceDirectAccess = false
+    @usableFromInline var forceDirectAccess = false
     /// Set by the public `withUntrackedModelReads { }` scope. While `true`, the
     /// `_ModelSourceBox` read subscripts skip `willAccessDirect` entirely (no
     /// ObservationRegistrar access, no `ModelAccess.willAccess` dispatch, no child
@@ -17,7 +18,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// used by `node.memoize` and `Observed`) explicitly clears this flag around its
     /// `access()` evaluations so that a memoize/observer set up inside an untracked
     /// scope still registers its own dependencies.
-    var untrackedReads = false
+    @usableFromInline var untrackedReads = false
     var didReplaceModelWithDestructedOrFrozenCopy = false
     var includeImplicitIDInMirror = false
     var includeChildrenInMirror = false
@@ -81,7 +82,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// evaluation sees the front-of-queue historical value (or the expectedState baseline)
     /// rather than the current live state.
     /// Consumed by the `willAccess` returned closure after the Context subscript yields.
-    var transitionOverrideValue: Any? = nil
+    @usableFromInline var transitionOverrideValue: Any? = nil
     /// Monotonically incrementing counter set when an outer `node.transaction { }` begins.
     /// Each outer transaction gets a new unique ID; nested transactions see the outer ID.
     /// `TestAccess.didModify` captures this at write time so multiple writes to the same
@@ -217,9 +218,9 @@ final class ThreadLocals: @unchecked Sendable {
 #if os(WASI)
 // WASI is single-threaded; a plain global suffices in place of pthread TLS.
 private let _wasiThreadLocals = ThreadLocals()
-var threadLocals: ThreadLocals { _wasiThreadLocals }
+@usableFromInline var threadLocals: ThreadLocals { _wasiThreadLocals }
 #else
-var threadLocals: ThreadLocals {
+@usableFromInline var threadLocals: ThreadLocals {
     if let state = pthread_getspecific(threadLocalsKey) {
         return Unmanaged<ThreadLocals>.fromOpaque(state).takeUnretainedValue()
     }
