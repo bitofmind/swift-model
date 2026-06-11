@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.3] — Read-path performance: `withUntrackedModelReads`, striped observer-KP cache, `@inlinable` hot path
+
 ### Added
 
 - **`withUntrackedModelReads { }` — public untracked/bulk-read scope.** Reads of `@Model` properties (and memoize/environment/preference values) inside the scope register no observation dependencies anywhere: no `ObservationRegistrar.access`, no `ModelAccess.willAccess` dispatch (view tracking / `ModelTester` / `Observed`), and no access stamping of returned child models. Reads reduce to a lock-protected raw state read — they still route through the context lock, so scanning while other threads write stays memory-safe (unlike the internal `forceDirectAccess` mechanism, which bypasses the lock and stays internal). Intended for O(N) traversals over live models on hot paths — hit-testing, snapping, validation passes — where per-read observation overhead dominates and the caller doesn't want a dependency on every visited property. Writes inside the scope notify normally. Framework-driven dependency collection is immune: `update()` (the engine under `node.memoize` and `Observed`) clears the flag around its `access()` evaluations, so a memoize set up inside an untracked scope still tracks its own dependencies. In the Release read-path benchmark an untracked read costs ~half a tracked read, and the n=120 two-property scan drops ~1.7x; a pre-extracted value snapshot remains far cheaper still for repeated scans (see the new *Performance* documentation article).

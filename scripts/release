@@ -1,0 +1,151 @@
+#!/bin/bash
+# Cut a SwiftModel release from the CHANGELOG's [Unreleased] section.
+#
+# Usage:
+#   scripts/release <version> "<short title>" [--dry-run] [--yes]
+#
+# Example:
+#   scripts/release 1.0.4 "Faster activation + memoize fixes"
+#
+# Mirrors how 1.0.0–1.0.3 were cut manually:
+#   1. Preflight: clean tree on an up-to-date `main`, `gh` authed, version not
+#      yet tagged, CHANGELOG has a non-empty [Unreleased] section.
+#   2. Stamps CHANGELOG.md: "## [Unreleased]" becomes "## [<version>] — <title>"
+#      with a fresh empty [Unreleased] section inserted above it.
+#   3. Commits as "Add <version> changelog entry" and pushes to main.
+#   4. Waits for the CI run on that push to finish — aborts before tagging if
+#      it fails.
+#   5. Pushes a lightweight tag `<version>` (no `v` prefix — matches every
+#      existing tag) and creates the GitHub release: title = bare version,
+#      notes = the stamped changelog section body (with `---` separators
+#      stripped).
+#
+# --dry-run prints the stamped heading and the release notes without touching
+# anything. --yes skips the confirmation prompt (for non-interactive use).
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+VERSION="${1:-}"
+TITLE="${2:-}"
+DRY_RUN=0
+ASSUME_YES=0
+for arg in "${@:3}"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        --yes|-y)  ASSUME_YES=1 ;;
+        *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+    esac
+done
+
+if [[ -z "$VERSION" || -z "$TITLE" ]]; then
+    echo "Usage: scripts/release <version> \"<short title>\" [--dry-run] [--yes]" >&2
+    exit 1
+fi
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "error: version must be X.Y.Z (no 'v' prefix), got '$VERSION'" >&2
+    exit 1
+fi
+
+# ── Preflight ────────────────────────────────────────────────────────────────
+
+if [[ "$(git rev-parse --abbrev-ref HEAD)" != "main" ]]; then
+    echo "error: must run from main (currently on $(git rev-parse --abbrev-ref HEAD))" >&2
+    exit 1
+fi
+if [[ -n "$(git status --porcelain)" ]]; then
+    echo "error: working tree is not clean" >&2
+    exit 1
+fi
+git fetch origin --tags --quiet
+if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+    echo "error: local main is not in sync with origin/main" >&2
+    exit 1
+fi
+if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+    echo "error: tag $VERSION already exists" >&2
+    exit 1
+fi
+gh auth status >/dev/null 2>&1 || { echo "error: gh is not authenticated" >&2; exit 1; }
+grep -q '^## \[Unreleased\]' CHANGELOG.md || { echo "error: no [Unreleased] section in CHANGELOG.md" >&2; exit 1; }
+
+# Extract the [Unreleased] body (everything up to the next "## [" heading).
+UNRELEASED_BODY="$(awk '/^## \[Unreleased\]/{flag=1; next} /^## \[/{flag=0} flag' CHANGELOG.md)"
+if ! printf '%s\n' "$UNRELEASED_BODY" | grep -q '[^[:space:]-]'; then
+    echo "error: [Unreleased] section is empty — nothing to release" >&2
+    exit 1
+fi
+
+# Release notes: the section body minus the trailing "---" separators.
+NOTES="$(printf '%s\n' "$UNRELEASED_BODY" | sed -e '/^---$/d' | sed -e '/./,$!d')"
+
+echo "Release:  $VERSION — $TITLE"
+echo "Tagging:  $(git rev-parse --short HEAD) + the changelog commit"
+echo
+echo "── Release notes ──────────────────────────────────────────────────────"
+printf '%s\n' "$NOTES"
+echo "───────────────────────────────────────────────────────────────────────"
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "(dry run — no changes made)"
+    exit 0
+fi
+if [[ "$ASSUME_YES" -ne 1 ]]; then
+    printf "Proceed with stamping, pushing main, tagging, and publishing? [y/N] "
+    read -r answer
+    [[ "$answer" == "y" || "$answer" == "Y" ]] || { echo "aborted"; exit 1; }
+fi
+
+# ── Stamp CHANGELOG ──────────────────────────────────────────────────────────
+
+awk -v ver="$VERSION" -v title="$TITLE" '
+    /^## \[Unreleased\]$/ && !done {
+        print "## [Unreleased]"
+        print ""
+        print "---"
+        print ""
+        print "## [" ver "] — " title
+        done=1
+        next
+    }
+    { print }
+' CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md
+
+git add CHANGELOG.md
+git commit -m "Add $VERSION changelog entry"
+git push origin main
+SHA="$(git rev-parse HEAD)"
+echo "Pushed changelog commit $SHA"
+
+# ── Wait for CI ──────────────────────────────────────────────────────────────
+
+echo "Waiting for the CI run on $SHA to appear…"
+RUN_ID=""
+for _ in $(seq 1 30); do
+    RUN_ID="$(gh run list --commit "$SHA" --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+    [[ -n "$RUN_ID" && "$RUN_ID" != "null" ]] && break
+    sleep 10
+done
+if [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]]; then
+    echo "error: no CI run appeared for $SHA — tag manually once CI is green:" >&2
+    echo "  git tag $VERSION && git push origin refs/tags/$VERSION" >&2
+    exit 1
+fi
+echo "Watching CI run $RUN_ID (this takes ~6 minutes)…"
+gh run watch "$RUN_ID" --exit-status || {
+    echo "error: CI failed — NOT tagging. Investigate, then re-run the tag+release steps." >&2
+    exit 1
+}
+
+# ── Tag + GitHub release ─────────────────────────────────────────────────────
+
+git tag "$VERSION"
+git push origin "refs/tags/$VERSION"
+
+NOTES_FILE="$(mktemp)"
+printf '%s\n' "$NOTES" > "$NOTES_FILE"
+gh release create "$VERSION" --title "$VERSION" --notes-file "$NOTES_FILE"
+rm -f "$NOTES_FILE"
+
+echo "✅ Released $VERSION"
