@@ -33,6 +33,7 @@ func runAll() {
     benchReadPath()
     benchModelScan()
     benchParallelReads()
+    benchInModuleProbe()
     benchPropertyAccessWithObserver()
     benchEventDispatch()
     benchHierarchyMutation()

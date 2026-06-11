@@ -403,3 +403,12 @@ func benchAnchorDependencies() {
         withExtendedLifetime(anchor) {}
     }
 }
+
+// TEMP PROBE — compares in-module (WMO-specialized) read cost against the
+// cross-module numbers in section 2b. See ReadPathProbe.swift in SwiftModel.
+func benchInModuleProbe() {
+    printHeader("2e. In-module read probe (WMO upper bound for @inlinable)")
+    let r = _readPathProbe(iterations: 1_000_000)
+    print(String(format: "  in-module tracked read:   %8.1f ns/op", r.tracked))
+    print(String(format: "  in-module untracked read: %8.1f ns/op", r.untracked))
+}

@@ -22,8 +22,9 @@ struct _ModificationCallbackSource: @unchecked Sendable {
     var propertyDescription: (@Sendable () -> String?)?
 }
 
+@usableFromInline
 class AnyContext: @unchecked Sendable {
-    let lock: NSRecursiveLock
+    @usableFromInline let lock: NSRecursiveLock
     internal let options: ModelOption
     private var nextKey = 0
 
@@ -730,6 +731,7 @@ class AnyContext: @unchecked Sendable {
         lifetime == .destructed
     }
 
+    @usableFromInline
     var unprotectedIsDestructed: Bool {
         modeLifeTime == .destructed
     }
