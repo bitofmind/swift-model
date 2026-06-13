@@ -60,6 +60,40 @@ jobs:
           SWIFT_MODEL_TIMEOUT_SCALE: "3"
         run: swift test ${{ matrix.flag }} --skip SwiftModelBenchmarkTests
 
+  benchmarks:
+    name: Benchmarks (macOS)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest
+      - name: Run benchmark suite
+        # The main macOS/Linux jobs `--skip SwiftModelBenchmarkTests`; this job
+        # runs `MemoizeAccessBenchmarks`, the one benchmark suite written to GATE
+        # rather than just print. Its assertions are CI-stable by construction:
+        #   • cached untracked memoize access ≤ 1.5× tracked (measured ~0.87×) —
+        #     a ratio with headroom, not a zero-margin comparison.
+        #   • produce-count stays O(1) (not O(accesses)) under genuine
+        #     cooperative-pool saturation — the regression gate for the
+        #     parallel-apple editor's produce-per-access thrash report.
+        #
+        # The other benchmark suites stay on-demand
+        # (`swift test --filter SwiftModelBenchmarkTests`): `MemoizePerformanceTests`
+        # and `LazyContextBenchmarks` gate on / print absolute `Task.sleep`-based
+        # timings, and `ReadPathBenchmarks` asserts a zero-margin
+        # `untracked < tracked` that can flip on a single min-of-rounds hiccup —
+        # all too hardware/load-sensitive to gate CI on.
+        #
+        # `SWIFT_MODEL_TIMEOUT_SCALE=3` for the same reason as the main jobs:
+        # the saturated-pool benchmark floods the cooperative pool and then
+        # drains via `backgroundCall.waitUntilIdle()`, which routes through the
+        # same test-infrastructure budgets.
+        env:
+          SWIFT_MODEL_TIMEOUT_SCALE: "3"
+        run: swift test --filter SwiftModelBenchmarkTests.MemoizeAccessBenchmarks
+
   linux:
     name: Linux (${{ matrix.mode }})
     runs-on: ubuntu-latest

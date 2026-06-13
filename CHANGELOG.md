@@ -6,6 +6,20 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **`node.memoize` no longer degrades to recompute-per-access once a dependency changes — the produce-per-access thrash that blocked adopters from upgrading past 1.0.2.** Two defects compounded into "every read runs `produce()`": (1) a value-changing dependency write left the cache entry permanently dirty, because the coalesced `performUpdate` *preserved* the dirty flag when storing a recomputed value (it couldn't tell "the mutation this recompute already incorporates" from "a concurrent mutation during produce") — so after one write, every subsequent access found the entry dirty and recomputed inline forever, even on a fully idle machine; (2) while the async revalidation task lagged (saturated cooperative pool), each dirty read recomputed inline *and threw the result away*, so N accesses in the starvation window cost N produces instead of 1. The fix replaces the `isDirty` boolean with monotonic `dirtyVersion`/`cleanVersion` counters: a recompute captures `dirtyVersion` before running `produce()` and advances `cleanVersion` to exactly that value when it commits — so the dependency changes the recompute incorporated are cleared, while a change arriving *during* `produce()` (which bumps `dirtyVersion` further) correctly keeps the entry dirty. A dirty read now also writes its fresh value back into the cache (silently on the `withObservationTracking` path — the already-scheduled `performUpdate` remains the sole notifier and dedups against the last *notified* value, so a read never fires observer notifications), so subsequent accesses in a starvation window hit the cache. Net effect: produce-count is now O(1) per dependency change regardless of access count or pool load, on both the `withObservationTracking` and `AccessCollector` paths, for single and chained memoizes. (Adopters pinned to `exact: "1.0.2"` solely to avoid this can move to the normal `from:` requirement once this ships.)
+
+- **Reading a memoized property inside `withUntrackedModelReads { }` now returns through the same cached fast path as a tracked read** instead of being materially slower. With the produce-per-access thrash fixed (above), an untracked cached memoize access is now ~0.9× the cost of a tracked one (it skips the observation dispatch), rather than the ~6× *slower* adopters measured on 1.0.3 — that figure was the discarded-recompute cost, not a pure access-path cost.
+
+### Changed
+
+- **`node.memoize` cache-hit fast path no longer allocates per access.** The `forceNextBox` (`LockIsolated`) and `didModifyCallback` closure are now built only on the first access that sets up tracking, not on every call — they were pure waste on the common cache-hit path, which discarded them.
+
+### Added
+
+- **Memoize regression coverage.** `SwiftModelTests.MemoizeThrashTests` asserts produce-count stays O(1) after a dependency write and under *deterministic* cooperative-pool starvation (the revalidation queue is blocked on a gate, not left to machine load) — for tracked and untracked access, single and chained memoizes. `SwiftModelBenchmarkTests.MemoizeAccessBenchmarks` adds the cost benchmark (cached untracked vs tracked access, interleaved-median ratio for CI stability) plus produce-count under genuine cooperative-pool saturation; it runs in CI via a dedicated `benchmarks` job (the read-path and timing benchmarks remain on-demand).
+
 ---
 
 ## [1.0.3] — Read-path performance: `withUntrackedModelReads`, striped observer-KP cache, `@inlinable` hot path

@@ -473,46 +473,37 @@ private extension ModelNode {
         // ViewAccess/AccessCollector/TestAccess tracking via active access:
         _$modelContext.willAccess(at: path)?()
 
-        // Box that will hold the `forceNextUpdate` closure returned by `update()`.
-        // Used so that `didModifyCallback` can call it when a forced (touch) change arrives,
-        // ensuring memoize's own update() instance bypasses isSame and propagates downstream.
-        let forceNextBox = LockIsolated<(@Sendable () -> Void)?>(nil)
+        // Note: `forceNextBox` and `didModifyCallback` are built lazily inside the
+        // first-access branch below, not here — they're only consumed by the
+        // `update()` setup on first access. Constructing them on every access
+        // (a `LockIsolated` allocation + a closure capture) was pure waste on the
+        // common cache-hit path. See `MemoizeAccessBenchmarks`.
 
-        // Create didModify callback that marks cache as dirty and, when the change is forced
-        // (e.g. via node.touch()), signals memoize's update() to bypass isSame on its next run.
-        // (Outside the main lock to avoid type inference issues.)
-        let didModifyCallback: @Sendable (Bool) -> Void = { @Sendable force in
-            context.lock {
-                if var entry = context._memoizeCache[key] {
-                    entry.isDirty = true
-                    context._memoizeCache[key] = entry
-                }
-            }
-            if force {
-                forceNextBox.value?()
-            }
-        }
-
-        // Check for cached value with dirty flag
-        // ATOMICALLY check and clear isDirty to prevent race with backgroundCall
-        let (cachedEntry, shouldRecompute): (AnyContext.MemoizeCacheEntry?, Bool) = context.lock {
+        // Check for cached value with dirty state. `capturedVersion` is the entry's
+        // dirtyVersion at this point — a recompute below incorporates every dependency
+        // change up to it, so the write-back advances cleanVersion to exactly this
+        // value (a change arriving DURING produce() keeps the entry dirty). See the
+        // versioning doc comment on `MemoizeCacheEntry`.
+        let (cachedEntry, shouldRecompute, capturedVersion): (AnyContext.MemoizeCacheEntry?, Bool, UInt64) = context.lock {
             guard let entry = context._memoizeCache[key] else {
-                return (nil, false)
+                return (nil, false, 0)
             }
 
             let shouldRecompute = entry.isDirty
 
             if shouldRecompute {
-                // For sync tracking (AccessCollector): clear isDirty to prevent double computation
-                // For async tracking (withObservationTracking): keep isDirty so performUpdate can re-track
+                // For sync tracking (AccessCollector): claim the recompute up front
+                // (advance cleanVersion to the captured dirtyVersion) so concurrent
+                // readers don't all produce. A dependency change during produce()
+                // bumps dirtyVersion past the claim and re-dirties the entry.
                 if !entry.usesAsyncTracking {
                     var freshEntry = entry
-                    freshEntry.isDirty = false
+                    freshEntry.cleanVersion = entry.dirtyVersion
                     context._memoizeCache[key] = freshEntry
                 }
             }
 
-            return (entry, shouldRecompute)
+            return (entry, shouldRecompute, entry.dirtyVersion)
         }
 
         if let entry = cachedEntry {
@@ -539,27 +530,40 @@ private extension ModelNode {
                     produce()
                 }
 
-                // For synchronous tracking (AccessCollector), update cache and notify
-                // This works because AccessCollector tracks via willAccess() callbacks
                 if !entry.usesAsyncTracking {
-                    // Call the stored onUpdate callback to trigger all observation notifications
-                    // This ensures external observers (SwiftUI, @Observable, etc.) are notified
-                    // The onUpdate callback handles:
-                    // - isSame duplicate checking
-                    // - Cache updating (sets isDirty: false)
+                    // Synchronous tracking (AccessCollector): update cache and notify
+                    // via the stored onUpdate callback. It handles:
+                    // - isSame duplicate checking (against the last NOTIFIED value)
+                    // - Cache updating (advances cleanVersion to capturedVersion)
                     // - modifyCallbacks (ViewAccess for pre-iOS 17)
                     // - willSet/didSet (ObservationRegistrar for iOS 17+)
-                    entry.onUpdate?(fresh)
+                    entry.onUpdate?(fresh, capturedVersion)
+                } else {
+                    // Async tracking (withObservationTracking): write the fresh value
+                    // back SILENTLY — store it and advance cleanVersion to
+                    // capturedVersion, but fire no observer notifications. Reads must
+                    // never notify on this path: a notification fired synchronously
+                    // from a read re-enters whatever machinery initiated it (a SwiftUI
+                    // body evaluation, a `ModelTester` predicate evaluation under its
+                    // own lock). The already-scheduled performUpdate remains the sole
+                    // notifier — it recomputes (re-establishing tracking) and dedups
+                    // its notification against `entry.notifiedValue`, so this silent
+                    // write-back cannot swallow it.
+                    //
+                    // Historically this path did not write back at all: it returned
+                    // `fresh` and left the stale cached value and the dirty state in
+                    // place for the performUpdate to resolve. That degraded to
+                    // produce-per-access whenever the performUpdate lagged (saturated
+                    // cooperative pool) — every access in the starvation window found
+                    // the entry dirty and produced inline. See `MemoizeThrashTests`.
+                    context.lock {
+                        if var freshEntry = context._memoizeCache[key], freshEntry.cleanVersion < capturedVersion {
+                            freshEntry.value = fresh
+                            freshEntry.cleanVersion = capturedVersion
+                            context._memoizeCache[key] = freshEntry
+                        }
+                    }
                 }
-                // For async tracking (withObservationTracking):
-                // DO NOT notify here - let the scheduled performUpdate handle it.
-                // Notifying here would trigger the onChange callback, which would re-access the property,
-                // hitting the dirty path again (infinite loop).
-                // The performUpdate will:
-                // 1. See isDirty: true
-                // 2. Call observe() -> withObservationTracking {} -> access() -> produce()
-                // 3. Recompute and re-establish tracking
-                // 4. Call onUpdate to notify observers
 
                 return fresh
             }
@@ -576,6 +580,28 @@ private extension ModelNode {
             if let existingEntry = context._memoizeCache[key] {
                 assert(existingEntry.typeID == ObjectIdentifier(T.self), "memoize key '\(key.base)' was previously used with a different type")
                 return existingEntry.value as! T
+            }
+
+            // Box that will hold the `forceNextUpdate` closure returned by `update()`.
+            // Used so that `didModifyCallback` can call it when a forced (touch) change
+            // arrives, ensuring memoize's own update() instance bypasses isSame and
+            // propagates downstream. Built here (not per-access) — only the first-access
+            // `update()` setup consumes it.
+            let forceNextBox = LockIsolated<(@Sendable () -> Void)?>(nil)
+
+            // Create didModify callback that marks the cache dirty (bumps dirtyVersion)
+            // and, when the change is forced (e.g. via node.touch()), signals memoize's
+            // update() to bypass isSame on its next run.
+            let didModifyCallback: @Sendable (Bool) -> Void = { @Sendable force in
+                context.lock {
+                    if var entry = context._memoizeCache[key] {
+                        entry.dirtyVersion &+= 1
+                        context._memoizeCache[key] = entry
+                    }
+                }
+                if force {
+                    forceNextBox.value?()
+                }
             }
 
             // First access: set up tracking with didModify callback.
@@ -601,15 +627,25 @@ private extension ModelNode {
                     useWithObservationTracking: useWithObservationTracking,
                     useCoalescing: useCoalescing,
                     didModify: didModifyCallback
-                ) {
+                ) { @Sendable () -> (value: T, version: UInt64) in
+                    // The produced value travels with the entry's dirtyVersion captured
+                    // BEFORE produce() runs, so onUpdate can advance cleanVersion to
+                    // exactly the dependency-change signals this produce incorporates —
+                    // a signal arriving DURING produce() keeps the entry dirty. The
+                    // version must travel with the value (not via a shared box):
+                    // a subsequent performUpdate's capture could otherwise overwrite
+                    // the box before this run's onUpdate reads it, marking a stale
+                    // value clean at a version it doesn't incorporate.
+                    //
                     // When called from a coalesced performUpdate (either the withObservationTracking
                     // or AccessCollector path): always call produce() so that dependency tracking
                     // is re-registered.
                     //
-                    // Race this fixes: onUpdate() can clear isDirty before a subsequently-scheduled
-                    // performUpdate's access() runs (backgroundCall executes concurrently with
-                    // mutations on Swift's cooperative thread pool). If we short-circuit to the
-                    // cached value, withObservationTracking/AccessCollector tracks nothing and the
+                    // Race this fixes: onUpdate() can clear the dirty state before a
+                    // subsequently-scheduled performUpdate's access() runs (backgroundCall
+                    // executes concurrently with mutations on Swift's cooperative thread
+                    // pool). If we short-circuit to the cached value,
+                    // withObservationTracking/AccessCollector tracks nothing and the
                     // subscription is silently lost for all remaining mutations.
                     //
                     // We detect "called from coalesced performUpdate" via
@@ -617,15 +653,16 @@ private extension ModelNode {
                     // performUpdate's access() call. This avoids spurious extra computes from
                     // other access() call sites (forceObserver setup, initial registration,
                     // dirty-path sync reads).
-                    if threadLocals.isInsideAsyncPerformUpdate {
-                        return produce()
+                    let (entry, version): (AnyContext.MemoizeCacheEntry?, UInt64) = context.lock {
+                        let entry = context._memoizeCache[key]
+                        return (entry, entry?.dirtyVersion ?? 0)
                     }
-                    let entry = context.lock({ context._memoizeCache[key] })
-                    if let entry = entry, !entry.isDirty {
-                        return entry.value as! T
+                    if !threadLocals.isInsideAsyncPerformUpdate, let entry = entry, !entry.isDirty {
+                        return (entry.value as! T, version)
                     }
-                    return produce()
-                } onUpdate: { @Sendable (value: T) in
+                    return (produce(), version)
+                } onUpdate: { @Sendable (produced: (value: T, version: UInt64)) in
+                    let value = produced.value
                     var postLockCallbacks: [() -> Void] = []
 
                     // Build type-erased isSame once for cache entry storage.
@@ -655,25 +692,44 @@ private extension ModelNode {
                         }
                         hasInitialized.setValue(true)
 
+                        // Value commits are last-writer-wins: a produce's value reflects
+                        // the state read during its produce window, which can be FRESHER
+                        // than its captured version suggests (an untracked write in the
+                        // re-tracking gap moves state without bumping dirtyVersion), so
+                        // versions cannot order value freshness — they only bound which
+                        // dependency-change signals the dirty-state clearing may consume.
+                        // performUpdate-vs-performUpdate ordering is already enforced by
+                        // update()'s stale-index check; only the newest run reaches here.
+                        let commitValue: T = value
+                        let commitVersion: UInt64 = produced.version
+
+                        // Dedup against the last value observers were NOTIFIED about —
+                        // not the cached `value`. A dirty access on the async path
+                        // writes its fresh value back silently; comparing against
+                        // `value` would see "unchanged" and swallow the notification
+                        // observers still need.
+                        //
                         // Bypass isSame when forceObservation is set (e.g. from node.touch()
                         // propagating through memoize). Without this bypass, a touch on a dependency
                         // would be silently swallowed even though memoize's update() already decided
                         // to fire onUpdate due to forceNext.
-                        if let isSame, let prevValue, !threadLocals.forceObservation, isSame(value, prevValue) {
-                            // Value is unchanged, but we still need to clear isDirty so the cache
-                            // is clean after performUpdate re-establishes tracking via observe().
-                            // Without this, isDirty stays true indefinitely when the recomputed value
-                            // equals the cached value, causing every subsequent performUpdate to see
-                            // isDirty=true and call produce() again, but never clearing the flag.
-                            if var currentEntry = context._memoizeCache[key], currentEntry.isDirty {
-                                currentEntry.isDirty = false
+                        let prevNotified = entry?.notifiedValue as? T
+                        if let isSame, let prevNotified, !threadLocals.forceObservation, isSame(commitValue, prevNotified) {
+                            // Value is unchanged, but the recompute still incorporates every
+                            // dependency change up to commitVersion — mark those clean.
+                            // Without this, the entry stays dirty indefinitely when the
+                            // recomputed value equals the cached value, causing every
+                            // subsequent access and performUpdate to call produce() again.
+                            if var currentEntry = context._memoizeCache[key], currentEntry.cleanVersion < commitVersion {
+                                currentEntry.value = commitValue
+                                currentEntry.cleanVersion = commitVersion
                                 context._memoizeCache[key] = currentEntry
                             }
                             return
                         }
 
                         // Store wrapped onUpdate callback that can be called from dirty path
-                        let wrappedOnUpdate: @Sendable (Any) -> Void = { @Sendable anyValue in
+                        let wrappedOnUpdate: @Sendable (Any, UInt64) -> Void = { @Sendable anyValue, producedVersion in
                             guard let typedValue = anyValue as? T else { return }
                             var postCallbacks: [() -> Void] = []
 
@@ -687,16 +743,36 @@ private extension ModelNode {
                                 let currentCancellable = currentEntry.cancellable
                                 let currentOnUpdate = currentEntry.onUpdate
 
-                                if let isSame, let currentPrevValue, isSame(typedValue, currentPrevValue) {
+                                // Value commits are last-writer-wins; versions only bound
+                                // the dirty-state clearing (see outer onUpdate).
+                                let commitValue: T = typedValue
+                                let commitVersion: UInt64 = producedVersion
+
+                                // Dedup against the last NOTIFIED value (see outer onUpdate).
+                                let prevNotified = currentEntry.notifiedValue as? T
+                                if let isSame, let prevNotified, isSame(commitValue, prevNotified) {
+                                    // Unchanged value still incorporates the dependency
+                                    // changes up to commitVersion — mark those clean so
+                                    // an equal-value recompute settles the dirty state.
+                                    if currentEntry.cleanVersion < commitVersion {
+                                        var freshEntry = currentEntry
+                                        freshEntry.value = commitValue
+                                        freshEntry.cleanVersion = commitVersion
+                                        context._memoizeCache[key] = freshEntry
+                                    }
                                     return
                                 }
 
-                                // Preserve isDirty if a concurrent mutation set it between
-                                // produce() and this lock acquisition.
+                                // dirtyVersion is carried over untouched: a concurrent
+                                // mutation between produce() and this lock acquisition
+                                // bumped it past commitVersion and the entry correctly
+                                // stays dirty.
                                 context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
-                                    value: typedValue,
+                                    value: commitValue,
                                     cancellable: currentCancellable,
-                                    isDirty: currentEntry.isDirty,
+                                    dirtyVersion: currentEntry.dirtyVersion,
+                                    cleanVersion: max(currentEntry.cleanVersion, commitVersion),
+                                    notifiedValue: commitValue,
                                     onUpdate: currentOnUpdate,
                                     usesAsyncTracking: usesAsyncTracking,
                                     isSame: typeErasedIsSame,
@@ -738,40 +814,30 @@ private extension ModelNode {
 #endif
                         }
 
-                        // Preserve isDirty across the entry replacement — **but only on
-                        // the coalesced (async) path**.
+                        // Versioned dirty handling across the entry replacement:
                         //
-                        // **Coalesced path (`useCoalescing=true`)**: `performUpdate`
-                        // runs on the BackgroundCallQueue drain task, concurrent with
-                        // ongoing mutations. By the time `update.update(with:index:)`
-                        // calls us, mutations that occurred between when
-                        // `performUpdate` captured `value` (under `last.withValue`) and
-                        // now may have set `entry.isDirty = true` via
-                        // `didModifyCallback`. The captured `value` is potentially
-                        // stale relative to those mutations. Clearing `isDirty` here
-                        // would silently swallow that signal — the cache would then
-                        // hold a stale `value` with `isDirty=false`, and the next
-                        // memoize read would return stale data instead of recomputing.
-                        // (Race observed in `testMemoizeWithNestedModelMutations` under
-                        // parallel load.) The previous code used `usesAsyncTracking`
-                        // as the gate, which produced the correct behaviour for the
-                        // `withObservationTracking` path but the wrong behaviour for
-                        // `accessCollector` + coalescing.
+                        // `performUpdate` runs on the BackgroundCallQueue drain task,
+                        // concurrent with ongoing mutations. By the time
+                        // `update.update(with:index:)` calls us, mutations that occurred
+                        // between when the access closure captured `produced.version`
+                        // (under the context lock, before `produce()`) and now may have
+                        // bumped `dirtyVersion` via `didModifyCallback`. The captured
+                        // `value` is potentially stale relative to those mutations.
                         //
-                        // **Non-coalesced path (`useCoalescing=false`)**: `performUpdate`
-                        // runs synchronously inside the setter's `buildPostLockCallbacks`.
-                        // `value` is freshly computed from the post-mutation state, so
-                        // `isDirty=false` is correct — there is no concurrent mutation
-                        // window to race against.
-                        //
-                        // `wrappedOnUpdate` (the sync-recompute path's callback) has
-                        // always preserved `currentEntry.isDirty` because that path runs
-                        // *after* `produce()` on the reader's thread, with the same
-                        // race window — preserving there is correct for the same reason.
+                        // Advancing `cleanVersion` to exactly `commitVersion` resolves
+                        // what a bool flag couldn't: the signals this produce incorporates
+                        // are cleared (so the entry doesn't stay permanently dirty after a
+                        // value-changing write — produce-per-access thrash, see
+                        // `MemoizeThrashTests`), while a concurrent mutation's bump keeps
+                        // `dirtyVersion > cleanVersion` and the next read recomputes
+                        // (the stale-cache race observed in
+                        // `testMemoizeWithNestedModelMutations` under parallel load).
                         context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
-                            value: value,
+                            value: commitValue,
                             cancellable: prevCancellable ?? {},
-                            isDirty: useCoalescing && (entry?.isDirty ?? false),
+                            dirtyVersion: entry?.dirtyVersion ?? 0,
+                            cleanVersion: max(entry?.cleanVersion ?? 0, commitVersion),
+                            notifiedValue: commitValue,
                             onUpdate: wrappedOnUpdate,
                             usesAsyncTracking: usesAsyncTracking,
                             isSame: typeErasedIsSame,

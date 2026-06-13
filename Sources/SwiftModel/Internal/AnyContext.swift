@@ -214,18 +214,46 @@ class AnyContext: @unchecked Sendable {
     struct MemoizeCacheEntry: @unchecked Sendable {
         var value: Any & Sendable
         var cancellable: (@Sendable () -> Void)?
-        var isDirty: Bool
-        var onUpdate: (@Sendable (Any) -> Void)?  // Callback to trigger observation updates
+        /// Monotonic count of dependency-change signals (`didModify`) received for
+        /// this entry. Bumped under the context lock on every dependency change.
+        var dirtyVersion: UInt64
+        /// The `dirtyVersion` the cached `value` is known to incorporate. A recompute
+        /// captures `dirtyVersion` under the lock *before* running `produce()` and
+        /// advances `cleanVersion` to that captured value when it stores its result —
+        /// so a dependency change that arrives *during* `produce()` keeps the entry
+        /// dirty, while the change(s) the recompute already incorporated are cleared.
+        ///
+        /// A plain bool can't make that distinction: preserving it across a recompute
+        /// left the entry permanently dirty after any value-changing dependency write
+        /// (produce-per-access thrash); clearing it swallowed concurrent changes
+        /// (stale cache). See `MemoizeThrashTests`.
+        var cleanVersion: UInt64
+        /// Whether the cached `value` is stale relative to the latest dependency change.
+        var isDirty: Bool { dirtyVersion > cleanVersion }
+        /// The last value external observers were notified about. A dirty *read* on the
+        /// async tracking path writes its fresh value back into `value` silently (reads
+        /// must never fire observer notifications — they can re-enter whatever machinery
+        /// initiated the read, e.g. a SwiftUI body evaluation or a `ModelTester` predicate
+        /// evaluation under its own lock). The performUpdate that notifies dedups against
+        /// THIS value rather than `value`, so a silent write-back can't swallow the
+        /// notification.
+        var notifiedValue: Any & Sendable
+        /// Callback to store a freshly produced value and trigger observation updates.
+        /// The second parameter is the `dirtyVersion` captured before that value's
+        /// `produce()` ran (see `cleanVersion`).
+        var onUpdate: (@Sendable (Any, UInt64) -> Void)?
         var usesAsyncTracking: Bool  // True if using withObservationTracking (async), false if using AccessCollector (sync)
         /// Type-erased identity comparison built once on first access via buildObservationIsSame.
         var isSame: (@Sendable (Any, Any) -> Bool)?
         /// ObjectIdentifier of T — asserts same key is never reused with a different type.
         var typeID: ObjectIdentifier
 
-        init(value: Any & Sendable, cancellable: (@Sendable () -> Void)? = nil, isDirty: Bool = false, onUpdate: (@Sendable (Any) -> Void)? = nil, usesAsyncTracking: Bool = false, isSame: (@Sendable (Any, Any) -> Bool)? = nil, typeID: ObjectIdentifier = ObjectIdentifier(Never.self)) {
+        init(value: Any & Sendable, cancellable: (@Sendable () -> Void)? = nil, dirtyVersion: UInt64 = 0, cleanVersion: UInt64 = 0, notifiedValue: (Any & Sendable)? = nil, onUpdate: (@Sendable (Any, UInt64) -> Void)? = nil, usesAsyncTracking: Bool = false, isSame: (@Sendable (Any, Any) -> Bool)? = nil, typeID: ObjectIdentifier = ObjectIdentifier(Never.self)) {
             self.value = value
             self.cancellable = cancellable
-            self.isDirty = isDirty
+            self.dirtyVersion = dirtyVersion
+            self.cleanVersion = cleanVersion
+            self.notifiedValue = notifiedValue ?? value
             self.onUpdate = onUpdate
             self.usesAsyncTracking = usesAsyncTracking
             self.isSame = isSame
