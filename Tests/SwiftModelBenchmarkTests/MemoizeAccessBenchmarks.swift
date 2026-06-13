@@ -118,10 +118,17 @@ struct MemoizeAccessBenchmarks {
         // `MemoizeThrashTests`.
         #expect(trackedProduces <= 5, "tracked sweep under saturation produced \(trackedProduces)× for one write — should be O(1), not O(accesses)")
         #expect(untrackedProduces <= 5, "untracked sweep under saturation produced \(untrackedProduces)× for one write — should be O(1), not O(accesses)")
-        #expect(model.layout.first == 2)
 
-        // Let the queued revalidations drain before the suite's next test.
+        // Value correctness is asserted only AFTER the queued revalidations
+        // drain. The flood spinners run at `.low` priority but `backgroundCall`
+        // drains at `.userInitiated` (higher), so the OS scheduler can run a
+        // `performUpdate` *during* the sweeps — fine for the produce-COUNT
+        // invariant above (it tolerates a sneaking revalidation), but it means
+        // the cached value can be mid-flight between the two `dep += 1` writes
+        // until things settle. After waitUntilIdle the last revalidation has
+        // committed the live-`dep` value (dep == 2 → layout.first == 2).
         await backgroundCall.waitUntilIdle()
+        #expect(model.layout.first == 2, "memoize settled to a stale value after saturation: \(String(describing: model.layout.first))")
     }
 
     /// Chained memoizes under saturation — the editor's snap-edge-index-over-
@@ -158,9 +165,12 @@ struct MemoizeAccessBenchmarks {
         // deterministic tight bound lives in `MemoizeThrashTests`.
         #expect(layoutProduces <= 10, "chained layout memoize produced \(layoutProduces)× during a saturated 200-access sweep — should be O(1), not O(accesses)")
         #expect(indexProduces <= 10, "chained index memoize produced \(indexProduces)× during a saturated 200-access sweep — should be O(1), not O(accesses)")
-        #expect(model.snapIndex == 121)
 
+        // Value correctness only after the queued revalidations drain — see
+        // `saturatedPoolSweepProduceCount` for why the cached value can be
+        // mid-flight during the saturated section. dep == 1 → snapIndex == 121.
         await backgroundCall.waitUntilIdle()
+        #expect(model.snapIndex == 121, "chained memoize settled to a stale value after saturation: \(model.snapIndex)")
     }
 }
 

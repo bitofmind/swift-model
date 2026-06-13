@@ -90,6 +90,14 @@ struct MemoizeThrashTests {
 
     // MARK: - Starved revalidation: dirty access must not degrade to produce-per-access
 
+    // These two tests block the revalidation queue's drain with a
+    // `DispatchSemaphore` to model a saturated cooperative pool deterministically.
+    // That needs libdispatch and a second thread to block — neither exists on
+    // WASM (`canImport(Dispatch)` is false there, and WASI is single-threaded, so
+    // a blocking gate would deadlock the runtime). The idle-pool and untracked
+    // tests above/below give WASM its coverage; the starvation property is a
+    // multi-threaded concern that doesn't apply to the single-threaded target.
+#if canImport(Dispatch)
     @Test(arguments: UpdatePath.allCases)
     func starvedRevalidationDoesNotProducePerAccess(updatePath: UpdatePath) async throws {
         let queue = BackgroundCallQueue()
@@ -153,6 +161,7 @@ struct MemoizeThrashTests {
         await queue.waitUntilIdle()
         #expect(model.snapIndex == 121)
     }
+#endif
 
     // MARK: - Untracked access
 
