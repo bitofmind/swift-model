@@ -188,6 +188,12 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     var probes: [TestProbe] = []
     let fileAndLine: FileAndLine
 
+    // (context, path) pairs for which a read-only-path wake subscription has been
+    // registered — see `registerReadOnlyPathWake`. Dedup only; the subscriptions
+    // themselves live in each context's modifyCallbacks (with `[weak self]`) and
+    // die with the context, so no cancellation handles are stored here.
+    private var readOnlyWakeKeys: Set<DependencyMetadataKey> = []
+
     // Per-model-type cache of private (non-exhaustively-tracked) key paths.
     // Keyed by `ObjectIdentifier(M.self)`, values are the LOCAL (non-root-relative)
     // WritableKeyPaths for properties declared `private` or `fileprivate` in that model type.
@@ -497,7 +503,24 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     }
 
     override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
-        guard let path = path as? WritableKeyPath<M._ModelState, Value> else { return nil }
+        guard let path = path as? WritableKeyPath<M._ModelState, Value> else {
+            // Read-only synthetic paths (a memoized property's `[memoizeKey:]`
+            // subscript) carry no Access bookkeeping, but a parked `expect`
+            // still needs to wake when their value commits: a memoize commit
+            // arrives from the coalesced performUpdate on the background drain
+            // — no `activeAccess.didModify` ever fires for it, only the
+            // context's `modifyCallbacks[path]`. Subscribe there (once per
+            // (context, path)) so the commit counts as activity.
+            //
+            // Historically this wake wasn't needed: a dependency change left
+            // the memoize entry permanently dirty, so every predicate
+            // re-evaluation recomputed inline and never had to wait for the
+            // performUpdate's commit. With versioned dirty tracking the cache
+            // actually holds — making the commit the event a parked expect
+            // must observe. See `MemoizeThrashTests`.
+            registerReadOnlyPathWake(context: context, path: path)
+            return nil
+        }
 
         // Capture the modification area and storage name at the point of access (thread-locals
         // are set here but may be cleared by the time the returned closure is invoked).
@@ -1644,6 +1667,23 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             self.dependencyPreferenceUpdates.removeAll()
         }
 
+    }
+
+    /// Registers a `context.onModify` subscription for a read-only synthetic path
+    /// (memoize keys) that fires `_noteActivity` when the path's value commits.
+    /// One subscription per (context, path); the callback holds `self` weakly and
+    /// the subscription dies with the context, so no cancellation handle is kept.
+    private func registerReadOnlyPathWake<M: Model, Value>(context: Context<M>, path: KeyPath<M._ModelState, Value> & Sendable) {
+        let key = DependencyMetadataKey(contextID: ObjectIdentifier(context), path: path)
+        let isNew = lock { readOnlyWakeKeys.insert(key).inserted }
+        guard isNew else { return }
+        // Registered outside the TestAccess lock — context.onModify takes the
+        // context lock, and holding both here would invert the established
+        // context → TestAccess lock order used by the didModify post-closures.
+        _ = context.onModify(for: path) { [weak self] finished, _ in
+            if finished { return nil }
+            return { self?._noteActivity() }
+        }
     }
 
     func install(_ probe: TestProbe) {
