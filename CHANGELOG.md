@@ -18,7 +18,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Added
 
-- **Memoize regression coverage.** `SwiftModelTests.MemoizeThrashTests` asserts produce-count stays O(1) after a dependency write and under *deterministic* cooperative-pool starvation (the revalidation queue is blocked on a gate, not left to machine load) — for tracked and untracked access, single and chained memoizes. `SwiftModelBenchmarkTests.MemoizeAccessBenchmarks` adds the cost benchmark (cached untracked vs tracked access, interleaved-median ratio for CI stability) plus produce-count under genuine cooperative-pool saturation; it runs in CI via a dedicated `benchmarks` job (the read-path and timing benchmarks remain on-demand).
+- **Memoize regression coverage.** `SwiftModelTests.MemoizeThrashTests` (in the regular CI suite) asserts produce-count stays O(1) after a dependency write and under *deterministic* cooperative-pool starvation (the revalidation queue is blocked on a gate, not left to machine load) — for tracked and untracked access, single and chained memoizes. `SwiftModelBenchmarkTests.MemoizeAccessBenchmarks` adds the on-demand cost benchmark (cached untracked vs tracked access, interleaved-median ratio) plus produce-count under genuine cooperative-pool saturation; like the other benchmark suites it is excluded from CI (run via `swift test --filter SwiftModelBenchmarkTests.MemoizeAccessBenchmarks`).
 
 ---
 
