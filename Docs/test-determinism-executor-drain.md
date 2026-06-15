@@ -129,9 +129,26 @@ wall clock in the decision.
 
 ## 6. Honest risks / what real wiring must clear
 
-The spike proves the *primitive*. Integration risks, to validate by wiring one
-real flaky test (`ChildActivationTaskTests.childTasksCompleteBeforeTeardown`)
-end-to-end:
+> **Update — end-to-end wiring attempted; NEGATIVE result (valuable).** Branch
+> `claude/spike-drain-executor` also contains a first end-to-end wiring (INERT by
+> default; opt in with `SWIFT_MODEL_EXPERIMENTAL_DRAIN=1`): model task spawns
+> (`Cancellables`) take an `executorPreference` to a per-test executor via a
+> `_TestExecutorBox` task-local set by the trait, and `expect`/`settle` drive it
+> via `_startExecutorDrive`. With the flag on, it **deadlocks real model
+> settle/teardown** — `SettlingTests` time out and
+> `ChildActivationTaskTests.childTasksCompleteBeforeTeardown` hits the trait
+> wall-clock cap. Cause: a **single serial-queue** executor does not compose with
+> real model work — model **context locks**, the **off-executor bg pump**
+> (`BackgroundCallQueue`/`Task.detached`, which ignores executor preference), and
+> **`@MainActor` hops** can leave the one serial thread blocked. The isolated
+> primitive (Tests A/B/C) remains sound; the lesson is the executor must be a
+> **counted *concurrent* executor**, and the fixpoint must **union the bg and
+> MainActor queues** — risks #1/#2 below are not optional. The wiring is left in,
+> inert and flagged, as the substrate for that next iteration; the end-to-end
+> test is `.disabled` with this finding.
+
+The spike proves the *primitive*. Integration risks, confirmed by the wiring
+attempt above:
 
 1. **MainActor hop.** Work that hops to `@MainActor` (`MainCallQueue`) runs on
    the main executor, not the drain executor. The fixpoint must drain that queue

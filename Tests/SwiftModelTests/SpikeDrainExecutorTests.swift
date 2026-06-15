@@ -2,6 +2,8 @@
 import Foundation
 import Dispatch
 import Testing
+import Clocks
+import SwiftModel
 
 // MARK: - SPIKE: executor-drain quiescence (throwaway, not shipped)
 //
@@ -106,6 +108,25 @@ func underCPULoad<T>(_ body: () async -> T) async -> T {
     return await body()
 }
 
+// Mirrors ChildActivationTaskTests' models — a parent whose child items each
+// spawn an onActivate task that sets `loaded` after a clock sleep. With an
+// ImmediateClock the work is logically finite; the only reason the real test
+// flakes is the cooperative pool not scheduling all of it within `expect`'s
+// wall-clock budget under load.
+@Model private struct SpikeParent: Sendable {
+    var items: [SpikeItem] = []
+}
+@Model private struct SpikeItem: Sendable, Identifiable {
+    let id: Int
+    var loaded: Bool = false
+    func onActivate() {
+        node.task {
+            try await node.continuousClock.sleep(for: .milliseconds(200))
+            loaded = true
+        } catch: { _ in }
+    }
+}
+
 @Suite("SPIKE: executor-drain quiescence")
 struct SpikeDrainExecutorTests {
 
@@ -171,6 +192,29 @@ struct SpikeDrainExecutorTests {
         #expect(!reached, "a continuously-yielding runaway must NOT reach a fixpoint")
         stop.withLock { run = false }
         _ = await spinner.value
+    }
+
+    /// TEST D — END-TO-END through the real `.modelTesting` path. The wiring
+    /// (`Cancellables` executorPreference + `_TestExecutorBox` task-local + the
+    /// `expect` drive) is exercised here: a parent spawns 5 child `onActivate`
+    /// tasks (clock-sleep → `loaded = true`) and `expect` asserts all loaded —
+    /// the exact shape of the documented load-flaky
+    /// `ChildActivationTaskTests.childTasksCompleteBeforeTeardown`. Looped under
+    /// CPU load: with the executor drive, `expect` resolves by driving the model
+    /// tasks to a fixpoint rather than waiting on the wall clock, so every
+    /// iteration passes regardless of contention.
+    @Test(.disabled("NEGATIVE RESULT: naive single-serial-queue executorPreference deadlocks real model settle/teardown (context locks + off-executor bg pump + @MainActor hops don't compose with one serial queue). The isolated primitive (Tests A/B/C) is sound; end-to-end needs a counted CONCURRENT executor whose fixpoint unions the bg/MainActor queues. Run manually with SWIFT_MODEL_EXPERIMENTAL_DRAIN=1 to reproduce the hang. See docs/test-determinism-executor-drain.md §6."))
+    func realModelChildTasksAreLoadIndependentEndToEnd() async {
+        guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) else { return }
+        await underCPULoad {
+            for _ in 0..<40 {
+                await withModelTesting(.off) {
+                    let parent = SpikeParent().withAnchor { $0.continuousClock = ImmediateClock() }
+                    parent.items = (0..<5).map { SpikeItem(id: $0) }
+                    await expect(parent.items.count == 5 && parent.items.allSatisfy { $0.loaded })
+                }
+            }
+        }
     }
 
     /// TEST C — HONEST CAVEAT. Work that suspends on an OFF-executor async

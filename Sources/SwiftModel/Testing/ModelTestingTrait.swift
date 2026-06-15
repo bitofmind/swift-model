@@ -441,12 +441,15 @@ private func _withModelTestingImpl(
     }
     let pending = _PendingModelTestScope(exhaustivity: resolvedExhaustivity, dependencies: mergedDependencies)
     let testQueue = BackgroundCallQueue()
+    let execBox = _makeTestExecutorBox()
     try await _BackgroundCallLocals.$queue.withValue(testQueue) {
-        try await _ModelTestingLocals.$scope.withValue(pending) {
-            try await body()
-        }
-        if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
-            await concrete.checkExhaustion(at: fl)
+        try await _TestExecutorBox.$current.withValue(execBox) {
+            try await _ModelTestingLocals.$scope.withValue(pending) {
+                try await body()
+            }
+            if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
+                await concrete.checkExhaustion(at: fl)
+            }
         }
     }
 }
@@ -492,6 +495,7 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
         // each other's in-flight Observed pipeline updates.
         let testQueue = BackgroundCallQueue()
         let testTag = test.name
+        let execBox = _makeTestExecutorBox()
         try await _BackgroundCallLocals.$queue.withValue(testQueue) {
             // Per-test wall-clock cap.
             //
@@ -507,13 +511,15 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
             // three the test should fail explicitly rather than hang.
             try await withoutActuallyEscaping(function) { escapingFunction in
                 try await _withTestTimeout(seconds: ModelTestingTraitOptions.testWallClockSeconds, testTag: testTag) {
-                    try await _ModelTestingLocals.$scope.withValue(pending) {
-                        try await escapingFunction()
-                    }
-                    // After the test body completes, run exhaustion check (still inside the
-                    // test-local queue scope so any teardown backgroundCall work uses testQueue).
-                    if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
-                        await concrete.checkExhaustion(at: fl)
+                    try await _TestExecutorBox.$current.withValue(execBox) {
+                        try await _ModelTestingLocals.$scope.withValue(pending) {
+                            try await escapingFunction()
+                        }
+                        // After the test body completes, run exhaustion check (still inside the
+                        // test-local queue scope so any teardown backgroundCall work uses testQueue).
+                        if let concrete = pending.concrete, let fl = pending.registrationFileAndLine {
+                            await concrete.checkExhaustion(at: fl)
+                        }
                     }
                 }
             }

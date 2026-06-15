@@ -89,6 +89,14 @@ extension TestAccess {
         // `weak self` would force `self` Optional everywhere inside; we
         // hold a strong reference instead since the evaluator's lifetime
         // is bounded by the awaitPredicate await on this task.
+        // EXPERIMENTAL (executor-drain quiescence): if model tasks are running on
+        // a per-test harness executor, drive them to a fixpoint concurrently with
+        // the reactive wait. Additive — the predicate still resolves reactively
+        // the instant it's true (transients caught); this just guarantees forward
+        // progress without depending on the wall clock, so a passing test resolves
+        // deterministically under load. `nil` (no executor / pre-macOS-15) leaves
+        // behaviour exactly as before.
+        let executorDriver = _startExecutorDrive()
         let outcome = await self.awaitPredicate(deadlineNs: deadlineNs) { @Sendable [self] in
             TesterAssertContextBase.$assertContext.withValue(context) {
                 usingActiveAccess(self) {
@@ -96,6 +104,7 @@ extension TestAccess {
                 }
             }
         }
+        executorDriver?.cancel()
 
         switch outcome {
         case .passed:
