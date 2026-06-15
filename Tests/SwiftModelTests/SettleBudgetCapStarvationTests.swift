@@ -215,6 +215,72 @@ struct SettleBudgetCapStarvationTests {
         scheduler._drivenTick(nowNs: DispatchTime.now().uptimeNanoseconds + quietNs + 1_000_000)
         _ = await task.value
     }
+
+    // MARK: - waitUntilSettled-level outcome (the user-visible settle())
+
+    /// THE USER-VISIBLE REGRESSION. The backstop tests above prove the *wait*
+    /// resolves; this proves `waitUntilSettled` — the function `settle()` /
+    /// `expect()` actually call — returns SUCCESS rather than reporting the
+    /// misleading "model still has active tasks" failure when the budget cap
+    /// trips on an already-quiescent model whose `.deferential` quiet-window
+    /// confirmation was starved.
+    ///
+    /// Deterministic via a `manualOnly` scheduler: the `.deferential` primary
+    /// is never delivered (`fireDeferential: false`), only the `.responsive`
+    /// backstop. The model never writes and bg is idle, so the budget-cap
+    /// quiescence re-check must pass.
+    ///
+    /// Before the fix `waitUntilSettled` returned `false` and recorded an
+    /// issue here (it judged the resolution purely by `now >= budgetEnd`).
+    @Test func inTestSettleSucceedsWhenQuiescentButDeferentialPrimaryStarved() async {
+        let scheduler = GlobalTickScheduler(manualOnly: true)
+        let tester = ModelTester(BudgetCapSignalModel(), exhaustivity: .off, tickScheduler: scheduler)
+        let access = tester.access
+        let budgetNs: UInt64 = 200_000_000   // 200 ms in-test budget (via hardCap)
+        let fl = FileAndLine(fileID: #fileID, filePath: #filePath, line: #line, column: #column)
+
+        let settled = await TestAccessOverrides.$hardCapNanoseconds.withValue(budgetNs) {
+            let task = Task { await access.waitUntilSettled(cleanup: false, at: fl) }
+            // Primary .deferential quiet-window deadline + .responsive backstop.
+            #expect(await Self.waitForPending(scheduler, atLeast: 2))
+            // Let real time pass the budget AND a full debounce window with no
+            // activity, so the quiescence re-check sees genuine quiet.
+            try? await Task.sleep(nanoseconds: budgetNs + 60_000_000)  // +60 ms > 50 ms window
+            // Starve the .deferential primary; deliver ONLY the backstop.
+            let fired = scheduler._drivenTick(nowNs: DispatchTime.now().uptimeNanoseconds, fireDeferential: false)
+            #expect(fired == 1, "only the .responsive budget backstop should fire; fired \(fired)")
+            return await task.value
+        }
+        #expect(settled, "a quiescent model must settle even when the .deferential confirmation is starved")
+    }
+
+    /// GUARD AGAINST OVER-CORRECTION. The budget-cap quiescence re-check must
+    /// NOT turn a genuinely-still-writing model into a false pass. Here the
+    /// model records activity right at the budget boundary, so the
+    /// `(now − lastActivity) ≥ window` condition fails and `waitUntilSettled`
+    /// must still report the timeout (return `false`).
+    @Test func inTestSettleStillFailsWhenActivityRecentAtBudget() async {
+        let scheduler = GlobalTickScheduler(manualOnly: true)
+        let tester = ModelTester(BudgetCapSignalModel(), exhaustivity: .off, tickScheduler: scheduler)
+        let access = tester.access
+        let budgetNs: UInt64 = 200_000_000
+        let fl = FileAndLine(fileID: #fileID, filePath: #filePath, line: #line, column: #column)
+
+        var settled = true
+        // The genuine-timeout path legitimately records an issue.
+        await withKnownIssue("a genuine settle timeout must still report an issue") {
+            settled = await TestAccessOverrides.$hardCapNanoseconds.withValue(budgetNs) {
+                let task = Task { await access.waitUntilSettled(cleanup: false, at: fl) }
+                #expect(await Self.waitForPending(scheduler, atLeast: 2))
+                try? await Task.sleep(nanoseconds: budgetNs + 60_000_000)
+                // Model still churning at the boundary: stamp activity "now".
+                access._noteActivity()
+                _ = scheduler._drivenTick(nowNs: DispatchTime.now().uptimeNanoseconds, fireDeferential: false)
+                return await task.value
+            }
+        }
+        #expect(!settled, "recent activity at the budget boundary is a genuine timeout, not quiescence")
+    }
 }
 
 // MARK: - Helpers

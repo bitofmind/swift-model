@@ -89,6 +89,11 @@ extension TestAccess {
         let startNs = _monotonicNs()
         let budgetEndNs = startNs &+ totalBudgetNs
 
+        // Treat the wait's start as the last activity, so a model that never
+        // writes still needs a full quiet window of real time to elapse
+        // before the budget-cap quiescence check (below) can pass.
+        noteWaitArmed()
+
         // Single-await settle.
         //
         // `awaitSettled` registers ONE pending entry with combined
@@ -139,6 +144,38 @@ extension TestAccess {
         case .passed, .timeout:
             let now = _monotonicNs()
             if now >= budgetEndNs {
+                // The total-budget cap tripped. This resolves via the
+                // `.responsive` budget backstop, which fires INLINE on the
+                // GTS `.userInitiated` queue — so it trips on time even when
+                // the primary `.deferential` quiet-window callback is starved
+                // on the `.background` queue. But "budget elapsed" alone does
+                // NOT mean the model is stuck: under cross-process CPU
+                // saturation (e.g. a concurrent `xcodebuild` on a shared CI
+                // host) the `.background` quiet-window confirmation can be
+                // starved for the whole budget while the model has actually
+                // been idle the entire time. Reporting a failure there is a
+                // false negative — the misleading "model still has active
+                // tasks" with an empty task list.
+                //
+                // So before failing, re-check actual quiescence inline — the
+                // same conditions the quiet-window callback would have checked
+                // had it been scheduled:
+                //   • bg idle (no in-flight pipeline / silent-memoize work),
+                //   • no task registered-but-not-yet-started (a body still
+                //     queued in the cooperative pool would write after we
+                //     return), and
+                //   • no activity for at least one debounce window
+                //     (the model has genuinely been quiet, not still writing).
+                // If all hold, the settle succeeded and the confirmation was
+                // merely late — return success. A genuinely churning model
+                // (recent activity), busy bg, or a task still pending its
+                // first run fails as before.
+                let quiescent = backgroundCall.isIdle
+                    && !context.hasPendingStartTask
+                    && (now &- lock { lastActivityNs }) >= window
+                if quiescent {
+                    return true
+                }
                 if !cleanup {
                     fail("settle() timed out: model still has active tasks.\n\(settleDiagnostics())", at: fileAndLine)
                 }

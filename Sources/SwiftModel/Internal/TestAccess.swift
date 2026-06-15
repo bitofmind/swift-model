@@ -362,6 +362,26 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     var _pendingExpects: [PendingExpect] = []
     var _nextPendingExpectId: UInt64 = 0
 
+    /// Monotonic-ns timestamp of the most recent `_noteActivity` (model
+    /// write / event send / probe call). Read by `waitUntilSettled` to
+    /// decide, when the total-budget cap trips, whether the model has in
+    /// fact been quiet for a full debounce window — i.e. whether settle
+    /// succeeded but its `.deferential` quiet-window confirmation was
+    /// starved by cross-process load, vs the model genuinely still churning.
+    /// Stamped under `lock` so the read in `waitUntilSettled` is ordered
+    /// against the last write. `0` until the first activity or the first
+    /// `noteWaitArmed()`.
+    var lastActivityNs: UInt64 = 0
+
+    /// Record the start of a settle wait as "activity now", so a settle
+    /// over a model that never writes still requires a full quiet window
+    /// of real elapsed time before `waitUntilSettled` treats it as
+    /// quiescent at the budget cap. Without this, `lastActivityNs == 0`
+    /// would make `now &- lastActivityNs` enormous and a just-armed,
+    /// never-confirmed wait would be declared quiescent immediately.
+    func noteWaitArmed() {
+        lock { lastActivityNs = monotonicNanoseconds() }
+    }
 
     // Captures a single state transition: how to apply it to a Root snapshot, and how to
     // describe it for exhaustion-failure messages.
@@ -964,6 +984,10 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         var wakes: [CheckedContinuation<PredicateOutcome, Never>] = []
         lock {
             let now = monotonicNanoseconds()
+            // Stamp the activity time so a settle resolved at its budget cap
+            // can tell "model has been quiet for a window" (confirmation
+            // merely starved) from "model still writing" (genuinely stuck).
+            lastActivityNs = now
             // Iterate in reverse so removals don't shift indices we haven't
             // visited yet.
             for i in (0..<_pendingExpects.count).reversed() {
