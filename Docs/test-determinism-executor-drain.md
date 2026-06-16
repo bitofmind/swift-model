@@ -216,6 +216,45 @@ wall clock in the decision.
 > migration is not done. Parked here (inert by default); this is the point where
 > a maintainer who owns the wait core should drive the rewrite.
 
+> **Update 5 — the firing semantics are proven, and they redirect the design
+> AWAY from the executor.** Clarified intent: the per-wait timeouts are internal
+> and arbitrary; under load they may take *as long as necessary*; in the happy
+> case they never fire; a broken test/refactor should fire *fast when a human
+> runs one test* and correctly under CI load. That reframes the "timeout" as a
+> **fixpoint check, not a time budget**: resolve *pass* when the target is met,
+> resolve *fail* the moment the model is **quiescent with the target still
+> unmet**; the wall clock is only a last-resort hang-catcher.
+>
+> Stage 1 made `expect` fixpoint-primary (fail when quiescent-but-unmet; wall
+> clock pushed to a 600 s backstop). **It works for the firing semantics** — an
+> unsatisfiable `expect` failed in **247 ms**, not 600 s (Test E). But it
+> *false-failed healthy* tests (`childTasks`), and the cause is decisive:
+>
+> **An instantaneous "executor idle (`outstanding == 0`)" is a PREMATURE
+> fixpoint.** A task suspended at `await clock.sleep` (even `ImmediateClock`) is
+> not a ready job, so when several child tasks are momentarily suspended
+> mid-sleep the counter reads 0 and the drive declares "fixpoint" while the work
+> is actually in flight — resolving "unmet" there is a false failure. Tasks
+> suspend and resume; a single idle instant cannot mean "done."
+>
+> **This is exactly why SwiftModel already uses a DEBOUNCED quiet window** (a
+> suspended task that resumes does activity within the window and re-arms it). So
+> the correct fixpoint detector is the **existing quiet window** (debounced over
+> `_noteActivity` = writes + task-body-starts + enqueues), **not a custom
+> executor** — the executor's idle count is both unnecessary and *worse*
+> (premature). 
+>
+> **Recommended direction (supersedes the executor route):** make
+> `expect`/`settle`/`waitUntil` resolve on the **quiet-window fixpoint with the
+> total budget removed** — i.e. wait as long as needed for the model to go quiet
+> (only a generous hang backstop, e.g. the trait cap), and **fail `expect` when
+> the model is quiet but the predicate is still unmet**. This reuses the
+> mechanism SwiftModel *already* relies on for `settle` (`awaitSettled`:
+> quiet-window + bg-idle), drops the executor wiring entirely, and avoids the
+> premature-fixpoint false failures. It is *less* invasive than the executor
+> migration. The executor spike (Tests A–E, iterations 1–4) remains as the
+> investigation record that led here; it should not ship.
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 

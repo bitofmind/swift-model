@@ -218,6 +218,26 @@ struct SpikeDrainExecutorTests {
         }
     }
 
+    /// TEST E — FIRING SEMANTICS. With the fixpoint-primary drive, an
+    /// unsatisfiable `expect` must FAIL the moment the model is quiescent (~ms
+    /// when unloaded), NOT wait the 600 s wall-clock backstop. This is the
+    /// "happy case never fires; a broken assertion fires fast interactively"
+    /// contract — the timeout is a fixpoint check, not a time budget.
+    @Test func brokenExpectFailsFastAtFixpoint() async {
+        guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) else { return }
+        guard ProcessInfo.processInfo.environment["SWIFT_MODEL_EXPERIMENTAL_DRAIN"] == "1" else { return }
+        let start = DispatchTime.now().uptimeNanoseconds
+        await withModelTesting(.off) {
+            let m = SpikeItem(id: 0).withAnchor { $0.continuousClock = ImmediateClock() }
+            await withKnownIssue("an unsatisfiable expect must fail at the fixpoint") {
+                await expect(m.loaded && !m.loaded)   // never true
+            }
+        }
+        let elapsedMs = (DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+        print("DIAG brokenExpect: elapsedMs=\(elapsedMs)")
+        #expect(elapsedMs < 5_000, "broken expect must fail at the fixpoint (~ms), not wait the 600 s backstop")
+    }
+
     /// TEST C — HONEST CAVEAT. Work that suspends on an OFF-executor async
     /// source (here a raw GCD timer, standing in for an uncontrolled real
     /// dependency) leaves the executor's ready queue empty while work is still

@@ -79,7 +79,13 @@ extension TestAccess {
         let snapshot = EvalSnapshot()
 
         let startNs = nowMonotonicNs()
-        let deadlineNs = startNs &+ timeout
+        // With the executor drive active, the FIXPOINT decides pass/fail (the
+        // drive resolves a still-unmet predicate the moment the model is
+        // quiescent — see `_startExecutorDrive`). The wall clock is then only a
+        // last-resort hang-catcher for a true deadlock where the fixpoint is
+        // never reached; arm it far out and let the `.modelTesting` trait cap be
+        // the real catcher. Without the drive, keep the original wall-clock budget.
+        let deadlineNs = _isExecutorDriveActive ? (startNs &+ 600_000_000_000) : (startNs &+ timeout)
 
         // The evaluator runs both initially (caller's thread) and on every
         // subsequent activity (writer thread, inside _noteActivity, under

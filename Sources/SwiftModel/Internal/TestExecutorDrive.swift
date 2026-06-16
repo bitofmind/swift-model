@@ -123,24 +123,38 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
 #endif
 
 extension TestAccess {
-    /// If a per-test harness executor is active, start a background driver that
-    /// drives model work to a fixpoint and then nudges a final predicate
-    /// re-evaluation (`_noteActivity`).
+    /// True when a per-test harness executor is installed (flag on, macOS 15+).
+    /// `expect` uses this to know the fixpoint drive — not the wall clock — is
+    /// the resolution authority, so it arms only a generous hang-catcher deadline.
+    var _isExecutorDriveActive: Bool {
+        #if canImport(Dispatch)
+        if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) {
+            return _TestExecutorBox.current is _DrainTestExecutor
+        }
+        #endif
+        return false
+    }
+
+    /// **Fixpoint-PRIMARY resolution for `expect`.** When a per-test executor is
+    /// active, this driver makes the *fixpoint* — not a wall-clock budget — decide
+    /// an `expect`'s outcome:
+    ///   • target met → the reactive `_noteActivity` path resolves it `.passed`
+    ///     (the instant it's true — transients still caught);
+    ///   • model reaches a fixpoint with the target still unmet →
+    ///     `_resolveUnmetPredicatesAtFixpoint` resolves it `.timeout` (= fail),
+    ///     which under no load is milliseconds (fast feedback) and under load is
+    ///     "as long as necessary" (never a false fire).
     ///
-    /// The fixpoint is the UNION of every place model-affecting work can live:
-    /// the executor's ready jobs, the per-test `BackgroundCallQueue` (Observed /
-    /// memoize pump), the `@MainActor` `MainCallQueue`, and any task registered
-    /// but not yet started (`hasPendingStartTask`). Draining task bodies alone is
-    /// not enough — a write can hand work to the bg pump or hop to MainActor, and
-    /// declaring "quiet" before those drain is exactly what made the naive serial
-    /// wiring mis-resolve. We loop barrier → drain bg → re-check all four until
-    /// they're *simultaneously* quiet across two rounds (a stable fixpoint), or a
-    /// LOGICAL round cap trips (runaway). No wall clock in the decision.
+    /// The fixpoint is the UNION of every place model-affecting work can live: the
+    /// executor's ready jobs, the per-test `BackgroundCallQueue` (Observed/memoize
+    /// pump), the `@MainActor` `MainCallQueue`, and any task registered but not yet
+    /// started (`hasPendingStartTask`). We do NOT `break` on first fixpoint: the
+    /// driver is started before `awaitPredicate` registers its entry, so we keep
+    /// re-confirming the fixpoint and resolving until the wait is gone (then
+    /// `expect` cancels us). `waitUntilIdle` is event-driven, so this only spins
+    /// in the sub-µs registration window, never while real work is in flight.
     ///
-    /// Additive to the reactive wait — model writes already wake `expect`/`settle`
-    /// as they happen (so transient-state assertions still resolve mid-drive);
-    /// this just guarantees forward progress without depending on the wall clock.
-    /// Returns the driver `Task` (cancel it once the wait resolves) or `nil`.
+    /// Returns the driver `Task` (cancel once the wait resolves) or `nil`.
     func _startExecutorDrive() -> Task<Void, Never>? {
         #if canImport(Dispatch)
         if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
@@ -148,26 +162,43 @@ extension TestAccess {
             return Task { [weak self] in
                 guard let self else { return }
                 let bg = backgroundCall   // task-local per-test queue (inherited)
-                var consecutiveQuiet = 0
                 while !Task.isCancelled {
                     await exec.waitUntilIdle()
                     if !bg.isIdle { await bg.waitForCurrentItems(deadline: .max) }
-                    let quiet = exec.isExecutorIdle
+                    let atFixpoint = exec.isExecutorIdle
                         && bg.isIdle
                         && mainCall.isIdle
                         && !self.context.hasPendingStartTask
-                    if quiet {
-                        consecutiveQuiet += 1
-                        if consecutiveQuiet >= 2 { break }
-                        await Task.yield()   // let any in-flight resumption re-enqueue before re-confirming
-                    } else {
-                        consecutiveQuiet = 0
+                    if atFixpoint {
+                        self._noteActivity()                      // resolve now-true predicates as .passed
+                        self._resolveUnmetPredicatesAtFixpoint()  // resolve still-unmet predicates as .timeout (fail)
+                        await Task.yield()                        // re-confirm (registration race / late re-enqueue)
                     }
                 }
-                self._noteActivity()
             }
         }
         #endif
         return nil
+    }
+
+    /// Resolve every pending `.predicate` (`expect`) wait as `.timeout` because
+    /// the model has reached a fixpoint with the predicate still false — i.e. it
+    /// will not become true, so this is a genuine assertion failure, surfaced
+    /// immediately rather than after a wall-clock budget. Settle/quiet-window
+    /// (`.settled`/`.debounce`) entries are left alone — they have their own
+    /// resolution. Continuations are resumed OUTSIDE the lock.
+    func _resolveUnmetPredicatesAtFixpoint() {
+        var wakes: [CheckedContinuation<PredicateOutcome, Never>] = []
+        lock {
+            for i in (0..<_pendingExpects.count).reversed() {
+                let pending = _pendingExpects[i]
+                if case .predicate = pending.mode {
+                    pending.cancelAllHandles()
+                    wakes.append(pending.continuation)
+                    _pendingExpects.remove(at: i)
+                }
+            }
+        }
+        for cont in wakes { cont.resume(returning: .timeout) }
     }
 }
