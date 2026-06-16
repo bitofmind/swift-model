@@ -208,22 +208,40 @@ extension TestAccess {
         if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
            let exec = _TestExecutorBox.current as? _DrainTestExecutor {
             let bg = backgroundCall
-            // Quiescence = executor idle AND bg idle AND no task pending its first
-            // run AND NO ACTIVITY OF ANY KIND for a `graceNs` grace window. The
-            // grace debounces against the most recent of (a) any `_noteActivity`
-            // — model write / event / probe / task-body-start — and (b) any
-            // executor enqueue. So ANY activity (a clock-parked task resuming and
-            // writing, an enqueue, an event) resets the window: on a single test
-            // the system is quiet at once and the grace elapses fast; under stress
-            // every resuming task keeps resetting it, so the wait lasts as long as
-            // necessary and only declares quiescence once the system is genuinely
-            // done. NON-STARVABLE throughout (counter + GTS, never `.background`).
-            // `mainCall` is excluded — it's process-global, not per-test.
+            // The per-test main-registrar observation queue. Off-main model
+            // writes deliver `withObservationTracking` / `Observed` / `onChange`
+            // notifications by enqueueing the main registrar's willSet/didSet on
+            // `context.mainCallQueue`, which drains on the shared `@MainActor`.
+            // This is the queue earlier iterations EXCLUDED (Update 9) — but that
+            // conflated it with the process-global `mainCall` global; the
+            // observation-delivery queue is actually PER-CONTEXT (root context
+            // owns it, children inherit), so the drive can safely wait on it: the
+            // shared main thread always drains this test's items in finite time,
+            // so the wait is bounded by the watchdog, never an inter-test hang.
+            // Including it closes the observation-delivery gap that false-failed
+            // onChange/Observed/event `expect`s under parallel load — the
+            // satisfying consumer write was merely pending on this queue past the
+            // grace (the dominant residual item-2 race). See
+            // docs/test-determinism-executor-drain.md (Update 12).
+            let main = self.context.mainCallQueue
+            // Quiescence = executor idle AND bg idle AND main-observation idle AND
+            // no task pending its first run AND NO ACTIVITY OF ANY KIND for a
+            // `graceNs` grace window. The grace debounces against the most recent
+            // of (a) any `_noteActivity` — model write / event / probe /
+            // task-body-start — and (b) any executor enqueue. So ANY activity (a
+            // clock-parked task resuming and writing, an enqueue, an event,
+            // an onChange consumer firing off the main drain) resets the window:
+            // on a single test the system is quiet at once and the grace elapses
+            // fast; under stress every resuming task keeps resetting it, so the
+            // wait lasts as long as necessary and only declares quiescence once
+            // the system is genuinely done. NON-STARVABLE throughout (counter +
+            // GTS, never `.background`).
             while !Task.isCancelled {
                 if _drainMonotonicNs() >= hangDeadlineNs { return false }
                 await exec.waitUntilIdleOrDeadline(hangDeadlineNs)
                 if !bg.isIdle { await bg.waitForCurrentItems(deadline: hangDeadlineNs) }
-                let idleNow = exec.isExecutorIdle && bg.isIdle && !self.context.hasPendingStartTask
+                if !main.isIdle { await main.waitForCurrentItems(deadline: hangDeadlineNs) }
+                let idleNow = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.context.hasPendingStartTask
                 if idleNow {
                     let lastActivity = max(self._lastActivityNs, exec.lastEnqueueNs)
                     let sinceActivity = _drainMonotonicNs() &- lastActivity

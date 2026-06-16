@@ -437,6 +437,58 @@ wall clock in the decision.
 > becomes race-free (more work, best outcome), or (C) ship 1a + live with reduced
 > residual, is the open maintainer decision.
 
+> **Update 12 — pursued (B); it is necessary coverage but NOT sufficient; the
+> data points back to (A).** Maintainer chose (B): close the executor-coverage
+> gap. Findings:
+>
+> 1. **The gap is real and now closed for observation.** Off-main model writes
+>    deliver the *main* registrar's willSet/didSet (`withObservationTracking` /
+>    `Observed` / `onChange`) via `context.mainCallQueue` — a queue earlier
+>    iterations excluded as "process-global." It is in fact **per-context
+>    (per-test)** (`AnyContext.mainCallQueue = parent?.mainCallQueue ?? .init()`);
+>    only the bare `let mainCall` global is process-wide. So the drive can safely
+>    wait on it (the shared `@MainActor` drains this test's items in finite time,
+>    watchdog-bounded, never an inter-test hang). The fixpoint now unions
+>    executor-idle + bg-idle + **per-test main-observation-idle** + no-pending-
+>    start. (`useMainThreadObservation` is true for `.modelTesting` on Darwin,
+>    confirmed.)
+> 2. **It does not measurably reduce the residual.** Full-parallel (flag on,
+>    UNLOADED machine — runs in ~8.5 s vs the doc's 165 s loaded): ~15–16 flaky
+>    unexpected failures both with and without the mainCall union, and the
+>    *membership varies run to run* (events, `onChange`/`Observed`, transitions,
+>    preference-exhaustivity, child recursion, the `checkExhaustion*DoesNotDeadlock`
+>    pair). `testChildEvents` / `testChangeOf` / `featureEvents` fail in BOTH.
+>    Single runs can't measure a small effect at this variance, but the event
+>    races can't be a mainCall artifact at all — **events don't use the registrar**
+>    (`node.send` is synchronous: `sendEvent` → AsyncStream continuation →
+>    `forEach` consumer, which already resumes on the counted executor).
+> 3. **Diagnosis: the residual is one phenomenon — a fine-grained fixpoint-
+>    *sampling* race, not a whole-queue exclusion.** Under contention the drive
+>    samples "idle ∧ no activity for grace" at an instant when a satisfying
+>    write/event/consumer-resume is in-flight but has not yet registered as
+>    activity within the (finite) grace window; `_resolveUnmetPredicatesAtFixpoint`
+>    then false-fails. It surfaces on every path that relies on "the consumer has
+>    propagated by the time `expect` samples," which is why it looks like a
+>    scattered long tail but is a single cause. This is exactly Update 8's
+>    theorem: **with a dependency-free signal, no finite grace can distinguish
+>    "quiescent, predicate never true" from "quiescent, a delayed resume is about
+>    to make it true" — the delay is unbounded under load.** (B) cannot beat that
+>    by covering more queues; a re-confirmation fixpoint already failed to (U9).
+> 4. **Recommendation: pivot to (A) — `expect` must not self-fail at a fixpoint.**
+>    A healthy `expect` still resolves reactively the instant its predicate is
+>    true (fast happy path, unchanged). A still-unmet predicate fails only when the
+>    model has been genuinely quiescent — *and the natural quiescence signal is the
+>    per-test inactivity watchdog built for item 1a* (30 s of true no-activity),
+>    surfacing the proper `expect` diff at that point rather than a generic
+>    `[TRAIT timeout]`. Race-free and dependency-free by construction. Cost: a
+>    genuinely-wrong assertion run by a human in isolation fails after the
+>    inactivity window rather than instantly — tunable (a shorter expect-specific
+>    inactivity-fail window, since true silence ≠ contention). The mainCall union
+>    from (1) is correct coverage regardless (doc risk #1) and is kept, but it is
+>    not the fix. **Open call for the maintainer: accept the (A) slow-fail
+>    tradeoff (and pick the expect inactivity-fail window), vs. keep fixpoint-fail
+>    + lived-with residual.**
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 
