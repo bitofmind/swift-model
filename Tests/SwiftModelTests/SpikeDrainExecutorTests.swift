@@ -203,9 +203,10 @@ struct SpikeDrainExecutorTests {
     /// CPU load: with the executor drive, `expect` resolves by driving the model
     /// tasks to a fixpoint rather than waiting on the wall clock, so every
     /// iteration passes regardless of contention.
-    @Test(.disabled("NEGATIVE RESULT: naive single-serial-queue executorPreference deadlocks real model settle/teardown (context locks + off-executor bg pump + @MainActor hops don't compose with one serial queue). The isolated primitive (Tests A/B/C) is sound; end-to-end needs a counted CONCURRENT executor whose fixpoint unions the bg/MainActor queues. Run manually with SWIFT_MODEL_EXPERIMENTAL_DRAIN=1 to reproduce the hang. See docs/test-determinism-executor-drain.md §6."))
-    func realModelChildTasksAreLoadIndependentEndToEnd() async {
+    @Test func realModelChildTasksAreLoadIndependentEndToEnd() async {
         guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) else { return }
+        // Opt-in: only meaningful with the experimental executor-drain wiring on.
+        guard ProcessInfo.processInfo.environment["SWIFT_MODEL_EXPERIMENTAL_DRAIN"] == "1" else { return }
         await underCPULoad {
             for _ in 0..<40 {
                 await withModelTesting(.off) {

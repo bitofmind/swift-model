@@ -147,8 +147,30 @@ wall clock in the decision.
 > inert and flagged, as the substrate for that next iteration; the end-to-end
 > test is `.disabled` with this finding.
 
+> **Update 2 — concurrent executor + union fixpoint: STILL not working (second
+> negative result).** Iteration 2 made the executor **concurrent** (to kill the
+> serial head-of-line deadlock) and made the `expect` drive's fixpoint the
+> **union** of executor-idle + `BackgroundCallQueue.isIdle` + `MainCallQueue.isIdle`
+> + `!hasPendingStartTask`. With the flag on it *still* fails: `SettlingTests`
+> time out and `childTasksCompleteBeforeTeardown` now **hangs to the 30 s trait
+> cap** — i.e. the child `onActivate` tasks **never run to completion on the
+> custom executor at all**. So the blocker is not the executor's shape; it's that
+> **model tasks don't make progress when moved off the default cooperative pool**
+> — most likely an actor-isolation / clock-resumption interaction (the child
+> awaits `node.continuousClock.sleep`, whose continuation must resume back onto
+> the preferred executor), and possibly that `settle` itself still resolves via
+> the wall-clock quiet-window rather than the drive. Diagnosing this needs real
+> instrumentation (GTS/settle tracing, confirming `enqueue`/resumption actually
+> fire for a task that hops through `ImmediateClock`/`@MainActor`), **not** more
+> blind rebuild cycles. The wiring remains inert-by-default (flag off ⇒ suite
+> green, verified); the experimental path is parked here pending that
+> investigation. **Revised conclusion: the executor migration is a deeper rework
+> than "add executorPreference + a drive" — it also requires making `settle`
+> drive-based and solving task-progress-on-a-custom-executor — and is best done
+> with a maintainer pairing + tracing, not autonomous trial-and-error.**
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
-attempt above:
+attempts above:
 
 1. **MainActor hop.** Work that hops to `@MainActor` (`MainCallQueue`) runs on
    the main executor, not the drain executor. The fixpoint must drain that queue

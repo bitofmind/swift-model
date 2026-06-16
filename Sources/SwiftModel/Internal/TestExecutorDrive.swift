@@ -44,13 +44,21 @@ func _makeTestExecutorBox() -> (any Sendable)? {
 }
 
 #if canImport(Dispatch)
-/// A harness-owned `TaskExecutor` that runs jobs on a serial queue and tracks
-/// the count of ready-but-not-finished jobs, so a drain to a *logical* fixpoint
-/// (no ready work) can stand in for wall-clock quiescence — load-independent by
-/// construction. See the design note and `SpikeDrainExecutorTests`.
+/// A harness-owned `TaskExecutor` that runs model tasks on a **concurrent**
+/// queue and counts ready-but-not-finished jobs, so a drain to a *logical*
+/// fixpoint (no ready work) can stand in for wall-clock quiescence —
+/// load-independent by construction. See the design note and
+/// `SpikeDrainExecutorTests`.
+///
+/// **Concurrent, not serial.** A single serial queue deadlocks real model work:
+/// a task that contends on a model context lock, or awaits a peer effect, would
+/// head-of-line-block the one thread while the work it needs sits behind it in
+/// the same queue. A concurrent queue lets independent model tasks make progress
+/// on separate threads; the `outstanding` counter + a `.barrier` hop still give
+/// a precise "no ready jobs" signal.
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
 final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
-    private let queue = DispatchQueue(label: "swift-model.test-drain-executor")
+    private let queue = DispatchQueue(label: "swift-model.test-drain-executor", attributes: .concurrent)
     private let lock = NSLock()
     private var outstanding = 0
 
@@ -63,31 +71,17 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
         }
     }
 
-    /// Drive to a logical fixpoint: hop a barrier onto the same serial queue
-    /// (raw GCD — not a tracked job) and read the ready-job count. Any
-    /// continuation resumed ONTO this executor is enqueued FIFO ahead of a
-    /// later barrier, so two consecutive barriers observing zero ready jobs
-    /// means no on-executor ready work remains — a fixpoint. `maxSteps` is a
-    /// LOGICAL cap (barrier-hop count, not wall-clock): a runaway that keeps
-    /// re-enqueuing never reaches the stable zero and trips it deterministically
-    /// on every machine. Returns `true` at a stable fixpoint, `false` if the
-    /// step cap tripped (runaway / off-executor stall).
-    func waitUntilQuiescent(maxSteps: Int = 100_000) async -> Bool {
-        var consecutiveZero = 0
-        var steps = 0
-        while steps < maxSteps {
-            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                queue.async { c.resume() }
-            }
-            if lock.withLock({ outstanding }) == 0 {
-                consecutiveZero += 1
-                if consecutiveZero >= 2 { return true }
-            } else {
-                consecutiveZero = 0
-            }
-            steps += 1
+    /// No executor job is ready/running this instant.
+    var isExecutorIdle: Bool { lock.withLock { outstanding == 0 } }
+
+    /// Returns after every currently-running job has reached its next
+    /// suspension point — the concurrent-queue analogue of a serial FIFO
+    /// barrier. Pairs with `isExecutorIdle`: a `.barrier` flush followed by
+    /// `isExecutorIdle == true` means no on-executor ready work remains.
+    func barrier() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            queue.async(flags: .barrier) { c.resume() }
         }
-        return false
     }
 }
 #endif
@@ -95,18 +89,47 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
 extension TestAccess {
     /// If a per-test harness executor is active, start a background driver that
     /// drives model work to a fixpoint and then nudges a final predicate
-    /// re-evaluation (`_noteActivity`). Additive to the reactive wait — model
-    /// writes already wake `expect`/`settle` as they happen, so transient
-    /// assertions still resolve mid-drive; this just guarantees forward progress
-    /// without depending on the wall clock. Returns the driver `Task` (cancel it
-    /// once the wait resolves) or `nil` when no executor is active.
+    /// re-evaluation (`_noteActivity`).
+    ///
+    /// The fixpoint is the UNION of every place model-affecting work can live:
+    /// the executor's ready jobs, the per-test `BackgroundCallQueue` (Observed /
+    /// memoize pump), the `@MainActor` `MainCallQueue`, and any task registered
+    /// but not yet started (`hasPendingStartTask`). Draining task bodies alone is
+    /// not enough — a write can hand work to the bg pump or hop to MainActor, and
+    /// declaring "quiet" before those drain is exactly what made the naive serial
+    /// wiring mis-resolve. We loop barrier → drain bg → re-check all four until
+    /// they're *simultaneously* quiet across two rounds (a stable fixpoint), or a
+    /// LOGICAL round cap trips (runaway). No wall clock in the decision.
+    ///
+    /// Additive to the reactive wait — model writes already wake `expect`/`settle`
+    /// as they happen (so transient-state assertions still resolve mid-drive);
+    /// this just guarantees forward progress without depending on the wall clock.
+    /// Returns the driver `Task` (cancel it once the wait resolves) or `nil`.
     func _startExecutorDrive() -> Task<Void, Never>? {
         #if canImport(Dispatch)
         if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
            let exec = _TestExecutorBox.current as? _DrainTestExecutor {
             return Task { [weak self] in
-                _ = await exec.waitUntilQuiescent()
-                self?._noteActivity()
+                guard let self else { return }
+                let bg = backgroundCall   // task-local per-test queue (inherited)
+                var consecutiveQuiet = 0
+                var rounds = 0
+                while rounds < 100_000, !Task.isCancelled {
+                    await exec.barrier()
+                    if !bg.isIdle { await bg.waitForCurrentItems(deadline: .max) }
+                    let quiet = exec.isExecutorIdle
+                        && bg.isIdle
+                        && mainCall.isIdle
+                        && !self.context.hasPendingStartTask
+                    if quiet {
+                        consecutiveQuiet += 1
+                        if consecutiveQuiet >= 2 { break }
+                    } else {
+                        consecutiveQuiet = 0
+                    }
+                    rounds += 1
+                }
+                self._noteActivity()
             }
         }
         #endif
