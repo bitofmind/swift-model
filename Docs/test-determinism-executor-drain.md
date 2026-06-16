@@ -169,6 +169,29 @@ wall clock in the decision.
 > drive-based and solving task-progress-on-a-custom-executor — and is best done
 > with a maintainer pairing + tracing, not autonomous trial-and-error.**
 
+> **Update 3 — RESOLVED: end-to-end works (iteration 3).** A layered
+> micro-diagnosis (`DiagExecutorClockTests`) refuted the clock-resumption
+> hypothesis — a bare `Task(executorPreference:)` over `ImmediateClock`/
+> `ContinuousClock` sleeps resumes on the executor fine, and a *real* `@Model`
+> `node.task` polled directly **completes** on the executor. So the hang was not
+> the tasks; it was the **drive itself**: it used `queue.async(flags: .barrier)`
+> to detect idle, and on a concurrent queue a barrier is a read-WRITE barrier
+> that **blocks all other jobs while pending** — so polling with it throttled the
+> very model work we were waiting on. Fix: detect idle with the **outstanding
+> counter + an event-driven, cancellation-aware `waitUntilIdle()`** (resume
+> waiters when the count hits 0), never a barrier. With that, the flag-on path is
+> green on the targeted suites **including under deliberate CPU load**:
+> `ChildActivationTaskTests` (previously hung), `SettlingTests` (previously timed
+> out), the runaway `settleInfiniteChangesTimeout` (still correctly reported),
+> and the end-to-end load-stressed `realModelChildTasksAreLoadIndependentEndToEnd`
+> (40 iterations under load). In the same machine-load moment, the flag-OFF
+> (wall-clock) path *flaked* `SettlingTests` while flag-ON stayed green —
+> the thesis demonstrated live. Note: `settle` benefits transitively — its
+> predicate phase (`expect` with empty predicates) drives the executor to a
+> fixpoint, so its wall-clock quiet-window has nothing left to wait on. Still
+> opt-in; remaining to reach full quality: the full suite under load, flip the
+> default on, then parallel-apple + the parallel-CI flip.
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 

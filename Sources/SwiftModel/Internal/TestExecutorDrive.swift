@@ -61,26 +61,53 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     private let queue = DispatchQueue(label: "swift-model.test-drain-executor", attributes: .concurrent)
     private let lock = NSLock()
     private var outstanding = 0
+    private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
     func enqueue(_ job: consuming ExecutorJob) {
         let unowned = UnownedJob(job)
         lock.withLock { outstanding += 1 }
         queue.async {
             unowned.runSynchronously(on: self.asUnownedTaskExecutor())
-            self.lock.withLock { self.outstanding -= 1 }
+            let waiters: [CheckedContinuation<Void, Never>] = self.lock.withLock {
+                self.outstanding -= 1
+                guard self.outstanding == 0 else { return [] }
+                let w = self.idleWaiters
+                self.idleWaiters.removeAll()
+                return w
+            }
+            for w in waiters { w.resume() }
         }
     }
 
     /// No executor job is ready/running this instant.
     var isExecutorIdle: Bool { lock.withLock { outstanding == 0 } }
 
-    /// Returns after every currently-running job has reached its next
-    /// suspension point — the concurrent-queue analogue of a serial FIFO
-    /// barrier. Pairs with `isExecutorIdle`: a `.barrier` flush followed by
-    /// `isExecutorIdle == true` means no on-executor ready work remains.
-    func barrier() async {
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            queue.async(flags: .barrier) { c.resume() }
+    /// Suspend until no executor job is ready (`outstanding == 0`); resume
+    /// immediately if already idle. **Event-driven via the counter — never a
+    /// `.barrier`.** A `.barrier` on a concurrent queue is a read-WRITE barrier
+    /// that blocks all other jobs while pending, so polling with one throttles
+    /// the very model work we're waiting on (that hung iteration 2). The counter
+    /// is decremented when a job returns (completes or suspends), so reaching 0
+    /// means no ready work without blocking anything. Cancellation-aware so the
+    /// driver unwinds promptly when the wait it serves resolves (e.g. on a
+    /// runaway, where 0 is never reached).
+    func waitUntilIdle() async {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                let resumeNow = lock.withLock { () -> Bool in
+                    if outstanding == 0 { return true }
+                    idleWaiters.append(c)
+                    return false
+                }
+                if resumeNow { c.resume() }
+            }
+        } onCancel: {
+            let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
+                let w = idleWaiters
+                idleWaiters.removeAll()
+                return w
+            }
+            for w in waiters { w.resume() }
         }
     }
 }
@@ -113,9 +140,8 @@ extension TestAccess {
                 guard let self else { return }
                 let bg = backgroundCall   // task-local per-test queue (inherited)
                 var consecutiveQuiet = 0
-                var rounds = 0
-                while rounds < 100_000, !Task.isCancelled {
-                    await exec.barrier()
+                while !Task.isCancelled {
+                    await exec.waitUntilIdle()
                     if !bg.isIdle { await bg.waitForCurrentItems(deadline: .max) }
                     let quiet = exec.isExecutorIdle
                         && bg.isIdle
@@ -124,10 +150,10 @@ extension TestAccess {
                     if quiet {
                         consecutiveQuiet += 1
                         if consecutiveQuiet >= 2 { break }
+                        await Task.yield()   // let any in-flight resumption re-enqueue before re-confirming
                     } else {
                         consecutiveQuiet = 0
                     }
-                    rounds += 1
                 }
                 self._noteActivity()
             }
