@@ -539,6 +539,45 @@ wall clock in the decision.
 > off for those, accept as residual). Best done with maintainer pairing, not
 > further autonomous trial-and-error.
 
+> **Update 14 — CORRECTED BASELINE: the earlier "neutral" read was apples-to-
+> oranges; with a same-machine flag-OFF control the drive is a clear win on
+> BOTH speed and parallel-flake.** Update 13 compared flag-on numbers against the
+> *doc's historical* baselines without re-measuring flag-off on the same
+> (unloaded) machine. Doing so reframes everything (`scripts/test` = `--parallel`;
+> CLAUDE.md notes dev-machine `--parallel` flakes for *any* path — CI's
+> deterministic gate is `--no-parallel`):
+>
+> | Config | Result |
+> |---|---|
+> | flag-OFF, `--no-parallel` (CI gate) | **GREEN**, 0 unexpected, **112 s** |
+> | flag-ON, `--no-parallel` | **~5–6 FLAKY** unexpected/run (set VARIES run-to-run), **43 s** |
+> | flag-OFF, `--parallel` (this machine) | **~31** unexpected |
+> | flag-ON, `--parallel` (this machine) | **~12–18** unexpected |
+>
+> Takeaways:
+> 1. **Flag-off inert path is preserved** — serial CI gate stays green. ✓
+> 2. **The drive is ~2.6× FASTER serially** (43 s vs 112 s) — it resolves at
+>    fixpoints instead of waiting out wall-clock debounce windows.
+> 3. **The drive HALVES `--parallel` flake** (≈31→≈12–18) — the load-tolerance
+>    thesis, confirmed against a real control.
+> 4. **But it is NOT a strict win on the serial gate:** flag-on adds a small
+>    FLAKY residual (~5–6/run, membership varies — observation `testOnChange*`/
+>    `testRecursive*`/`testCapturedObserved*`, events `featureEvents`/
+>    `testChildEvents`, and the `checkExhaustion*DoesNotDeadlock` stress pair)
+>    that flag-off serial does not have. So the fixpoint-sampling race (Update 8)
+>    manifests even SERIALLY at low rate — the shared drain queue + cooperative
+>    pool retain within-test scheduling slack. Each such test PASSES in isolation;
+>    it is an inter-test / within-test-concurrency timing effect, not a
+>    deterministic logic bug.
+>
+> Net: items 1a + B + A are shippable (flag OFF by default) and make the opt-in
+> drive faster and markedly more parallel-tolerant than the wall-clock path; the
+> ~5–6 serial flaky residual is the remaining barrier to flipping the default on,
+> and it is the same fundamental sampling race — now correctly bounded and
+> measured. The tracing-based diagnosis in Update 13's conclusion stands as the
+> next step; the bar is "flag-on serial reaches 0 unexpected, stably" before the
+> default flips.
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 
