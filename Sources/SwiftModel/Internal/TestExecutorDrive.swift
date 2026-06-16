@@ -178,37 +178,37 @@ extension TestAccess {
     /// checks). Returns `true` at the fixpoint, `false` if the deadlock watchdog
     /// (`hangDeadlineNs`) fires or the Task is cancelled. No executor → `true`
     /// (callers gate on `_isExecutorDriveActive`).
-    func _driveToStableFixpoint(hangDeadlineNs: UInt64) async -> Bool {
+    func _driveToStableFixpoint(hangDeadlineNs: UInt64, graceNs: UInt64) async -> Bool {
         #if canImport(Dispatch)
         if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
            let exec = _TestExecutorBox.current as? _DrainTestExecutor {
             let bg = backgroundCall
-            // Short, NON-STARVABLE debounce that the fixpoint must persist for —
-            // bridges the suspend→resume gap of a task parked on a clock/await
-            // (it re-enqueues on resume, bumping `lastEnqueueNs`, resetting this
-            // window). Confirmed via GTS, never `.background` QoS, so it doesn't
-            // starve under load. Tunable knob (runtime vs robustness).
-            let debounceNs: UInt64 = 25_000_000   // 25 ms
+            // Quiescence = executor idle AND bg idle AND no task pending its first
+            // run AND NO ACTIVITY OF ANY KIND for a `graceNs` grace window. The
+            // grace debounces against the most recent of (a) any `_noteActivity`
+            // — model write / event / probe / task-body-start — and (b) any
+            // executor enqueue. So ANY activity (a clock-parked task resuming and
+            // writing, an enqueue, an event) resets the window: on a single test
+            // the system is quiet at once and the grace elapses fast; under stress
+            // every resuming task keeps resetting it, so the wait lasts as long as
+            // necessary and only declares quiescence once the system is genuinely
+            // done. NON-STARVABLE throughout (counter + GTS, never `.background`).
+            // `mainCall` is excluded — it's process-global, not per-test.
             while !Task.isCancelled {
-                let now = _drainMonotonicNs()
-                if now >= hangDeadlineNs { return false }
+                if _drainMonotonicNs() >= hangDeadlineNs { return false }
                 await exec.waitUntilIdleOrDeadline(hangDeadlineNs)
                 if !bg.isIdle { await bg.waitForCurrentItems(deadline: hangDeadlineNs) }
-                // NOTE: `mainCall` is PROCESS-GLOBAL (not per-test) — gating on it
-                // would make a test's drive wait on every OTHER parallel test's
-                // main-queue work (never idle → hang). Per-test signals only: the
-                // executor (per-test) and `bg` (per-test task-local). Headless
-                // `.modelTesting` model work doesn't hop the MainActor queue.
                 let idleNow = exec.isExecutorIdle && bg.isIdle && !self.context.hasPendingStartTask
                 if idleNow {
-                    let sinceEnqueue = _drainMonotonicNs() &- exec.lastEnqueueNs
-                    if sinceEnqueue >= debounceNs {
-                        return true   // idle, and quiet for a full debounce since the last enqueue
+                    let lastActivity = max(self._lastActivityNs, exec.lastEnqueueNs)
+                    let sinceActivity = _drainMonotonicNs() &- lastActivity
+                    if sinceActivity >= graceNs {
+                        return true   // idle, and no activity of any kind for a full grace window
                     }
-                    // Idle but a recent enqueue — wait out the remainder of the
-                    // window (non-starvable), then re-check; a resuming task will
-                    // have re-enqueued and reset it by then.
-                    await _gtsSleep(debounceNs &- sinceEnqueue, hangDeadlineNs: hangDeadlineNs)
+                    // Idle but recent activity — wait out the remainder of the
+                    // grace (non-starvable), then re-check; a resuming task will
+                    // have produced fresh activity and reset it by then.
+                    await _gtsSleep(graceNs &- sinceActivity, hangDeadlineNs: hangDeadlineNs)
                 }
             }
             return false
@@ -216,6 +216,14 @@ extension TestAccess {
         #endif
         return true
     }
+
+    /// Grace windows for the fixpoint debounce. `settle` is forgiving (a slightly
+    /// early settle just means the next line re-settles), so it uses a short
+    /// grace. `expect` makes a definitive "predicate will never be true" judgment
+    /// to FAIL, so it must be sure the system is genuinely done — a larger grace,
+    /// resistant to a delayed resume under load. Tunable knobs.
+    static var _settleGraceNs: UInt64 { 30_000_000 }   // 30 ms
+    static var _expectGraceNs: UInt64 { 250_000_000 }  // 250 ms
 
     /// Non-starvable sleep for `ns` (or until `hangDeadlineNs`), via GTS — used
     /// by the drive's debounce. Cancellation-aware.
@@ -256,20 +264,14 @@ extension TestAccess {
         if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
            _TestExecutorBox.current is _DrainTestExecutor {
             let hang = _executorHangDeadlineNs()
+            let grace = Self._expectGraceNs
             return Task { [weak self] in
                 guard let self else { return }
                 while !Task.isCancelled {
-                    let reached = await self._driveToStableFixpoint(hangDeadlineNs: hang)
-                    self._noteActivity()   // resolve now-true predicates as .passed
-                    // RE-CONFIRM before failing: a `loaded`-style write may still
-                    // be propagating to the predicate evaluator under parallel
-                    // load. Drive to a SECOND stable fixpoint (gives a racing
-                    // write a debounce window to land + fire `_noteActivity`); only
-                    // a predicate STILL unmet after that is a genuine failure.
-                    let reached2 = await self._driveToStableFixpoint(hangDeadlineNs: hang)
-                    self._noteActivity()
+                    let reached = await self._driveToStableFixpoint(hangDeadlineNs: hang, graceNs: grace)
+                    self._noteActivity()                      // resolve now-true predicates as .passed
                     self._resolveUnmetPredicatesAtFixpoint()  // fail still-unmet predicates
-                    if !reached || !reached2 { break }        // watchdog tripped (deadlock)
+                    if !reached { break }                     // watchdog tripped (deadlock)
                     await Task.yield()
                 }
             }
@@ -300,6 +302,6 @@ extension TestAccess {
     /// must live in the class body — Swift forbids overriding in an extension).
     func _driveToStableFixpointErasedImpl() async -> Bool {
         guard _isExecutorDriveActive else { return true }
-        return await _driveToStableFixpoint(hangDeadlineNs: _executorHangDeadlineNs())
+        return await _driveToStableFixpoint(hangDeadlineNs: _executorHangDeadlineNs(), graceNs: Self._expectGraceNs)
     }
 }

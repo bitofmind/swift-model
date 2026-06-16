@@ -92,7 +92,7 @@ extension TestAccess {
         // necessary; only a genuine deadlock (no fixpoint within the watchdog)
         // fails. See docs/test-determinism-executor-drain.md.
         if _isExecutorDriveActive {
-            let reached = await _driveToStableFixpoint(hangDeadlineNs: _executorHangDeadlineNs())
+            let reached = await _driveToStableFixpoint(hangDeadlineNs: _executorHangDeadlineNs(), graceNs: Self._settleGraceNs)
             if !reached, !cleanup {
                 fail("settle() timed out: model never reached a fixpoint (deadlock or runaway).\n\(settleDiagnostics())", at: fileAndLine)
             }

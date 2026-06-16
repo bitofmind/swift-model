@@ -967,10 +967,18 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// Thread-safety: callable from any thread. Wakes continuations OUTSIDE
     /// the lock so resumed Tasks can call back into `awaitPredicate` /
     /// `awaitQuietWindow` without re-entering.
+    /// Monotonic-ns of the most recent model activity (write / event / probe /
+    /// task-body-start) seen by `_noteActivity`. The executor-drain grace window
+    /// debounces against this (and the executor's last enqueue), so any activity
+    /// — including a clock-suspended task's resume-and-write — resets the grace,
+    /// keeping a wait from declaring quiescence while work is still in flight.
+    var _lastActivityNs: UInt64 = 0
+
     func _noteActivity() {
         var wakes: [CheckedContinuation<PredicateOutcome, Never>] = []
         lock {
             let now = monotonicNanoseconds()
+            _lastActivityNs = now
             // Iterate in reverse so removals don't shift indices we haven't
             // visited yet.
             for i in (0..<_pendingExpects.count).reversed() {

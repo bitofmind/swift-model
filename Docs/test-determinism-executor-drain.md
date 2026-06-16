@@ -365,6 +365,39 @@ wall clock in the decision.
 > **Status: settle drive-primary is a validated win; `expect` drive-primary needs
 > the (a)/(b) decision + the stress/event clusters. Inert by default.**
 
+> **Update 10 — activity-grace (general, no dependency): settle stays fixed;
+> expect residual is scaling + a long tail.** Per the maintainer's steer (must
+> NOT depend on the clock or any specific dependency), the fixpoint debounce now
+> keys on **all activity** — every `_noteActivity` (write/event/probe/task-start,
+> via a new `_lastActivityNs`) AND executor enqueues — with a per-verb grace
+> (settle 30 ms, expect 250 ms). Any activity (a clock-parked task resuming and
+> writing) resets the grace, so on a single test it's quiet at once (fast) and
+> under stress it waits until genuinely done. Full-parallel (flag on): **0 settle
+> timeouts**, unexpected failures **118 → ~51**.
+>
+> Residual, now precisely characterized (two different things):
+> 1. **Trait-cap hangs** (`childTasks`, `testImmediateClock` fail at exactly
+>    ~30.7 s = the trait cap). NOT a premature fail — the drive *correctly*
+>    waits, but under full-parallel ONE shared GCD queue backs every test's model
+>    tasks, so hundreds contend and the test's tasks queue behind them; the 30 s
+>    trait cap fires before they drain. Trading iter4's thread-explosion for a
+>    shared-queue bottleneck. Fix: the trait cap must itself be load-tolerant (an
+>    inactivity watchdog, not an absolute 30 s), and/or a bounded-but-larger
+>    executor concurrency.
+> 2. **Long tail of genuine interactions** (fast fails): `testClockStepByStep`
+>    (manual clock stepping), `checkExhaustion*DoesNotDeadlock` (preference-
+>    exhaustion), `testChildEvents`/`testTouchThenRealWrite` (event/transition
+>    propagation) — the drive resolves before/around these in ways their
+>    assertions don't expect.
+>
+> **Conclusion: `settle` drive-primary is a clean, validated, SHIPPABLE win (the
+> core disease). `expect` drive-primary is deeper R&D** — it needs (a) a
+> load-tolerant trait cap + executor concurrency tuning for the scaling hangs,
+> (b) the fundamental fast-fail-vs-delayed-resume race accepted via watchdog-only
+> failure (general, no-dependency, race-free, but slow-fail) or lived-with as
+> much-reduced residual flakiness, and (c) the long-tail interactions resolved
+> one by one. Recommend banking settle and treating expect as a separate effort.
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 
