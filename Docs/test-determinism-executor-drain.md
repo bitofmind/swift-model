@@ -192,6 +192,30 @@ wall clock in the decision.
 > opt-in; remaining to reach full quality: the full suite under load, flip the
 > default on, then parallel-apple + the parallel-CI flip.
 
+> **Update 4 — full-PARALLEL gate fails; the real remaining scope is exposed.**
+> Iteration 3 is green on *targeted* suites under load, but the **full suite
+> run in parallel** (91 suites / 813 tests, the actual goal) fails broadly —
+> first with per-test concurrent queues exploding GCD's thread pool, then, after
+> backing all executors with **one shared concurrent queue** (iteration 4),
+> still ~288 failures: `settle() timed out` *and* `Timeout after 3–5 s waiting
+> for condition` in `waitUntil`-based tests. Root cause: **moving model work to a
+> custom executor doesn't add capacity — it relocates the same contention** —
+> and, decisively, **the drive is only *additive*: every wait still carries a
+> wall-clock deadline** (`expect` 5 s, `settle` 5 s, `waitUntil` 3–5 s; the last
+> isn't wired to the drive at all). Under full parallel, those wall-clock budgets
+> are the binding constraint, so load still fails them regardless of the executor.
+>
+> **Revised, honest scope:** true load-independence under parallel requires the
+> step the design note calls "make the drain the PRIMARY resolution" — i.e.
+> **rewrite every wait primitive (`expect`, `settle`, `waitUntil`, exhaustion) to
+> resolve on the executor/queue *fixpoint*, demoting the wall clock to a generous
+> last-resort hang-catcher (e.g. 60 s)** — not an additive drive alongside the
+> existing 5 s budgets. That is a substantial rework of the wait core
+> (`TestAccess`/`TestExpect`/`TestWaitSupport`), and it's the genuine remaining
+> work. The primitive and small-scale end-to-end are validated; the wait-core
+> migration is not done. Parked here (inert by default); this is the point where
+> a maintainer who owns the wait core should drive the rewrite.
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 

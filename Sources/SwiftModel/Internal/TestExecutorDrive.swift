@@ -56,9 +56,18 @@ func _makeTestExecutorBox() -> (any Sendable)? {
 /// the same queue. A concurrent queue lets independent model tasks make progress
 /// on separate threads; the `outstanding` counter + a `.barrier` hop still give
 /// a precise "no ready jobs" signal.
+/// ONE process-wide concurrent queue backs every per-test executor. Per-test
+/// instances each created their own `.concurrent` queue, which under full
+/// PARALLEL test execution (dozens of suites at once, each with its own
+/// executor) exploded GCD's worker-thread pool — executors couldn't get threads,
+/// tasks stalled, and `settle` timed out everywhere. A single shared concurrent
+/// queue bounds total threads (GCD manages the pool); each executor keeps its
+/// OWN `outstanding` counter, so per-test quiescence detection is unaffected.
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
+private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.shared", attributes: .concurrent)
+
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
 final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
-    private let queue = DispatchQueue(label: "swift-model.test-drain-executor", attributes: .concurrent)
     private let lock = NSLock()
     private var outstanding = 0
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
@@ -66,7 +75,7 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     func enqueue(_ job: consuming ExecutorJob) {
         let unowned = UnownedJob(job)
         lock.withLock { outstanding += 1 }
-        queue.async {
+        _sharedDrainQueue.async {
             unowned.runSynchronously(on: self.asUnownedTaskExecutor())
             let waiters: [CheckedContinuation<Void, Never>] = self.lock.withLock {
                 self.outstanding -= 1
