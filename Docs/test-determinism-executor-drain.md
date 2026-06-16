@@ -309,6 +309,33 @@ wall clock in the decision.
 > Open tuning (maintainer judgment): the watchdog duration X, and whether to
 > shorten the debounce window.
 
+> **Update 8 — EVALUATION: budget-scaling is refuted; `.background` starvation
+> is the unbounded disease; the executor-drain is the only resolution.** Ran the
+> full suite in PARALLEL with `SWIFT_MODEL_TIMEOUT_SCALE=100` (every budget ×100,
+> executor OFF — pure existing code). Result: **93 unexpected failures, 23-minute
+> runtime, and 72 are still `settle() timed out: model still has active tasks`**
+> — at a 500 s budget. A model's real work never takes 500 s, so the budget is
+> not the constraint: settle's quiet-check runs `.deferential` →
+> `DispatchQueue.global(qos: .background)`, which macOS starves **indefinitely**
+> under parallel load, so the confirmation never fires and the `.responsive`
+> backstop trips the false timeout at *any* budget. **Scaling (the lever this
+> project has relied on for years) cannot fix this**; it only makes the run
+> pathologically slow.
+>
+> The tension this exposes: `.deferential`/`.background` is *race-safe* (lets an
+> about-to-write task run before the quiet-check) but *starvable*; `.responsive`
+> is *non-starvable* but reintroduces the toggleExpanded race. **Neither is both
+> via QoS.** The only mechanism that is both is the **executor-drain**: it *runs*
+> ready work to a fixpoint deterministically rather than *observing* quiescence
+> through a starvable callback — an about-to-write task is a ready job, so the
+> drain runs it, then the check sees the write. Iteration 3 confirmed the
+> executor-drain makes settle work at small scale; its failures were Stage-1's
+> premature *resolve-as-fail* (use the drain to DETECT, not to fail) and
+> full-parallel scale (the shared-queue fix), both scoped. **Conclusion: abandon
+> budget/QoS tuning; the path is the executor-drain as the settle *quiescence
+> detector* (not a failure trigger), made primary and scaled. This is a core
+> concurrency-design decision for the maintainer.**
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 
