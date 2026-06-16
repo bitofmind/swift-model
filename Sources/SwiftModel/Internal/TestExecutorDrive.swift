@@ -260,13 +260,32 @@ extension TestAccess {
         return true
     }
 
-    /// Grace windows for the fixpoint debounce. `settle` is forgiving (a slightly
-    /// early settle just means the next line re-settles), so it uses a short
-    /// grace. `expect` makes a definitive "predicate will never be true" judgment
-    /// to FAIL, so it must be sure the system is genuinely done — a larger grace,
-    /// resistant to a delayed resume under load. Tunable knobs.
+    /// Grace window for `settle`'s fixpoint debounce. `settle` is forgiving (a
+    /// slightly early settle just means the next line re-settles), so it uses a
+    /// short grace. Tunable knob.
     static var _settleGraceNs: UInt64 { 30_000_000 }   // 30 ms
-    static var _expectGraceNs: UInt64 { 250_000_000 }  // 250 ms
+
+    /// **`expect` inactivity-fail window (option A — see Update 12/13).** `expect`
+    /// NEVER self-fails at a mere fixpoint sample: a predicate that becomes true
+    /// resolves *reactively and instantly* via `_noteActivity` (`.passed`), never
+    /// via the drive. The drive's fixpoint only governs the FAIL path, and Update
+    /// 8's theorem says no finite single-sample grace can distinguish "quiescent,
+    /// never true" from "quiescent, a delayed resume is about to land." So instead
+    /// of failing at the first 250 ms-quiet sample (which false-failed
+    /// event/onChange/transition `expect`s whose satisfying work landed just after
+    /// — the dominant residual), `expect` fails only after a *sustained* window of
+    /// genuine inactivity: every `_noteActivity` / executor enqueue / queue drain
+    /// resets it (the drive loops), so under contention the fail simply DEFERS
+    /// until the model is truly quiet — no false fail. The window only bounds how
+    /// fast a genuinely-wrong assertion surfaces when a human runs one test
+    /// (the model goes quiet at once → fail in ~one window). 2 s default keeps
+    /// that interactive fail reasonably fast while being robust to realistic
+    /// resume delays; scaled by `timeoutScale` so CI gets proportionally more
+    /// slack. (The deadlock watchdog, `_executorHangDeadlineNs`, remains the
+    /// last-resort cap for a model that never goes quiet at all.)
+    static var _expectGraceNs: UInt64 {
+        UInt64(2_000_000_000 * ModelTestingTraitOptions.timeoutScale)
+    }
 
     /// Non-starvable sleep for `ns` (or until `hangDeadlineNs`), via GTS — used
     /// by the drive's debounce. Cancellation-aware.

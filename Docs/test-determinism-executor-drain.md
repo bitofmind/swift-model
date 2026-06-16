@@ -489,6 +489,56 @@ wall clock in the decision.
 >    tradeoff (and pick the expect inactivity-fail window), vs. keep fixpoint-fail
 >    + lived-with residual.**
 
+> **Update 13 — (A) implemented (2 s tunable expect inactivity-fail window,
+> scaled by `timeoutScale`); it helps the targeted class but the DOMINANT
+> residual is a broad propagation race that neither (A) nor (B) cracks.**
+> `_expectGraceNs` is now the expect inactivity-fail window (2 s × scale); `expect`
+> resolves PASS reactively/instantly as before and only FAILs after a sustained
+> window of genuine inactivity (every activity/enqueue/queue-drain resets it, so
+> under load the fail defers until truly quiet — no false fail; settle keeps its
+> 30 ms grace).
+>
+> Evidence:
+> - **Targeted win:** `testChildEvents` flake rate fell from ~1/3 to 0/8 in a
+>   focused combo loop — the deferred-resume class is helped.
+> - **Aggregate ≈ neutral.** Full-parallel (flag on, UNLOADED machine, ~7–8.5 s,
+>   spike/diag investigation tests removed): 12–18 unexpected failures/run,
+>   union ≈ 25 over 3 runs, dominated by **observation / transition / event
+>   propagation** — `testChangeOf*`, `testOnChange*`,
+>   `testRecursive{Child,Children,OptChild}`,
+>   `testCapturedObservedFiresOnEveryMutation`, `testTaskId*`, `testChildEvents`,
+>   `featureEvents`, `asyncTaskBothTransitionsAsserted` — plus the
+>   `checkExhaustion*DoesNotDeadlock` stress pair. Same order of magnitude as the
+>   pre-(A) ~15–16. (`awaitQuietWindow_firesAfterQuietWindow` also appears but is a
+>   pre-existing wall-clock-timing META-test flake — `5.0 s < 4.5 s` under
+>   contention — unrelated to the drive; flakes on `main` too.)
+> - **High variance** on a shared/unloaded machine makes single-run aggregate
+>   deltas unreliable; the documented baselines (118→51→…) were on a far busier
+>   machine (165 s runs vs ~8 s here).
+>
+> Diagnosis: the dominant residual is ONE phenomenon — the executor-drive's
+> quiescence detector **systematically mis-times observation/transition/event
+> propagation under contention**. Neither lengthening the grace (A) nor unioning
+> the per-test mainCall queue (B) resolves it, which means the satisfying consumer
+> write reaches the test through a path that, under load, is *both* uncounted by
+> the executor *and* slow enough to beat a multi-second inactivity window — or it
+> is a genuine clock-parked-transient premature-fixpoint (a task parked
+> mid-`sleep` is not a ready job and emits no activity, so no finite grace covers
+> it; Update 5's hard core, dependency-free-unsolvable per U7/U8).
+>
+> **Conclusion — stop blind grace/coverage tuning; the next step is TRACING, as
+> Updates 2 & 9 already concluded.** Shippable now (flag still OFF by default):
+> item 1a (load-tolerant trait cap) + (B) per-test mainCall union + (A) tunable
+> expect inactivity-fail — all correct, low-risk, a strict improvement on the
+> targeted classes. The broad propagation residual needs instrumented diagnosis
+> (`SWIFT_MODEL_GTS_TRACE` + executor enqueue/idle logging) on ONE failing
+> observation test under reproduced load, to pinpoint *exactly* where the
+> satisfying write lands relative to the fixpoint sample — distinguishing an
+> uncounted continuation-resume path (fixable by threading `executorPreference`
+> through it — doc risk #3) from an irreducible unbounded delay (→ keep the flag
+> off for those, accept as residual). Best done with maintainer pairing, not
+> further autonomous trial-and-error.
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 
