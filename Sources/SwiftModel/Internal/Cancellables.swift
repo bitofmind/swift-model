@@ -158,6 +158,23 @@ extension TaskCancellable {
                 }
             }
 
+            #if canImport(Dispatch)
+            // EXPERIMENTAL (executor-drain quiescence): in `.modelTesting`, run
+            // model task bodies on the per-test harness executor so the test can
+            // drive them to a fixpoint instead of waiting on the wall clock. The
+            // contextual `Task<Void, Error>` return type resolves the throwing
+            // `executorPreference` overload, exactly as the plain spawns below.
+            // (Name is dropped here only because the `name:`+`executorPreference:`
+            // combined initializer isn't available across all supported toolchains.)
+            if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
+               let exec = _TestExecutorBox.current as? _DrainTestExecutor {
+                if isDetached {
+                    return Task.detached(executorPreference: exec, priority: priority, operation: operation)
+                } else {
+                    return Task(executorPreference: exec, priority: priority, operation: operation)
+                }
+            }
+            #endif
             if isDetached {
                 return Task.detached(name: taskName, priority: priority, operation: operation)
             } else {
