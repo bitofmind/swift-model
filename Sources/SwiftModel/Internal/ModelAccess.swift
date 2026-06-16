@@ -103,6 +103,13 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
     /// Default: no-op. `TestAccess` overrides to fire `_noteActivity`.
     func taskBodyStarted() {}
 
+    /// Erased executor-drain hooks so the free `waitUntil` (which only has
+    /// `ModelAccess.current`, not the generic `TestAccess<Root>`) can drive the
+    /// model to a quiescence fixpoint. Defaults are inert; `TestAccess`
+    /// overrides them when the per-test harness executor is active.
+    var hasTestExecutorErased: Bool { false }
+    func driveToStableFixpointErased() async -> Bool { true }
+
     var shouldPropagateToChildren: Bool { false }
 
     /// Returns the `ModelAccess` to install on a child model when propagating observation.

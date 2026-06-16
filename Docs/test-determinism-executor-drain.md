@@ -336,6 +336,35 @@ wall clock in the decision.
 > detector* (not a failure trigger), made primary and scaled. This is a core
 > concurrency-design decision for the maintainer.**
 
+> **Update 9 — drive-PRIMARY implemented: settle FIXED; `expect`+clock is the
+> residual hard core.** Implemented the corrected plan: `settle`/`expect`/
+> `waitUntil` resolve on the executor-drain fixpoint (non-starvable), with a
+> short non-starvable debounce (executor-idle must persist since the last
+> enqueue — bridges suspend→resume gaps), `mainCall` excluded from the per-test
+> fixpoint (it's process-global → would hang under parallel), and a generous
+> deadlock watchdog. Full-parallel result (flag on): **the 72 `settle() timed
+> out` failures are GONE**, runtime **165 s** (vs 1379 s for ×100 budgets).
+> Settle's `.background`-starvation disease is cured.
+>
+> Residual (~23 distinct): **`expect`+clock** (`testImmediateClock`,
+> `testClockStepByStep`, `childTasks`, `testChangeOf*`), **deadlock-stress**
+> (`checkExhaustion*DoesNotDeadlock*`), **events** (`featureEvents`,
+> `testChildEvents`). The core one is `expect`'s premature-fixpoint race under
+> parallel load: `settle` only needs "quiescent" (robust), but `expect` judges
+> the predicate *at* the fixpoint — so a clock task whose resume+write is delayed
+> past the debounce under load yields "fixpoint, predicate false" → a FALSE
+> failure on a healthy test. A re-confirmation fixpoint narrowed but did not
+> eliminate it (a delayed resume is unbounded under load). Race-free options:
+> (a) `expect` fails only at the watchdog — stable, but a genuine wrong-assertion
+> fails slowly (sacrifices fast-interactive-fail); (b) fold the test-clock's
+> pending-sleeper set into the fixpoint so it's never declared while a task is
+> clock-parked — clean, but clock-internals-deep. The deadlock-stress/event
+> clusters need separate investigation (the drive may resolve before events
+> propagate / interact with `checkExhaustion`'s locking).
+>
+> **Status: settle drive-primary is a validated win; `expect` drive-primary needs
+> the (a)/(b) decision + the stress/event clusters. Inert by default.**
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 
