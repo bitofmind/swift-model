@@ -255,6 +255,31 @@ wall clock in the decision.
 > migration. The executor spike (Tests A–E, iterations 1–4) remains as the
 > investigation record that led here; it should not ship.
 
+> **Update 6 — runtime balance: resolve EVENT-DRIVEN, don't pay a fixed
+> debounce.** Constraint raised: many tests call `settle()` several times;
+> stability matters most, but the fix must not make tests wait unnecessarily
+> (N settles × a fixed window × many tests = real total-runtime cost). Note the
+> status quo *already* pays this — `awaitSettled` always arms a 50 ms quiet
+> window and waits it out even when the model is already quiet.
+>
+> Resolution: don't keep the fixed debounce as the primary latency. Resolve a
+> wait **event-driven, the instant the model is genuinely quiescent**, via an
+> **authoritative in-flight signal** — the *correct* version of what the executor
+> attempted. The executor counted **ready jobs** (premature: a task suspended at
+> `clock.sleep` reads as 0). Instead count **in-flight TRANSIENT tasks from
+> registration until completion**, so a suspended-mid-await task still counts
+> (fixes the premature-fixpoint bug), and a wait resolves the moment that count
+> hits 0 ∧ bg idle ∧ main idle ∧ no pending-start. SwiftModel's `TaskCancellable`
+> infra already separates the relevant kinds: `node.task` bodies and `forEach`
+> **inner per-element** bodies are transient (counted = "work happening now");
+> `forEach`'s outer loop / `onChange` consumers parked awaiting the next element
+> are long-lived (excluded — parked ≠ busy). Outcome: happy-path settles are
+> near-instant (often *faster* than today's 50 ms floor → shorter total
+> runtime); broken assertions still fail fast at quiescence; under load it waits
+> as long as needed (no budget, hang-backstop only); the 50 ms debounce drops to
+> a *fallback* for genuinely ambiguous cases. Stability first, without
+> unnecessary waiting.
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 
