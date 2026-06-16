@@ -398,6 +398,45 @@ wall clock in the decision.
 > much-reduced residual flakiness, and (c) the long-tail interactions resolved
 > one by one. Recommend banking settle and treating expect as a separate effort.
 
+> **Update 11 — follow-up branch `claude/expect-drain` (stacks on #23): item 1a
+> done; the "long-tail events" collapse INTO item 2.** Rebased the expect
+> drive-primary changes onto `claude/settle-drain` (#23) as a separate follow-up.
+> Reproduced Update 10's state: with the flag on, the item-1 trait-cap suites
+> (`childTasksCompleteBeforeTeardown`, `testImmediateClock`, `testClockStepByStep`)
+> all **pass in isolation** — the drive is sound at small scale; they only fail
+> under full-parallel by hitting the absolute 30 s trait cap.
+>
+> **Item 1a implemented — load-tolerant trait cap.** The per-test wall-clock cap
+> is now an **inactivity watchdog** keyed on the test's own `_DrainTestExecutor`
+> activity (`activityNs`: `now` while a job is running/ready, else the most
+> recent enqueue/completion, floored at the executor's birth time). It re-arms on
+> every executor advance and trips only after a full 30 s window of *genuine*
+> inactivity — so a healthy-but-slow test whose jobs queue behind hundreds on the
+> shared drain queue never trips, while a real per-test stall still surfaces (the
+> signal is per-test, not process-global). Flag-off path is untouched (absolute
+> cap). Green on the item-1 suites + `SettlingTests` + `ExecutorDrainSettleTests`
+> in isolation; flag-off inert. The full-parallel effect on the residual is the
+> next gate (a heavy run — deferred pending maintainer go-ahead).
+>
+> **Key finding — item 3's "event long-tail" is item 2, not a separate bug.**
+> `testChildEvents` **passes when run alone** (flag on) and only fails when other
+> suites add parallel pressure. The mechanism is exactly the item-2 race: an
+> `expect` predicate (`…optChild.didSend(.count(7))`) is judged *unmet at a
+> declared fixpoint* while the satisfying event is merely delayed under
+> contention; `_resolveUnmetPredicatesAtFixpoint` then false-fails it, the event
+> is never consumed, and `checkExhaustion` reports "event … was not handled". So
+> the 250 ms `_expectGraceNs` is NOT being reset by the in-flight event delivery —
+> i.e. some event/continuation resume is reaching the test *without* registering
+> as executor activity or `_noteActivity` during the grace window. That points
+> back at doc risk #3 (executor-preference inheritance through `forEach`/event/
+> `Observed` continuation chains): if every model continuation resumed on the
+> counted executor, the grace would cover the delay and fixpoint-fail would be
+> race-free — the general (no-dependency) form of Update 9's option (b). Whether
+> to (A) make `expect` watchdog-only-fail (race-free, but a genuinely-wrong
+> assertion slow-fails), (B) close the executor-coverage gap so fixpoint-fail
+> becomes race-free (more work, best outcome), or (C) ship 1a + live with reduced
+> residual, is the open maintainer decision.
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 
