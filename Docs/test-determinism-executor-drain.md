@@ -280,6 +280,35 @@ wall clock in the decision.
 > a *fallback* for genuinely ambiguous cases. Stability first, without
 > unnecessary waiting.
 
+> **Update 7 — CORRECTION: the debounce is fundamental; completion-counting
+> cannot replace it.** Update 6's "resolve event-driven on an in-flight transient
+> count, drop the debounce" is **unsound**. A supported pattern — a long-lived
+> user `node.task { while !cancelled { let x = await stream.next(); self.y = x } }`
+> — *never completes*, so a registration→completion count never returns to 0 and
+> the wait would hang. `CLAUDE.md` states this is supported: long-lived consumers
+> "correctly settle … as long as they aren't currently writing." Classification
+> can't save it: `forEach`/`onChange` are framework-known-long-lived, but a user
+> `node.task` may be transient OR a `while` loop and is indistinguishable at
+> spawn. Only the **debounce quiet-window** correctly settles a parked long-lived
+> consumer *and* waits out a suspended-mid-`sleep` transient. So the debounce
+> stays; the runtime win is a fast-path (zero-registered-tasks → immediate) and
+> possibly a shorter window — NOT eliminating the debounce.
+>
+> **Corrected sound plan (priority = stability + load-independence):**
+> 1. Keep the debounce quiet-window as the detector.
+> 2. Remove the total budget; replace the hang-catch with an **inactivity
+>    watchdog** — fail after X s of *zero* activity (writes, task starts/ends),
+>    reset on any progress. Slow-but-progressing never trips; a true deadlock
+>    (no activity) trips at X. Load-independent and deadlock-catching.
+> 3. Make the quiet-window confirmation **non-starvable** (drop the
+>    `.deferential`→`.background` QoS hop for `.responsive`).
+> 4. `expect` fails when **quiescent-but-unmet** (fast interactive failure).
+> 5. Drop the executor (premature/wrong detector).
+> 6. Runtime: fast-path immediate return when zero registered tasks; debounce
+>    window stays (tunable).
+> Open tuning (maintainer judgment): the watchdog duration X, and whether to
+> shorten the debounce window.
+
 The spike proves the *primitive*. Integration risks, confirmed by the wiring
 attempts above:
 
