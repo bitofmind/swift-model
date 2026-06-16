@@ -90,8 +90,7 @@ final class DrainTaskExecutor: TaskExecutor, @unchecked Sendable {
 /// Saturate ~half the cores with busy loops for the duration of `body`, then
 /// stop them. Deliberately bounded (half the cores, scoped lifetime) so it
 /// stresses scheduling without wedging a shared machine.
-@Sendable
-func underCPULoad<T>(_ body: () async -> T) async -> T {
+@Sendable private func underCPULoad<T>(_ body: () async -> T) async -> T {
     let stop = NSLock()
     nonisolated(unsafe) var running = true
     let burners = max(2, ProcessInfo.processInfo.activeProcessorCount / 2)

@@ -81,7 +81,14 @@ private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.sha
 final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     private let lock = NSLock()
     private var outstanding = 0
+    /// Birth time — the floor for `activityNs` so a test that hasn't yet
+    /// enqueued any executor work reads "active as of now", not the epoch. (The
+    /// raw timestamps below start at 0; `monotonicNs` is a large uptime value,
+    /// so without this floor the inactivity watchdog would see `0 + window` as
+    /// already elapsed and trip instantly.)
+    private let _birthNs: UInt64 = _drainMonotonicNs()
     private var _lastEnqueueNs: UInt64 = 0
+    private var _lastCompletionNs: UInt64 = 0
     /// Closures that fire (at most once each) when `outstanding` hits 0.
     private var idleWaiters: [(id: UInt64, fire: @Sendable () -> Void)] = []
     private var nextWaiterId: UInt64 = 0
@@ -93,6 +100,23 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     /// check slips through (premature fixpoint).
     var lastEnqueueNs: UInt64 { lock.withLock { _lastEnqueueNs } }
 
+    /// Per-test "is this test making progress?" signal for the trait-cap
+    /// inactivity watchdog (`_parkUntilInactiveOrCancel`). Returns `now` while
+    /// any job is running/ready (the test is actively working), otherwise the
+    /// most recent enqueue/completion timestamp. The watchdog resets its window
+    /// on every advance, so a healthy-but-slow test under full-parallel load —
+    /// whose jobs queue behind hundreds on the shared drain queue but keep
+    /// draining — never trips; only a test with NO executor activity for the
+    /// full window (a genuine deadlock/runaway with a stalled executor) does.
+    /// This is per-test isolated (each test owns its `_DrainTestExecutor`), so
+    /// unlike a process-global signal it still catches a single hung test while
+    /// the rest of the suite is busy.
+    var activityNs: UInt64 {
+        lock.withLock {
+            outstanding > 0 ? _drainMonotonicNs() : max(_birthNs, max(_lastEnqueueNs, _lastCompletionNs))
+        }
+    }
+
     func enqueue(_ job: consuming ExecutorJob) {
         let unowned = UnownedJob(job)
         lock.withLock { outstanding += 1; _lastEnqueueNs = _drainMonotonicNs() }
@@ -100,6 +124,7 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
             unowned.runSynchronously(on: self.asUnownedTaskExecutor())
             let toFire: [@Sendable () -> Void] = self.lock.withLock {
                 self.outstanding -= 1
+                self._lastCompletionNs = _drainMonotonicNs()
                 guard self.outstanding == 0 else { return [] }
                 let fns = self.idleWaiters.map(\.fire)
                 self.idleWaiters.removeAll()

@@ -509,8 +509,29 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
             // Hitting it means: deadlock, runaway loop, or a contract-
             // violating predicate that doesn't react to model state. In all
             // three the test should fail explicitly rather than hang.
+            //
+            // When the executor drive is active (`execBox != nil`, flag on,
+            // macOS 15+), the cap is an INACTIVITY WATCHDOG keyed on this test's
+            // own executor activity rather than an absolute deadline: under
+            // full-parallel a healthy test's jobs queue behind hundreds on the
+            // shared drain queue, so wall-clock-to-drain legitimately exceeds an
+            // absolute 30 s — but the test is still making progress. The
+            // watchdog resets its window on every executor advance and only
+            // fires after a full window of NO activity (a genuine stall). Flag
+            // off ⇒ `activityProbe` is nil ⇒ the original absolute cap, unchanged.
+            let activityProbe: (@Sendable () -> UInt64)?
+            #if canImport(Dispatch)
+            if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
+               let exec = execBox as? _DrainTestExecutor {
+                activityProbe = { exec.activityNs }
+            } else {
+                activityProbe = nil
+            }
+            #else
+            activityProbe = nil
+            #endif
             try await withoutActuallyEscaping(function) { escapingFunction in
-                try await _withTestTimeout(seconds: ModelTestingTraitOptions.testWallClockSeconds, testTag: testTag) {
+                try await _withTestTimeout(seconds: ModelTestingTraitOptions.testWallClockSeconds, testTag: testTag, activityProbe: activityProbe) {
                     try await _TestExecutorBox.$current.withValue(execBox) {
                         try await _ModelTestingLocals.$scope.withValue(pending) {
                             try await escapingFunction()
@@ -556,25 +577,38 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
 /// safety net (`Tests/SwiftModelTests/ReactiveWaitInfrastructureTests.swift`).
 /// Set `reportIssueOnTimeout: false` from validation tests so the
 /// `reportIssue(_:)` call doesn't pollute the test's own issue list.
+/// - Parameter activityProbe: when non-nil, the cap is an INACTIVITY WATCHDOG
+///   rather than an absolute deadline. The probe returns the monotonic-ns of
+///   this test's most recent progress (executor enqueue/completion, or `now`
+///   while busy). The timer fires `seconds` after the *last* observed activity,
+///   so a slow-but-progressing test under load never trips; only `seconds` of
+///   genuine inactivity does. Nil ⇒ the original absolute deadline (flag-off /
+///   pre-macOS-15 path, unchanged).
 @Sendable
 package func _withTestTimeout<R: Sendable>(
     seconds: Double,
     testTag: String,
     reportIssueOnTimeout: Bool = true,
+    activityProbe: (@Sendable () -> UInt64)? = nil,
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
     line: UInt = #line,
     column: UInt = #column,
     _ body: @Sendable @escaping () async throws -> R
 ) async throws -> R {
-    let deadlineNs = monotonicNanoseconds() + UInt64(seconds * 1_000_000_000)
+    let windowNs = UInt64(seconds * 1_000_000_000)
+    let deadlineNs = monotonicNanoseconds() + windowNs
     return try await withThrowingTaskGroup(of: _TimedResult<R>.self) { group in
         group.addTask {
             let result = try await body()
             return .body(result)
         }
         group.addTask {
-            await _parkUntilDeadlineOrCancel(deadlineNs: deadlineNs)
+            if let activityProbe {
+                await _parkUntilInactiveOrCancel(windowNs: windowNs, activityProbe: activityProbe)
+            } else {
+                await _parkUntilDeadlineOrCancel(deadlineNs: deadlineNs)
+            }
             return .timeout
         }
         guard let first = try await group.next() else {
@@ -696,6 +730,27 @@ private func _parkUntilDeadlineOrCancel(deadlineNs: UInt64) async {
         toResume?.resume()
     }
 }
+
+/// Inactivity-watchdog variant of `_parkUntilDeadlineOrCancel`: returns once
+/// `activityProbe()` has not advanced for a full `windowNs`, or the Task is
+/// cancelled. Re-arms on every advance, so a test that keeps making executor
+/// progress under heavy parallel load never trips — only a genuine stall does.
+///
+/// Implemented as a re-checking loop over the proven single-shot park: each
+/// iteration parks until `lastActivity + windowNs`; if activity advanced during
+/// the park, the next target moves forward and we park again; if it didn't, the
+/// window has elapsed and we return (trip). Cancellation surfaces as
+/// `Task.isCancelled` after the inner park returns, which exits the loop.
+@Sendable
+private func _parkUntilInactiveOrCancel(windowNs: UInt64, activityProbe: @Sendable () -> UInt64) async {
+    while !Task.isCancelled {
+        let target = activityProbe() &+ windowNs
+        if monotonicNanoseconds() >= target {
+            return   // a full window with no fresh activity → trip
+        }
+        await _parkUntilDeadlineOrCancel(deadlineNs: target)
+    }
+}
 #else
 @Sendable
 private func _parkUntilDeadlineOrCancel(deadlineNs: UInt64) async {
@@ -705,6 +760,19 @@ private func _parkUntilDeadlineOrCancel(deadlineNs: UInt64) async {
     let now = monotonicNanoseconds()
     let delayNs = deadlineNs > now ? deadlineNs - now : 0
     try? await Task.sleep(nanoseconds: delayNs)
+}
+
+@Sendable
+private func _parkUntilInactiveOrCancel(windowNs: UInt64, activityProbe: @Sendable () -> UInt64) async {
+    // WASM never installs a per-test executor (`_makeTestExecutorBox` returns
+    // nil without Dispatch), so this is never actually called; provided only so
+    // the shared `_withTestTimeout` compiles. Behaves like the absolute cap.
+    while !Task.isCancelled {
+        let target = activityProbe() &+ windowNs
+        let now = monotonicNanoseconds()
+        if now >= target { return }
+        try? await Task.sleep(nanoseconds: target - now)
+    }
 }
 #endif
 
