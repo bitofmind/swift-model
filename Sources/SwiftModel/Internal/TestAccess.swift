@@ -502,6 +502,13 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         _noteActivity()
     }
 
+    // Erased executor-drain hooks (overrides must be in the class body, not an
+    // extension). Implementations live in TestExecutorDrive.swift.
+    override var hasTestExecutorErased: Bool { _isExecutorDriveActive }
+    override func driveToStableFixpointErased() async -> Bool {
+        await _driveToStableFixpointErasedImpl()
+    }
+
     override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
         guard let path = path as? WritableKeyPath<M._ModelState, Value> else {
             // Read-only synthetic paths (a memoized property's `[memoizeKey:]`

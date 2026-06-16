@@ -61,7 +61,22 @@ package func waitUntil(
     line: UInt = #line
 ) async throws {
     if condition() { return }
-    let scaledTimeout = UInt64(Double(timeout) * ModelTestingTraitOptions.timeoutScale)
+    // With the per-test harness executor active, the wall-clock budget is not
+    // the right cap: `waitUntil` already polls via GTS (non-starvable), so the
+    // only failure mode under load was the deadline firing before the model —
+    // slowed by contention — set the condition. Extend the cap to the deadlock
+    // watchdog so the condition is caught whenever the model's work completes
+    // (load-tolerant); a genuinely-never-true condition still fails, just at the
+    // watchdog rather than a per-test budget.
+    var executorActive = false
+    #if canImport(Dispatch)
+    if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) {
+        executorActive = _TestExecutorBox.current is _DrainTestExecutor
+    }
+    #endif
+    let scaledTimeout = executorActive
+        ? 120_000_000_000   // watchdog (see `_executorHangDeadlineNs`)
+        : UInt64(Double(timeout) * ModelTestingTraitOptions.timeoutScale)
     try await _waitUntil(
         condition: condition,
         pollInterval: pollInterval,

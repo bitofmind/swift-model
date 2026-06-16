@@ -217,10 +217,13 @@ extension TestAccess {
         return true
     }
 
-    /// Grace window for `settle`'s fixpoint debounce. `settle` is forgiving (a
-    /// slightly early settle just means the next line re-settles), so a short
-    /// grace suffices. Tunable knob (runtime vs robustness).
+    /// Grace windows for the fixpoint debounce. `settle` is forgiving (a slightly
+    /// early settle just means the next line re-settles), so it uses a short
+    /// grace. `expect` makes a definitive "predicate will never be true" judgment
+    /// to FAIL, so it must be sure the system is genuinely done — a larger grace,
+    /// resistant to a delayed resume under load. Tunable knobs.
     static var _settleGraceNs: UInt64 { 30_000_000 }   // 30 ms
+    static var _expectGraceNs: UInt64 { 250_000_000 }  // 250 ms
 
     /// Non-starvable sleep for `ns` (or until `hangDeadlineNs`), via GTS — used
     /// by the drive's debounce. Cancellation-aware.
@@ -249,5 +252,56 @@ extension TestAccess {
             }
         } onCancel: { fire() }
         #endif
+    }
+
+    /// `expect`'s driver: on each stable fixpoint, resolve the reactive predicate
+    /// (`_noteActivity` → pass if now true) and then fail any still-unmet
+    /// predicate (`_resolveUnmetPredicatesAtFixpoint` → `.timeout`). Loops to
+    /// cover the registration race (the driver starts before `awaitPredicate`
+    /// registers) and to re-confirm; `expect` cancels it once the wait resolves.
+    func _startExecutorDrive() -> Task<Void, Never>? {
+        #if canImport(Dispatch)
+        if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
+           _TestExecutorBox.current is _DrainTestExecutor {
+            let hang = _executorHangDeadlineNs()
+            let grace = Self._expectGraceNs
+            return Task { [weak self] in
+                guard let self else { return }
+                while !Task.isCancelled {
+                    let reached = await self._driveToStableFixpoint(hangDeadlineNs: hang, graceNs: grace)
+                    self._noteActivity()                      // resolve now-true predicates as .passed
+                    self._resolveUnmetPredicatesAtFixpoint()  // fail still-unmet predicates
+                    if !reached { break }                     // watchdog tripped (deadlock)
+                    await Task.yield()
+                }
+            }
+        }
+        #endif
+        return nil
+    }
+
+    /// Resolve every pending `.predicate` (`expect`) wait as `.timeout` — the
+    /// model is quiescent with the predicate still unmet, so it will not become
+    /// true. Settle/quiet-window entries are left to their own resolution.
+    func _resolveUnmetPredicatesAtFixpoint() {
+        var wakes: [CheckedContinuation<PredicateOutcome, Never>] = []
+        lock {
+            for i in (0..<_pendingExpects.count).reversed() {
+                let pending = _pendingExpects[i]
+                if case .predicate = pending.mode {
+                    pending.cancelAllHandles()
+                    wakes.append(pending.continuation)
+                    _pendingExpects.remove(at: i)
+                }
+            }
+        }
+        for cont in wakes { cont.resume(returning: .timeout) }
+    }
+
+    /// Implementation of the erased `ModelAccess` hook (the `override` itself
+    /// must live in the class body — Swift forbids overriding in an extension).
+    func _driveToStableFixpointErasedImpl() async -> Bool {
+        guard _isExecutorDriveActive else { return true }
+        return await _driveToStableFixpoint(hangDeadlineNs: _executorHangDeadlineNs(), graceNs: Self._expectGraceNs)
     }
 }
