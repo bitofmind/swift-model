@@ -331,6 +331,20 @@ extension TestAccess {
                 guard let self else { return }
                 while !Task.isCancelled {
                     let reached = await self._driveToStableFixpoint(hangDeadlineNs: hang, graceNs: grace)
+                    // CRITICAL: bail the instant this driver is cancelled, BEFORE
+                    // touching the shared `_pendingExpects`. `expect()` cancels its
+                    // driver the moment its own `awaitPredicate` resolves; the very
+                    // next sequential `expect` then registers a fresh predicate into
+                    // the SAME per-test `_pendingExpects`. If this just-cancelled
+                    // driver were to run `_resolveUnmetPredicatesAtFixpoint` on its
+                    // way out, it would spuriously fail that next predicate as
+                    // `.timeout` before its satisfying write/event arrived — a
+                    // fast, window-independent false failure (the dominant
+                    // executor-drive residual: lost last element of an accumulated
+                    // Observed/onChange sequence). `_driveToStableFixpoint` returns
+                    // `false` on BOTH cancellation and the hang watchdog, so gate on
+                    // `Task.isCancelled` specifically.
+                    if Task.isCancelled { break }
                     self._noteActivity()                      // resolve now-true predicates as .passed
                     self._resolveUnmetPredicatesAtFixpoint()  // fail still-unmet predicates
                     if !reached { break }                     // watchdog tripped (deadlock)

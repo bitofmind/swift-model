@@ -638,3 +638,49 @@ Each step is independently shippable and reversible.
 > merged/dropped or merely reordered. (A) is KEPT at 2 s — correct for the event
 > sub-class and the chosen semantics — but is now known not to be the lever for
 > the Observed/transition residual.
+
+> **Update 16 — ROOT-CAUSED & FIXED: the dominant residual was a cancelled-driver
+> bug, not an irreducible race. Flag-on serial is now GREEN.** Tracing (Update 15's
+> plan) pinpointed it immediately. `expect()` starts a per-call executor driver
+> (`_startExecutorDrive`) and cancels it (`executorDriver?.cancel()`) the instant
+> its `awaitPredicate` resolves. But the driver loop ran
+> `_resolveUnmetPredicatesAtFixpoint()` on EVERY iteration — including the one
+> where `_driveToStableFixpoint` returned `false` because the Task had just been
+> CANCELLED. Since `_pendingExpects` is shared across a test's sequential
+> `expect`s, the just-cancelled driver of expect *A* would, on its way out, fail
+> whatever predicate expect *B* had freshly registered — before B's satisfying
+> write/event arrived. That is precisely the observed signature: a fast,
+> window-independent false failure leaving an accumulated Observed/onChange/event
+> sequence missing its LAST element (`counts == [5]` vs `[5, 8]`). It explained
+> why neither (A) grace-length nor (B) queue-coverage helped: the fail did not
+> come from B's own drive at all — it came from A's cancellation unwind.
+>
+> Fix (one line of intent): the driver bails on `Task.isCancelled` BEFORE touching
+> the shared pending entries — a cancelled driver must never fail another expect's
+> predicate. `_driveToStableFixpoint` returns `false` for both cancellation and
+> the hang watchdog, so the guard checks `Task.isCancelled` specifically (a real
+> deadlock still surfaces via the per-test inactivity watchdog).
+>
+> Results (same machine):
+> | Config | Before fix | After fix |
+> |---|---|---|
+> | flag-OFF serial (CI gate) | green, 112 s | green, 112 s (unchanged) |
+> | flag-ON serial | ~5–6 flaky/run | **GREEN, 2/2, 42 s** |
+> | flag-ON `--parallel` | ~12–18/run | **1–3/run** |
+> | OnChange+UpdateStream combo (was ~1/run) | flaky | **0 / 6 runs** |
+>
+> The whole observation/transition/event class (`testChangeOf*`, `testRecursive*`,
+> `testCapturedObserved*`, `testTaskId*`, `testChildEvents`, `featureEvents`) is
+> gone. **Flag-on serial — the bar to flip the default — is GREEN.** Remaining
+> `--parallel` residual is the pre-existing `awaitQuietWindow_firesAfterQuietWindow`
+> wall-clock-timing META-test flake (flakes on `main` too) plus occasional
+> `testClockStepByStep` / `testOnChangeCancelPreviousDiscardsStalework` — to be
+> confirmed as the genuine dev-machine `--parallel` tail (CLAUDE.md's documented
+> class) vs anything new, before proposing the default flip.
+>
+> Net of this branch: items 1a + B + A (now correctly understood as helping the
+> event sub-class only) + the cancelled-driver fix make the opt-in drive **2.6×
+> faster serially, serial-clean, and an order of magnitude less parallel-flaky**
+> than the wall-clock path. Lesson restated: the design note kept saying "trace,
+> don't tune" — tracing found a concrete one-line bug after grace/coverage tuning
+> had stalled.
