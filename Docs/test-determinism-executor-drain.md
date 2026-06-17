@@ -754,3 +754,35 @@ Each step is independently shippable and reversible.
 > (failing-`expect` latency ~instant → the inactivity window; trait cap becomes
 > inactivity-based; drive active on macOS 15+/iOS 18+/Linux-Swift-6, inert
 > elsewhere).
+
+> **Update 19 — 100× stress: drive removes ~90% of the flake population but
+> REGRESSES the clock-parked tests at scale=1 (the premature-fixpoint hard core).**
+> 100 iterations of the full suite, `--parallel`, scale=1, same machine:
+>
+> | | flag-OFF | flag-ON |
+> |---|---|---|
+> | iterations w/ ≥1 flake | 70/100 | 66/100 |
+> | distinct flaky tests | **63** | **6** |
+>
+> The drive eliminates all 57 memoize/setup-key/task-id/onChange/settling/
+> observation tests that flake flag-off; all 6 flag-on flakes are documented
+> known-load-sensitive tests (no NEW test flakes). So: **no new flaky tests, and
+> the broad population is cut ~10×.**
+>
+> BUT three ImmediateClock/timer tests flake *more* under the drive at scale=1:
+> `childTasksCompleteBeforeTeardown` 2→**42**/100, `testImmediateClock` 1→**25**,
+> `testClockStepByStep` 1→**24**. This is Update 5's premature fixpoint: a task
+> parked mid-`clock.sleep` is not a ready job and emits no activity, so under
+> unscaled parallel load the drive can declare quiescence before the child's
+> queued resume writes its result, and `expect` fails. Scale-dependent — CI's
+> `TIMEOUT_SCALE=3` gives the queued resumes room (CI drain rows passed green),
+> but the local `scripts/test` default (scale=1, `--parallel`) makes these clock
+> tests worse than flag-off.
+>
+> **Implication for the default flip:** the drive is a large net win on broad
+> flakiness, but flipping the default ON is gated on addressing the clock-parked
+> premature-fixpoint (so scale=1 `--parallel` doesn't regress the clock tests) OR
+> on raising the local default scale / accepting these as the documented clock
+> tail. The clock-parked fixpoint fix is the Update 5 hard core (count
+> parked-transient tasks as in-flight without a clock dependency, or a test-clock
+> pending-sleeper hook) — maintainer-pairing territory, not a blind tweak.
