@@ -11,23 +11,40 @@ env:
 
 jobs:
   macos:
-    name: macOS (${{ matrix.mode }})
+    name: macOS (${{ matrix.mode }}${{ matrix.drain == '1' && ', drain' || '' }})
     runs-on: macos-15
     timeout-minutes: 15
+    # `drain=1` rows run the suite with the experimental executor-drain
+    # (`SWIFT_MODEL_EXPERIMENTAL_DRAIN=1`) active. They are INFORMATIONAL only
+    # (`continue-on-error`) while the drive is opt-in: this is the gate that
+    # proves the drive's load-tolerance on the real (small, contended) runners
+    # — the one signal a dev machine can't provide — without blocking merges on
+    # the experimental path. Flip the default (and drop `continue-on-error`)
+    # only once these stay green. The `drain=0` rows are the existing required
+    # gates and are unchanged.
+    continue-on-error: ${{ matrix.drain == '1' }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - mode: parallel
             flag: --parallel
+            drain: "0"
           - mode: serial
             flag: --no-parallel
+            drain: "0"
+          - mode: parallel
+            flag: --parallel
+            drain: "1"
+          - mode: serial
+            flag: --no-parallel
+            drain: "1"
     steps:
       - uses: actions/checkout@v6
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest
-      - name: Build and test (${{ matrix.mode }})
+      - name: Build and test (${{ matrix.mode }}, drain=${{ matrix.drain }})
         # Both modes are exercised:
         #
         # • `--parallel` validates the framework's claim that tests are
@@ -58,12 +75,17 @@ jobs:
         # or the `swift-model-benchmarks` Xcode test plan.
         env:
           SWIFT_MODEL_TIMEOUT_SCALE: "3"
+          SWIFT_MODEL_EXPERIMENTAL_DRAIN: ${{ matrix.drain }}
         run: swift test ${{ matrix.flag }} --skip SwiftModelBenchmarkTests
 
   linux:
-    name: Linux (${{ matrix.mode }})
+    name: Linux (${{ matrix.mode }}${{ matrix.drain == '1' && ', drain' || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    # See the macOS job: `drain=1` rows are informational
+    # (`continue-on-error`) signal for the experimental executor-drive on a
+    # contended runner; `drain=0` are the existing required gates.
+    continue-on-error: ${{ matrix.drain == '1' }}
     container:
       image: swift:6.3.0
     strategy:
@@ -72,8 +94,16 @@ jobs:
         include:
           - mode: parallel
             flag: --parallel
+            drain: "0"
           - mode: serial
             flag: --no-parallel
+            drain: "0"
+          - mode: parallel
+            flag: --parallel
+            drain: "1"
+          - mode: serial
+            flag: --no-parallel
+            drain: "1"
     steps:
       - uses: actions/checkout@v6
       - name: Cache Swift build artifacts
@@ -98,11 +128,12 @@ jobs:
           key: ${{ runner.os }}-swift-6.3-${{ matrix.mode }}-v2-${{ hashFiles('Package.swift') }}
           restore-keys: |
             ${{ runner.os }}-swift-6.3-${{ matrix.mode }}-v2-${{ hashFiles('Package.swift') }}
-      - name: Build and test (${{ matrix.mode }})
+      - name: Build and test (${{ matrix.mode }}, drain=${{ matrix.drain }})
         # See the macOS job for the dual-mode rationale and
         # `SWIFT_MODEL_TIMEOUT_SCALE` justification.
         env:
           SWIFT_MODEL_TIMEOUT_SCALE: "3"
+          SWIFT_MODEL_EXPERIMENTAL_DRAIN: ${{ matrix.drain }}
         run: swift test ${{ matrix.flag }} --skip SwiftModelBenchmarkTests
 
   android:
