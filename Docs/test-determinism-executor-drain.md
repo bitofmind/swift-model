@@ -684,3 +684,44 @@ Each step is independently shippable and reversible.
 > than the wall-clock path. Lesson restated: the design note kept saying "trace,
 > don't tune" — tracing found a concrete one-line bug after grace/coverage tuning
 > had stalled.
+
+> **Update 17 — same-machine flag-off vs flag-on `--parallel` is decisive; CI
+> flag-on gate added; tail hardened/documented.** Added a same-machine flag-OFF
+> control for `--parallel` (the comparison Update 13 lacked):
+>
+> | `--parallel`, this machine | unexpected failures / run |
+> |---|---|
+> | flag-OFF (wall-clock path) | **11–23** (large, varied: setup/ordering/memoize/observation/taskId) |
+> | flag-ON (executor-drive) | **1–4** (small clock/timer/observation remnant) |
+>
+> The drive doesn't merely halve parallel flake — it **suppresses ~5–10× of the
+> population**. The flag-on remnant (`testImmediateClock`,
+> `childTasksCompleteBeforeTeardown`, `testObservedStreamWithModelAccessingObservable`
+> — already in CLAUDE.md's known-load-sensitive list — plus `testClockStepByStep`,
+> `testOnChangeCancelPreviousDiscardsStalework`, and the very-rare `testRaceVariant`)
+> are TestClock/timer/observation tests that **also flake flag-off** and are a
+> strict subset of the shared dev-machine tail. They are NOT drive regressions.
+>
+> (a) **CI flag-on gate**: added a `drain={0,1}` dimension to the macOS + Linux
+> matrices; `drain=1` runs the suite with `SWIFT_MODEL_EXPERIMENTAL_DRAIN=1`
+> (serial + parallel), `continue-on-error` (informational) while the drive is
+> opt-in. This is the production gate the note kept calling for — load-tolerance
+> on the real contended runners, the one signal a dev machine can't give. Drop
+> `continue-on-error` (and flip the default) once these stay green.
+>
+> (b) **Tail**: hardened the one clearly-over-tight assertion —
+> `awaitQuietWindow_firesAfterQuietWindow` dropped its wall-clock UPPER-bound
+> (`< 4.5 s × scale`), which asserted timing on a `.deferential`/`.background`
+> callback that macOS starves under `--parallel` (it flaked on both flag states);
+> the lower-bound + `.timeout` checks keep the real coverage. The remaining
+> TestClock/observation remnant is documented as the known load-sensitive class
+> (CLAUDE.md), not rewritten — they share the flag-off tail and the drive already
+> crushes the surrounding population, so per-test rewrites in the maintainer's
+> core test suite would add regression risk for little gain.
+>
+> **Bottom line:** flag-off serial green (inert path intact); flag-on serial green
+> (6/7, 2.6× faster); flag-on `--parallel` an order of magnitude cleaner than
+> flag-off. The opt-in drive is a clear, validated win. Remaining before flipping
+> the default ON: (1) the new CI flag-on rows stay green on real runners; (2)
+> maintainer sign-off on the cross-platform activation scope + the behavior-change
+> changelog (failing-`expect` latency ~instant → the inactivity window).
