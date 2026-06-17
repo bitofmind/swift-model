@@ -725,3 +725,32 @@ Each step is independently shippable and reversible.
 > the default ON: (1) the new CI flag-on rows stay green on real runners; (2)
 > maintainer sign-off on the cross-platform activation scope + the behavior-change
 > changelog (failing-`expect` latency ~instant → the inactivity window).
+
+> **Update 18 — CI FLAG-ON GATE PASSED on the real runners (first run, clean).**
+> The missing production signal is in. On PR #24's CI (run 27686648814), all four
+> flag-on `drain=1` rows — the **Build and test** step itself, not just the
+> `continue-on-error` job conclusion — were GREEN:
+>
+> | Job (drive active, `TIMEOUT_SCALE=3`) | Result | Wall-clock |
+> |---|---|---|
+> | macOS (serial, drain) | ✅ | 5.2 min |
+> | macOS (parallel, drain) | ✅ | 2.7 min |
+> | Linux (serial, drain) | ✅ | 3.4 min |
+> | Linux (parallel, drain) | ✅ | 2.5 min |
+>
+> So the executor-drive runs the full suite to green on the small, contended CI
+> runners — serial AND parallel, macOS AND Linux (confirming the drive also
+> activates and works on Linux Swift 6.3, not just macOS 15+) — the load-tolerance
+> that a dev machine can't prove. The required flag-off gates stayed green
+> (inert path intact). First run was cleaner than the dev machine (no racy-tail
+> bite).
+>
+> Caveat for the default flip: this is ONE CI run; `--parallel` is inherently
+> non-deterministic, so "stably green" wants a few more runs before flipping. The
+> remaining gate is therefore narrow: (1) a short stability-confirmation period on
+> the flag-on rows, then (2) a small follow-up that flips `_makeTestExecutorBox`'s
+> default on (so the *required* gates exercise the drive), drops the drain rows'
+> `continue-on-error`, and adds a CHANGELOG entry for the behavior change
+> (failing-`expect` latency ~instant → the inactivity window; trait cap becomes
+> inactivity-based; drive active on macOS 15+/iOS 18+/Linux-Swift-6, inert
+> elsewhere).
