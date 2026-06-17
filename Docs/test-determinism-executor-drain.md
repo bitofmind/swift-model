@@ -611,3 +611,30 @@ attempts above:
 4. Virtualise internal scheduling (GTS, call-queue pumps) last.
 
 Each step is independently shippable and reversible.
+
+> **Update 15 — DIAGNOSTIC REDIRECT: the dominant residual is window-INDEPENDENT
+> fast-fail, NOT the inactivity/delayed-resume race.** Targeted the most-reliable
+> residual tests (`testChangeOf`, `testRecursive{Child,Children,OptChild}`,
+> `testCapturedObservedFiresOnEveryMutation`, `testTaskId*`). Concrete failure: an
+> `expect` over an ACCUMULATED update sequence sees the LAST update missing —
+> e.g. `counts == [5]` when `[5, 8]` was expected — and it FAILS FAST (0.05–0.1 s).
+>
+> Decisive experiment: temporarily set the expect inactivity-fail window to 30 s.
+> The tests **still fail at 0.05–0.1 s**, unchanged. So these failures do NOT go
+> through the drive`'s inactivity-fail path at all, and (A) cannot address them —
+> they are not a delayed-resume that a longer grace would catch. The Update 13/14
+> framing ("fixpoint-sampling / delayed-resume race") is WRONG for this
+> (dominant) sub-class; it is right only for the EVENT sub-class (`testChildEvents`),
+> which (A) did measurably help (1/3 → 0/8).
+>
+> New hypothesis (for the tracing/pairing session): moving the Observed/onChange
+> consumer onto the per-test drain executor changes the INTERLEAVING between the
+> test thread`'s successive mutations and the consumer`'s appends — so an
+> accumulated-sequence assertion observes the wrong sequence (a missing or merged
+> update) at evaluation time, independent of any wait window. This is an
+> executor-ordering effect, not a quiescence-detection effect. Next concrete step:
+> trace one `testChangeOf` failure (consumer append timestamps + the executor
+> enqueue order vs the two `count +=` mutations) to confirm whether an update is
+> merged/dropped or merely reordered. (A) is KEPT at 2 s — correct for the event
+> sub-class and the chosen semantics — but is now known not to be the lever for
+> the Observed/transition residual.
