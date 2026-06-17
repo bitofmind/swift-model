@@ -57,8 +57,16 @@ private final class _GTSSleepState: @unchecked Sendable {
 }
 
 /// Build a fresh per-test executor box, or `nil` where custom task executors
-/// aren't available. Opt-in via `SWIFT_MODEL_EXPERIMENTAL_DRAIN=1` while the
-/// approach is validated; inert otherwise (every wait keeps its current path).
+/// aren't available. Opt-in via `SWIFT_MODEL_EXPERIMENTAL_DRAIN=1`; inert
+/// otherwise (every wait keeps its current path).
+///
+/// NOTE: cannot be on by default yet. The drive needs model tasks on this
+/// executor, and routing them off the cooperative pool is slightly slower under
+/// parallel load — enough to trip `expect`'s wall-clock budget in latency-
+/// sensitive clock tests (`childTasksCompleteBeforeTeardown`, `testImmediateClock`
+/// regress with it on). Enabling by default is unblocked only once `expect`/
+/// `waitUntil` are also drive-primary (so they don't depend on a wall-clock
+/// budget). Until then this stays opt-in. See docs/test-determinism-executor-drain.md.
 func _makeTestExecutorBox() -> (any Sendable)? {
     #if canImport(Dispatch)
     if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),

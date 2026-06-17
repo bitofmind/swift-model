@@ -52,7 +52,9 @@ struct ExecutorDrainSettleTests {
     /// load — the load-independence the drain provides. Opt-in: only meaningful
     /// with the harness executor active.
     @Test func settleIsLoadIndependentAcrossChildTasks() async {
+        // Opt-in: only meaningful with the harness executor active.
         guard ProcessInfo.processInfo.environment["SWIFT_MODEL_EXPERIMENTAL_DRAIN"] == "1" else { return }
+        guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) else { return }
         await underCPULoad {
             for _ in 0..<60 {
                 await withModelTesting(.off) {
