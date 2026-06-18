@@ -786,3 +786,42 @@ Each step is independently shippable and reversible.
 > tail. The clock-parked fixpoint fix is the Update 5 hard core (count
 > parked-transient tasks as in-flight without a clock dependency, or a test-clock
 > pending-sleeper hook) — maintainer-pairing territory, not a blind tweak.
+
+> **Update 20 — premature-fixpoint is UNFIXABLE cleanly (two attempts, with
+> data); DEFAULT FLIPPED ON with it as a documented limitation.**
+> Real-world validation (parallel-apple, separate PR) showed the drive cures the
+> "CI runs forever" disease on a real consumer (833→962 passing, 13→1 failing
+> suites; the lone residual was a missing-clock-override test bug, fixed there).
+> That left the premature-fixpoint clock tests (`childTasks`, `testImmediateClock`,
+> `testClockStepByStep`) as the only thing worse than the wall-clock path, at
+> `scale=1 --parallel`. Two fixes were implemented and MEASURED:
+>
+> 1. **Hard transient-task gate** — classify `forEach`/`onChange` as long-lived
+>    (task-local marker), count active TRANSIENT (`node.task`) tasks, and refuse
+>    to declare a fixpoint while any is in flight. Result: **hangs.** The
+>    `OutputSnapshotTests` that *intentionally* hold long-lived `node.task`s (the
+>    "N active tasks" diagnostics) never go quiescent → 120 s watchdog each. This
+>    is Update 7's edge, now empirically confirmed: `node.task` is genuinely
+>    ambiguous (transient vs. intentional long-lived loop) and can't be told apart
+>    at spawn. Reverted.
+> 2. **Bounded transient-drain** — same classification, but wait for transient
+>    tasks only up to a cap, then proceed. Result: fixes the hang (snapshot tests
+>    pass in ~3 s) **but does not fix the clock tests** (still flaked 7/10 parallel
+>    iters) AND adds slowdown (an 82 s iteration from accumulated caps). The clock
+>    flakiness isn't purely parked-task — it's also cross-model write propagation
+>    (child `loaded` → parent predicate), which a task-state gate can't see.
+>    Reverted. A longer `expect` grace (4 s) was also tried: no flake reduction,
+>    slower failures. Reverted.
+>
+> Conclusion: the premature-fixpoint has **no clean dependency-free fix** — the
+> only signals are clock-coupling (ruled out) or transient-counting (hangs). It is
+> the inverse of the parallel-apple bug: a *controlled* clock parking a task makes
+> the executor read idle too soon, vs. a *live* clock never going idle.
+>
+> **Decision: flip the default ON** (`_makeTestExecutorBox` returns the executor
+> unless `SWIFT_MODEL_EXPERIMENTAL_DRAIN=0`), accepting the clock-test
+> `scale=1 --parallel` regression as a documented, bounded limitation (CI is
+> green at `scale=3`; serial is green; the broad win is overwhelming). CI keeps
+> the wall-clock (`=0`) serial/parallel rows as the REQUIRED deterministic gate
+> and runs the drive (default) informationally until the clock tail is resolved or
+> accepted as gate-able. CHANGELOG updated. Opt-out preserved.

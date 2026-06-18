@@ -57,12 +57,24 @@ private final class _GTSSleepState: @unchecked Sendable {
 }
 
 /// Build a fresh per-test executor box, or `nil` where custom task executors
-/// aren't available. Opt-in via `SWIFT_MODEL_EXPERIMENTAL_DRAIN=1` while the
-/// approach is validated; inert otherwise (every wait keeps its current path).
+/// aren't available (macOS < 15 / iOS < 18 / WASM) — those keep the wall-clock
+/// wait path.
+///
+/// **The executor-drain is now ON BY DEFAULT** under `.modelTesting` (macOS 15+
+/// / iOS 18+ / Linux-Swift-6): the wait verbs resolve on a non-starvable
+/// executor fixpoint instead of a wall-clock budget. Set
+/// `SWIFT_MODEL_EXPERIMENTAL_DRAIN=0` to OPT OUT and restore the legacy
+/// wall-clock path (kept for comparison / fallback). Any other value (or unset)
+/// = drive on.
+///
+/// Known limitation (documented in `Docs/test-determinism-executor-drain.md`):
+/// a handful of clock-driven tests can be MORE flaky than the wall-clock path
+/// under `--parallel` at `TIMEOUT_SCALE=1` (the premature-fixpoint on a task
+/// parked mid-`clock.sleep`). Run those serially or bump `TIMEOUT_SCALE`.
 func _makeTestExecutorBox() -> (any Sendable)? {
     #if canImport(Dispatch)
     if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
-       ProcessInfo.processInfo.environment["SWIFT_MODEL_EXPERIMENTAL_DRAIN"] == "1" {
+       ProcessInfo.processInfo.environment["SWIFT_MODEL_EXPERIMENTAL_DRAIN"] != "0" {
         return _DrainTestExecutor()
     }
     #endif

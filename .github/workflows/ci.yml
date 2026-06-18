@@ -14,14 +14,17 @@ jobs:
     name: macOS (${{ matrix.mode }}${{ matrix.drain == '1' && ', drain' || '' }})
     runs-on: macos-15
     timeout-minutes: 15
-    # `drain=1` rows run the suite with the experimental executor-drain
-    # (`SWIFT_MODEL_EXPERIMENTAL_DRAIN=1`) active. They are INFORMATIONAL only
-    # (`continue-on-error`) while the drive is opt-in: this is the gate that
-    # proves the drive's load-tolerance on the real (small, contended) runners
-    # — the one signal a dev machine can't provide — without blocking merges on
-    # the experimental path. Flip the default (and drop `continue-on-error`)
-    # only once these stay green. The `drain=0` rows are the existing required
-    # gates and are unchanged.
+    # The executor-drain is now ON BY DEFAULT (see `_makeTestExecutorBox`).
+    #   • `drain=1` rows exercise that DEFAULT (`SWIFT_MODEL_EXPERIMENTAL_DRAIN=1`
+    #     ≡ the default behaviour). INFORMATIONAL (`continue-on-error`): a small
+    #     set of clock-driven tests can flake under `--parallel` at this scale
+    #     (the premature-fixpoint limitation — see the design note), so the drive
+    #     is validated here without blocking merges on that known tail.
+    #   • `drain=0` rows are the OPT-OUT (legacy wall-clock path) and remain the
+    #     REQUIRED deterministic gate — the proven-green serial/parallel runs that
+    #     guard correctness independent of the drive.
+    # Promote `drain=1` to required (drop `continue-on-error`) only once the
+    # parallel clock-test tail is resolved or accepted as gate-able.
     continue-on-error: ${{ matrix.drain == '1' }}
     strategy:
       fail-fast: false
@@ -82,9 +85,9 @@ jobs:
     name: Linux (${{ matrix.mode }}${{ matrix.drain == '1' && ', drain' || '' }})
     runs-on: ubuntu-latest
     timeout-minutes: 12
-    # See the macOS job: `drain=1` rows are informational
-    # (`continue-on-error`) signal for the experimental executor-drive on a
-    # contended runner; `drain=0` are the existing required gates.
+    # See the macOS job: the executor-drain is the DEFAULT; `drain=1` rows
+    # exercise it (informational — clock-test parallel tail), `drain=0` rows are
+    # the opt-out wall-clock path and the required deterministic gate.
     continue-on-error: ${{ matrix.drain == '1' }}
     container:
       image: swift:6.3.0
