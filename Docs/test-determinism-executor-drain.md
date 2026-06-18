@@ -875,8 +875,43 @@ Each step is independently shippable and reversible.
 > child-task completion) testable without a manual `settle`. Only the genuine
 > external-dependency registration races are pushed test-side.
 >
-> Validation: full suite **30/30 clean `--parallel` at `scale=1`** (the harshest
-> local condition — 10+20 iters), serial 3/3 clean, flag-off inert (clean at
-> `scale=3`, the CI setting). Targeted: 40× OnChange, 30× Clock, 25× clock+child.
-> With the tail resolved, CI's `drain=1` rows can be **promoted to required**
-> (drop `continue-on-error`) per the exit condition in `ci.yml`.
+> Validation: full suite **80/80 clean `--parallel` at `scale=1`** (the harshest
+> local condition), serial clean, flag-off inert at `scale=3`. Targeted: 40×
+> OnChange, 30× Clock, 25× clock+child.
+>
+> **Update 22 — real-runner CI: drive SERIAL promoted to required; drive PARALLEL
+> stays informational (a pre-existing `waitUntil` tail, not the gate).** Pushing
+> the branch and promoting `drain=1` to required surfaced a failure on the small
+> GitHub runners that the many-core dev machine never shows: the `drain=1 parallel`
+> jobs failed (intermittently — macOS flipped to pass on re-run; Linux is the
+> consistent offender) on two tests:
+>   • `testObservedStreamWithModelAccessingObservable` — `@Observable` interop,
+>     explicitly unsupported, wrapped in `withKnownIssue(isIntermittent: true)`.
+>   • `testSharedDependency` — `waitUntil` for a deinit chain, known-flaky ~2/1000.
+>
+> Both are **`waitUntil`-based**, so the global-quiescence gate (which lives in the
+> `expect` driver, `_startExecutorDrive`) is NOT implicated — and indeed the
+> `drain=1 SERIAL` jobs passed cleanly both runs. Root cause is a pre-existing
+> interaction: under the drive, `waitUntil` extends its deadline to the 120 s
+> deadlock watchdog (`WaitUntilCallback.swift`), which EXCEEDS the per-test trait
+> cap (30 s × scale = 90 s on CI). So when a `waitUntil` predicate genuinely never
+> becomes true on a saturated 2-vCPU container (Observable interop not delivering;
+> a deinit chain not scheduled in time), the trait cap fires first and throws
+> `_TestTimeoutError` OUTSIDE the `withKnownIssue` block → an un-absorbable hard
+> failure. The dev machine has the cores to deliver/schedule in time, so it never
+> reproduces locally.
+>
+> Decision: split required-vs-informational by **mode**, not drain.
+> `continue-on-error: ${{ matrix.mode == 'parallel' }}` — SERIAL rows (both drains)
+> are the required deterministic gates (drive-serial is the primary correctness
+> signal; wall-clock-serial is the vanilla regression gate); PARALLEL rows (both
+> drains) are informational, since parallel-on-tiny-runners is a clean gate for
+> neither path (wall-clock starves; the drive has this `waitUntil` tail). This
+> still delivers the core win — the drive is now a REQUIRED gate (serial) and the
+> default — without blocking merges on a pre-existing known-flaky `waitUntil` tail.
+>
+> Future work to promote `drain=1 parallel` to required: cap `waitUntil`'s
+> under-drive deadline BELOW the trait cap so a never-true predicate fails via the
+> catchable `WaitUntilTimeoutError` (absorbable by `withKnownIssue`) rather than
+> the un-catchable trait-cap error. Deferred — it changes pre-existing `waitUntil`
+> load-tolerance and needs its own validation pass.
