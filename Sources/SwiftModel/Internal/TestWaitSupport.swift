@@ -84,6 +84,21 @@ extension TestAccess {
     /// budget was exhausted.
     @discardableResult
     package func waitUntilSettled(cleanup: Bool = false, at fileAndLine: FileAndLine) async -> Bool {
+        // Executor-drain path (primary, when the per-test harness executor is
+        // active): resolve on the model's STABLE FIXPOINT — a non-starvable,
+        // load-independent quiescence signal — instead of the `.deferential`/
+        // `.background` quiet-check (which macOS starves under parallel load,
+        // the root cause of the false `settle() timed out`). Waits as long as
+        // necessary; only a genuine deadlock (no fixpoint within the watchdog)
+        // fails. See docs/test-determinism-executor-drain.md.
+        if _isExecutorDriveActive {
+            let reached = await _driveToStableFixpoint(hangDeadlineNs: _executorHangDeadlineNs(), graceNs: Self._settleGraceNs)
+            if !reached, !cleanup {
+                fail("settle() timed out: model never reached a fixpoint (deadlock or runaway).\n\(settleDiagnostics())", at: fileAndLine)
+            }
+            return reached
+        }
+
         let window = cleanup ? Self.settleDebounceCleanupNs : Self.settleDebounceInTestNs
         let totalBudgetNs = cleanup ? Self.settleCleanupTotalBudgetNs : Self.settleTotalBudgetNs
         let startNs = _monotonicNs()

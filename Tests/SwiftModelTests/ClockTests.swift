@@ -25,12 +25,22 @@ struct ClockTests {
         let model = TimerModel().withAnchor {
             $0.continuousClock = clock
         }
+        // The `forEach(clock.timer(...))` consumer subscribes to the clock
+        // lazily, on its first `next()`. Settling here (and between steps)
+        // guarantees the timer has registered its next sleep *before* we
+        // advance — otherwise `advance` can fire before the subscription
+        // exists and that tick is lost. This is a TestClock registration
+        // ordering property, not a model invariant; `settle()` is the
+        // documented way to make it deterministic.
+        await settle()
 
         await clock.advance(by: .seconds(1))
         await expect(model.secondsElapsed == 1)
+        await settle()
 
         await clock.advance(by: .seconds(1))
         await expect(model.secondsElapsed == 2)
+        await settle()
 
         await clock.advance(by: .seconds(1))
         await expect(model.secondsElapsed == 3)

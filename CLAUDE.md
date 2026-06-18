@@ -192,15 +192,47 @@ Direct use of `ModelTester(model, ...)` (requires `@testable import SwiftModel`)
 
 The full suite is **clean on both serial and parallel CI**, and clean on local sub-x100 parallel runs. A small set of tests can flake at extreme parallel stress on a developer machine (x1000+) — typically because the test asserts a timing property that depends on the cooperative pool's scheduling cadence, which we don't control. None block CI.
 
-The 5 s `settleTotalBudgetNs` plus settle's `.deferential` priority gets enough wall-clock to actually let the cooperative pool drain before the wait fails under reasonable load. The remaining flake surface is tests where the assertion's success depends on a quantity of cooperative-pool work (ticks, sleeps, task starts) that under x1000 saturation can't all be scheduled within the wall-clock budget:
+**Resolved (drive path):** the four clock-driven tests that previously headed this
+list — `ClockTests.testImmediateClock`, `ChildActivationTaskTests.childTasksCompleteBeforeTeardown`,
+`ClockTests.testClockStepByStep`, `OnChangeTests.testOnChangeCancelPreviousDiscardsStalework`
+— are now stable on the drive via two distinct mechanisms, because they were two
+distinct classes of problem:
 
-  • `ClockTests.testImmediateClock` — `await expect(model.secondsElapsed > 0)` against an `ImmediateClock`-driven timer.
-  • `ChildActivationTaskTests.childTasksCompleteBeforeTeardown` — `await expect(parent.items.allSatisfy { $0.loaded })` where each child's `onActivate` task sets `loaded = true` after an `ImmediateClock` sleep.
+- **Premature-fixpoint (work routed *through* the executor)** — `testImmediateClock`
+  and `childTasksCompleteBeforeTeardown`. Their pending work (immediate-clock ticks,
+  child activation tasks) runs on the drain executor, so it's countable. Fixed by the
+  **global-quiescence fail-gate** in `TestExecutorDrive.swift`: a still-unmet `expect`
+  is only failed once the *whole process* is executor-quiescent (`_globalOutstanding == 0`
+  across all parallel tests + no global activity for the grace), not merely when the
+  one test looks idle. A child parked mid-`clock.sleep` while the run is busy no longer
+  trips a false fixpoint — the fail defers until the work actually completes and the
+  predicate passes reactively. The global counter is a relaxed Swift 6 `Atomic` (lock-free
+  hot path on every enqueue/completion).
+- **TestClock registration ordering (work parked *off* the executor)** — `testClockStepByStep`
+  and `testOnChangeCancelPreviousDiscardsStalework`. Their pending work is a `TestClock`
+  deadline, invisible to *any* executor-quiescence accounting, gated by an
+  `advance`-vs-`subscribe` race (the consumer must register its `clock.sleep` before the
+  test advances). This is a TestClock scheduling property, not a model invariant, so it's
+  fixed **test-side**: `await settle()` after `withAnchor` and between steps parks the
+  timer (registering its next deadline) before each `advance`. This is the documented
+  `settle()`-after-`withAnchor` pattern; the old code relied on `Task.yield()` ordering
+  (the point-free `megaYield` gamble) to win the race, which parallel load loses.
+
+The discriminator for any new clock/timing flake: **is the pending work routed through
+our executor?** If yes, the drive/global-gate owns it (a real framework responsibility —
+don't paper over it with a manual `settle()`). If it's parked on an external clock with a
+registration race, the test owns the ordering (`settle()` before `advance`).
+
+The remaining flake surface is tests where the assertion's success depends on a quantity of cooperative-pool work (ticks, sleeps, task starts) that under x1000 saturation can't all be scheduled within the wall-clock budget:
+
   • `MemoizeDirtyObservationTests.testDirtyPathWithOnModifyCallback` — `#expect(updateCount.value >= 1)` after a 5 s poll for a memoize-coalesced `performUpdate` to fire its `onModify` callback.
   • `MemoizeTests.testMemoizeWithNestedModelMutations` (`.accessCollector`) and `testMemoizeWithBranchingDependencies_WithAnchor` (`.withObservationTracking`) — both wait on `expect` that the memoize's recompute has settled to the expected final value after rapid-fire mutations. Under parallel-test load the OT `performUpdate` Task and the test's `expect` evaluator interleave in ways that can let the predicate see partial state; rate ~1–2/100 at x100 parallel.
   • `StandupsTests.testRecordTranscript` / `testSpeechRecognitionFailure_Continue` (Examples/Standups) — `await clock.advance(by: .seconds(6))` releases 6 timer wake-ups at once; under x1000 saturation the 6 tick-processing steps don't all get CPU slots before the next `expect`'s budget expires.
   • `DualRegistrarTests.testObservedStreamWithModelAccessingObservable` — Observable interop, not officially supported. Listed for completeness; expected to flake.
   • `ModelDependencyTests.testSharedDependency` — `waitUntil(testResult.value.contains("(->5)(->5)"), timeout: 10s)` polls for two deinit-chain log entries to appear. The deinit chain runs as the last strong reference to the dep model is released; under x1000 parallel-test stress the cooperative pool can take longer than 10 s to schedule those deinits. Rate ~2/1000.
+  • `UpdateStreamTests.testRaceVariant` (and `testRace`) — two unstructured `Task {}` (one writes `count = 7`, one starts a `forEach(Observed)` collector) racing the Observed registration gap; asserts convergence (`counts.last == 7`). A lost update in the gap (rare, ~per-1000) fails it. Pre-existing on both flag states; not specific to the executor-drive.
+
+These are a small remnant of a much larger tail that the executor-drive removed: on the legacy wall-clock path (which now survives only as the automatic fallback for test hosts that can't run the drive — pre-macOS-15 / pre-iOS-18 / older Swift / WASM), the dev-machine `--parallel` flake population was ~5–10× larger. The drive is the unconditional default wherever it can run; there is no opt-out flag. See `Docs/test-determinism-executor-drain.md`.
 
 When investigating new load flakes, check first whether the test matches this pattern (asserting a property whose truth requires N cooperative-pool slots to land within a fixed wall-clock budget, or relying on coalescing/observation timing that the cooperative scheduler doesn't guarantee) before chasing a library bug.
 
@@ -239,10 +271,16 @@ GitHub Actions (`.github/workflows/ci.yml`):
 - **Android**: compile-only cross-compile to `aarch64-unknown-linux-android28`.
 - **WASM**: compile-only build to `wasm32-unknown-wasip1`.
 
-Both `parallel` and `serial` test modes run for macOS and Linux. Parallel
-validates the framework's parallel-test claim; serial is the deterministic
-regression gate (caught the OR-path race fixed in 497c2ab). `fail-fast: false`
-on the matrices so one mode's flake doesn't suppress the other's signal.
+Both `parallel` and `serial` test modes run for macOS and Linux, with the
+executor-drive as the unconditional default (no flag — see `_makeTestExecutorBox`),
+and **both are now REQUIRED** (merge-blocking). Serial is the deterministic
+regression gate (caught the OR-path race fixed in 497c2ab). Parallel validates
+the framework's parallel-test claim; it was informational while a small
+`waitUntil`-based tail flaked on the small CI runners (`testSharedDependency`, the
+unsupported `testObservedStream`), but both causes are fixed (see
+`Docs/test-determinism-executor-drain.md` Updates 22–24) and it has been verified
+green across repeated runs. `fail-fast: false` so one mode's flake doesn't
+suppress the other's signal.
 
 
 `swift-tools-version` is **6.1** — minimum required for the `traits:` parameter
