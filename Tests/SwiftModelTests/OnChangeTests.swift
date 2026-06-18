@@ -99,14 +99,18 @@ struct OnChangeTests {
         // initial: false — no initial emission
         await settle {}
 
-        // Trigger two rapid changes with coalesceUpdates: false to ensure both emit separately.
-        // Task 1 starts sleeping; task 2 cancels task 1 and starts its own sleep.
+        // coalesceUpdates: false makes both changes emit separately. Settling
+        // between the writes makes the cancelPrevious ordering deterministic
+        // under the executor drive: after value=1, task 1 is parked mid-sleep
+        // (the stale work); value=2 then cancels that in-flight sleep and starts
+        // task 2; settling again parks task 2's sleep so it is *registered* with
+        // the TestClock before we advance. (Previously this relied on Task.yield()
+        // ordering to win a registration race against advance — a TestClock
+        // scheduling property, not a model invariant. See testClockStepByStep.)
         model.value = 1
-        await Task.yield()
-        await Task.yield()
+        await settle {}
         model.value = 2
-        // clock.advance yields internally, giving the outer task a chance to process value=2,
-        // cancel task 1's sleep (via CancellationError), and register task 2's sleep.
+        await settle {}
         await clock.advance(by: .seconds(1))
         await expect {
             model.value == 2

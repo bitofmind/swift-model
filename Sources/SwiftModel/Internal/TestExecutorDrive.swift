@@ -2,6 +2,9 @@ import Foundation
 #if canImport(Dispatch)
 import Dispatch
 #endif
+#if canImport(Synchronization)
+import Synchronization
+#endif
 
 // MARK: - Executor-drain quiescence (primary resolution for expect/settle/waitUntil)
 //
@@ -46,6 +49,17 @@ private final class _GTSSleepState: @unchecked Sendable {
     var cont: CheckedContinuation<Void, Never>?
     var cancel: (@Sendable () -> Void)?
     var done = false
+}
+
+/// Process-wide executor-activity snapshot across ALL per-test drain executors,
+/// used by `expect`'s GLOBAL-quiescence fail-gate. `(0, 0)` where unavailable.
+func _DrainTestExecutorGlobalSnapshot() -> (outstanding: Int, sinceActivityNs: UInt64) {
+    #if canImport(Dispatch)
+    if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) {
+        return _DrainTestExecutor._globalSnapshot()
+    }
+    #endif
+    return (0, 0)
 }
 
 @inline(__always) func _drainMonotonicNs() -> UInt64 {
@@ -105,6 +119,26 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     private var idleWaiters: [(id: UInt64, fire: @Sendable () -> Void)] = []
     private var nextWaiterId: UInt64 = 0
 
+    // Process-wide executor activity across ALL per-test drain executors. Powers
+    // `expect`'s GLOBAL-quiescence fail-gate: a still-unmet `expect` is failed
+    // only when the WHOLE process is quiescent (no ready job in any test + no
+    // global activity for the grace), not merely when this one test looks idle —
+    // so a premature per-test fixpoint (e.g. a child parked mid-`clock.sleep`
+    // while the run is busy) defers the fail until the work actually finishes.
+    // Lock-free (relaxed atomics): this is bumped on every executor enqueue and
+    // completion across all parallel tests, so it must not contend. The two
+    // loads in `_globalSnapshot` need not be a consistent pair — the gate is a
+    // heuristic guarded by a grace window, not a linearizable invariant.
+    static let _globalOutstanding = Atomic<Int>(0)
+    static let _globalLastActivityNs = Atomic<UInt64>(0)
+    static func _globalSnapshot() -> (outstanding: Int, sinceActivityNs: UInt64) {
+        let now = _drainMonotonicNs()
+        let last = _globalLastActivityNs.load(ordering: .relaxed)
+        // Clamp the lookback to 1 s so a never-yet-active global counter (last == 0)
+        // doesn't read as "idle for the whole uptime".
+        return (_globalOutstanding.load(ordering: .relaxed), now &- max(last, now &- 1_000_000_000_000))
+    }
+
     /// Monotonic-ns of the most recent `enqueue`. A task suspended mid-`await`
     /// (e.g. on a clock) re-enqueues when it resumes, bumping this — so the drive
     /// can require executor-idle to *persist* for a debounce window since the
@@ -132,6 +166,8 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     func enqueue(_ job: consuming ExecutorJob) {
         let unowned = UnownedJob(job)
         lock.withLock { outstanding += 1; _lastEnqueueNs = _drainMonotonicNs() }
+        Self._globalOutstanding.wrappingAdd(1, ordering: .relaxed)
+        Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
         _sharedDrainQueue.async {
             unowned.runSynchronously(on: self.asUnownedTaskExecutor())
             let toFire: [@Sendable () -> Void] = self.lock.withLock {
@@ -142,6 +178,8 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
                 self.idleWaiters.removeAll()
                 return fns
             }
+            Self._globalOutstanding.wrappingSubtract(1, ordering: .relaxed)
+            Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
             for f in toFire { f() }
         }
     }
@@ -358,9 +396,32 @@ extension TestAccess {
                     // `Task.isCancelled` specifically.
                     if Task.isCancelled { break }
                     self._noteActivity()                      // resolve now-true predicates as .passed
-                    self._resolveUnmetPredicatesAtFixpoint()  // fail still-unmet predicates
-                    if !reached { break }                     // watchdog tripped (deadlock)
-                    await Task.yield()
+                    // GLOBAL-quiescence gate on the FAIL (not per-test): only commit
+                    // a fail when the WHOLE process is quiescent — no ready job in ANY
+                    // parallel test's executor, and no global activity for `grace`.
+                    // Rationale (trace-confirmed): the premature-fixpoint false-fails
+                    // fire while THIS test looks idle (a child parked mid-`clock.sleep`
+                    // is not a ready job) but the global system is still BUSY and the
+                    // child is about to resume + write. Deferring the fail until a
+                    // genuine global lull lets that work finish → the predicate passes
+                    // reactively → no false fail. Under continuous parallel load the
+                    // fail defers until the run winds down (slow-but-correct, the
+                    // intended behaviour); serially/interactively the global system is
+                    // quiet at once, so a genuinely-broken expect still fails promptly.
+                    // settle() is unaffected — it uses `_driveToStableFixpoint`
+                    // directly (per-test quiescence), not this driver.
+                    let g = _DrainTestExecutorGlobalSnapshot()
+                    let globalQuiescent = g.outstanding == 0 && g.sinceActivityNs >= grace
+                    if globalQuiescent {
+                        self._resolveUnmetPredicatesAtFixpoint()  // fail still-unmet predicates
+                        if !reached { break }                     // watchdog tripped (deadlock)
+                        await Task.yield()
+                    } else {
+                        // Per-test quiescent but the global system is busy — defer the
+                        // fail and re-check soon (cheap poll; non-starvable GTS sleep).
+                        if !reached { break }
+                        await self._gtsSleep(min(grace, 50_000_000), hangDeadlineNs: hang)
+                    }
                 }
             }
         }

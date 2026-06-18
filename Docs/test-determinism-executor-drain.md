@@ -825,3 +825,58 @@ Each step is independently shippable and reversible.
 > the wall-clock (`=0`) serial/parallel rows as the REQUIRED deterministic gate
 > and runs the drive (default) informationally until the clock tail is resolved or
 > accepted as gate-able. CHANGELOG updated. Opt-out preserved.
+>
+> **Update 21 — the clock tail IS resolved, by splitting it into its two real
+> classes.** Update 20's "no clean fix" conclusion was correct *for a single
+> mechanism* — it failed because it treated four tests as one problem. They are
+> two:
+>
+> 1. **Work routed THROUGH the executor** (`testImmediateClock`,
+>    `childTasksCompleteBeforeTeardown`). The pending work — immediate-clock ticks,
+>    child activation tasks — runs on the drain executor and is therefore
+>    countable. The premature fixpoint here is real and the framework's to fix.
+>    Fix: a **global-quiescence fail-gate**. `_DrainTestExecutor` now keeps a
+>    process-wide `_globalOutstanding` counter (across ALL per-test executors) plus
+>    a last-activity timestamp, as lock-free relaxed Swift 6 `Atomic`s bumped on
+>    every `enqueue`/completion. `expect`'s driver fails a still-unmet predicate
+>    only when the WHOLE process is quiescent (`_globalOutstanding == 0` + no global
+>    activity for the grace), not merely when this one test looks idle. A child
+>    parked mid-`clock.sleep` while the run is busy no longer trips a false
+>    fixpoint: the fail defers until that work actually completes, the predicate
+>    then passes reactively. (Under continuous parallel load the fail defers until
+>    the run winds down — slow-but-correct; serially/interactively the global system
+>    is quiet at once so a genuinely-broken `expect` still fails promptly. `settle`
+>    is unaffected — it uses per-test `_driveToStableFixpoint` directly.) This is
+>    why Update 20's transient-counting failed where this succeeds: it gates on
+>    *global executor activity*, not on classifying individual tasks (the
+>    unsolvable `node.task` ambiguity), so the `OutputSnapshotTests` long-lived
+>    `node.task`s don't hang — they keep the global counter > 0 only while genuinely
+>    running, and those tests don't `expect`-then-fail anyway.
+>
+> 2. **Work parked OFF the executor** (`testClockStepByStep`,
+>    `testOnChangeCancelPreviousDiscardsStalework`). The pending work is a
+>    `TestClock` deadline — invisible to *any* executor-quiescence accounting,
+>    global or per-test — gated by an `advance`-vs-`subscribe` race: the
+>    `forEach(clock.timer)` / `onChange` consumer must register its `clock.sleep`
+>    before the test calls `advance`, or the tick is lost. This is a TestClock
+>    scheduling property, **not a model invariant**, and point-free's own answer to
+>    it is the serial `@MainActor` executor (which SwiftModel deliberately rejects)
+>    or the deprecated `Task.megaYield()` hack. Fix: **test-side** `await settle()`
+>    after `withAnchor` and between `advance` calls — `settle` resolves on per-test
+>    quiescence, which for a `TestClock` means the timer is parked *and registered*,
+>    so the next `advance` always finds the suspension. The old `Task.yield()×2`
+>    ordering gamble (the megaYield pattern) is what parallel load lost.
+>
+> The discriminator going forward: **is the pending work routed through our
+> executor?** Yes → framework owns it (global gate); parked on an external clock
+> with a registration race → test owns the ordering (`settle` before `advance`).
+> Honest scope: this does NOT mean "blame scheduling for everything" — class (1)
+> was a genuine framework gap the gate closes, making a real user pattern (async
+> child-task completion) testable without a manual `settle`. Only the genuine
+> external-dependency registration races are pushed test-side.
+>
+> Validation: full suite **30/30 clean `--parallel` at `scale=1`** (the harshest
+> local condition — 10+20 iters), serial 3/3 clean, flag-off inert (clean at
+> `scale=3`, the CI setting). Targeted: 40× OnChange, 30× Clock, 25× clock+child.
+> With the tail resolved, CI's `drain=1` rows can be **promoted to required**
+> (drop `continue-on-error`) per the exit condition in `ci.yml`.
