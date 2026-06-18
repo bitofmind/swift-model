@@ -910,8 +910,28 @@ Each step is independently shippable and reversible.
 > still delivers the core win — the drive is now a REQUIRED gate (serial) and the
 > default — without blocking merges on a pre-existing known-flaky `waitUntil` tail.
 >
-> Future work to promote `drain=1 parallel` to required: cap `waitUntil`'s
-> under-drive deadline BELOW the trait cap so a never-true predicate fails via the
-> catchable `WaitUntilTimeoutError` (absorbable by `withKnownIssue`) rather than
-> the un-catchable trait-cap error. Deferred — it changes pre-existing `waitUntil`
-> load-tolerance and needs its own validation pass.
+> **Update 23 — `waitUntil` under the drive now fails on a sub-trait-cap
+> inactivity window (catchable, absorbable).** The `waitUntil` deadline bug from
+> Update 22 is fixed in `WaitUntilCallback.swift`: under the drive, instead of a
+> fixed 120 s watchdog (which exceeded the 90 s trait cap), `waitUntil` fails when
+> this test's executor has been INACTIVE for 60% of the trait window
+> (`testWallClockSeconds × 0.6` = 18 s × scale) — the same inactivity signal the
+> trait cap uses (`exec.activityNs`), so it stays load-tolerant (a progressing
+> model keeps resetting it) but is *guaranteed* to fire before the trait cap, via
+> the catchable `WaitUntilTimeoutError`. A 120 s absolute watchdog still backstops
+> the continuous-activity-but-never-true edge. Flag-off path unchanged (probe is
+> nil → the scaled absolute budget governs, as before).
+>
+> Effect: a `withKnownIssue`'d never-true `waitUntil` (e.g.
+> `testObservedStreamWithModelAccessingObservable` on a saturated container) now
+> fails fast with an *absorbable* error instead of riding to the un-absorbable
+> trait cap. Validation: wait-infra meta-tests 20/20, full suite 10/10 at
+> `scale=1`; no regression.
+>
+> Remaining blocker for promoting `drain=1 parallel` to required:
+> `testSharedDependency` — a *real* assertion (not `withKnownIssue`) polling for a
+> two-entry deinit chain. Under 2-vCPU container saturation the chain can take
+> longer than even the 120 s backstop to schedule, so it remains a genuine
+> load-flake (~2/1000) that this fix improves (fails faster when stalled) but
+> doesn't eliminate. Parallel stays informational until that test is made
+> load-robust (e.g. a dedicated larger budget) or accepted as gate-exempt.

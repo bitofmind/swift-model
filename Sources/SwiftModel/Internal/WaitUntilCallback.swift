@@ -64,23 +64,42 @@ package func waitUntil(
     // With the per-test harness executor active, the wall-clock budget is not
     // the right cap: `waitUntil` already polls via GTS (non-starvable), so the
     // only failure mode under load was the deadline firing before the model —
-    // slowed by contention — set the condition. Extend the cap to the deadlock
-    // watchdog so the condition is caught whenever the model's work completes
-    // (load-tolerant); a genuinely-never-true condition still fails, just at the
-    // watchdog rather than a per-test budget.
-    var executorActive = false
+    // slowed by contention — set the condition. So under the drive we fail on
+    // an INACTIVITY WINDOW keyed on this test's own executor activity (the same
+    // signal the trait cap uses), not a fixed wall-clock budget: while the
+    // model's work is advancing the wait extends (load-tolerant); a genuinely-
+    // stalled condition fails after a full window of no executor activity.
+    //
+    // CRITICAL: that window must be strictly SMALLER than the trait cap's window
+    // (`testWallClockSeconds`), so a never-true `waitUntil` fails via the
+    // catchable `WaitUntilTimeoutError` — which `withKnownIssue` can absorb —
+    // rather than riding to the trait cap, whose `_TestTimeoutError` is thrown
+    // OUTSIDE the test body and so can't be absorbed. (This was the
+    // `testObservedStreamWithModelAccessingObservable` hard-failure on saturated
+    // container CI: a withKnownIssue'd never-true wait hit the 120 s watchdog,
+    // which exceeded the 90 s trait cap.) An absolute watchdog still backstops
+    // the case where the executor stays continuously active but this specific
+    // condition never holds.
+    var activityProbe: (@Sendable () -> UInt64)? = nil
+    var inactivityWindowNs: UInt64 = 0
     #if canImport(Dispatch)
-    if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) {
-        executorActive = _TestExecutorBox.current is _DrainTestExecutor
+    if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
+       let exec = _TestExecutorBox.current as? _DrainTestExecutor {
+        activityProbe = { exec.activityNs }
+        // 60% of the trait window — a clear margin below the trait cap, while
+        // still generous enough to absorb a saturated runner's scheduling gaps.
+        inactivityWindowNs = UInt64(ModelTestingTraitOptions.testWallClockSeconds * 0.6 * 1_000_000_000)
     }
     #endif
-    let scaledTimeout = executorActive
-        ? 120_000_000_000   // watchdog (see `_executorHangDeadlineNs`)
+    let absoluteTimeout = activityProbe != nil
+        ? 120_000_000_000   // watchdog backstop (see `_executorHangDeadlineNs`)
         : UInt64(Double(timeout) * ModelTestingTraitOptions.timeoutScale)
     try await _waitUntil(
         condition: condition,
         pollInterval: pollInterval,
-        timeout: scaledTimeout,
+        timeout: absoluteTimeout,
+        activityProbe: activityProbe,
+        inactivityWindowNs: inactivityWindowNs,
         file: file,
         line: line
     )
@@ -91,6 +110,8 @@ private func _waitUntil(
     condition: @escaping @Sendable () -> Bool,
     pollInterval: UInt64,
     timeout: UInt64,
+    activityProbe: (@Sendable () -> UInt64)? = nil,
+    inactivityWindowNs: UInt64 = 0,
     file: StaticString,
     line: UInt
 ) async throws {
@@ -121,14 +142,19 @@ private func _waitUntil(
             // Test the predicate from GCD's pool (not the cooperative pool).
             let passed = condition()
 
+            // Time out on the absolute watchdog OR — under the drive — on a full
+            // inactivity window with no fresh executor activity (the load-tolerant,
+            // sub-trait-cap signal; see `waitUntil`). Either way the failure is the
+            // catchable `WaitUntilTimeoutError`, so `withKnownIssue` can absorb it.
+            let inactivityTimedOut = activityProbe.map { now >= $0() &+ inactivityWindowNs } ?? false
             let resolution: Result<Void, Error>?
             if passed {
                 resolution = .success(())
-            } else if now >= deadlineNs {
+            } else if now >= deadlineNs || inactivityTimedOut {
                 resolution = .failure(WaitUntilTimeoutError(
                     file: file,
                     line: line,
-                    timeoutSeconds: Double(timeout) / 1_000_000_000.0
+                    timeoutSeconds: Double(inactivityTimedOut ? inactivityWindowNs : timeout) / 1_000_000_000.0
                 ))
             } else {
                 resolution = nil
@@ -202,9 +228,16 @@ private func _waitUntil(
     condition: @escaping @Sendable () -> Bool,
     pollInterval: UInt64,
     timeout: UInt64,
+    activityProbe: (@Sendable () -> UInt64)? = nil,
+    inactivityWindowNs: UInt64 = 0,
     file: StaticString,
     line: UInt
 ) async throws {
+    // WASM never installs a per-test executor (no Dispatch), so `activityProbe`
+    // is always nil here — the inactivity path is unused; the absolute timeout
+    // governs. Params accepted only so the call site is platform-uniform.
+    _ = activityProbe
+    _ = inactivityWindowNs
     let startNs = UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
     let deadlineNs = startNs &+ timeout
     while !condition() {
