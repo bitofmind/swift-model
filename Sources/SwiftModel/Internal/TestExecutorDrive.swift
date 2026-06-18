@@ -71,24 +71,23 @@ func _DrainTestExecutorGlobalSnapshot() -> (outstanding: Int, sinceActivityNs: U
 }
 
 /// Build a fresh per-test executor box, or `nil` where custom task executors
-/// aren't available (macOS < 15 / iOS < 18 / WASM) — those keep the wall-clock
-/// wait path.
+/// aren't available — those keep the wall-clock wait path.
 ///
-/// **The executor-drain is now ON BY DEFAULT** under `.modelTesting` (macOS 15+
-/// / iOS 18+ / Linux-Swift-6): the wait verbs resolve on a non-starvable
-/// executor fixpoint instead of a wall-clock budget. Set
-/// `SWIFT_MODEL_EXPERIMENTAL_DRAIN=0` to OPT OUT and restore the legacy
-/// wall-clock path (kept for comparison / fallback). Any other value (or unset)
-/// = drive on.
+/// Under `.modelTesting`, the wait verbs (`settle`/`expect`/`waitUntil`) resolve
+/// on a non-starvable executor-drain fixpoint instead of a wall-clock budget.
+/// This is **unconditional** wherever it can run — macOS 15+ / iOS 18+ /
+/// Linux-Swift-6 (custom `TaskExecutor` needs the Swift 6 runtime). There is no
+/// opt-out: the drive is the validated default, not an experiment.
 ///
-/// Known limitation (documented in `Docs/test-determinism-executor-drain.md`):
-/// a handful of clock-driven tests can be MORE flaky than the wall-clock path
-/// under `--parallel` at `TIMEOUT_SCALE=1` (the premature-fixpoint on a task
-/// parked mid-`clock.sleep`). Run those serially or bump `TIMEOUT_SCALE`.
+/// The wall-clock path is NOT a toggle — it survives only as the automatic
+/// fallback for test HOSTS that can't run the drive: pre-macOS-15 / pre-iOS-18
+/// (e.g. an older simulator), older Swift on Linux, and WASM (no `Dispatch` at
+/// all). The `#available` / `#if canImport(Dispatch)` checks select it; nothing
+/// else does. (To compare the two paths, check out the pre-removal history — the
+/// `SWIFT_MODEL_EXPERIMENTAL_DRAIN` env var and the `drain=0` CI rows lived there.)
 func _makeTestExecutorBox() -> (any Sendable)? {
     #if canImport(Dispatch)
-    if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
-       ProcessInfo.processInfo.environment["SWIFT_MODEL_EXPERIMENTAL_DRAIN"] != "0" {
+    if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) {
         return _DrainTestExecutor()
     }
     #endif

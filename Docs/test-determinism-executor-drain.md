@@ -935,3 +935,28 @@ Each step is independently shippable and reversible.
 > load-flake (~2/1000) that this fix improves (fails faster when stalled) but
 > doesn't eliminate. Parallel stays informational until that test is made
 > load-robust (e.g. a dedicated larger budget) or accepted as gate-exempt.
+>
+> **Update 24 — the `SWIFT_MODEL_EXPERIMENTAL_DRAIN` flag is removed; the drive is
+> the unconditional default.** With the drive validated (80+ local `--parallel`
+> iterations, multiple green CI runs, ~2.6× faster serial, the flake population
+> gone), there is no longer a reason to keep an opt-out or the `drain=0`
+> comparison rows live in the tree. Distinguishing "what the runtime ships to"
+> (iOS 14+) from "what host runs the tests" was the key: `.modelTesting` runs on
+> the developer's/CI's machine, which on any modern toolchain (macOS 15+ /
+> Linux-Swift-6) can run the drive — so the drive is simply on there.
+>
+> Changes: `_makeTestExecutorBox` returns the executor whenever `#available`
+> (macOS 15+/iOS 18+), with no env-var check; the wall-clock path survives ONLY
+> as the automatic fallback for test hosts that can't run the drive (pre-macOS-15
+> / pre-iOS-18 hosts and simulators, older Swift, WASM — which has no `Dispatch`
+> and needs the `#else` branch just to compile), selected by availability rather
+> than a toggle. The CI matrix drops the `drain` dimension entirely — each OS now
+> runs just `{parallel, serial}` on the drive (serial required, parallel
+> informational). `ExecutorDrainSettleTests` gates on `#available` instead of the
+> env var. CHANGELOG + CLAUDE.md updated.
+>
+> The before/after comparison isn't lost — it's in this document and in git
+> history (the `SWIFT_MODEL_EXPERIMENTAL_DRAIN` env var and the `drain=0` rows are
+> one `git show` away). Keeping a toggle "for comparison" or "as an escape hatch"
+> didn't justify the standing complexity; re-introducing one is trivial if a
+> real, drive-specific need ever surfaces on a supported platform.

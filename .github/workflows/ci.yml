@@ -11,28 +11,23 @@ env:
 
 jobs:
   macos:
-    name: macOS (${{ matrix.mode }}${{ matrix.drain == '1' && ', drain' || '' }})
+    name: macOS (${{ matrix.mode }})
     runs-on: macos-15
     timeout-minutes: 15
-    # The executor-drain is ON BY DEFAULT (see `_makeTestExecutorBox`). Required
-    # vs informational is split by MODE, not drain, because the SERIAL runs are
-    # the deterministic gates and PARALLEL on the small 2–3 core / 2-vCPU runners
-    # is a clean gate for NEITHER path:
-    #   • SERIAL rows (both drains) are REQUIRED. `drain=1 serial` is the primary
-    #     correctness signal (the drive) and is rock-solid here; `drain=0 serial`
-    #     is the vanilla wall-clock regression gate (cooperative-pool serial
-    #     execution, independent of the drive — it caught the OR-path race fixed in
-    #     497c2ab). Cheap insurance, retained.
-    #   • PARALLEL rows (both drains) are INFORMATIONAL (`continue-on-error`). The
-    #     wall-clock path starves under `--parallel` on small runners (the disease
-    #     this effort replaced); the drive path is clean EXCEPT a residual tail of
-    #     `waitUntil`-based lifecycle/interop tests (testSharedDependency deinit
-    #     chains, the unsupported Observable-interop testObservedStream) that, on a
-    #     saturated 2-vCPU container, poll past the budget — a documented known-flaky
-    #     set, not a drive regression. Both are validated for comparison; neither
-    #     blocks merges. Promote `drain=1 parallel` to required only once that
-    #     waitUntil tail is resolved (see design note: cap `waitUntil`'s under-drive
-    #     deadline below the trait cap so withKnownIssue can absorb it).
+    # The executor-drain is the unconditional default on this runner (macOS 15,
+    # Swift 6 — see `_makeTestExecutorBox`); there is no flag and no wall-clock
+    # comparison row (that lived in pre-removal history). Required vs informational
+    # splits by MODE:
+    #   • SERIAL is REQUIRED — the primary deterministic correctness gate. It also
+    #     caught the OR-path race fixed in 497c2ab (serialized execution).
+    #   • PARALLEL is INFORMATIONAL (`continue-on-error`). It validates the
+    #     framework's parallel-safety claim, but on the small 2–3 core / 2-vCPU
+    #     runners a residual tail of `waitUntil`-based lifecycle/interop tests
+    #     (testSharedDependency deinit chains; the unsupported Observable-interop
+    #     testObservedStream) can poll past the budget under saturation — a
+    #     documented known-flaky set, not a drive regression. Run + visible every
+    #     time; doesn't block merges. Promote to required once that waitUntil tail
+    #     is made load-robust (see design note Updates 22–23).
     continue-on-error: ${{ matrix.mode == 'parallel' }}
     strategy:
       fail-fast: false
@@ -40,65 +35,39 @@ jobs:
         include:
           - mode: parallel
             flag: --parallel
-            drain: "0"
           - mode: serial
             flag: --no-parallel
-            drain: "0"
-          - mode: parallel
-            flag: --parallel
-            drain: "1"
-          - mode: serial
-            flag: --no-parallel
-            drain: "1"
     steps:
       - uses: actions/checkout@v6
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest
-      - name: Build and test (${{ matrix.mode }}, drain=${{ matrix.drain }})
-        # Both modes are exercised:
+      - name: Build and test (${{ matrix.mode }})
+        # `--parallel` validates the framework's parallel-safety claim — a real
+        # differentiator vs. e.g. TCA's enforced `@MainActor`. `--no-parallel` is
+        # the deterministic regression gate (caught the OR-path race in 497c2ab).
+        # `fail-fast: false` so one mode's flake doesn't cancel the other's signal.
         #
-        # • `--parallel` validates the framework's claim that tests are
-        #   parallel-safe — a real differentiator vs. e.g. TCA's enforced
-        #   `@MainActor`. Under contention on a 3-core runner, settle's
-        #   `.deferential` priority defers the quiet-window check to
-        #   `.background` QoS, so the wait correctly extends to match
-        #   actual pool load instead of failing on wall-clock.
+        # `SWIFT_MODEL_TIMEOUT_SCALE=3` multiplies all test-infrastructure budgets
+        # (expect/settle 5 s → 15 s; cleanup settle 25 s → 75 s; trait cap 30 s →
+        # 90 s; meta-test bounds scale too). The small CI runners stall under
+        # saturation; locally tests use scale=1 (default) for fast feedback.
         #
-        # • `--no-parallel` is the deterministic regression gate. It was
-        #   what caught the OR-path race fixed in 497c2ab, which only
-        #   manifested on serialized CI. Keep it for that reason; the
-        #   cost is small (one extra job, no extra test code).
-        #
-        # `fail-fast: false` so a serial-only flake doesn't cancel the
-        # parallel job's signal (and vice versa).
-        #
-        # `SWIFT_MODEL_TIMEOUT_SCALE=3` multiplies all test-infrastructure
-        # budgets (expect 5 s → 15 s; in-test settle 5 s → 15 s; cleanup
-        # settle 25 s → 75 s; trait cap 30 s → 90 s; meta-test bounds
-        # scale with budget). The small CI runners can stall `.background`
-        # QoS callbacks for many seconds under saturation; locally tests
-        # use scale=1 (default) for fast failure feedback.
-        #
-        # Benchmarks live in `SwiftModelBenchmarkTests` (split off from
-        # `SwiftModelTests`) — skipped from regular CI runs. Run them
-        # on-demand via `swift test --filter SwiftModelBenchmarkTests`
-        # or the `swift-model-benchmarks` Xcode test plan.
+        # Benchmarks live in `SwiftModelBenchmarkTests` (skipped from CI; run via
+        # `swift test --filter SwiftModelBenchmarkTests`).
         env:
           SWIFT_MODEL_TIMEOUT_SCALE: "3"
-          SWIFT_MODEL_EXPERIMENTAL_DRAIN: ${{ matrix.drain }}
         run: swift test ${{ matrix.flag }} --skip SwiftModelBenchmarkTests
 
   linux:
-    name: Linux (${{ matrix.mode }}${{ matrix.drain == '1' && ', drain' || '' }})
+    name: Linux (${{ matrix.mode }})
     runs-on: ubuntu-latest
     timeout-minutes: 12
-    # See the macOS job: SERIAL rows (both drains) are the REQUIRED deterministic
-    # gates (drive serial is the primary signal; wall-clock serial is the vanilla
-    # regression gate). PARALLEL rows (both drains) are informational on the small
-    # runners — wall-clock starves, and the drive has a residual `waitUntil`-based
-    # known-flaky tail (testSharedDependency, the unsupported testObservedStream)
-    # under 2-vCPU container saturation.
+    # See the macOS job: the drive is the unconditional default (Swift 6.3
+    # container). SERIAL is the REQUIRED deterministic gate; PARALLEL is
+    # informational (the residual `waitUntil`-based known-flaky tail —
+    # testSharedDependency, the unsupported testObservedStream — under 2-vCPU
+    # container saturation).
     continue-on-error: ${{ matrix.mode == 'parallel' }}
     container:
       image: swift:6.3.0
@@ -108,16 +77,8 @@ jobs:
         include:
           - mode: parallel
             flag: --parallel
-            drain: "0"
           - mode: serial
             flag: --no-parallel
-            drain: "0"
-          - mode: parallel
-            flag: --parallel
-            drain: "1"
-          - mode: serial
-            flag: --no-parallel
-            drain: "1"
     steps:
       - uses: actions/checkout@v6
       - name: Cache Swift build artifacts
@@ -142,12 +103,11 @@ jobs:
           key: ${{ runner.os }}-swift-6.3-${{ matrix.mode }}-v2-${{ hashFiles('Package.swift') }}
           restore-keys: |
             ${{ runner.os }}-swift-6.3-${{ matrix.mode }}-v2-${{ hashFiles('Package.swift') }}
-      - name: Build and test (${{ matrix.mode }}, drain=${{ matrix.drain }})
+      - name: Build and test (${{ matrix.mode }})
         # See the macOS job for the dual-mode rationale and
         # `SWIFT_MODEL_TIMEOUT_SCALE` justification.
         env:
           SWIFT_MODEL_TIMEOUT_SCALE: "3"
-          SWIFT_MODEL_EXPERIMENTAL_DRAIN: ${{ matrix.drain }}
         run: swift test ${{ matrix.flag }} --skip SwiftModelBenchmarkTests
 
   android:

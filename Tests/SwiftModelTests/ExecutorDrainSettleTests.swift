@@ -4,9 +4,9 @@ import Dispatch
 import Testing
 import SwiftModel
 
-// Regression coverage for executor-drain `settle()` (opt-in via
-// SWIFT_MODEL_EXPERIMENTAL_DRAIN=1). With the per-test harness executor active,
-// `settle()` resolves on the model's drain FIXPOINT — a non-starvable,
+// Regression coverage for executor-drain `settle()`. With the per-test harness
+// executor active (macOS 15+ / iOS 18+ / Linux-Swift-6 — the unconditional
+// default), `settle()` resolves on the model's drain FIXPOINT — a non-starvable,
 // load-independent quiescence signal — instead of the `.deferential`/`.background`
 // quiet-check that macOS starves under parallel load (the root cause of the
 // false `settle() timed out: model still has active tasks`). See
@@ -49,10 +49,11 @@ import SwiftModel
 struct ExecutorDrainSettleTests {
     /// `settle()` over a model whose children each run an async chain must
     /// resolve (no false timeout) on EVERY iteration, INCLUDING under heavy CPU
-    /// load — the load-independence the drain provides. Opt-in: only meaningful
-    /// with the harness executor active.
+    /// load — the load-independence the drain provides. Only meaningful where the
+    /// harness executor is active (skipped on older hosts that use the wall-clock
+    /// fallback, where this guarantee doesn't hold).
     @Test func settleIsLoadIndependentAcrossChildTasks() async {
-        guard ProcessInfo.processInfo.environment["SWIFT_MODEL_EXPERIMENTAL_DRAIN"] == "1" else { return }
+        guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) else { return }
         await underCPULoad {
             for _ in 0..<60 {
                 await withModelTesting(.off) {

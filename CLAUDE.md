@@ -232,7 +232,7 @@ The remaining flake surface is tests where the assertion's success depends on a 
   • `ModelDependencyTests.testSharedDependency` — `waitUntil(testResult.value.contains("(->5)(->5)"), timeout: 10s)` polls for two deinit-chain log entries to appear. The deinit chain runs as the last strong reference to the dep model is released; under x1000 parallel-test stress the cooperative pool can take longer than 10 s to schedule those deinits. Rate ~2/1000.
   • `UpdateStreamTests.testRaceVariant` (and `testRace`) — two unstructured `Task {}` (one writes `count = 7`, one starts a `forEach(Observed)` collector) racing the Observed registration gap; asserts convergence (`counts.last == 7`). A lost update in the gap (rare, ~per-1000) fails it. Pre-existing on both flag states; not specific to the executor-drive.
 
-These also flake on the flag-OFF (wall-clock) path under `--parallel` — in fact the executor-drive (`SWIFT_MODEL_EXPERIMENTAL_DRAIN=1`) *reduces* the overall dev-machine `--parallel` flake population ~5–10× (it's a small remnant of a much larger shared tail). See `Docs/test-determinism-executor-drain.md`.
+These are a small remnant of a much larger tail that the executor-drive removed: on the legacy wall-clock path (which now survives only as the automatic fallback for test hosts that can't run the drive — pre-macOS-15 / pre-iOS-18 / older Swift / WASM), the dev-machine `--parallel` flake population was ~5–10× larger. The drive is the unconditional default wherever it can run; there is no opt-out flag. See `Docs/test-determinism-executor-drain.md`.
 
 When investigating new load flakes, check first whether the test matches this pattern (asserting a property whose truth requires N cooperative-pool slots to land within a fixed wall-clock budget, or relying on coalescing/observation timing that the cooperative scheduler doesn't guarantee) before chasing a library bug.
 
@@ -271,10 +271,15 @@ GitHub Actions (`.github/workflows/ci.yml`):
 - **Android**: compile-only cross-compile to `aarch64-unknown-linux-android28`.
 - **WASM**: compile-only build to `wasm32-unknown-wasip1`.
 
-Both `parallel` and `serial` test modes run for macOS and Linux. Parallel
-validates the framework's parallel-test claim; serial is the deterministic
-regression gate (caught the OR-path race fixed in 497c2ab). `fail-fast: false`
-on the matrices so one mode's flake doesn't suppress the other's signal.
+Both `parallel` and `serial` test modes run for macOS and Linux, with the
+executor-drive as the unconditional default (no flag — see `_makeTestExecutorBox`).
+**Serial is REQUIRED** — the deterministic regression gate (caught the OR-path
+race fixed in 497c2ab). **Parallel is INFORMATIONAL** (`continue-on-error`): it
+validates the framework's parallel-test claim, but on the small CI runners a
+residual `waitUntil`-based known-flaky tail (`testSharedDependency`, the
+unsupported `testObservedStream`) can poll past the budget under saturation, so
+it's run-and-visible but not merge-blocking. `fail-fast: false` so one mode's
+flake doesn't suppress the other's signal.
 
 
 `swift-tools-version` is **6.1** — minimum required for the `traits:` parameter
