@@ -960,3 +960,23 @@ Each step is independently shippable and reversible.
 > one `git show` away). Keeping a toggle "for comparison" or "as an escape hatch"
 > didn't justify the standing complexity; re-introducing one is trivial if a
 > real, drive-specific need ever surfaces on a supported platform.
+>
+> **Update 25 — `testSharedDependency` made deterministic; PARALLEL promoted to a
+> required CI gate.** The last parallel straggler: the test shares one
+> `Dependency` across two children, each observing its value via
+> `forEach(Observed)`. `sharedDep.value -= 2` (→5) delivers `(->5)` to EACH child
+> reactively while both are alive — but the old test waited for only ONE, then
+> removed the children, letting the SECOND `(->5)` arrive entangled with child
+> teardown (ARC/cancellation-flush timing), which is the load-sensitive flake.
+> A `settle()`-based attempt made it *worse* (1/30): that second entry can land
+> AFTER executor quiescence via the flush path, which `settle` doesn't drive. The
+> fix is to make the delivery reactive instead of teardown-timed — assert both
+> children see 5 and wait for `(->5)(->5)` UP FRONT, while both children exist;
+> the trailing wait then only needs the imminent `d` destruct log.
+>
+> With that and the Update 23 `waitUntil` fix, both parallel flake sources are
+> gone. Verified green across 4 consecutive CI runs (push + 3 re-runs, parallel
+> jobs green on macOS and Linux each time), so the `continue-on-error` is dropped:
+> **both serial and parallel are now required, merge-blocking gates on macOS and
+> Linux.** That completes the arc — the executor-drive is the unconditional
+> default and the full CI matrix gates on it.

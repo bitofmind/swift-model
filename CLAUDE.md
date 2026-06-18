@@ -272,14 +272,15 @@ GitHub Actions (`.github/workflows/ci.yml`):
 - **WASM**: compile-only build to `wasm32-unknown-wasip1`.
 
 Both `parallel` and `serial` test modes run for macOS and Linux, with the
-executor-drive as the unconditional default (no flag — see `_makeTestExecutorBox`).
-**Serial is REQUIRED** — the deterministic regression gate (caught the OR-path
-race fixed in 497c2ab). **Parallel is INFORMATIONAL** (`continue-on-error`): it
-validates the framework's parallel-test claim, but on the small CI runners a
-residual `waitUntil`-based known-flaky tail (`testSharedDependency`, the
-unsupported `testObservedStream`) can poll past the budget under saturation, so
-it's run-and-visible but not merge-blocking. `fail-fast: false` so one mode's
-flake doesn't suppress the other's signal.
+executor-drive as the unconditional default (no flag — see `_makeTestExecutorBox`),
+and **both are now REQUIRED** (merge-blocking). Serial is the deterministic
+regression gate (caught the OR-path race fixed in 497c2ab). Parallel validates
+the framework's parallel-test claim; it was informational while a small
+`waitUntil`-based tail flaked on the small CI runners (`testSharedDependency`, the
+unsupported `testObservedStream`), but both causes are fixed (see
+`Docs/test-determinism-executor-drain.md` Updates 22–24) and it has been verified
+green across repeated runs. `fail-fast: false` so one mode's flake doesn't
+suppress the other's signal.
 
 
 `swift-tools-version` is **6.1** — minimum required for the `traits:` parameter

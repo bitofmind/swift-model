@@ -16,19 +16,18 @@ jobs:
     timeout-minutes: 15
     # The executor-drain is the unconditional default on this runner (macOS 15,
     # Swift 6 — see `_makeTestExecutorBox`); there is no flag and no wall-clock
-    # comparison row (that lived in pre-removal history). Required vs informational
-    # splits by MODE:
-    #   • SERIAL is REQUIRED — the primary deterministic correctness gate. It also
-    #     caught the OR-path race fixed in 497c2ab (serialized execution).
-    #   • PARALLEL is INFORMATIONAL (`continue-on-error`). It validates the
-    #     framework's parallel-safety claim, but on the small 2–3 core / 2-vCPU
-    #     runners a residual tail of `waitUntil`-based lifecycle/interop tests
-    #     (testSharedDependency deinit chains; the unsupported Observable-interop
-    #     testObservedStream) can poll past the budget under saturation — a
-    #     documented known-flaky set, not a drive regression. Run + visible every
-    #     time; doesn't block merges. Promote to required once that waitUntil tail
-    #     is made load-robust (see design note Updates 22–23).
-    continue-on-error: ${{ matrix.mode == 'parallel' }}
+    # comparison row (that lived in pre-removal history). BOTH modes are now
+    # REQUIRED (no `continue-on-error`):
+    #   • SERIAL — the primary deterministic correctness gate (caught the OR-path
+    #     race fixed in 497c2ab under serialized execution).
+    #   • PARALLEL — validates the framework's parallel-safety claim, a real
+    #     differentiator vs. e.g. TCA's enforced `@MainActor`. It was informational
+    #     while a small `waitUntil`-based tail flaked on the small runners; both
+    #     causes are now fixed (design note Updates 22–24): `testObservedStream`'s
+    #     never-true wait fails catchably so `withKnownIssue` absorbs it, and
+    #     `testSharedDependency` awaits its shared-dep observations reactively up
+    #     front instead of via teardown timing. Verified green across repeated CI
+    #     runs, so it now blocks merges too.
     strategy:
       fail-fast: false
       matrix:
@@ -64,11 +63,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     # See the macOS job: the drive is the unconditional default (Swift 6.3
-    # container). SERIAL is the REQUIRED deterministic gate; PARALLEL is
-    # informational (the residual `waitUntil`-based known-flaky tail —
-    # testSharedDependency, the unsupported testObservedStream — under 2-vCPU
-    # container saturation).
-    continue-on-error: ${{ matrix.mode == 'parallel' }}
+    # container). BOTH modes are now REQUIRED — serial is the deterministic gate,
+    # and parallel (formerly informational while the `waitUntil` tail flaked on
+    # the 2-vCPU container) is now green after the Update 22–24 fixes, so it
+    # blocks merges too.
     container:
       image: swift:6.3.0
     strategy:
