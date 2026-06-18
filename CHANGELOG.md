@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.4] — `node.memoize` produce-per-access fix + executor-drain test determinism
+
 ### Fixed
 
 - **`node.memoize` no longer degrades to recompute-per-access once a dependency changes — the produce-per-access thrash that blocked adopters from upgrading past 1.0.2.** Two defects compounded into "every read runs `produce()`": (1) a value-changing dependency write left the cache entry permanently dirty, because the coalesced `performUpdate` *preserved* the dirty flag when storing a recomputed value (it couldn't tell "the mutation this recompute already incorporates" from "a concurrent mutation during produce") — so after one write, every subsequent access found the entry dirty and recomputed inline forever, even on a fully idle machine; (2) while the async revalidation task lagged (saturated cooperative pool), each dirty read recomputed inline *and threw the result away*, so N accesses in the starvation window cost N produces instead of 1. The fix replaces the `isDirty` boolean with monotonic `dirtyVersion`/`cleanVersion` counters: a recompute captures `dirtyVersion` before running `produce()` and advances `cleanVersion` to exactly that value when it commits — so the dependency changes the recompute incorporated are cleared, while a change arriving *during* `produce()` (which bumps `dirtyVersion` further) correctly keeps the entry dirty. A dirty read now also writes its fresh value back into the cache (silently on the `withObservationTracking` path — the already-scheduled `performUpdate` remains the sole notifier and dedups against the last *notified* value, so a read never fires observer notifications), so subsequent accesses in a starvation window hit the cache. Net effect: produce-count is now O(1) per dependency change regardless of access count or pool load, on both the `withObservationTracking` and `AccessCollector` paths, for single and chained memoizes. (Adopters pinned to `exact: "1.0.2"` solely to avoid this can move to the normal `from:` requirement once this ships.)
