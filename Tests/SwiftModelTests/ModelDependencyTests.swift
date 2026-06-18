@@ -168,8 +168,19 @@ struct ModelDependencyTests {
             try await waitUntil(testResult.value.contains("(4:7)"))
 
             sharedDep.value -= 2
-            await expect(model.children[0].dependency.value == 5)
-            try await waitUntil(testResult.value.contains("(->5)"))
+            // Both children share `sharedDep` and observe its value, so the
+            // change delivers "(->5)" to EACH — reactively, while both are still
+            // alive. Wait for both deliveries here, before any teardown. The old
+            // test waited for only one and let the second arrive entangled with
+            // child teardown ("a deinit chain whose timing is at the mercy of
+            // when the last strong reference is released") — the load-sensitive
+            // testSharedDependency parallel flake. Asserting both observations up
+            // front, while the children exist, makes the log deterministic.
+            await expect {
+                model.children[0].dependency.value == 5
+                model.children[1].dependency.value == 5
+            }
+            try await waitUntil(testResult.value.contains("(->5)(->5)"))
 
             model.children.remove(at: 0)
 
@@ -184,12 +195,10 @@ struct ModelDependencyTests {
                 model.children.isEmpty
                 sharedDep.lifetime == .destructed
             }
-            // Generous timeout: the second "(->5)" comes from a deinit chain
-            // whose timing is at the mercy of when the last strong reference
-            // is released — under x1000 parallel-test stress this can take
-            // longer than the default 5 s. 10 s still surfaces a real
-            // "deinit never fired" bug while tolerating load-induced latency.
-            try await waitUntil(testResult.value.contains("(->5)(->5)"), timeout: 10_000_000_000)
+            // "d" is the dependency's onCancel teardown log; by the time
+            // lifetime == .destructed it is imminent. (No large timeout needed —
+            // the load-sensitive "(->5)(->5)" wait moved up, above.)
+            try await waitUntil(testResult.value.contains("(->5)(->5)d"))
 
             #expect(testResult.value == "D(1:4711)D(3:8)(->7)(4:7)(->5)(->5)d")
         }
