@@ -502,6 +502,31 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         _noteActivity()
     }
 
+    // MARK: - Runaway diagnostic (settle-timeout)
+
+    /// Per-call-site reactive-body fire counts, keyed by source location. A
+    /// registration that keeps firing right up to a settle timeout (high count,
+    /// recent `lastFireNs`) is the runaway `settleDiagnostics()` names. Dedicated
+    /// lock so the hot `reactiveBodyFired` path never contends the main access lock.
+    private let _fireStatsLock = NSLock()
+    nonisolated(unsafe) private var _fireStats: [FileAndLine: (count: Int, lastFireNs: UInt64)] = [:]
+
+    override func reactiveBodyFired(_ fileAndLine: FileAndLine) {
+        let now = _drainMonotonicNs()
+        _fireStatsLock.withLock {
+            var s = _fireStats[fileAndLine] ?? (count: 0, lastFireNs: 0)
+            s.count += 1
+            s.lastFireNs = now
+            _fireStats[fileAndLine] = s
+        }
+    }
+
+    /// Snapshot of per-call-site reactive fire counts, consumed by
+    /// `settleDiagnostics()` to rank/flag the runaway source on a settle timeout.
+    func _reactiveFireStats() -> [FileAndLine: (count: Int, lastFireNs: UInt64)] {
+        _fireStatsLock.withLock { _fireStats }
+    }
+
     // Erased executor-drain hooks (overrides must be in the class body, not an
     // extension). Implementations live in TestExecutorDrive.swift.
     override var hasTestExecutorErased: Bool { _isExecutorDriveActive }

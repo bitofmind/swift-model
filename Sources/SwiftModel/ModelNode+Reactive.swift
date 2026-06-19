@@ -328,9 +328,13 @@ public extension ModelNode {
         }
 
         guard cancelPrevious else {
+            let fireFL = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
             return task(name, function: function, isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column, operation: {
                 for try await value in sequence {
                     guard !Task.isCancelled, !context.isDestructed else { return }
+                    // Count this delivery for the settle-timeout runaway diagnostic
+                    // (no-op outside tests). See ModelAccess.reactiveBodyFired.
+                    ModelAccess.current?.reactiveBodyFired(fireFL)
 
                     do {
                         try await operation(value)
@@ -370,6 +374,9 @@ public extension ModelNode {
             var previousInner: TaskCancellable? = nil
 
             for try await value in sequence {
+                // Count this delivery for the settle-timeout runaway diagnostic
+                // (no-op outside tests). See ModelAccess.reactiveBodyFired.
+                ModelAccess.current?.reactiveBodyFired(fileAndLine)
                 // Step 1: cancel the previous body so it observes cancellation at its next
                 // suspension point (cooperative cancellation).
                 previousInner?.cancel()

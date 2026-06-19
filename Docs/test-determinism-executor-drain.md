@@ -980,3 +980,20 @@ Each step is independently shippable and reversible.
 > **both serial and parallel are now required, merge-blocking gates on macOS and
 > Linux.** That completes the arc — the executor-drive is the unconditional
 > default and the full CI matrix gates on it.
+>
+> **Update 26 — runaway-source diagnostic for non-fixpoint timeouts (1.0.5).**
+> Feedback from a real consumer (`parallel-apple`): a non-converging reactive
+> cascade — a `node.forEach(Observed { … })` / `node.onChange` whose source emits
+> a non-`isSame` value each evaluation, or sits in a feedback loop — makes the
+> drive's true-fixpoint `settle()` correctly time out ("model never reached a
+> fixpoint"). But the diagnostic listed *every* active registration, so finding
+> the offender took multiple debugging rounds (see the `swift-model-104-…-settle-hang`
+> handoff thread). Fix: the drive now counts per-call-site reactive-body
+> deliveries (`ModelAccess.reactiveBodyFired`, gated through the access so it's a
+> no-op outside `.modelTesting` — zero production cost), and `settleDiagnostics()`
+> prepends a callout naming the registration that fired far more than a one-shot
+> **and was still firing at the timeout** — the non-`isSame`/feedback source.
+> Diagnostic-only; the 120 s watchdog and all settle semantics are unchanged. The
+> "convergent cascade settles / non-convergent never does" mechanism is the
+> Update 21–23 dedup story (env writes dedup for Equatable values; `Observed`
+> dedups on `isSame` output).

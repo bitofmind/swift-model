@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+
+- **`settle()`/`expect()` now name the runaway source when a model never reaches a fixpoint.** Under the executor-drain (1.0.4), a reactive cascade that never converges — a `node.forEach(Observed { … })` / `node.onChange` whose source emits a non-`isSame` value each evaluation, or that sits in a feedback loop (a write that re-triggers it) — makes `settle()` correctly time out with "model never reached a fixpoint." Previously the diagnostic listed *every* active registration, so the actual offender was hidden. Now the drive counts per-call-site reactive-body deliveries; on a timeout it prepends a callout naming the registration that fired far more than a one-shot **and was still firing at the timeout** ("⚠️ likely runaway: `Model: \"…\" @ File.swift:NN` fired 4,812× and was still firing…"), with the fix guidance (make the emitted value `isSame`/`Equatable`-stable, or break the cycle). Counting is gated through `ModelAccess` so it is a no-op (zero cost) outside `.modelTesting`. Diagnostic-only — no behavior change.
+
 ---
 
 ## [1.0.4] — `node.memoize` produce-per-access fix + executor-drain test determinism

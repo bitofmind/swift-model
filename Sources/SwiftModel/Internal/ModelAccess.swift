@@ -103,6 +103,14 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
     /// Default: no-op. `TestAccess` overrides to fire `_noteActivity`.
     func taskBodyStarted() {}
 
+    /// Records that a reactive body (`node.forEach` / `node.onChange`) delivered
+    /// an element, keyed by its source location. Powers `settle()`'s runaway
+    /// diagnostic: a registration that keeps firing right up to a settle timeout
+    /// is almost certainly a non-`isSame` source or a feedback loop. Default:
+    /// no-op (zero cost in production — `ModelAccess.current` is nil or a
+    /// non-test access). `TestAccess` overrides to count.
+    func reactiveBodyFired(_ fileAndLine: FileAndLine) {}
+
     /// Erased executor-drain hooks so the free `waitUntil` (which only has
     /// `ModelAccess.current`, not the generic `TestAccess<Root>`) can drive the
     /// model to a quiescence fixpoint. Defaults are inert; `TestAccess`
