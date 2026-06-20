@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.5] — Same-`id` child-replace anchoring fix; `Model.modelID` + `settle`/`expect` runaway-source diagnostic
+
 ### Fixed
 
 - **Replacing an optional `@Model` child (or any non-collection `ModelContainer`-typed property) with a new instance that reuses the existing child's explicit Identifiable `id` no longer leaves the new child unanchored.** The `ModelContainer` write path had a fast path — `if containerIsSame(newValue, container) { container = newValue; return }` — that, when the structure looked unchanged by `.id`, stored the assigned value *raw* and skipped `updateContext`. That is correct only when the assigned value is the already-anchored live child; for a *fresh* instance sharing an existing domain `id` (the case a `@Model` with an explicit, reusable `id` makes reachable) it stored a pre-anchor value with **no context** — the child silently dropped out of the hierarchy: no observation, no tasks, no `onActivate`, and reads returned its detached state. A SwiftUI view bound to such a child rendered its birth state and never updated. The fast path is removed; the path now always reconciles, so a same-`id` assignment reuses the existing child's context (continuity, matching the `[Model]` collection write path) and the child stays live. Genuine no-op write-backs stay cheap via the per-element `findOrTrackChild` fast path. Only same-`id` replacement was affected — different-`id` replacement and `nil`→value already anchored correctly.
