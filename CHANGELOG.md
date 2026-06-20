@@ -6,6 +6,16 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Replacing an optional `@Model` child (or any non-collection `ModelContainer`-typed property) with a new instance that reuses the existing child's explicit Identifiable `id` no longer leaves the new child unanchored.** The `ModelContainer` write path had a fast path — `if containerIsSame(newValue, container) { container = newValue; return }` — that, when the structure looked unchanged by `.id`, stored the assigned value *raw* and skipped `updateContext`. That is correct only when the assigned value is the already-anchored live child; for a *fresh* instance sharing an existing domain `id` (the case a `@Model` with an explicit, reusable `id` makes reachable) it stored a pre-anchor value with **no context** — the child silently dropped out of the hierarchy: no observation, no tasks, no `onActivate`, and reads returned its detached state. A SwiftUI view bound to such a child rendered its birth state and never updated. The fast path is removed; the path now always reconciles, so a same-`id` assignment reuses the existing child's context (continuity, matching the `[Model]` collection write path) and the child stays live. Genuine no-op write-backs stay cheap via the per-element `findOrTrackChild` fast path. Only same-`id` replacement was affected — different-`id` replacement and `nil`→value already anchored correctly.
+
+### Added
+
+- **`public var Model.modelID: ModelID` — the model's stable, per-instance identity.** Distinct from `id`: `id` is the `Identifiable` conformance and may be a *domain* value when a model declares its own `id` (e.g. a key reused by different instances over time), whereas `modelID` identifies *this specific instance*, is stable for its lifetime (assigned at construction, before anchoring, and carried into the live context), and is never reused. It is the reliable way to tell whether two model values refer to the same live instance; for a model without an explicit `id`, `modelID` and `id` are identical.
+
+- **DEBUG diagnostic for duplicate ids in a model collection.** Assigning a `[Model]` (or `IdentifiedArray`-style) collection in which two *distinct* instances share an Identifiable `id` now emits a `reportIssue` in DEBUG, mirroring SwiftUI's `ForEach` duplicate-id warning. Such elements are conflated onto a single child context (the duplicate resolves to the first's context and its state is lost), which previously failed silently. The check is keyed by `modelID`, so the *same* instance appearing more than once — legitimate model sharing — does not warn; only distinct instances colliding on one `id` are flagged.
+
 ---
 
 ## [1.0.4] — `node.memoize` produce-per-access fix + executor-drain test determinism
