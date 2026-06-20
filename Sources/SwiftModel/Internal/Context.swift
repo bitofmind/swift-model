@@ -1437,9 +1437,20 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     // MARK: - MutableCollection variants (no ModelContainer constraint)
     //
     // These mirror the existing ModelContainer-constrained overloads but work with any
-    // MutableCollection whose elements are Model & Identifiable. ModelRef uses only `id`
-    // (ModelID, globally unique) as the registry key — the outer `containerPath` dict key
-    // already distinguishes collections, so `id` alone disambiguates elements within a bucket.
+    // MutableCollection whose elements are Model & Identifiable. ModelRef uses the element's
+    // Identifiable `id` as the registry key — the outer `containerPath` dict key already
+    // distinguishes collections, so `id` alone disambiguates elements within a bucket.
+    //
+    // NOTE on `id`: this is the element's *Identifiable* `id`, NOT necessarily the per-instance
+    // `modelID`. For a default-`id` @Model the two coincide; a @Model that declares an explicit
+    // `id` shadows the default, so the key is that domain id. This is deliberate: `id` is the
+    // stable-identity slot key (the ForEach / IdentifiedArray model), so replacing an element with
+    // a NEW instance carrying an existing `id` CONTINUES the live child — its context, activation,
+    // tasks and state are preserved and the new instance's birth state is intentionally ignored
+    // (to change a child, mutate it; do not replace it). The required contract is the standard
+    // Identifiable one: `id` must be UNIQUE WITHIN THIS COLLECTION at any instant — two distinct
+    // instances sharing an `id` in one collection are conflated onto a single context. See
+    // ExplicitIdReplacementTests for the full characterization.
 
     /// Creates or retrieves the child context for a `MutableCollection` element,
     /// using `ModelRef(id: childModel.id)` as the registry key.
@@ -1568,17 +1579,20 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     //
     // These handle MutableCollection properties whose element type is `ModelContainer & Identifiable`
     // but the collection itself is NOT ModelContainer (e.g. IdentifiedArray<@ModelContainer enum>).
-    // Child model contexts are stored under `children[collectionPath]` using
-    // `ModelRef(id: childModel.id)` as the registry key. Model IDs (UUIDs) are globally unique,
-    // so no cursor key path is needed, eliminating the 3 heap allocations that cursor construction
-    // would otherwise require before every registry lookup.
+    // The inner child Model's context is stored under `children[collectionPath]` using
+    // `ModelRef(id: childModel.id)` (the inner Model's Identifiable id) as the registry key, with a
+    // constant `elementPath`, so no per-element cursor key path is needed — eliminating the 3 heap
+    // allocations that cursor construction would otherwise require before every registry lookup.
+    // As with `childContextForCollection`, `id` is the Identifiable id (== modelID only for a
+    // default-`id` @Model); see the stable-identity contract note there.
 
     /// Creates or retrieves the child context for a `Model` child inside a `ModelContainer`
     /// element of a `MutableCollection` that is not itself `ModelContainer`.
     ///
-    /// Uses `ModelRef(id: childModel.id)` as the registry key. Model IDs (UUIDs) are globally
-    /// unique, so no cursor key path is needed to disambiguate elements. This eliminates the 3
-    /// cursor allocations that would otherwise be required before every registry lookup.
+    /// Uses `ModelRef(id: childModel.id)` as the registry key with a constant `elementPath`, so no
+    /// cursor key path is needed to disambiguate elements. This eliminates the 3 cursor allocations
+    /// that would otherwise be required before every registry lookup. `id` is the element's
+    /// Identifiable id — see the stable-identity contract note above `childContextForCollection`.
     func childContextForContainerCollectionModel<C: MutableCollection, Child: Model>(
         collectionPath: WritableKeyPath<M, C>,
         childModel: Child

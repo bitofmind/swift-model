@@ -117,6 +117,18 @@ public extension Model {
     /// model type declares its own `id` property of a different type.
     var id: ModelID { modelID }
 
+    /// The model's stable, per-instance identity.
+    ///
+    /// Unlike ``id`` — which is the `Identifiable` conformance and may be a *domain* value when the
+    /// model declares its own `id` property (e.g. a reusable key shared by distinct instances over
+    /// time) — `modelID` is the framework-assigned identity of *this specific instance*. It is
+    /// stable for the instance's lifetime (assigned at construction, before anchoring, and carried
+    /// into the live context) and is never reused, so it is the reliable way to tell whether two
+    /// model values refer to the same live instance.
+    ///
+    /// For a model that does not declare an explicit `id`, `modelID` and `id` are identical.
+    var modelID: ModelID { modelContext.modelID }
+
     func onActivate() { }
 
     /// The runtime interface for this model.
