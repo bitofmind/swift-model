@@ -831,6 +831,10 @@ extension _ModelSourceBox {
         }
         guard let context = _modifyContext(accessBox: accessBox) else { return }
 
+#if DEBUG
+        _warnOnDuplicateModelIDs(newValue)
+#endif
+
         let modelPath = M._modelStateKeyPath.appending(path: statePath)
         var postLockCallbacks: [() -> Void] = []
         var structuralChange = false
@@ -994,13 +998,14 @@ extension _ModelSourceBox {
             context.stateTransaction(at: statePath, isSame: {
                 containerIsSame($0, $1)
             }, accessBox: accessBox, modify: { container in
-                // Fast path: if element structure is unchanged (same IDs in same order),
-                // skip the O(N) updateContext traversal — no child contexts need to change.
-                if containerIsSame(newValue, container) {
-                    container = newValue
-                    return
-                }
-
+                // NOTE: there is intentionally NO "same IDs ⇒ store newValue and return" fast path
+                // here. `containerIsSame` compares by Identifiable `.id`, which a fresh instance
+                // sharing an existing domain `id` also satisfies — storing such a pre-anchor value
+                // raw would leave the new child UNANCHORED (no context/observation/tasks). Always
+                // run `updateContext`: for a genuine no-op write-back its per-element
+                // `findOrTrackChild` fast path reuses the existing context cheaply (no onActivate
+                // churn); for a same-`.id` replacement it reuses the live child's context so the
+                // stored value stays anchored (continuity — matching the collection write path).
                 var newContainer = newValue
                 let prevDidReplace = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
                 threadLocals.didReplaceModelWithDestructedOrFrozenCopy = false

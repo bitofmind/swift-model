@@ -140,9 +140,7 @@ extension Model {
         lifetime == .initial
     }
 
-    var modelID: ModelID {
-        modelContext.modelID
-    }
+    // `modelID` is declared as public API in Model.swift (per-instance identity).
 
     mutating func withContextAdded(context: Context<Self>) {
         // Transition @Model pending state to live before traversal reads _$modelSource paths.

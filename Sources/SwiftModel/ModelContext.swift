@@ -179,3 +179,33 @@ func _modelIsSame<T: Model>(_ lhs: T, _ rhs: Any) -> Bool {
     let rightOptional = rhs as! T
     return lhs.id == rightOptional.id
 }
+
+#if DEBUG
+/// DEBUG diagnostic: distinct model instances in one collection must not share an Identifiable
+/// `id` (the standard Identifiable/ForEach contract). Two *different* instances sharing an `id` are
+/// conflated onto a single child context — the duplicate resolves to the first's context and its
+/// state is lost, with no error. SwiftUI's `ForEach` reports an analogous runtime issue.
+///
+/// The check is by `modelID` (per-instance identity), NOT just `id`: the SAME model instance
+/// appearing multiple times in a collection is legitimate *sharing* (same `modelID`) and must not
+/// warn — only distinct instances (different `modelID`) colliding on one `id` are flagged. Called
+/// from the `Model`-element collection write path in `_ModelSourceBox`.
+func _warnOnDuplicateModelIDs<C: Collection>(_ collection: C) where C.Element: Model & Identifiable {
+    guard collection.count > 1 else { return }
+    var modelIDByID: [C.Element.ID: ModelID] = [:]
+    for element in collection {
+        let mid = element.modelID
+        if let existing = modelIDByID[element.id], existing != mid {
+            reportIssue(
+                "SwiftModel: two distinct model instances share id \(element.id) among " +
+                "\(C.Element.self) elements in a single collection. Collection elements must have " +
+                "unique ids (the Identifiable/ForEach contract); distinct instances sharing an id " +
+                "are conflated onto one child context and the duplicate's state is lost. (The same " +
+                "instance appearing more than once is fine — that is model sharing.)"
+            )
+            return
+        }
+        modelIDByID[element.id] = mid
+    }
+}
+#endif
