@@ -16,6 +16,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 - **DEBUG diagnostic for duplicate ids in a model collection.** Assigning a `[Model]` (or `IdentifiedArray`-style) collection in which two *distinct* instances share an Identifiable `id` now emits a `reportIssue` in DEBUG, mirroring SwiftUI's `ForEach` duplicate-id warning. Such elements are conflated onto a single child context (the duplicate resolves to the first's context and its state is lost), which previously failed silently. The check is keyed by `modelID`, so the *same* instance appearing more than once — legitimate model sharing — does not warn; only distinct instances colliding on one `id` are flagged.
 
+### Tests
+
+- **`FrozenChildObservationTests`** — characterises the live-vs-frozen observation contract behind the "sub-view stuck at a child's birth state" symptom: a child read out of a live parent is itself live and tracks mutations, whereas a frozen copy (same `modelID`, no context) silently does not participate in `withObservationTracking` (the iOS 17+ registrar path SwiftUI drives invalidation through) — so a non-live value must never reach an `@ObservedModel`. Also covers reading per-instance identity via the public `modelID` when an explicit domain `id` shadows `Identifiable.id`.
+
 ---
 
 ## [1.0.4] — `node.memoize` produce-per-access fix + executor-drain test determinism
