@@ -770,11 +770,21 @@ extension _ModelSourceBox {
 
             let modelPath = M._modelStateKeyPath.appending(path: statePath)
             var callbacks: [() -> Void] = []
+            // Identity is the Identifiable `.id` (the stable-identity contract shared with the
+            // collection and optional/`ModelContainer` write paths): assigning a fresh instance
+            // that reuses the existing child's `.id` CONTINUES that live child rather than replacing
+            // it — its context, activation, tasks and state are preserved and the new instance's
+            // state is ignored (to change a child, mutate it). Only a DIFFERENT `.id` is a genuine
+            // replacement. For a default-`id` @Model `.id == modelID`, so this is unchanged there;
+            // it only affects models with an explicit, reusable `id`.
             context.stateTransaction(at: statePath, isSame: {
-                $0.modelID == $1.modelID
+                $0.id == $1.id
             }, accessBox: accessBox, modify: { child in
                 var newChild = newValue
-                if let childContext = child.context {
+                // Tear down the old child only on a real replacement (different `.id`). For a
+                // same-`.id` assignment, leaving the existing context registered lets
+                // `updateContext` reuse it — continuity, matching the collection write path.
+                if let childContext = child.context, child.id != newValue.id {
                     context.removeChild(childContext, at: \M.self, callbacks: &callbacks)
                 }
                 context.updateContext(for: &newChild, at: modelPath)
