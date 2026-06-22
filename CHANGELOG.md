@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- **Assigning a new instance to a single `@Model` child property is now consistent with collections and optionals: a same-`id` assignment continues the existing live child instead of replacing it.** Previously `model.child = NewChild(...)` always replaced (tore the old child down, anchored the new one) even when the new instance reused the existing child's Identifiable `id`, while `[Model]` and `Model?` properties treated a same-`id` assignment as *continuity* (the existing live child is kept, the new instance's state ignored). All child shapes now follow one rule: **`.id` is identity — to change a child you mutate it; assigning a fresh instance that reuses an existing `id` continues that child, and only a *different* `id` is a replacement.** This only affects `@Model` types that declare an explicit, reusable `id`; for a default-`id` model `.id == modelID`, so every distinct instance still replaces exactly as before. To intentionally swap in different state under the same domain key, either mutate the existing child or give the new instance a distinct `id`.
+
 ---
 
 ## [1.0.5] — Same-`id` child-replace anchoring fix; `Model.modelID` + `settle`/`expect` runaway-source diagnostic
