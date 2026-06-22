@@ -26,6 +26,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 - **`settle()`/`expect()` now name the runaway source when a model never reaches a fixpoint.** Under the executor-drain (1.0.4), a reactive cascade that never converges — a `node.forEach(Observed { … })` / `node.onChange` whose source emits a non-`isSame` value each evaluation, or that sits in a feedback loop (a write that re-triggers it) — makes `settle()` correctly time out with "model never reached a fixpoint." Previously the diagnostic listed *every* active registration, so the actual offender was hidden. Now the drive counts per-call-site reactive-body deliveries; on a timeout it prepends a callout naming the registration that fired far more than a one-shot **and was still firing at the timeout** ("⚠️ likely runaway: `Model: \"…\" @ File.swift:NN` fired 4,812× and was still firing…"), with the fix guidance (make the emitted value `isSame`/`Equatable`-stable, or break the cycle). Counting is gated through `ModelAccess` so it is a no-op (zero cost) outside `.modelTesting`. Diagnostic-only — no behavior change.
 
+### Tests
+
+- **`FrozenChildObservationTests`** — characterises the live-vs-frozen observation contract behind the "sub-view stuck at a child's birth state" symptom: a child read out of a live parent is itself live and tracks mutations, whereas a frozen copy (same `modelID`, no context) silently does not participate in `withObservationTracking` (the iOS 17+ registrar path SwiftUI drives invalidation through) — so a non-live value must never reach an `@ObservedModel`. Also covers reading per-instance identity via the public `modelID` when an explicit domain `id` shadows `Identifiable.id`.
+
 ---
 
 ## [1.0.4] — `node.memoize` produce-per-access fix + executor-drain test determinism
