@@ -129,8 +129,9 @@ struct ExplicitIdReconcileTests {
 // behavior; the `optionalChild` case is a genuine bug (see comment).
 @Suite(.modelTesting(exhaustivity: .off))
 struct ExplicitIdShapeMatrixTests {
-    // Single `var child: M`: REPLACEMENT — new context, new state applied. (The single-Model write
-    // path skips by `modelID` and does removeChild + updateContext.)
+    // Single `var child: M`: CONTINUITY — same-`.id` assignment reuses the existing child's
+    // context and discards the new instance's state, consistent with the optional and collection
+    // write paths. (Previously this replaced; unified so `.id` is identity across all child shapes.)
     @Test func singleChild_sameIdReplace() async {
         let p = SMParent(child: SMChild(id: 1, value: 99)).withAnchor()
         await settle {}
@@ -138,6 +139,17 @@ struct ExplicitIdShapeMatrixTests {
         p.child = SMChild(id: 1, value: 5)
         await settle {}
         #expect(p.child.context != nil)                                    // anchored
+        #expect(p.child.context.map(ObjectIdentifier.init) == before)      // context reused
+        #expect(p.child.value == 99)                                       // new state discarded
+    }
+
+    // Single `var child: M`: a DIFFERENT `.id` is a genuine replacement — new context, new state.
+    @Test func singleChild_differentIdReplace() async {
+        let p = SMParent(child: SMChild(id: 1, value: 99)).withAnchor()
+        await settle {}
+        let before = p.child.context.map(ObjectIdentifier.init)
+        p.child = SMChild(id: 2, value: 5)
+        await settle {}
         #expect(p.child.context.map(ObjectIdentifier.init) != before)      // new context
         #expect(p.child.value == 5)                                        // new state applied
     }

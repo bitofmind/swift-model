@@ -164,7 +164,9 @@ extension TestAccess {
     }
 
     /// Compact diagnostic listing models with active tasks at settle-timeout
-    /// time. One line per task with model name and source location.
+    /// time. One line per task with model name and source location. When one
+    /// reactive registration kept firing right up to the timeout, a runaway
+    /// callout is prepended naming it (the usual cause of a non-fixpoint).
     private func settleDiagnostics() -> String {
         var lines: [String] = []
         for info in context.activeTasks {
@@ -172,6 +174,49 @@ extension TestAccess {
                 lines.append("  \(info.modelName): \"\(taskName)\" @ \(fl.fileID):\(fl.line)")
             }
         }
-        return lines.joined(separator: "\n")
+        let listing = lines.joined(separator: "\n")
+        if let runaway = _runawayDiagnosticLine() {
+            return runaway + "\n" + listing
+        }
+        return listing
+    }
+
+    /// If exactly the failure shape "a reactive body that never stops firing"
+    /// is present, name it. The runaway is the call site that (a) fired far more
+    /// than a one-shot would and (b) was *still firing* at the timeout — i.e. the
+    /// model never reached a fixpoint because this source keeps emitting. Returns
+    /// nil for other stalls (genuine deadlock, parked task), so their output is
+    /// unchanged.
+    private func _runawayDiagnosticLine() -> String? {
+        let stats = _reactiveFireStats()
+        guard !stats.isEmpty else { return nil }
+        let now = _monotonicNs()
+        let stillFiringWindowNs: UInt64 = 1_000_000_000   // fired within the last 1 s
+        let minFiresToFlag = 20                            // a one-shot fires ~once; a runaway, thousands
+
+        var best: (fl: FileAndLine, count: Int)?
+        for (fl, s) in stats {
+            let stillFiring = s.lastFireNs != 0 && now >= s.lastFireNs && (now &- s.lastFireNs) <= stillFiringWindowNs
+            guard stillFiring, s.count >= minFiresToFlag else { continue }
+            if best == nil || s.count > best!.count { best = (fl, s.count) }
+        }
+        guard let best else { return nil }
+
+        // Prefer the active-task label (model + taskName; the taskName already
+        // carries "@ file:line" for forEach/onChange). Fall back to the bare
+        // location if the call site isn't in activeTasks (e.g. a child context).
+        var label = "@ \(best.fl.fileID):\(best.fl.line)"
+        for info in context.activeTasks {
+            for (taskName, fl) in info.tasks where fl == best.fl {
+                label = "\(info.modelName): \"\(taskName)\""
+            }
+        }
+        return """
+          ⚠️ likely runaway: \(label) fired \(best.count)× and was still firing at the timeout.
+             A reactive source (node.forEach / node.onChange) that keeps firing never reaches a
+             fixpoint. It almost certainly emits a non-isSame value each evaluation, or sits in a
+             feedback loop (a write that re-triggers it). Make the emitted value isSame/Equatable-
+             stable, or break the cycle. See Docs/test-determinism-executor-drain.md.
+        """
     }
 }
