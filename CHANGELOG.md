@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.6] — Single-`@Model`-child same-`id` continuity; `reduceHierarchy` lock-order deadlock fix
+
 ### Fixed
 
 - **A hierarchy traversal that registers parent-relationship observation no longer deadlocks against a concurrent property write under `.modelTesting`.** `AnyContext.reduce` — the core of `reduceHierarchy`/`mapHierarchy`, and the path every `@EnvironmentStorage` read walks to resolve a value up the ancestor chain — acquired the `TestAccess` lock (via `willAccessParents()` → `TestAccess.willAccess` → `registerReadOnlyPathWake`) **while already holding the context (hierarchy) lock**, because the registration ran inside `lock(observedParents)`. That inverts the `TestAccess.lock → context.lock` order every writer uses (`Context._modify` / `Context.transaction` call `acquireWriteLock()` *before* `lock.lock()`), so a writer holding the `TestAccess` lock and waiting on the context lock, racing a traversal holding the context lock and waiting on the `TestAccess` lock, was a genuine AB-BA deadlock — observed as `settle()`/`expect()` hanging (never reaching a fixpoint) when one model activates and reads an environment value while another writes a property, both on the concurrent drive. `willAccessParents()` is now hoisted out of the context lock, so the registration runs on the same `TestAccess → context` order as every writer; the parents list itself is still read under the lock. (The sibling storage/preference traversals already registered observation outside the lock.) Locking-discipline change only — no behavior change, and a no-op outside `.modelTesting`.
