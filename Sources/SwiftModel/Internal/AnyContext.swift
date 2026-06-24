@@ -928,7 +928,23 @@ class AnyContext: @unchecked Sendable {
         let parents: [AnyContext]
         if needsParents {
             if observeParents {
-                parents = lock(observedParents)
+                // Register the parents-relationship observation dependency BEFORE taking
+                // the context lock. `willAccessParents()` routes through
+                // `TestAccess.willAccess` → `registerReadOnlyPathWake`, which acquires the
+                // `TestAccess` lock. Doing that while holding `self.lock` (the shared
+                // hierarchy/context lock) here inverts the established
+                // `TestAccess.lock → context.lock` order that `Context._modify` /
+                // `Context.transaction` enforce (they `acquireWriteLock()` BEFORE
+                // `lock.lock()`). That inversion is a real AB-BA deadlock: a concurrent
+                // writer holds `TestAccess.lock` and waits for `context.lock`, while this
+                // traversal holds `context.lock` and waits for `TestAccess.lock` — observed
+                // as a hang under the concurrent test-drain (e.g. one model activating and
+                // reading an environment value via `reduceHierarchy` while another writes a
+                // property). Hoisting the registration out of the lock keeps this path on
+                // the same `TestAccess.lock → context.lock` order; the parents list itself
+                // is still read under the lock just below.
+                willAccessParents()
+                parents = lock { weakParents.compactMap(\.parent) }
             } else {
                 parents = parentsLock { weakParents.compactMap(\.parent) }
             }
