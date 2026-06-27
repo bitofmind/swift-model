@@ -104,6 +104,7 @@ struct InheritCancellationContextTests {
     /// cancelling the outer forEach also cancels in-flight per-element tasks.
     @Test func testForEachCancelPreviousInheritsContext() async throws {
         @Locked var processedCount = 0
+        @Locked var interruptedBeforeWork = false
         let channel = AsyncChannel<Int>()
         let workStarted = AsyncChannel<()>()
 
@@ -112,22 +113,37 @@ struct InheritCancellationContextTests {
 
             let subscription = model.forEach(channel, cancelPrevious: true) { value in
                 await workStarted.send(())
-                // Long-running work per element
-                try await Task.sleep(nanoseconds: 500_000_000)
+                // Per-element work long enough that the body can ONLY finish via
+                // cancellation, never via the wall clock. (The old 500 ms sleep
+                // raced the fixed post-cancel wait: under parallel CI load >500 ms
+                // could elapse between work-start and the assert, the sleep then
+                // completed and `+= value` ran → flaky `processedCount → 1`.)
+                do {
+                    try await Task.sleep(nanoseconds: 30_000_000_000)
+                } catch {
+                    // Cancellation interrupted the sleep before the write below.
+                    $interruptedBeforeWork.wrappedValue = true
+                    throw error
+                }
                 $processedCount.wrappedValue += value
             } catch: { _ in }
 
             var startIt = workStarted.makeAsyncIterator()
 
-            // Send first value and let it start processing
+            // Send first value and let it start processing.
             await channel.send(1)
             await startIt.next()
 
-            // Cancel the forEach before processing completes
+            // Cancel the forEach before processing completes.
             subscription.cancel()
 
-            // Processing should be interrupted (processedCount stays 0)
-            try await Task.sleep(nanoseconds: 100_000_000)
+            // Deterministic: wait until the in-flight body actually observes the
+            // cancellation (flag set in its catch), bounded generously so a
+            // saturated CI box still converges. Resolves in ms once cancellation
+            // propagates; if cancellation failed to interrupt the body this times
+            // out and fails — which is the real regression this test guards.
+            try await waitUntil($interruptedBeforeWork.value == true, timeout: 10_000_000_000)
+            // …and the cancelled body never reached its write.
             #expect(processedCount == 0)
         }
     }
