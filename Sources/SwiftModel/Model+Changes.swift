@@ -572,7 +572,26 @@ private extension ModelNode {
             return entry.value as! T
         }
 
-        // First access: set up tracking
+        // First access: set up tracking.
+        //
+        // Acquire the TestAccess write lock (A) BEFORE the context hierarchy
+        // lock (B), matching the canonical A→B order that
+        // `Context.transaction` establishes (`acquireWriteLock()` then `lock`).
+        // This block used to take B (`context.lock`) and only acquire A inside
+        // the nested `context.transaction` below — i.e. B→A. A concurrent
+        // `transaction` on another thread takes A→B, so the two opposite orders
+        // form an AB-BA deadlock. It bites only under `.modelTesting` (the base
+        // `ModelAccess.acquireWriteLock` is a no-op in production), where it
+        // wedged the serial macOS package test plan: a synchronous model
+        // activation running `memoize` here (holding B, awaiting A) against a
+        // drain-executor model task inside `transaction` (holding A, awaiting
+        // B) — captured live with `sample` on a hung xctest. Same lock-pair /
+        // AB-BA family as the `reduceHierarchy` fix (#29), on the site #29 did
+        // not cover. Both locks are recursive, so the nested transaction's own
+        // acquireWriteLock/`lock` re-enter harmlessly.
+        let memoizeWriteLockHolder = ModelAccess.active ?? ModelAccess.current
+        memoizeWriteLockHolder?.acquireWriteLock()
+        defer { memoizeWriteLockHolder?.releaseWriteLock() }
         return context.lock {
 
             // Double-check: another thread may have set up tracking between our nil check above
@@ -606,10 +625,9 @@ private extension ModelNode {
 
             // First access: set up tracking with didModify callback.
             // memoize setup doesn't issue user-property writes via stateTransaction,
-            // so we don't need an accessBox here — pass the same `active ?? current`
-            // chain `Context.transaction` uses as a fallback. See the long
-            // comment block at `Context.transaction(writeLockHolder:_:)`.
-            let memoizeWriteLockHolder = ModelAccess.active ?? ModelAccess.current
+            // so we don't need an accessBox here — `memoizeWriteLockHolder` (the
+            // same `active ?? current` chain `Context.transaction` uses) was
+            // acquired above, BEFORE the context lock, to preserve the A→B order.
             let (cancellable, forceNextUpdate) = context.transaction(writeLockHolder: memoizeWriteLockHolder) {
                 // Enable coalescing by default to batch multiple dependency changes during transactions
                 // Can be disabled via ModelOption.disableMemoizeCoalescing for testing

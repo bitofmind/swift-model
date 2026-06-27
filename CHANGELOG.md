@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **`memoize`'s first-access setup no longer deadlocks against a concurrent property write under `.modelTesting`.** A direct sibling of the 1.0.6 `reduceHierarchy` fix, on the path that fix did not cover. `memoize`'s first-access block took the context (hierarchy) lock — `context.lock { … }` — and only then, through the nested `Context.transaction`, the `TestAccess` write lock (`acquireWriteLock()`), i.e. **context → TestAccess**. That inverts the **TestAccess → context** order every writer uses (`Context._modify` / `Context.transaction` acquire `acquireWriteLock()` *before* `lock.lock()`), so a thread doing a first-access `memoize` (holding the context lock, awaiting the `TestAccess` lock) racing a writer (holding the `TestAccess` lock, awaiting the context lock) was a genuine AB-BA deadlock — observed as `settle()`/`expect()` hanging (never reaching a fixpoint) when one model activates and reads a memoized value while another writes a property, both on the concurrent drive. It was captured live with `sample` on a hung test host: a model activation whose `onActivate` read a memoized child value while drain-executor model tasks ran writes. `memoize` now acquires the `TestAccess` write lock **before** the context lock, matching the canonical order; both locks are recursive, so the nested `Context.transaction` re-enters harmlessly. Locking-discipline change only — no behavior change, and a no-op outside `.modelTesting` (`ModelAccess.acquireWriteLock()` is a no-op in production).
+
 ---
 
 ## [1.0.6] — Single-`@Model`-child same-`id` continuity; `reduceHierarchy` lock-order deadlock fix
