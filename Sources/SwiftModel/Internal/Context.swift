@@ -200,10 +200,21 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     override func onActivate() -> Bool {
         let shouldActivate = super.onActivate()
 
+        // `pendingActivation` must be consumed exactly once, by the single caller that won the
+        // atomic anchored→active transition in `super.onActivate()` (which returns `true` only
+        // for the first activation). Read-and-nil it under the hierarchy lock: concurrent
+        // `onActivate()` calls on the same context — e.g. two concurrent collection writers each
+        // running the `structuralChange` re-activation loop in `_performCollectionSet`, which
+        // runs OUTSIDE `stateTransaction` — would otherwise race on this `var` (one writing `nil`
+        // while another reads/calls it). Losers (`shouldActivate == false`) never touch it.
         if shouldActivate {
-            pendingActivation?()
+            let pending = lock { () -> (() -> Void)? in
+                let p = pendingActivation
+                pendingActivation = nil
+                return p
+            }
+            pending?()
         }
-        pendingActivation = nil
 
         for child in lock(allChildren) {
             _ = child.onActivate()
