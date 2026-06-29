@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Context.onActivate()` no longer data-races on `pendingActivation` under concurrent activation.** When two unsynchronized writers mutate the same identified-collection property concurrently (the field "two RMW writers" pattern), each `_performCollectionSet` runs its `structuralChange` re-activation loop (`element.activate()` → `onActivate()`) **outside** the `stateTransaction` lock. Two such loops calling `onActivate()` on the same child context then raced on the unsynchronized `pendingActivation` `var` — one writing `nil` while another read/called it — surfaced directly by ThreadSanitizer (`swift test --sanitize=thread`). The activation closure is now read-and-niled **under the hierarchy lock** and consumed only by the single caller that wins the atomic anchored→active transition in `super.onActivate()` (losers never touch it). Locking-discipline change only — single-threaded behaviour is unchanged (the value was always consumed exactly once by the first activation). Regression coverage in `ContainerReanchorResetTests` (run under TSan to exercise the race).
+
 ---
 
 ## [1.0.7] — `memoize` first-access lock-order deadlock fix
