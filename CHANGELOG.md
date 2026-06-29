@@ -10,7 +10,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 - **`Context.onActivate()` no longer data-races on `pendingActivation` under concurrent activation.** When two unsynchronized writers mutate the same identified-collection property concurrently (the field "two RMW writers" pattern), each `_performCollectionSet` runs its `structuralChange` re-activation loop (`element.activate()` → `onActivate()`) **outside** the `stateTransaction` lock. Two such loops calling `onActivate()` on the same child context then raced on the unsynchronized `pendingActivation` `var` — one writing `nil` while another read/called it — surfaced directly by ThreadSanitizer (`swift test --sanitize=thread`). The activation closure is now read-and-niled **under the hierarchy lock** and consumed only by the single caller that wins the atomic anchored→active transition in `super.onActivate()` (losers never touch it). Locking-discipline change only — single-threaded behaviour is unchanged (the value was always consumed exactly once by the first activation). Regression coverage in `ContainerReanchorResetTests` (run under TSan to exercise the race).
 
----
+### Tests
+
+- **`ReactiveWaitInfrastructureTests`'s cancel→resume bounds now scale with `SWIFT_MODEL_TIMEOUT_SCALE`.** The three "a cancelled wait resumes within N seconds" hang-detector assertions used raw nanosecond literals (`2_000_000_000` / `5_000_000_000`) that — unlike every other test-infra wall-clock budget — did **not** multiply by `ModelTestingTraitOptions.timeoutScale`. Under Linux-parallel CI saturation the cancel→resume measured 2.0–3.3 s, tipping the raw 2 s bounds over and failing `backgroundCallQueue_waitUntilIdle_cancellable` / `backgroundCallQueue_waitForCurrentItems_cancellable` — a load flake, not a real hang. The bounds now scale (CI runs `×3`), so a saturated runner has headroom while a genuine cancellation hang still exceeds the scaled budget. Test-only.
 
 ## [1.0.7] — `memoize` first-access lock-order deadlock fix
 

@@ -75,9 +75,11 @@ struct ReactiveWaitInfrastructureTests {
         // Under x1000 parallel-test stress the cooperative pool's scheduling
         // of Task.sleep wake + task.cancel + onCancel + continuation.resume
         // can stretch to 1.5-2 s. A real "cancellation hung" bug would still
-        // exceed 5 s.
-        #expect(elapsedNs < 5_000_000_000,
-                "cancel→resume should land within 5 s; took \(elapsedNs) ns")
+        // exceed the (scaled) bound. Scaled by `timeoutScale` (env
+        // `SWIFT_MODEL_TIMEOUT_SCALE`, CI=3) like every other test-infra
+        // wall-clock budget, so a saturated CI runner doesn't read as a hang.
+        #expect(elapsedNs < UInt64(5_000_000_000 * ModelTestingTraitOptions.timeoutScale),
+                "cancel→resume should land within 5 s (×\(ModelTestingTraitOptions.timeoutScale)); took \(elapsedNs) ns")
     }
 
     // MARK: - 2. CallQueue wait primitives are cancellation-aware
@@ -106,8 +108,12 @@ struct ReactiveWaitInfrastructureTests {
         await waiter.value
         let elapsedNs = Self.elapsedNs(since: startNs)
 
-        #expect(elapsedNs < 2_000_000_000,
-                "waitUntilIdle should resume within 2 s of cancel; took \(elapsedNs) ns")
+        // Scaled by `timeoutScale` (env `SWIFT_MODEL_TIMEOUT_SCALE`, CI=3) like the
+        // other cancel→resume hang-detector bounds — a saturated Linux-parallel
+        // runner was measured taking 2.0–3.3 s for this cancel→resume, which the
+        // raw 2 s literal misread as a hang. A real hang still exceeds the scaled bound.
+        #expect(elapsedNs < UInt64(2_000_000_000 * ModelTestingTraitOptions.timeoutScale),
+                "waitUntilIdle should resume within 2 s of cancel (×\(ModelTestingTraitOptions.timeoutScale)); took \(elapsedNs) ns")
     }
 
     /// `onIdle` fires immediately when the queue is already idle.
@@ -192,8 +198,12 @@ struct ReactiveWaitInfrastructureTests {
         await waiter.value
         let elapsedNs = Self.elapsedNs(since: startNs)
 
-        #expect(elapsedNs < 2_000_000_000,
-                "waitForCurrentItems should resume within 2 s of cancel; took \(elapsedNs) ns")
+        // Scaled by `timeoutScale` (env `SWIFT_MODEL_TIMEOUT_SCALE`, CI=3) like the
+        // other cancel→resume hang-detector bounds — a saturated Linux-parallel
+        // runner was measured taking 2.0–3.3 s for this cancel→resume, which the
+        // raw 2 s literal misread as a hang. A real hang still exceeds the scaled bound.
+        #expect(elapsedNs < UInt64(2_000_000_000 * ModelTestingTraitOptions.timeoutScale),
+                "waitForCurrentItems should resume within 2 s of cancel (×\(ModelTestingTraitOptions.timeoutScale)); took \(elapsedNs) ns")
     }
 
     // MARK: - 3. _withTestTimeout
