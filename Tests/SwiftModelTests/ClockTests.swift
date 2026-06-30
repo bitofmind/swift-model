@@ -16,7 +16,22 @@ private struct TimerModel {
     }
 }
 
-@Suite(.modelTesting)
+// `.serialized` so the suite's three clock tests never run concurrently *with
+// each other*. `testImmediateClock` drives an ImmediateClock `timer(...)`, which
+// is an unbounded producer — it fires intervals as fast as the model can process
+// them for the whole lifetime of the test. Running that infinite producer
+// alongside the registration-sensitive `testClockStepByStep` (which needs its
+// `clock.sleep` subscription to land between `advance`es) starved both under
+// parallel load: the producer monopolised in-process cooperative slots while the
+// step-by-step test's precise scheduling was waiting for them. Serializing the
+// suite removes that intra-suite self-amplification. (The sibling load
+// sensitivity in `childTasksCompleteBeforeTeardown` is addressed there by moving
+// the child task's async work *onto* the drain executor so the trait cap's
+// inactivity watchdog sees continuous progress; `testImmediateClock`'s unbounded
+// producer can't lean on that — its `expect` resolves on the first tick and then
+// an infinite stream of ticks keeps the executor busy regardless — so reducing
+// its in-suite concurrency is the available test-side lever.)
+@Suite(.modelTesting, .serialized)
 struct ClockTests {
     /// TestClock lets you advance time explicitly and assert intermediate states.
     @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)

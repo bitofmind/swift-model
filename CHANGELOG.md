@@ -6,6 +6,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- **Test-suite hardening only — no library change.** Two `.modelTesting` tests that flaked exclusively under `macOS (parallel)` CI saturation (and full-suite parallel `swift test` under load), while passing serially, on Linux, and in isolation, are now load-independent:
+  - `ChildActivationTaskTests.childTasksCompleteBeforeTeardown` — the child `node.task`'s async work moved from an off-executor `ImmediateClock.sleep` to an on-executor `Task.yield` chain (the validated `DrainItem`/`settleIsLoadIndependentAcrossChildTasks` shape). The off-executor sleep was invisible to the executor-drive's inactivity watchdog, so under saturation the test's wall-clock drifted past the `.modelTesting` trait cap (~103 s on a constrained CI runner vs. the 90 s scaled cap). On-executor suspensions keep progress visible to the watchdog, so a slow-but-progressing run never trips the cap. The unkeyed-task-vs-`checkExhaustion` teardown race under test is unchanged (`expect`, not `settle`, preserves the tight teardown window).
+  - `ClockTests` is now `.serialized` so its unbounded `ImmediateClock` timer producer (`testImmediateClock`) no longer runs concurrently with the registration-sensitive `testClockStepByStep` and starves it. No semantic change to either test.
+
 ---
 
 ## [1.0.8] — Cross-construction init-accessor state bleed fix; `pendingActivation` activation race fix
