@@ -402,23 +402,27 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
         _PendingStack.store(path, value)
     }
 
-    /// **Middle property**: if `latest` is set (user-written init, phase-2 setter path),
-    /// writes directly to the already-created Reference.state. Otherwise stores on the
-    /// thread-local stack (phase-1 init accessor path).
+    /// **Middle property** init-accessor: stores the value on the thread-local pending stack
+    /// for the construction currently being accumulated.
+    ///
+    /// A middle init-accessor's value ALWAYS belongs to the instance being constructed, so it
+    /// is always stacked (the last property's `_threadLocalStoreAndPop` / `_popFromThreadLocal`
+    /// pops the accumulated values to build the new instance's `_State`).
+    ///
+    /// History — this previously wrote directly into `pendingStack.latest` when that was set,
+    /// to support "phase-2" setter writes after a user-written init created the Reference. But
+    /// `latest` is a thread-local that PERSISTS across constructions and is cleared only by the
+    /// index-0 property's `_threadLocalStoreFirst`. When the index-0 tracked property has no
+    /// default and is assigned in the init body (e.g. the first `var` set in a custom `init`,
+    /// as happens when the declared-first stored property is a `let` excluded from tracking),
+    /// that clear never fires — so a *fresh* construction's middle init-accessors found a stale
+    /// `latest` pointing at a PRIOR, still-live instance and wrote their birth values (e.g. an
+    /// optional `@Model` child = nil) straight into it, with no observable setter call. That
+    /// silently reset an existing live model's state when a sibling was constructed. Stacking is
+    /// unconditionally correct for a middle init-accessor; the write-to-`latest` branch was
+    /// unreachable for every model shape across the test suite.
     public static func _threadLocalStoreOrLatest<V>(_ path: WritableKeyPath<M._ModelState, V>, _ value: V) {
-        if let ref = threadLocals.pendingStack.latest as? Context<M>.Reference {
-            // Keep the entire old state alive past the write so no class reference's
-            // deinit can fire while ref.state is exclusively held (prevents re-entrant
-            // exclusivity violations). Reading ref.state (whole-struct copy) instead of
-            // ref.state[keyPath: path] avoids the keypath trap that occurs when the field
-            // is a zero-initialized @Model value (_zeroInit() produces an invalid spare-bit
-            // pattern for _ModelSourceBox._mode, causing KeyPath._projectReadOnly to trap).
-            withExtendedLifetime(ref.state) {
-                ref.state[keyPath: path] = value
-            }
-        } else {
-            _PendingStack.store(path, value)
-        }
+        _PendingStack.store(path, value)
     }
 
     /// **Last/Only property**: stores the value, pops the `PendingStorage` from the
