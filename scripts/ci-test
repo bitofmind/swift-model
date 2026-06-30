@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# scripts/ci-test — wrapper around `swift test` that tolerates a known, benign
+# Linux toolchain flake WITHOUT masking real failures.
+#
+# Symptom
+# -------
+# On Linux, swift-syntax's compiler-plugin message handler intermittently logs
+#
+#   Internal Error: DecodingError.dataCorrupted: Data was corrupted.
+#   Debug description: Corrupted JSON. Underlying error: unexpected end of file
+#
+# during macro expansion — the plugin's stdio pipe (the compiler ↔ macro-plugin
+# JSON IPC channel) delivers a truncated/EOF frame under concurrent macro jobs.
+# It is emitted on essentially EVERY Linux build (it shows up in PASSING runs
+# too — e.g. the serial job logs dozens of these and still exits 0), but it can
+# intermittently make `swift test` exit NON-ZERO even though the build compiled
+# cleanly and EVERY test passed. That is exactly how the `Linux (parallel)` job
+# flaked (run 28446231009): final summary `Test run with 764 tests … passed`,
+# yet the job failed. macOS is unaffected (different plugin host; zero
+# occurrences there), so this wrapper is a transparent no-op on macOS.
+#
+# This is an upstream toolchain artifact (swift-syntax 600.0.1 / Swift 6.3
+# plugin host), not a SwiftModel bug — there is nothing in the library or the
+# macro plugin to fix. The honest mitigation is to let CI distinguish "the build
+# and tests succeeded but the plugin IPC printed noise" from a real failure.
+#
+# Policy (non-masking)
+# --------------------
+#   • swift test exits 0
+#         -> success.
+#   • exits non-zero, the run reported `Test run with N tests … passed`, and
+#     there are NO real failures (no failed swift-testing test, no non-known
+#     recorded issue, no failed XCTest suite)
+#         -> the non-zero exit is the plugin-IPC noise; treat as success.
+#   • exits non-zero WITH a real test failure
+#         -> FAIL immediately, never retried. A flaky/failing test must still
+#            surface (serial mode remains the deterministic gate).
+#   • exits non-zero with NO test summary at all AND the plugin-IPC signature is
+#     present
+#         -> the flake aborted the build before tests ran; retry (bounded).
+#   • otherwise (genuine build error)
+#         -> FAIL with the original exit code.
+set -uo pipefail
+
+readonly MAX_ATTEMPTS=3
+readonly FLAKE_SIG='Internal Error: DecodingError.*Corrupted JSON.*unexpected end of file'
+
+attempt=0
+while :; do
+  attempt=$((attempt + 1))
+  log="$(mktemp)"
+
+  swift test "$@" 2>&1 | tee "$log"
+  code=${PIPESTATUS[0]}
+
+  if [ "$code" -eq 0 ]; then
+    rm -f "$log"
+    exit 0
+  fi
+
+  # A swift-testing run that completed and passed.
+  passed_summary=$(grep -cE 'Test run with [0-9]+ tests? in [0-9]+ suites? passed' "$log" || true)
+  # Any genuine failure signal. `recorded an issue` does NOT match the
+  # known-issue verb form `recorded a known issue`, so known issues are ignored.
+  real_failure=$(grep -cE '✘ Test |recorded an issue|Test Suite .* failed|Test run with [0-9]+ tests? in [0-9]+ suites? failed' "$log" || true)
+
+  if [ "$passed_summary" -ge 1 ] && [ "$real_failure" -eq 0 ]; then
+    echo ""
+    echo "::notice::ci-test: swift test exited ${code}, but the test run reported PASSED with no real failures."
+    echo "ci-test: attributing the non-zero exit to the known Linux swift-syntax compiler-plugin IPC decode flake; treating as success."
+    rm -f "$log"
+    exit 0
+  fi
+
+  if [ "$real_failure" -ge 1 ]; then
+    echo "ci-test: real test/build failure detected — not retrying, not masking." >&2
+    rm -f "$log"
+    exit "$code"
+  fi
+
+  # No test summary at all: the build did not reach the test run.
+  if grep -qE "$FLAKE_SIG" "$log" && [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+    echo "ci-test: no test summary and plugin-IPC flake signature present; retrying (attempt $((attempt + 1))/${MAX_ATTEMPTS})…" >&2
+    rm -f "$log"
+    continue
+  fi
+
+  echo "ci-test: failing with exit code ${code} after ${attempt} attempt(s)." >&2
+  rm -f "$log"
+  exit "$code"
+done

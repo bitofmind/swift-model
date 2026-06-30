@@ -104,9 +104,24 @@ jobs:
       - name: Build and test (${{ matrix.mode }})
         # See the macOS job for the dual-mode rationale and
         # `SWIFT_MODEL_TIMEOUT_SCALE` justification.
+        #
+        # Linux goes through `scripts/ci-test` rather than calling `swift test`
+        # directly. On Linux, swift-syntax's compiler-plugin message handler
+        # intermittently logs `Internal Error: DecodingError … Corrupted JSON …
+        # unexpected end of file` during macro expansion (a truncated/EOF frame
+        # on the compiler ↔ macro-plugin IPC pipe). It is emitted on essentially
+        # every Linux build — including passing ones — but can occasionally make
+        # `swift test` exit non-zero even though the build compiled and EVERY
+        # test passed. That is exactly how `Linux (parallel)` flaked on
+        # run 28446231009 (`Test run with 764 tests … passed`, yet job failed).
+        # An upstream toolchain artifact, not a SwiftModel bug. The wrapper
+        # treats "build compiled + test run passed + zero real failures" as
+        # success and still fails hard on any genuine test/build failure — it
+        # does NOT retry or mask real failures. macOS is unaffected (zero
+        # occurrences), so it keeps calling `swift test` directly.
         env:
           SWIFT_MODEL_TIMEOUT_SCALE: "3"
-        run: swift test ${{ matrix.flag }} --skip SwiftModelBenchmarkTests
+        run: scripts/ci-test ${{ matrix.flag }} --skip SwiftModelBenchmarkTests
 
   android:
     name: Android (aarch64)
