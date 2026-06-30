@@ -267,9 +267,23 @@ Do not treat disabled macro tests as a failure when the destination is a simulat
 
 GitHub Actions (`.github/workflows/ci.yml`):
 - **macOS** (matrix: `parallel` | `serial`): `macos-15`, default Xcode, `swift test`.
-- **Linux** (matrix: `parallel` | `serial`): `ubuntu-latest`, `swift:6.3.0` container, `swift test`.
+- **Linux** (matrix: `parallel` | `serial`): `ubuntu-latest`, `swift:6.3.0` container, `scripts/ci-test` (wraps `swift test` — see below).
 - **Android**: compile-only cross-compile to `aarch64-unknown-linux-android28`.
 - **WASM**: compile-only build to `wasm32-unknown-wasip1`.
+
+**Linux `swift test` goes through `scripts/ci-test`.** On Linux, swift-syntax's
+compiler-plugin message handler intermittently logs `Internal Error:
+DecodingError … Corrupted JSON … unexpected end of file` during macro expansion
+(a truncated/EOF frame on the compiler ↔ macro-plugin IPC pipe). It is emitted
+on essentially every Linux build — present in passing runs too — but can
+occasionally make `swift test` exit non-zero even though the build compiled and
+every test passed (this is how `Linux (parallel)` flaked on run 28446231009).
+It's an upstream toolchain artifact, not a SwiftModel/macro-plugin bug. The
+wrapper treats "build compiled + `Test run with … passed` + zero real failures"
+as success and still fails hard on any genuine test/build failure — it does
+**not** retry or mask real failures (a failing/flaky test, or a real build
+error, still fails the job). macOS is unaffected (zero occurrences) and calls
+`swift test` directly.
 
 Both `parallel` and `serial` test modes run for macOS and Linux, with the
 executor-drive as the unconditional default (no flag — see `_makeTestExecutorBox`),
