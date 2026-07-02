@@ -267,6 +267,12 @@ Do not treat disabled macro tests as a failure when the destination is a simulat
 
 GitHub Actions (`.github/workflows/ci.yml`):
 - **macOS** (matrix: `parallel` | `serial`): `macos-15`, default Xcode, `swift test`.
+- **macOS (TSan)**: full parallel suite under `--sanitize=thread` at `SWIFT_MODEL_TIMEOUT_SCALE=6`;
+  fails on ANY `WARNING: ThreadSanitizer` in the log (TSan doesn't fail the exit code itself).
+  Skips the one documented-unsupported interop test
+  (`testObservedStreamWithModelAccessingObservable`, which races by design in test code).
+  The suite has been TSan-clean since the 2026-07-02 concurrency-audit fixes — any report is a
+  regression.
 - **Linux** (matrix: `parallel` | `serial`): `ubuntu-latest`, `swift:6.3.0` container, `scripts/ci-test` (wraps `swift test` — see below).
 - **Android**: compile-only cross-compile to `aarch64-unknown-linux-android28`.
 - **WASM**: compile-only build to `wasm32-unknown-wasip1`.
