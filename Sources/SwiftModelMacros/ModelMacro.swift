@@ -313,9 +313,12 @@ extension ModelMacro: MemberMacro {
             // Default `._popFromThreadLocal(Self._makeState)` captures any thread-local entries
             // stored by init accessors, builds _State via the factory, and creates a Reference.
             // In the synthesized init, the last/only init accessor overrides this via
-            // `initializes: _$modelSource` (so the default is NOT evaluated). For user-written inits
-            // that skip the last tracked property, the default fires AFTER the init body and captures
-            // the partially-stored entries.
+            // `initializes: _$modelSource` (so the default is NOT evaluated). In user-written
+            // inits the default fires in the prologue, after all tracked-property defaults
+            // (declaration order — macro-added members come last) and BEFORE the init body:
+            // it captures the default-fired entries; body assignments then overwrite the
+            // zero-init placeholders via setter → _storePendingIfNeeded. Verified orderings
+            // are pinned by PendingConstructionBoundaryTests.
             result.append("private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)")
 
             // No explicit init generated — the compiler-synthesized memberwise init is used.
