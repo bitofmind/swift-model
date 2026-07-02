@@ -49,6 +49,10 @@ public final class PendingStorage<State>: @unchecked Sendable {
     func store<V>(_ path: WritableKeyPath<State, V>, _ value: V) {
         storage[path] = TypedPendingValue(value)
     }
+
+    func contains(_ path: AnyKeyPath) -> Bool {
+        storage[path] != nil
+    }
 }
 
 // MARK: - Internal pending-value box
@@ -405,10 +409,14 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
     // MARK: Thread-local pending storage
 
     /// **First/Only property**: clears stale `latest` from a previous construction,
-    /// then stores the value on the thread-local stack. Prevents cross-construction bleed.
+    /// then opens a NEW pending frame on the thread-local stack. Index 0's accessor is
+    /// always the first store of its construction (memberwise inits assign in
+    /// declaration order; user-written inits fire accessors only from prologue default
+    /// evaluation, which also runs in declaration order), so it must never merge into
+    /// a same-type frame left open by an enclosing construction — see `_PendingStack`.
     public static func _threadLocalStoreFirst<V>(_ path: WritableKeyPath<M._ModelState, V>, _ value: V) {
         threadLocals.pendingStack.latest = nil
-        _PendingStack.store(path, value)
+        _PendingStack.storeFirst(path, value)
     }
 
     /// **Middle property** init-accessor: stores the value on the thread-local pending stack
@@ -1077,17 +1085,55 @@ extension _ModelSourceBox {
 
 // MARK: - _PendingStack (thread-local, type-erased)
 
-/// Thread-local stack of `PendingStorage` instances used during `@Model` struct init.
+/// Thread-local stack of `PendingStorage` frames — one frame per in-flight `@Model`
+/// construction.
 ///
-/// Each init accessor calls `store` which auto-creates a `PendingStorage` on the stack.
-/// After all init accessors fire, `_$modelSource`'s default calls `popOrCreate` to collect
-/// the accumulated values. Nested model inits (child default values) stack correctly.
+/// Init accessors call `store`/`storeFirst`, which accumulate values into the current
+/// construction's frame; the construction's single pop (`_threadLocalStoreAndPop`'s or
+/// `_popFromThreadLocal`'s `popOrCreate`) collects them. Nested constructions (models
+/// built while another model's frame is open) must get their OWN frame — merging by
+/// `State` type alone would bleed values, steal the outer frame's `pendingID`, and make
+/// the outer construction re-evaluate default expressions it had already evaluated
+/// (observable with impure defaults like `UUID()`; see
+/// `PendingConstructionBoundaryTests`).
+///
+/// Different-type nesting is trivially bounded by the top-of-stack type check. For
+/// SAME-type nesting there is no explicit begin-of-init hook to push a boundary marker
+/// (user-property default expressions evaluate before any macro-insertable member's
+/// default), but none is needed — two local rules are sufficient:
+///
+///  1. **`storeFirst` always opens a new frame.** Index 0's accessor is always the
+///     first store of its construction: accessors fire either from the compiler-
+///     synthesized memberwise init (declaration order) or from prologue default-value
+///     evaluation in a user-written init (also declaration order; defaults fire even
+///     for properties the init body assigns — body assignments are setter calls, not
+///     accessor calls).
+///  2. **A keypath collision opens a new frame.** Within one construction each
+///     property's accessor fires at most once, so a middle/last store whose keypath
+///     the top frame already holds can only be the start of a nested same-type
+///     construction.
+///
+/// Together these are complete for same-type nesting: the same model type always fires
+/// the same defaulted-property sequence, so a nested construction's first store is
+/// either index 0 (rule 1) or collides with the outer frame's copy of that same
+/// defaulted keypath (rule 2). A same-type model with NO defaulted properties never
+/// opens a frame at all (its pop just builds from placeholders), so it cannot be
+/// interfered with. These orderings are pinned by `PendingConstructionBoundaryTests`.
 enum _PendingStack {
-    /// Stores a value in the top-of-stack pending storage for this `State` type.
-    /// Auto-creates if no matching storage exists yet.
+    /// Opens a NEW pending frame seeded with the first property's value (rule 1 above).
+    static func storeFirst<State, V>(_ path: WritableKeyPath<State, V>, _ value: V) {
+        let pending = PendingStorage<State>()
+        pending.store(path, value)
+        threadLocals.pendingStack.append(pending)
+    }
+
+    /// Stores a value into the current construction's frame: merges into the top frame
+    /// when it matches this `State` type and doesn't already hold this keypath;
+    /// otherwise (empty stack, different-type top, or keypath collision — rule 2 above)
+    /// opens a new frame.
     static func store<State, V>(_ path: WritableKeyPath<State, V>, _ value: V) {
         let box = threadLocals.pendingStack
-        if let top = box.last as? PendingStorage<State> {
+        if let top = box.last as? PendingStorage<State>, !top.contains(path) {
             top.store(path, value)
         } else {
             let pending = PendingStorage<State>()
