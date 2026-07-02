@@ -46,8 +46,83 @@ class AnyContext: @unchecked Sendable {
     private let parentsLock = NSLock()
     private(set) var weakParents: [WeakParent] = []
     var children: OrderedDictionary<AnyKeyPath, OrderedDictionary<ModelRef, AnyContext>> = [:]
-    var dependencyContexts: [ObjectIdentifier: AnyContext] = [:]
-    var dependencyCache: [AnyHashable: Any] = [:]
+
+    // Protects `_dependencyContexts` and `_dependencyCache` independently of the hierarchy
+    // lock — the same leaf-lock pattern as `parentsLock` above. The hierarchy lock alone
+    // cannot protect these dictionaries: `setupModelDependency` writes to
+    // `rootParent`'s stores while holding only *self*'s hierarchy lock, and for a grafted
+    // (separately-anchored) child `self.lock !== rootParent.lock` — so a grafted child's
+    // dep setup raced the root hierarchy's own locked mutations. Likewise
+    // `nearestDependencyContext` reads each *ancestor*'s store while holding only self's
+    // hierarchy lock; taking the ancestor's hierarchy lock there would be the reverse of
+    // teardown's parent → child lock order (`removeParent` → `onRemoval`) — an AB-BA
+    // deadlock. The leaf lock resolves both: every store access (read or write, own or
+    // cross-hierarchy) goes through the accessors below, which take ONLY this lock.
+    //
+    // Leaf-lock discipline: the closures passed to `dependenciesLock` touch nothing but
+    // the two dictionaries — never call anything that can acquire another lock (context
+    // locks, `parentsLock`, Reference locks, key-path construction) and never nest two
+    // contexts' `dependenciesLock`s. Same-context check-then-act sequences (e.g.
+    // check-nil-then-insert in `setupModelDependency`) remain atomic for same-hierarchy
+    // callers via the hierarchy lock they already hold; the insert-if-absent accessor
+    // additionally re-checks under the leaf lock so concurrent grafted writers can't
+    // corrupt the dictionaries (first insert wins).
+    private let dependenciesLock = NSLock()
+    private var _dependencyContexts: [ObjectIdentifier: AnyContext] = [:]
+    private var _dependencyCache: [AnyHashable: Any] = [:]
+
+    /// Leaf-locked read of the dependency context registered for `typeID`, if any.
+    func dependencyContext(for typeID: ObjectIdentifier) -> AnyContext? {
+        dependenciesLock { _dependencyContexts[typeID] }
+    }
+
+    /// Atomically inserts `context` for `typeID` if no entry exists.
+    /// Returns `true` if the insert happened, `false` if an entry was already present
+    /// (including `context` itself) — callers use this to decide whether to link
+    /// parents, so a lost cross-hierarchy race must not double-link.
+    func addDependencyContextIfAbsent(_ context: AnyContext, for typeID: ObjectIdentifier) -> Bool {
+        dependenciesLock {
+            guard _dependencyContexts[typeID] == nil else { return false }
+            _dependencyContexts[typeID] = context
+            return true
+        }
+    }
+
+    /// Unconditionally (re)places the entry for `typeID` — used when re-anchoring a
+    /// destructed dependency context. Any replaced context is released outside the leaf lock.
+    func setDependencyContext(_ context: AnyContext, for typeID: ObjectIdentifier) {
+        let replaced = dependenciesLock { _dependencyContexts.updateValue(context, forKey: typeID) }
+        _ = replaced  // released here, outside the leaf lock
+    }
+
+    /// Leaf-locked snapshot of all registered dependency contexts.
+    var dependencyContextValues: [AnyContext] {
+        dependenciesLock { _dependencyContexts.isEmpty ? [] : Array(_dependencyContexts.values) }
+    }
+
+    /// Leaf-locked read of the dependency cache.
+    func cachedDependencyValue(for key: AnyHashable) -> Any? {
+        dependenciesLock { _dependencyCache[key] }
+    }
+
+    /// Leaf-locked write to the dependency cache. Any replaced value is released
+    /// outside the leaf lock (releasing a model copy can run arbitrary deinit chains).
+    func setCachedDependencyValue(_ value: Any, for key: AnyHashable) {
+        let replaced = dependenciesLock { _dependencyCache.updateValue(value, forKey: key) }
+        _ = replaced  // released here, outside the leaf lock
+    }
+
+    /// Drains both dependency stores, returning the contents so the caller controls
+    /// where the (potentially deinit-heavy) releases happen — never inside the leaf lock.
+    func drainDependencyStores() -> (contexts: [ObjectIdentifier: AnyContext], cache: [AnyHashable: Any]) {
+        dependenciesLock {
+            let drained = (_dependencyContexts, _dependencyCache)
+            _dependencyContexts.removeAll()
+            _dependencyCache.removeAll()
+            return drained
+        }
+    }
+
     /// True for contexts created by `setupModelDependency` (dep model contexts).
     /// When true, `nearestDependencyContext` skips this context's own `dependencyContexts`
     /// and starts the search from the parent — preventing dep models from shadowing
@@ -69,8 +144,11 @@ class AnyContext: @unchecked Sendable {
     /// Lazy map from a collection property's key path to an element-path maker closure.
     /// Registered once per collection property on first `visitCollection` call.
     /// Only consulted by `rootPathTree()` when `rootPaths` is queried (TestAccess / undo
-    /// observation). Never accessed in production. Protected by the hierarchy lock;
-    /// `nonisolated(unsafe)` since locking discipline is enforced at call sites.
+    /// observation). Never accessed in production. Protected by THIS context's hierarchy
+    /// lock — writers (`registerCollectionElementPathMaker`) hold it, and `rootPathTree()`
+    /// snapshots a parent's store under the parent's own lock (not the querying child's,
+    /// which for grafted children is a different lock). `nonisolated(unsafe)` since
+    /// locking discipline is enforced at call sites.
     ///
     /// The maker signature is `(elementID, fallbackElement) -> elementPath`. The
     /// `fallbackElement` is the child context's current live model value, captured
@@ -496,6 +574,15 @@ class AnyContext: @unchecked Sendable {
     func removeParent(_ parent: AnyContext, callbacks: inout [() -> Void]) {
         // Take `self.lock` for the whole body — same reasoning as `addParent`.
         //
+        // Lock-order note (cross-hierarchy): teardown chains locks parent → child
+        // (`onRemoval` holds self.lock and recurses into `child.removeParent`, taking
+        // child.lock). Two hierarchies grafted into each other in ONE direction never
+        // produce the reverse pair. MUTUAL grafting (A's root a parent inside B while
+        // B's root is a parent inside A) would allow an AB-BA between two concurrent
+        // teardowns — but a mutual graft is a cycle in the parent graph, which is
+        // already structurally unsupported (`rootParent` and every ancestor walk would
+        // recurse forever), so teardown deliberately does not defend against it.
+        //
         // This also covers the `onRemoval(callbacks:)` recursion at the tail:
         // when the child's last parent is being removed, `onRemoval(callbacks:)`
         // tears down `self`'s dictionaries (`_memoizeCache`, `eventContinuations`,
@@ -561,13 +648,18 @@ class AnyContext: @unchecked Sendable {
     func mapModel<T>(access: ModelAccess?, _ body: (any Model) throws -> T?) rethrows -> T? { fatalError() }
 
     var rootPaths: [AnyKeyPath] {
-        // Collect raw path segments under the lock, then compose OUTSIDE the lock.
-        // appending(path:) calls _swift_getKeyPath which acquires the Swift runtime
-        // lock. Holding the context lock while needing the runtime lock deadlocks
-        // when a GCD thread holds the runtime lock (key path creation during
-        // observation/memoize) and needs the context lock (model write).
-        let tree = lock { rootPathTree() }
-        return composeRootPaths(from: tree)
+        // Collect raw path segments one lock at a time (see `rootPathTree()`), then
+        // compose OUTSIDE all locks. appending(path:) calls _swift_getKeyPath which
+        // acquires the Swift runtime lock. Holding a context lock while needing the
+        // runtime lock deadlocks when a GCD thread holds the runtime lock (key path
+        // creation during observation/memoize) and needs the context lock (model write).
+        //
+        // Callers must NOT hold any context lock (TestAccess call sites are engineered
+        // to compute rootPaths post-lock — see the deadlock comments there): the walk
+        // takes each parent's lock in child → parent direction, which is the reverse of
+        // teardown's parent → child order — safe only because at most one lock is held
+        // at a time.
+        composeRootPaths(from: rootPathTree())
     }
 
     /// Intermediate representation of the path hierarchy — raw segments with no
@@ -594,31 +686,46 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    /// Collects the raw path segments for this context. Must be called under the lock.
+    /// Collects the raw path segments for this context, walking upward one lock at a time.
+    /// Must be called with NO context lock held (see `rootPaths`).
+    ///
+    /// Each parent's `children` / `collectionElementPathMakersStore` is snapshotted under
+    /// THAT parent's own hierarchy lock. The pre-fix code held self's lock for the whole
+    /// walk — correct for same-hierarchy parents (`parent.lock === self.lock`), but for a
+    /// grafted (separately-anchored) child the parent lives under a different lock, so the
+    /// reads raced the parent hierarchy's own locked mutations. Taking the parent's lock
+    /// while still holding self's would reverse teardown's parent → child order (AB-BA),
+    /// so — like `didModify`'s iterative ancestor walk — the lock is released before each
+    /// upward hop. Element-path makers run OUTSIDE the lock: they construct key paths
+    /// (Swift runtime lock — see `rootPaths`).
     private func rootPathTree() -> RootPathTree {
+        let parents = self.parents
         if parents.isEmpty {
             return .leaf(selfPath)
         }
 
-        return .node(parents.flatMap { parent in
-            parent.children.flatMap { childPath, modelRefs in
-                modelRefs.compactMap { modalRef, context -> (childPath: AnyKeyPath, elementPath: AnyKeyPath, parentTree: RootPathTree)? in
-                    guard context === self else { return nil }
-                    // If a lazy element-path maker was registered for this collection
-                    // property (by visitCollection), use it to build the element-level
-                    // key path on demand. Without a maker, fall back to the stored
-                    // elementPath (cursor-based or sentinel \C.self for non-collection children).
-                    let elementPath: AnyKeyPath
-                    if let maker = parent.collectionElementPathMakersStore?[childPath] {
-                        // Pass the child's current live model as the fallback
-                        // for the cursor's `get` closure — see
-                        // `collectionElementPathMakersStore` doc.
-                        elementPath = maker(modalRef.id, context.anyModel)
-                    } else {
-                        elementPath = modalRef.elementPath
+        return .node(parents.flatMap { parent -> [(childPath: AnyKeyPath, elementPath: AnyKeyPath, parentTree: RootPathTree)] in
+            // Snapshot self's registrations in this parent under the parent's lock.
+            let segments = parent.lock {
+                parent.children.flatMap { childPath, modelRefs in
+                    modelRefs.compactMap { modelRef, context -> (childPath: AnyKeyPath, modelRef: ModelRef, maker: (@Sendable (AnyHashable, Any) -> AnyKeyPath)?)? in
+                        guard context === self else { return nil }
+                        return (childPath, modelRef, parent.collectionElementPathMakersStore?[childPath])
                     }
-                    return (childPath: childPath, elementPath: elementPath, parentTree: parent.rootPathTree())
                 }
+            }
+            guard !segments.isEmpty else { return [] }
+            // Recurse outside parent.lock — never more than one lock at a time.
+            let parentTree = parent.rootPathTree()
+            return segments.map { segment in
+                // If a lazy element-path maker was registered for this collection
+                // property (by visitCollection), use it to build the element-level
+                // key path on demand. Without a maker, fall back to the stored
+                // elementPath (cursor-based or sentinel \C.self for non-collection
+                // children). Pass the child's current live model as the fallback for
+                // the cursor's `get` closure — see `collectionElementPathMakersStore` doc.
+                let elementPath = segment.maker.map { $0(segment.modelRef.id, anyModel) } ?? segment.modelRef.elementPath
+                return (childPath: segment.childPath, elementPath: elementPath, parentTree: parentTree)
             }
         })
     }
@@ -676,9 +783,9 @@ class AnyContext: @unchecked Sendable {
 
     var activeTasks: [(modelName: String, tasks: [(name: String, fileAndLine: FileAndLine)])] {
         // Snapshot self's tasks + children under self.lock. `allChildren` walks
-        // `children.values` and `dependencyContexts.values`, both of which are
-        // protected by self.lock for writes. Reading lockless here races with
-        // concurrent `childContext` / `setupModelDependency` inserts.
+        // `children.values` (protected by self.lock) and the dependency contexts
+        // (snapshotted under `dependenciesLock` inside `forEachChild`). Reading
+        // `children` lockless here races concurrent `childContext` inserts.
         let (selfTasks, snapshot) = lock { (cancellationsStore?.activeTasks ?? [], allChildren) }
         return snapshot.reduce(into: selfTasks) { $0.append(contentsOf: $1.activeTasks) }
     }
@@ -785,15 +892,17 @@ class AnyContext: @unchecked Sendable {
         context.removeParent(self, callbacks: &callbacks)
     }
 
-    /// Calls `body` for each direct child context without allocating an intermediate array.
-    /// Use this in hot paths instead of `allChildren` to avoid the 3-array allocation overhead.
+    /// Calls `body` for each direct child context without allocating an intermediate array
+    /// for `children`. Use this in hot paths instead of `allChildren` to avoid the 3-array
+    /// allocation overhead. Dependency contexts are snapshotted under `dependenciesLock`
+    /// (empty → no allocation) and iterated outside it so `body` can take other locks.
     func forEachChild(_ body: (AnyContext) -> Void) {
         for modelRefs in children.values {
             for child in modelRefs.values where child !== self {
                 body(child)
             }
         }
-        for child in dependencyContexts.values where child !== self {
+        for child in dependencyContextValues where child !== self {
             body(child)
         }
     }
@@ -843,8 +952,12 @@ class AnyContext: @unchecked Sendable {
         if cancellationsStore == nil { cancellationsStore = Cancellations() }
         cancellationsStore!.seal()
         self.children.removeAll()
-        dependencyContexts.removeAll()
-        dependencyCache.removeAll()
+        // Drain the leaf-locked dependency stores. The contents are released right here —
+        // under the hierarchy lock (matching the old `removeAll()` timing) but outside the
+        // leaf lock, since releasing contexts/model copies can run deinit chains that take
+        // other locks. The dep contexts themselves stay alive via the `children` snapshot
+        // above until their `removeParent` teardown below.
+        _ = drainDependencyStores()
 
         for entry in _memoizeCache.values {
             entry.cancellable?()
@@ -1009,14 +1122,14 @@ class AnyContext: @unchecked Sendable {
         // making them completely free of the hierarchy lock.
         if relation.contains(.descendants) {
             let children = lock {
-                self.children.values.flatMap { $0.values } + (relation.contains(.dependencies) ? Array(dependencyContexts.values) : [])
+                self.children.values.flatMap { $0.values } + (relation.contains(.dependencies) ? dependencyContextValues : [])
             }
             for child in children {
                 try child.reduce(for: dependencies.union([.self, .descendants]), observeParents: observeParents, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
             }
         } else if relation.contains(.children) {
             let children = lock {
-                self.children.values.flatMap { $0.values } + (relation.contains(.dependencies) ? Array(dependencyContexts.values) : [])
+                self.children.values.flatMap { $0.values } + (relation.contains(.dependencies) ? dependencyContextValues : [])
             }
             for child in children {
                 try child.reduce(for: dependencies.union(.self), observeParents: observeParents, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
@@ -1051,8 +1164,8 @@ class AnyContext: @unchecked Sendable {
 
     func cancelAllRecursively(for id: some Hashable&Sendable) {
         // Snapshot children under self.lock to avoid racing against concurrent
-        // `childContext` / `setupModelDependency` writes to `children` and
-        // `dependencyContexts`.
+        // `childContext` writes to `children` (dependency contexts are snapshotted
+        // under `dependenciesLock` inside `forEachChild`).
         //
         // CRITICAL: do NOT call `cancellationsStore?.cancelAll(for: id)` while
         // holding self.lock. `cancelAll(for:)` invokes `onCancel()` on each
@@ -1236,6 +1349,13 @@ class AnyContext: @unchecked Sendable {
     /// Walks up the context hierarchy from self to rootParent, returning the first
     /// dependency context found for the given type ID. This ensures child-level
     /// withDependencies overrides take precedence over root-level ones.
+    ///
+    /// Each ancestor's store is read via `dependencyContext(for:)` — the `dependenciesLock`
+    /// leaf lock — never the ancestor's hierarchy lock: the caller may hold self's hierarchy
+    /// lock (`dependency(for:)`), and for grafted ancestors `ctx.lock !== self.lock`, so
+    /// taking the ancestor's hierarchy lock here would reverse teardown's parent → child
+    /// lock order (AB-BA deadlock). Like the parent hops, each read is an independent
+    /// snapshot — never more than one lock at a time.
     func nearestDependencyContext(for typeID: ObjectIdentifier) -> AnyContext? {
         // Dep contexts search parents first so the root's explicit override wins over the dep
         // model's own testValue dep defaults (e.g. BackendModel.testValue overrides EnvDep to
@@ -1245,14 +1365,14 @@ class AnyContext: @unchecked Sendable {
             ? parentsLock { weakParents.first?.parent }
             : self
         while let ctx = current {
-            if let dep = ctx.dependencyContexts[typeID] {
+            if let dep = ctx.dependencyContext(for: typeID) {
                 return dep
             }
             if ctx === rootParent { break }
             current = ctx.parentsLock { ctx.weakParents.first?.parent }
         }
         // For dep contexts with no parent override, use own dep-loop context as fallback.
-        return isDepContext ? dependencyContexts[typeID] : nil
+        return isDepContext ? dependencyContext(for: typeID) : nil
     }
 
     func setupModelDependency<D: Model>(_ model: inout D, cacheKey: AnyHashable?, postSetups: inout [() -> Void]) {
@@ -1268,20 +1388,19 @@ class AnyContext: @unchecked Sendable {
             // Model has a live context (was `.reference` SourceKind with context).
             let reference = modelRef
             if let child = reference.context, child.rootParent === rootParent {
-                if dependencyContexts[ObjectIdentifier(D.self)] == nil {
-                    dependencyContexts[ObjectIdentifier(D.self)] = child
+                if addDependencyContextIfAbsent(child, for: ObjectIdentifier(D.self)) {
                     child.addParent(self, callbacks: &postSetups)
                 }
                 return
-            } else if dependencyContexts[ObjectIdentifier(D.self)] == nil || reference.lifetime == .destructed {
+            } else if dependencyContext(for: ObjectIdentifier(D.self)) == nil || reference.lifetime == .destructed {
                 if let cacheKey {
-                    if let context = rootParent.dependencyContexts[ObjectIdentifier(D.self)] as? Context<D> {
+                    if let context = rootParent.dependencyContext(for: ObjectIdentifier(D.self)) as? Context<D> {
                         model.withContextAdded(context: context)
                         model.modelContext = ModelContext(context: context)
                     } else {
                         model = model.initialDependencyCopy // make sure to do unique copy of default value (liveValue etc).
                         rootParent.setupModelDependency(&model, cacheKey: nil, postSetups: &postSetups)
-                        rootParent.dependencyCache[cacheKey] = model
+                        rootParent.setCachedDependencyValue(model, for: cacheKey)
                     }
                     // Register the shared dependency context on self directly rather than
                     // recursing into setupModelDependency again. At this point the model's
@@ -1290,8 +1409,7 @@ class AnyContext: @unchecked Sendable {
                     // so the child.rootParent === rootParent check in the recursive call would
                     // fail, producing an infinite recursion / stack overflow.
                     if let child = model.modelContext.reference?.context {
-                        if dependencyContexts[ObjectIdentifier(D.self)] == nil {
-                            dependencyContexts[ObjectIdentifier(D.self)] = child
+                        if addDependencyContextIfAbsent(child, for: ObjectIdentifier(D.self)) {
                             child.addParent(self, callbacks: &postSetups)
                         }
                     }
@@ -1312,7 +1430,9 @@ class AnyContext: @unchecked Sendable {
                     guard model.context == nil else { return }
                     let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self, isDepContext: true)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
-                    dependencyContexts[ObjectIdentifier(D.self)] = child
+                    // Unconditional set: this branch is entered when the entry is nil OR the
+                    // previous dep context was destructed — the destructed entry must be replaced.
+                    setDependencyContext(child, for: ObjectIdentifier(D.self))
                     model.withContextAdded(context: child)
                     model.modelContext = ModelContext(context: child)
                     postSetups.append {
@@ -1355,17 +1475,19 @@ class AnyContext: @unchecked Sendable {
                     guard model.context == nil else { return }
                     let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self, isDepContext: true)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
-                    rootParent.dependencyContexts[depTypeID] = child
+                    // For a grafted (separately-anchored) self, `rootParent.lock !== self.lock`
+                    // — these writes are synchronized by rootParent's `dependenciesLock`, not
+                    // by the hierarchy lock we hold.
+                    rootParent.setDependencyContext(child, for: depTypeID)
                     model.withContextAdded(context: child)
                     model.modelContext = ModelContext(context: child)
-                    rootParent.dependencyCache[cacheKey] = model
+                    rootParent.setCachedDependencyValue(model, for: cacheKey)
                     postSetups.append {
                         _ = child.onActivate()
                     }
                 }
                 if let child = model.modelContext.reference?.context {
-                    if dependencyContexts[depTypeID] == nil {
-                        dependencyContexts[depTypeID] = child
+                    if addDependencyContextIfAbsent(child, for: depTypeID) {
                         // Only add self as parent if this is a reused context (found via
                         // nearestDependencyContext). When we just created the context above
                         // with `parent: self`, self is already a parent — don't duplicate.
@@ -1385,23 +1507,22 @@ class AnyContext: @unchecked Sendable {
                 // All copies share the same Reference, so modelID is the same across copies.
                 let pendingKey = _PendingDepKey(typeID: ObjectIdentifier(D.self), modelID: model.modelID)
                 let depTypeID = ObjectIdentifier(D.self)
-                if let existing = rootParent.dependencyCache[pendingKey] as? Context<D> {
+                if let existing = rootParent.cachedDependencyValue(for: pendingKey) as? Context<D> {
                     model.withContextAdded(context: existing)
                     model.modelContext = ModelContext(context: existing)
-                    if dependencyContexts[depTypeID] == nil {
-                        dependencyContexts[depTypeID] = existing
+                    if addDependencyContextIfAbsent(existing, for: depTypeID) {
                         existing.addParent(self, callbacks: &postSetups)
                     }
                 } else {
                     assert(model.context == nil)
                     let child = Context<D>(model: model, lock: lock, dependencies: nil, parent: self, isDepContext: true)
                     child.withModificationActiveCount { $0 = anyModificationActiveCount }
-                    dependencyContexts[depTypeID] = child
+                    setDependencyContext(child, for: depTypeID)
                     model.withContextAdded(context: child)
                     model.modelContext = ModelContext(context: child)
                     // No _linkedReference needed: all pre-anchor copies already hold child.reference
                     // (the single shared Reference). After setContext, ref._context = child.
-                    rootParent.dependencyCache[pendingKey] = child
+                    rootParent.setCachedDependencyValue(child, for: pendingKey)
                     postSetups.append {
                         _ = child.onActivate()
                     }
@@ -1412,7 +1533,7 @@ class AnyContext: @unchecked Sendable {
 
     func dependency<Value>(for keyPath: KeyPath<DependencyValues, Value>&Sendable) -> Value {
         lock {
-            if let value = dependencyCache[keyPath] as? Value {
+            if let value = cachedDependencyValue(for: keyPath) as? Value {
                 return value
             }
 
@@ -1434,12 +1555,12 @@ class AnyContext: @unchecked Sendable {
 
                     withPostActions { postActions in
                         setupModelDependency(&model, cacheKey: keyPath, postSetups: &postActions)
-                        dependencyCache[keyPath] = model
+                        setCachedDependencyValue(model, for: keyPath)
                     }
                     return model as! Value
                 } else {
                     if !unprotectedIsDestructed {
-                        dependencyCache[keyPath] = value
+                        setCachedDependencyValue(value, for: keyPath)
                     }
                     return value
                 }
@@ -1450,7 +1571,7 @@ class AnyContext: @unchecked Sendable {
     func dependency<Value: DependencyKey>(for type: Value.Type) -> Value where Value.Value == Value {
         lock {
             let key = ObjectIdentifier(type)
-            if let value = dependencyCache[key] as? Value {
+            if let value = cachedDependencyValue(for: key) as? Value {
                 return value
             }
 
@@ -1465,12 +1586,12 @@ class AnyContext: @unchecked Sendable {
 
                     withPostActions { postActions in
                         setupModelDependency(&model, cacheKey: key, postSetups: &postActions)
-                        dependencyCache[key] = model
+                        setCachedDependencyValue(model, for: key)
                     }
                     return model as! Value
                 } else {
                     if !unprotectedIsDestructed {
-                        dependencyCache[key] = value
+                        setCachedDependencyValue(value, for: key)
                     }
                     return value
                 }

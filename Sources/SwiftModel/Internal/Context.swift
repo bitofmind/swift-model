@@ -181,7 +181,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                             entry.restoreInto(&capturedDependencies, model)
                         }
                         if !isDepContext {
-                            dependencyCache[key] = model
+                            setCachedDependencyValue(model, for: key)
                         }
                     }
                 }
