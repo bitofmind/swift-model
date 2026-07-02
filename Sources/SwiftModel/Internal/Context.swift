@@ -295,6 +295,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
             willAccessSyntheticPath(\_StateObserver<M._ModelState>[_parentsObservationKey: _ParentsObservationKey(), modelID: reference.modelID])
         }
+        // Shadow gap-race detector (withObservationTracking path) — `didModifyParents`
+        // fires `modifyCallbacks` for this same path. See `willAccessGapShadow`.
+        willAccessGapShadow(at: parentsObservationPath)
         modelContext.willAccess(at: parentsObservationPath)?()
     }
 
@@ -333,6 +336,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             willAccessSyntheticPath(\_StateObserver<M._ModelState>[environmentKey: storage.key, modelID: reference.modelID])
         }
         modelContext.willAccess(at: untypedPath)?()
+
+        // Shadow gap-race detector (withObservationTracking path): subscribe on the TYPED
+        // `[_metadata:]` path — that is the key `didModifyStorage`'s post-lock callbacks
+        // fire (`modifyCallbacks` for the untyped path never fire). See `willAccessGapShadow`.
+        willAccessGapShadow(at: \M._ModelState[_metadata: storage] as WritableKeyPath<M._ModelState, V>&Sendable)
 
         // Typed writable path on M._ModelState — drives TestAccess snapshot tracking so that
         // `model.node.local.myKey`/`model.node.environment.myKey` inside expect {} is fully assertable.
@@ -373,6 +381,16 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     override func didModifyStorage<V>(_ storage: ContextStorage<V>) {
+        // Defer `ObservationTracking.onObservedChange` performUpdate enqueues until every
+        // listener for this write — Apple's one-shot onChange (fired inline by
+        // `invokeDidModifySyntheticPath`) and the gap-shadow's post-lock callback — has made
+        // its dedup decision against the same `hasPendingUpdate` snapshot. This is the same
+        // tier-2 deferral `Context.transaction` provides for real `_State` writes; without
+        // it, the shadow subscription registered by `willAccessGapShadow` could schedule a
+        // duplicate performUpdate for a write Apple already handled. See
+        // `ThreadLocals.lockHeldBackgroundCalls`.
+        let lhbcOwned = beginLockHeldBackgroundCallsScope()
+        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
         // Batch all ObservationRegistrar willSet/didSet notifications so that the two
         // invokeDidModify calls below (untyped + typed paths) fire only one drain at the end
         // instead of one per call.
@@ -453,6 +471,14 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
         modelContext.willAccess(at: untypedPath)?()
 
+        // Shadow gap-race detector (withObservationTracking path): subscribe on the TYPED
+        // `[_preference:]` path — that is the key `didModifyPreference` /
+        // `notifyPreferenceChange` fire post-lock callbacks for (`modifyCallbacks` for the
+        // untyped path never fire). This runs per visited context during `preferenceValue`'s
+        // subtree aggregation, so a contribution write on any visited descendant fires the
+        // subscription registered on that same context. See `willAccessGapShadow`.
+        willAccessGapShadow(at: \M._ModelState[_preference: storage] as WritableKeyPath<M._ModelState, V>&Sendable)
+
         // The typed writable path for TestAccess is now handled by willAccessPreferenceValue,
         // called after preferenceValue finishes aggregating with the computed value in hand.
         // Registering it here (during reduceHierarchy traversal) would require reading back
@@ -498,6 +524,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     override func didModifyPreference<V>(_ storage: PreferenceStorage<V>) {
+        // Same tier-2 performUpdate-enqueue deferral as `didModifyStorage` (see the comment
+        // there) — covers this context AND the entire `notifyPreferenceChange` parent-chain
+        // walk (nested scopes share the outer array).
+        let lhbcOwned = beginLockHeldBackgroundCallsScope()
+        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
         // Batch all registrar notifications across this context's two invokeDidModify calls
         // AND the entire parent-chain walk (notifyPreferenceChange), so there is one drain
         // at the end rather than one per context level.
@@ -575,6 +606,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// without creating TestAccess ValueUpdate entries. The typed `_preference` path is intentionally
     /// omitted — ancestors that never wrote a contribution should not appear in exhaustion reports.
     override func notifyPreferenceChange<V>(_ storage: PreferenceStorage<V>) {
+        // Same tier-2 performUpdate-enqueue deferral as `didModifyPreference` (usually a
+        // nested no-op — that caller already opened the scope — but upward propagation can
+        // also be entered directly, e.g. from teardown paths).
+        let lhbcOwned = beginLockHeldBackgroundCallsScope()
+        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
         let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[preferenceKey: storage.key]
         lock { self.didModify() }
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
@@ -813,6 +849,39 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         } else {
             backgroundObservationRegistrarMakingIfNeeded.access(observer, keyPath: kp)
         }
+    }
+
+    /// Dispatches the gap-race shadow collector (see the `let shadow = …` doc comment in
+    /// `ObservationTracking.update`'s `withObservationTracking` branch) for a synthetic-path read.
+    ///
+    /// `willAccessSyntheticPath` registers synthetic dependencies (memoize sentinels,
+    /// environment/local storage, preferences, the parents relationship) ONLY with Apple's
+    /// one-shot `withObservationTracking`, and `ModelContext.willAccess` short-circuits for
+    /// the whole `observe()` body (`isInsideMemoizeObserve`). Without this dispatch the
+    /// shadow never sees synthetic reads, leaving the Gap A/B registration races open for
+    /// them: a synthetic-path write landing between one-shot registration windows is
+    /// dropped, `hasPendingUpdate` stays false, and the outer Observed/memoize holds a
+    /// stale value until some other tracked dependency changes.
+    ///
+    /// `path` must be the key path whose `modifyCallbacks` the corresponding write-side
+    /// actually fires: the TYPED `[_metadata:]` / `[_preference:]` paths for
+    /// storage/preferences (`didModifyStorage` / `didModifyPreference` /
+    /// `notifyPreferenceChange` build their post-lock callbacks for those; the untyped
+    /// registrar-facing `[environmentKey:]` / `[preferenceKey:]` paths' `modifyCallbacks`
+    /// never fire), and the untyped sentinel/parents paths for memoize/parents. Taken as an
+    /// autoclosure so the key-path allocation is only paid when a shadow is installed.
+    ///
+    /// Gates mirror `willAccessDirect`'s shadow dispatch plus the registrar gate in
+    /// `willAccessSyntheticPath`: skipped inside memoize's synchronous dirty-recompute
+    /// (`isInsideMemoizeProduce`) and inside `withUntrackedModelReads` scopes
+    /// (`untrackedReads`), so the shadow's persistent subscriptions never cover reads
+    /// Apple's tracking is also blind to. Deliberately NOT gated on
+    /// `isInsideMemoizeObserve` — the shadow exists precisely to see reads inside the
+    /// observe() body.
+    func willAccessGapShadow<T>(at path: @autoclosure () -> KeyPath<M._ModelState, T>&Sendable) {
+        let tl = threadLocals
+        guard let shadow = tl.gapShadowCollector, !tl.isInsideMemoizeProduce, !tl.untrackedReads else { return }
+        _ = shadow.willAccess(from: self, at: path())
     }
 
     /// Fires ObservationRegistrar willSet/didSet for a synthetic `_StateObserver` keypath.

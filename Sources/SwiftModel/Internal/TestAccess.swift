@@ -362,6 +362,12 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     var _pendingExpects: [PendingExpect] = []
     var _nextPendingExpectId: UInt64 = 0
 
+    /// Same-thread re-entrancy guard for `_noteActivity`'s evaluation loop (see the
+    /// comment there). Both guarded by `lock` — it's recursive, so only the thread
+    /// currently inside `_noteActivity` can ever observe `_isNotingActivity == true`.
+    private var _isNotingActivity = false
+    private var _noteActivityRerun = false
+
 
     // Captures a single state transition: how to apply it to a Root snapshot, and how to
     // describe it for exhaustion-failure messages.
@@ -1010,88 +1016,119 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         lock {
             let now = monotonicNanoseconds()
             _lastActivityNs = now
-            // Iterate in reverse so removals don't shift indices we haven't
-            // visited yet.
-            for i in (0..<_pendingExpects.count).reversed() {
-                let pending = _pendingExpects[i]
-                switch pending.mode {
-                case .predicate(let evaluate):
-                    let passed = evaluate()
-                    if passed {
-                        pending.cancelAllHandles()
-                        wakes.append(pending.continuation)
-                        _pendingExpects.remove(at: i)
-                    }
-                case .debounce(let quietWindowNs):
-                    // Re-arm deadline to `min(now + quietWindow, budgetCap)`.
-                    // Skip the re-schedule when it wouldn't push the
-                    // deadline further out (already at the cap).
-                    //
-                    // GlobalTickScheduler.schedule/cancel acquire a
-                    // separate lock, so re-arming while holding
-                    // TestAccess.lock is deadlock-free. The cancel handle
-                    // is replaced atomically before the new one is
-                    // scheduled; a stale fire of the OLD scheduler entry
-                    // would call `_fireDeadline(pendingId:)`, but by then
-                    // either the entry has been re-armed (cancel happened)
-                    // or it has actually fired (no-op on the second
-                    // attempt — `_pendingExpects` no longer contains it).
-                    let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
-                    if newDeadline > pending.deadlineNs {
-                        pending.deadlineCancel?()
-                        pending.deadlineNs = newDeadline
-                        let entryId = pending.id
-                        pending.deadlineCancel = tickScheduler.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
-                            self?._fireDeadline(pendingId: entryId)
-                        }
-                        _settleTrace("rearm:debounce id=\(pending.id) newDeadlineInMs=\((Int64(bitPattern: newDeadline) &- Int64(bitPattern: now)) / 1_000_000)")
-                    }
-                case .settled(let quietWindowNs, _):
-                    // Same re-arm rule as `.debounce`, plus: if we're in
-                    // the "waiting on bg-idle" sub-state (deadline already
-                    // fired, bgIdleCancel set), cancel the bg-idle
-                    // observer (this activity proves bg is not idle right
-                    // now) and re-schedule the GTS deadline to push the
-                    // quiet window forward.
-                    let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
-                    _settleTrace("rearm:settled id=\(pending.id) newDeadlineInMs=\((Int64(bitPattern: newDeadline) &- Int64(bitPattern: now)) / 1_000_000) hadBgCancel=\(pending.bgIdleCancel != nil)")
 
-                    // If a bg-idle observer is in flight, cancel it.
-                    // Activity = not idle, so any pending idle-fire is
-                    // semantically stale. The wrapper-with-fired-flag in
-                    // `BackgroundCallQueue.onIdle` makes a racing fire
-                    // observe the cancel and no-op.
-                    if let bgCancel = pending.bgIdleCancel {
-                        bgCancel()
-                        pending.bgIdleCancel = nil
-                    }
-
-                    // Re-engage the GTS deadline. Two cases:
-                    //   1. deadlineCancel != nil → still in waiting-on-GTS
-                    //      state; cancel old entry and re-schedule forward.
-                    //   2. deadlineCancel == nil → GTS deadline already
-                    //      fired earlier; we were in waiting-on-bg-idle.
-                    //      Activity returns us to waiting-on-GTS — schedule
-                    //      a fresh GTS entry.
-                    if pending.deadlineCancel != nil && newDeadline <= pending.deadlineNs {
-                        // No forward movement and still in GTS-waiting
-                        // state → nothing to do.
-                        continue
-                    }
-                    pending.deadlineCancel?()
-                    pending.deadlineNs = newDeadline
-                    let entryId = pending.id
-                    pending.deadlineCancel = tickScheduler.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
-                        self?._fireDeadline(pendingId: entryId)
-                    }
-                }
+            // Same-thread re-entrancy guard. `evaluate()` below runs user predicates
+            // under the (recursive) lock, and a predicate READ can synchronously fire
+            // observation machinery that re-enters `_noteActivity` on this thread —
+            // e.g. reading a dirty memoized value on the AccessCollector path runs
+            // `entry.onUpdate` inline, whose sentinel notification fires a
+            // `registerReadOnlyPathWake` wake. If that inner call mutated
+            // `_pendingExpects` mid-iteration, the outer loop's saved indices would
+            // go stale (`remove(at:)` trap, or silent wrong-entry removal). The
+            // inner call just records that state may have changed and returns; the
+            // outer call restarts its evaluation pass, so the inner activity's
+            // effects are still fully evaluated. Terminates because a re-entrant
+            // notification implies a recompute that settles (a clean cache fires no
+            // further wakes) — predicates themselves must not write (see the
+            // evaluator contract on `awaitPredicate`).
+            if _isNotingActivity {
+                _noteActivityRerun = true
+                return
             }
+            _isNotingActivity = true
+            defer { _isNotingActivity = false }
+
+            repeat {
+                _noteActivityRerun = false
+                _noteActivityPass(now: now, wakes: &wakes)
+            } while _noteActivityRerun
         }
         // Resume outside the lock — resumed Tasks may synchronously call
         // back into `awaitPredicate`, which would re-acquire the lock.
         // Order doesn't matter — each continuation is unique.
         for cont in wakes {
             cont.resume(returning: .passed)
+        }
+    }
+
+    /// One evaluation pass over `_pendingExpects`. Must be called under `lock`
+    /// with `_isNotingActivity` set (only `_noteActivity` calls this).
+    private func _noteActivityPass(now: UInt64, wakes: inout [CheckedContinuation<PredicateOutcome, Never>]) {
+        // Iterate in reverse so removals don't shift indices we haven't
+        // visited yet.
+        for i in (0..<_pendingExpects.count).reversed() {
+            let pending = _pendingExpects[i]
+            switch pending.mode {
+            case .predicate(let evaluate):
+                let passed = evaluate()
+                if passed {
+                    pending.cancelAllHandles()
+                    wakes.append(pending.continuation)
+                    _pendingExpects.remove(at: i)
+                }
+            case .debounce(let quietWindowNs):
+                // Re-arm deadline to `min(now + quietWindow, budgetCap)`.
+                // Skip the re-schedule when it wouldn't push the
+                // deadline further out (already at the cap).
+                //
+                // GlobalTickScheduler.schedule/cancel acquire a
+                // separate lock, so re-arming while holding
+                // TestAccess.lock is deadlock-free. The cancel handle
+                // is replaced atomically before the new one is
+                // scheduled; a stale fire of the OLD scheduler entry
+                // would call `_fireDeadline(pendingId:)`, but by then
+                // either the entry has been re-armed (cancel happened)
+                // or it has actually fired (no-op on the second
+                // attempt — `_pendingExpects` no longer contains it).
+                let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
+                if newDeadline > pending.deadlineNs {
+                    pending.deadlineCancel?()
+                    pending.deadlineNs = newDeadline
+                    let entryId = pending.id
+                    pending.deadlineCancel = tickScheduler.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
+                        self?._fireDeadline(pendingId: entryId)
+                    }
+                    _settleTrace("rearm:debounce id=\(pending.id) newDeadlineInMs=\((Int64(bitPattern: newDeadline) &- Int64(bitPattern: now)) / 1_000_000)")
+                }
+            case .settled(let quietWindowNs, _):
+                // Same re-arm rule as `.debounce`, plus: if we're in
+                // the "waiting on bg-idle" sub-state (deadline already
+                // fired, bgIdleCancel set), cancel the bg-idle
+                // observer (this activity proves bg is not idle right
+                // now) and re-schedule the GTS deadline to push the
+                // quiet window forward.
+                let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
+                _settleTrace("rearm:settled id=\(pending.id) newDeadlineInMs=\((Int64(bitPattern: newDeadline) &- Int64(bitPattern: now)) / 1_000_000) hadBgCancel=\(pending.bgIdleCancel != nil)")
+
+                // If a bg-idle observer is in flight, cancel it.
+                // Activity = not idle, so any pending idle-fire is
+                // semantically stale. The wrapper-with-fired-flag in
+                // `BackgroundCallQueue.onIdle` makes a racing fire
+                // observe the cancel and no-op.
+                if let bgCancel = pending.bgIdleCancel {
+                    bgCancel()
+                    pending.bgIdleCancel = nil
+                }
+
+                // Re-engage the GTS deadline. Two cases:
+                //   1. deadlineCancel != nil → still in waiting-on-GTS
+                //      state; cancel old entry and re-schedule forward.
+                //   2. deadlineCancel == nil → GTS deadline already
+                //      fired earlier; we were in waiting-on-bg-idle.
+                //      Activity returns us to waiting-on-GTS — schedule
+                //      a fresh GTS entry.
+                if pending.deadlineCancel != nil && newDeadline <= pending.deadlineNs {
+                    // No forward movement and still in GTS-waiting
+                    // state → nothing to do.
+                    continue
+                }
+                pending.deadlineCancel?()
+                pending.deadlineNs = newDeadline
+                let entryId = pending.id
+                pending.deadlineCancel = tickScheduler.schedule(deadlineNs: newDeadline, priority: pending.priority) { [weak self] in
+                    self?._fireDeadline(pendingId: entryId)
+                }
+            }
         }
     }
 
@@ -1116,8 +1153,13 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     ///
     /// **Evaluator contract**: must be cheap (called per activity),
     /// reentrant-safe (NSRecursiveLock), and MUST NOT write to the
-    /// model (would trigger recursive `_noteActivity` while we hold the
-    /// lock). TaskLocals like `assertContext` must be wrapped inside
+    /// model. A recursive `_noteActivity` from inside an evaluation is
+    /// absorbed by the re-entrancy guard (a fresh evaluation pass runs
+    /// after the current one), so framework-triggered *read* side effects
+    /// — e.g. a dirty memoize recompute notifying synchronously on the
+    /// AccessCollector path — are safe; but a predicate that writes
+    /// re-dirties state on every pass and would rerun forever.
+    /// TaskLocals like `assertContext` must be wrapped inside
     /// `evaluate` by the caller — they don't propagate from caller to
     /// writer thread automatically. Pattern:
     ///

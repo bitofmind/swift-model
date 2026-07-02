@@ -57,7 +57,7 @@ struct SettleBudgetCapStarvationTests {
     private static func waitForPending(
         _ scheduler: GlobalTickScheduler,
         atLeast target: Int,
-        within seconds: Double = 5
+        within seconds: Double = 5 * ModelTestingTraitOptions.timeoutScale
     ) async -> Bool {
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1_000_000_000)
         while scheduler._pendingCount < target {
@@ -157,7 +157,14 @@ struct SettleBudgetCapStarvationTests {
 
         let bg = BackgroundCallQueue()        // idle
         let quietNs: UInt64 = 50_000_000
-        let budgetNs: UInt64 = 5_000_000_000  // 5 s — far past the quiet window
+        // Far past the quiet window, AND scaled: the backstop deadline is armed at
+        // registration time, but the `_drivenTick` below uses `DispatchTime.now()`
+        // *at tick time* — under ThreadSanitizer on a saturated CI runner the
+        // registration→tick gap has measured > 5 s wall-clock, which reached an
+        // unscaled 5 s backstop deadline and made BOTH entries fire (`fired == 2`).
+        // Scaling by `timeoutScale` (6 under the TSan job) keeps the backstop
+        // unreachable, which is the property this control test isolates.
+        let budgetNs = UInt64(5_000_000_000 * ModelTestingTraitOptions.timeoutScale)
 
         let task = Task {
             await access.awaitSettled(
