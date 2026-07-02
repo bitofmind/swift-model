@@ -176,11 +176,13 @@ final class ThreadLocals: @unchecked Sendable {
     /// are invoked in registration order.
     var lockHeldBackgroundCalls: [() -> Void]? = nil
 
-    /// When non-nil, `Context.willAccessDirect` ALSO dispatches `willAccess`
-    /// to this collector (in addition to the existing `activeAccess` / Apple
-    /// registrar paths), giving observe()'s gap-race fix a way to register
-    /// per-(context, path) `context.onModify` subscriptions synchronously
-    /// with each read.
+    /// When non-nil, `Context.willAccessDirect` (real `_State` reads) and
+    /// `Context.willAccessGapShadow` (synthetic-path reads: memoize sentinels,
+    /// environment/local storage, preferences, the parents relationship) ALSO
+    /// dispatch `willAccess` to this collector (in addition to the existing
+    /// `activeAccess` / Apple registrar paths), giving observe()'s gap-race
+    /// fix a way to register per-(context, path) `context.onModify`
+    /// subscriptions synchronously with each read.
     ///
     /// Set by `ObservationTracking.observe()` for the `withObservationTracking`
     /// branch only. Outside that scope this is `nil` and incurs zero cost.
