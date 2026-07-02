@@ -422,7 +422,12 @@ struct ReactiveWaitInfrastructureTests {
         let probeFlag = LockIsolated(false)
 
         let waiter = Task { () -> TestAccess<ActivitySignalModel>.PredicateOutcome in
-            let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+            // Scaled (like this file's other bounds): the deadline races THIS
+            // test's own main task getting a cooperative-pool slot after its
+            // 50 ms sleep to flip the flag — under TSan + parallel saturation
+            // that wake was measured taking > 5 s, so a raw 5 s deadline fires
+            // `.timeout` first (false failure).
+            let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(5_000_000_000 * ModelTestingTraitOptions.timeoutScale)
             return await access.awaitPredicate(deadlineNs: deadline) { @Sendable in
                 probeFlag.value
             }
@@ -491,7 +496,10 @@ struct ReactiveWaitInfrastructureTests {
         let access = tester.access
 
         let waiter = Task { () -> TestAccess<ActivitySignalModel>.PredicateOutcome in
-            let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+            // Scaled for the same reason as `awaitPredicate_resolvesOnActivity`:
+            // the deadline races the main task's post-sleep wake (which issues
+            // the cancel) — a raw 5 s loses to > 5 s starvation under TSan.
+            let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(5_000_000_000 * ModelTestingTraitOptions.timeoutScale)
             return await access.awaitPredicate(deadlineNs: deadline) { @Sendable in false }
         }
         try? await Task.sleep(nanoseconds: 50_000_000)
