@@ -197,11 +197,9 @@ final class ThreadLocals: @unchecked Sendable {
 
     deinit {
         // Defensively clear the pending stack on thread exit. GCD threads can be
-        // recycled many times across tests before the OS terminates them; any stale
-        // pre-anchor Reference left in `latest` is released here explicitly rather
-        // than as part of the implicit _PendingStackBox field release. `stack` is
-        // also cleared to drain any incomplete model-init entries.
-        pendingStack.latest = nil
+        // recycled many times across tests before the OS terminates them; clearing
+        // here drains any incomplete model-init entries explicitly rather than as
+        // part of the implicit _PendingStackBox field release.
         pendingStack.stack.removeAll()
     }
 

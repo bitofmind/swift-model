@@ -408,14 +408,13 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
 
     // MARK: Thread-local pending storage
 
-    /// **First/Only property**: clears stale `latest` from a previous construction,
-    /// then opens a NEW pending frame on the thread-local stack. Index 0's accessor is
-    /// always the first store of its construction (memberwise inits assign in
-    /// declaration order; user-written inits fire accessors only from prologue default
-    /// evaluation, which also runs in declaration order), so it must never merge into
-    /// a same-type frame left open by an enclosing construction — see `_PendingStack`.
+    /// **First/Only property**: opens a NEW pending frame on the thread-local stack.
+    /// Index 0's accessor is always the first store of its construction (memberwise
+    /// inits assign in declaration order; user-written inits fire accessors only from
+    /// prologue default evaluation, which also runs in declaration order), so it must
+    /// never merge into a same-type frame left open by an enclosing construction — see
+    /// `_PendingStack`.
     public static func _threadLocalStoreFirst<V>(_ path: WritableKeyPath<M._ModelState, V>, _ value: V) {
-        threadLocals.pendingStack.latest = nil
         _PendingStack.storeFirst(path, value)
     }
 
@@ -426,31 +425,32 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
     /// is always stacked (the last property's `_threadLocalStoreAndPop` / `_popFromThreadLocal`
     /// pops the accumulated values to build the new instance's `_State`).
     ///
-    /// History — this previously wrote directly into `pendingStack.latest` when that was set,
-    /// to support "phase-2" setter writes after a user-written init created the Reference. But
-    /// `latest` is a thread-local that PERSISTS across constructions and is cleared only by the
-    /// index-0 property's `_threadLocalStoreFirst`. When the index-0 tracked property has no
-    /// default and is assigned in the init body (e.g. the first `var` set in a custom `init`,
-    /// as happens when the declared-first stored property is a `let` excluded from tracking),
-    /// that clear never fires — so a *fresh* construction's middle init-accessors found a stale
+    /// History — the "OrLatest" in the name refers to a since-removed thread-local
+    /// (`_PendingStackBox.latest`) this previously wrote directly into when set, to support
+    /// "phase-2" setter writes after a user-written init created the Reference. But `latest`
+    /// PERSISTED across constructions and was cleared only by the index-0 property's
+    /// `_threadLocalStoreFirst`. When the index-0 tracked property has no default and is
+    /// assigned in the init body (e.g. the first `var` set in a custom `init`, as happens
+    /// when the declared-first stored property is a `let` excluded from tracking), that
+    /// clear never fired — so a *fresh* construction's middle init-accessors found a stale
     /// `latest` pointing at a PRIOR, still-live instance and wrote their birth values (e.g. an
     /// optional `@Model` child = nil) straight into it, with no observable setter call. That
     /// silently reset an existing live model's state when a sibling was constructed. Stacking is
     /// unconditionally correct for a middle init-accessor; the write-to-`latest` branch was
-    /// unreachable for every model shape across the test suite.
+    /// unreachable for every model shape across the test suite, so the read path (and later
+    /// the by-then write-only `latest` property itself) was removed. The name is kept because
+    /// it's baked into macro-expanded client code.
     public static func _threadLocalStoreOrLatest<V>(_ path: WritableKeyPath<M._ModelState, V>, _ value: V) {
         _PendingStack.store(path, value)
     }
 
     /// **Last/Only property**: stores the value, pops the `PendingStorage` from the
-    /// thread-local stack, builds `_State` via factory, creates a pre-anchor Reference,
-    /// and sets `latest` (so subsequent phase-2 setter calls route to the same Reference).
+    /// thread-local stack, builds `_State` via factory, and creates a pre-anchor Reference.
     public static func _threadLocalStoreAndPop<V>(_ path: WritableKeyPath<M._ModelState, V>, _ value: V, _ factory: (PendingStorage<M._ModelState>) -> M._ModelState) -> _ModelSourceBox {
         _PendingStack.store(path, value)
         let pending = _PendingStack.popOrCreate(M._ModelState.self)
         let state = factory(pending)
         let ref = Context<M>.Reference(modelID: pending.pendingID, state: state)
-        threadLocals.pendingStack.latest = ref
         return _ModelSourceBox(reference: ref)
     }
 
@@ -1164,10 +1164,6 @@ enum _PendingStack {
 
 final class _PendingStackBox: @unchecked Sendable {
     var stack: [AnyObject] = []
-    /// Set by `_threadLocalStoreAndPop` after the last init accessor pops the pending storage.
-    /// Allows phase-2 setter calls (user-written inits) to route to the same Reference.
-    /// Cleared by `_threadLocalStoreFirst` at the start of each new model construction.
-    var latest: AnyObject?
 
     var last: AnyObject? { stack.last }
     var isEmpty: Bool { stack.isEmpty }
