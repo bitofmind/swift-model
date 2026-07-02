@@ -359,13 +359,22 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
     /// frozen-copy sources when `isApplyingSnapshot` is set (TestAccess snapshot writes).
     public var _modelState: M._ModelState {
         get {
-            if reference._stateCleared {
-                if !reference._hasGenesis {
-                    reportIssue("Reading _modelState from a cleared model — this is a bug in SwiftModel.")
+            // Read under the live hierarchy lock: this getter is reached by
+            // deep-access visitors OUTSIDE any locked scope (the value copy is
+            // walked after `subscript.read`'s lock scope ended), where the raw
+            // whole-struct read can tear against a concurrent collection write's
+            // `Reference.clear()` of a removed child (TSan-confirmed). The issue
+            // report happens outside the lock.
+            let (readFromClearedModel, value) = reference.withHierarchyLockIfLive { () -> (Bool, M._ModelState) in
+                if reference._stateCleared {
+                    return (!reference._hasGenesis, reference._hasGenesis ? reference._genesisState : _zeroInit())
                 }
-                return reference._hasGenesis ? reference._genesisState : _zeroInit()
+                return (false, reference.state)
             }
-            return reference.state
+            if readFromClearedModel {
+                reportIssue("Reading _modelState from a cleared model — this is a bug in SwiftModel.")
+            }
+            return value
         }
         nonmutating set {
             if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
@@ -882,15 +891,23 @@ extension _ModelSourceBox {
         }
 
         if structuralChange {
+            // Snapshot the elements under the hierarchy lock: this loop runs
+            // AFTER `stateTransaction` returned, so a raw `reference.state` read
+            // here races a concurrent writer's locked write-back on the same key
+            // path (torn collection read). The snapshot may still be stale by the
+            // time `activate()` runs — that's inherent to re-activating outside
+            // the transaction — but `onActivate()` refuses to resurrect
+            // concurrently-destructed contexts, so a stale element is a no-op.
+            let elements = context.lock { context.reference.state[keyPath: statePath] }
             let access = accessBox._reference?.access ?? ModelAccess.current
             if let access, access.shouldPropagateToChildren {
                 usingAccess(access) {
-                    for element in context.reference.state[keyPath: statePath] {
+                    for element in elements {
                         element.activate()
                     }
                 }
             } else {
-                for element in context.reference.state[keyPath: statePath] {
+                for element in elements {
                     element.activate()
                 }
             }

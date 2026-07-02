@@ -69,6 +69,36 @@ struct TaskIdSerializationTests {
         }
     }
 
+    /// `onChange(of:cancelPrevious: true)` variant of the body-serialization test.
+    /// `_onChangeImpl`'s cancelPrevious branch must provide the same Behaviour-B
+    /// guarantee as `_forEachImpl`: the previous body is cancelled AND fully awaited
+    /// (including its sync tail after the last suspension point) before the next body
+    /// starts — otherwise stale tails interleave with the new body's writes.
+    @Test func onChangeCancelPreviousBodiesNeverRunConcurrently() async {
+        let model = OnChangeBodyRaceModel().withAnchor()
+        // Wait for the initial body (old == new == 0) to fully complete before pushing
+        // more changes.
+        await settle { model.completed.count == 1 }
+
+        for newId in 1...10 {
+            model.id = newId
+            // Give the runtime a turn so the new body's iteration starts before we
+            // change again — without this, coalesceUpdates (default) may collapse all
+            // changes into a single emission and we never exercise the race.
+            await Task.yield()
+        }
+
+        await expect {
+            model.id == 10
+            model.completed.contains(10)
+        }
+        await settle()
+
+        #expect(model.maxConcurrentBodies.value == 1,
+                "Expected at most one body in flight at a time; observed \(model.maxConcurrentBodies.value).")
+        #expect(model.completed.last == 10)
+    }
+
     private func _taskIdBodiesNeverRunConcurrentlyBody() async {
         let model = BodyRaceModel().withAnchor()
         // Wait for the initial body (id == 0) to fully complete before pushing more
@@ -137,6 +167,41 @@ struct TaskIdSerializationTests {
 
             inFlight.withValue { $0 -= 1 }
             completed.append(id)
+        }
+    }
+}
+
+/// `onChange(of:cancelPrevious: true)` counterpart of `BodyRaceModel`. Same synthetic
+/// race shape: increment an in-flight counter, yield (cancellation window), spin on a
+/// sync CPU tail with no cancellation observability, decrement, record.
+@Model fileprivate struct OnChangeBodyRaceModel {
+    var id: Int = 0
+    var completed: [Int] = []
+
+    let inFlight = LockIsolated(0)
+    let maxConcurrentBodies = LockIsolated(0)
+
+    func onActivate() {
+        node.onChange(of: id, cancelPrevious: true) { _, new in
+            let now = inFlight.withValue { value -> Int in
+                value += 1
+                return value
+            }
+            maxConcurrentBodies.withValue { max in
+                if now > max { max = now }
+            }
+
+            // Suspension point: gives Task.cancel() a chance to land if id has changed.
+            await Task.yield()
+
+            // Sync CPU tail with no cancellation observability — the window in which
+            // two bodies could otherwise overlap.
+            var x: UInt64 = 0
+            for i in 0..<200_000 { x &+= UInt64(i) }
+            blackHole(x)
+
+            inFlight.withValue { $0 -= 1 }
+            completed.append(new)
         }
     }
 }

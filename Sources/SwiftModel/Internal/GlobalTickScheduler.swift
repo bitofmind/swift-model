@@ -256,7 +256,9 @@ final class GlobalTickScheduler: @unchecked Sendable {
         // callbacks hop to `.background` from there.
         let source = DispatchSource.makeTimerSource(queue: .global(qos: .userInitiated))
         source.schedule(
-            deadline: .now() + DispatchTimeInterval.nanoseconds(Int(delayNs)),
+            // UInt64 deadline arithmetic — `.nanoseconds(Int(delayNs))` would
+            // trap for delays > ~2.1 s on 32-bit-`Int` platforms (watchOS).
+            deadline: DispatchTime(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds &+ UInt64(delayNs)),
             // One-shot: leeway is "best effort" — the OS may fire up
             // to this much later. With `.background` QoS the actual
             // delay under load far exceeds this anyway; setting it

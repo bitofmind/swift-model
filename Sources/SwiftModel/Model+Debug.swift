@@ -68,9 +68,14 @@ public extension ModelNode where M: Sendable {
                 let value = context._modelSeed
                 switch fmt {
                 case .diff(let style):
-                    let prevSnap = previous.value
                     let newSnap = snapshot(value)
-                    previous.setValue(newSnap)
+                    // Read-and-replace in ONE critical section: two concurrent
+                    // post-lock callbacks doing separate get/set interleave into
+                    // duplicated or missing diff lines.
+                    let prevSnap = previous.withValue { prev -> String? in
+                        defer { prev = newSnap }
+                        return prev
+                    }
                     if let prevSnap, prevSnap != newSnap,
                        let d = snapshotLineDiff(prevSnap, newSnap, style: style) {
                         printerBox.write("\(label) value changed:\n\(d)")

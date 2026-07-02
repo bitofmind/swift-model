@@ -80,8 +80,13 @@ private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) 
 
 /// Schedules `body` to fire at the absolute monotonic deadline (or
 /// immediately if the deadline is already in the past). Returns a
-/// cancel handle; calling it before the deadline fires guarantees the
-/// callback will not run. Idempotent — cancel after fire is a no-op.
+/// cancel handle. Cancelling before the deadline *usually* prevents the
+/// callback, but a fire already in flight (expired entries are extracted
+/// from the scheduler's pending set before their callbacks run — and
+/// `.deferential` callbacks may then wait on the `.background` queue) can
+/// still invoke it after cancel returns. Callers MUST tolerate a
+/// post-cancel invocation with their own once-guard (every in-tree
+/// consumer does). Idempotent — cancel after fire is a no-op.
 ///
 /// Routed through `GlobalTickScheduler` on platforms that have
 /// `Dispatch` so all test-infrastructure deadlines share one ticker.

@@ -88,6 +88,20 @@ struct OnChangeTests {
         }
     }
 
+    @Test func testOnChangeInitialFalseSeesImmediateWrite() async {
+        // Regression: `_onChangeImpl` must construct its Observed (and thus complete
+        // observation registration) on the caller's thread, before onChange returns.
+        // A write landing synchronously after activation — before the cooperative pool
+        // has scheduled the outer task's body — must still be observed; with
+        // `initial: false` the transition would otherwise be silently dropped.
+        let model = OnChangeNoInitialModel().withAnchor()
+        model.value = 1
+        await expect {
+            model.value == 1
+            model.log == ["0→1"]
+        }
+    }
+
     // MARK: - cancelPrevious
 
     @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)

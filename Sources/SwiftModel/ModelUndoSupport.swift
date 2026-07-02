@@ -99,6 +99,13 @@ private protocol _SyncAvailabilityObservable: Sendable {
 /// ```
 public final class ModelUndoStack: UndoBackend, @unchecked Sendable {
     private let lock = NSLock()
+    /// Serializes whole undo/redo operations (pop → captureReverse → apply → push-back).
+    /// Distinct from `lock`, which only guards the collections: `apply()` runs model
+    /// restores that take the hierarchy lock, and writers holding the hierarchy lock
+    /// call `push` — holding `lock` across `apply()` would create an AB-BA with them,
+    /// while `operationLock` is never taken on the writer/push path. Recursive so sync
+    /// availability observers may call `undo()`/`redo()` re-entrantly.
+    private let operationLock = NSRecursiveLock()
     private var undoEntries: [ModelUndoEntry] = []
     private var redoEntries: [ModelUndoEntry] = []
     private var continuations: [Int: AsyncStream<UndoAvailability>.Continuation] = [:]
@@ -136,23 +143,34 @@ public final class ModelUndoStack: UndoBackend, @unchecked Sendable {
     }
 
     public func undo() {
-        guard let entry = lock({ undoEntries.popLast() }) else { return }
-        let reverse = entry.captureReverse()
-        entry.apply()
-        lock { redoEntries.append(reverse) }
-        notifyAll()
+        // Serialize the whole operation: two concurrent `undo()` calls could
+        // otherwise pop entries N and N-1 and interleave their
+        // captureReverse/apply, each snapshotting state mid-restore of the
+        // other → corrupted redo entries.
+        operationLock {
+            guard let entry = lock({ undoEntries.popLast() }) else { return }
+            let reverse = entry.captureReverse()
+            entry.apply()
+            lock { redoEntries.append(reverse) }
+            notifyAll()
+        }
     }
 
     public func redo() {
-        guard let entry = lock({ redoEntries.popLast() }) else { return }
-        let reverse = entry.captureReverse()
-        entry.apply()
-        lock { undoEntries.append(reverse) }
-        notifyAll()
+        // Same serialization as `undo()`.
+        operationLock {
+            guard let entry = lock({ redoEntries.popLast() }) else { return }
+            let reverse = entry.captureReverse()
+            entry.apply()
+            lock { undoEntries.append(reverse) }
+            notifyAll()
+        }
     }
 
     private func notifyAll() {
-        let avail = UndoAvailability(canUndo: canUndo, canRedo: canRedo)
+        // Snapshot both flags in ONE lock acquisition — separate `canUndo` /
+        // `canRedo` reads can report a combination that never existed.
+        let avail = lock { UndoAvailability(canUndo: !undoEntries.isEmpty, canRedo: !redoEntries.isEmpty) }
         // Call sync observers first — they update canUndo/canRedo on the model immediately,
         // without any cooperative-pool scheduling. Copy the dict outside the lock so that
         // observers are free to call undo()/redo()/push() without deadlocking.

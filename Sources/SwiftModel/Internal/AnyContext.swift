@@ -113,19 +113,21 @@ class AnyContext: @unchecked Sendable {
     let useMainThreadObservation: Bool
 
     /// Pairs both observation registrars in one heap allocation.
-    /// Created lazily (via `RegistrarBox`) at the root context and shared by all children
+    /// Created eagerly with the `RegistrarBox` at the root context and shared by all children
     /// in the tree, so that the whole hierarchy uses O(2) registrar instances instead of O(2N).
     ///
-    /// The `background` registrar is allocated eagerly on first observation access (every
-    /// `@Model` with `useObservationRegistrar == true` reaches the background side).
+    /// The `background` registrar is a `let` — the immutable chain box → pair → background
+    /// is safely readable lock-free from any thread.
     /// The `main` registrar is allocated lazily on first main-channel use — contexts with
     /// `useMainThreadObservation == false` (non-Apple, or opt-out on Apple) never touch it,
     /// saving one `ObservationRegistrar` allocation (which itself heap-allocates an internal
-    /// `Extent`) per model tree on those platforms.
+    /// `Extent`) per model tree on those platforms. ALL `_main` reads and writes go through
+    /// the hierarchy lock: the nil → non-nil publication read without it is a data race
+    /// (double-checked locking without atomics) — do not add an unlocked fast path.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     final class RegistrarPair: @unchecked Sendable {
         let background: ObservationRegistrar
-        /// Lazily-allocated main-channel registrar. Written once (nil → non-nil) under the
+        /// Lazily-allocated main-channel registrar. Read and written only under the
         /// hierarchy lock. `nonisolated(unsafe)`: locking discipline enforced at call sites.
         nonisolated(unsafe) var _main: ObservationRegistrar?
         init() {
@@ -133,16 +135,16 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    /// Lightweight container for the lazily-allocated `RegistrarPair`.
-    /// Created cheaply at the root context (1 allocation); the `RegistrarPair` inside
-    /// (3 allocations: class + 2 `ObservationRegistrar._Storage`) is only created on first
-    /// observation access, keeping activation cost low for unobserved models.
-    /// All child contexts inherit the same box reference — thread-safe as a `let` constant.
+    /// Container for the tree's `RegistrarPair`, created at the root context when
+    /// observation is enabled. The pair is created eagerly with the box (3 allocations
+    /// per anchored tree: box + pair + the background registrar's storage): a `let`
+    /// makes the background-registrar chain immutable and race-free with zero locks.
+    /// The previous lazily-published `var _pair` was double-checked locking without
+    /// atomics — a formal data race on every unlocked fast-path read (TSan-confirmed).
+    /// All child contexts inherit the same box reference — thread-safe as `let` constants.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     final class RegistrarBox: @unchecked Sendable {
-        /// Lazily-populated pair. Written once (nil → non-nil) under the hierarchy lock.
-        /// `nonisolated(unsafe)`: locking discipline enforced at all call sites.
-        nonisolated(unsafe) var _pair: AnyObject?  // RegistrarPair?
+        let pair = RegistrarPair()
     }
 
     /// Shared lazy box for the `ObservationRegistrar` pair for the entire model tree.
@@ -156,13 +158,14 @@ class AnyContext: @unchecked Sendable {
     /// Returns nil when observation is disabled or before the first observation access.
     var mainObservationRegistrarStore: Any? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            return (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?._main
+            // `_main` is lock-published; read it under the same lock.
+            return lock { (_registrarBox as? RegistrarBox)?.pair._main }
         }
         return nil
     }
     var backgroundObservationRegistrarStore: Any? {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            return (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?.background
+            return (_registrarBox as? RegistrarBox)?.pair.background
         }
         return nil
     }
@@ -170,10 +173,13 @@ class AnyContext: @unchecked Sendable {
     /// `nonisolated(unsafe)`: manual locking discipline (same as other lazy stores).
     nonisolated(unsafe) var cancellationsStore: Cancellations?
     /// Returns the Cancellations registry, creating it lazily on first use.
-    /// All task-registration paths go through this; read-only paths use `cancellationsStore`.
+    /// All task-registration paths go through this; read-only paths snapshot
+    /// `cancellationsStore` under `lock`. Always locks — an unlocked fast-path
+    /// read of the `nonisolated(unsafe)` store races the locked nil → non-nil
+    /// publication (double-checked locking without atomics), and registration
+    /// paths are not hot enough to justify that.
     var cancellations: Cancellations {
-        if let c = cancellationsStore { return c }
-        return lock {
+        lock {
             if cancellationsStore == nil { cancellationsStore = Cancellations() }
             return cancellationsStore!
         }
@@ -522,19 +528,26 @@ class AnyContext: @unchecked Sendable {
     }
 
     var rootParent: AnyContext {
+        // Each hop snapshots that ancestor's parents under its own `parentsLock`
+        // (released before the next hop) — never more than one lock at a time.
         parents.first?.rootParent ?? self
     }
 
     /// The current live parents. Calling this from observation-tracked code will register
     /// a dependency on the parents relationship via `willAccessParents()`.
+    /// Snapshots `weakParents` under `parentsLock`: writers (`addParent`/`removeParent`)
+    /// mutate the array under their hierarchy lock + `parentsLock`, but a cross-hierarchy
+    /// reader (grafted trees don't share the hierarchy lock) can otherwise catch a COW
+    /// reallocation mid-read. `parentsLock` is a leaf lock — the closure only does weak
+    /// loads, so no ordering hazard.
     var parents: [AnyContext] {
-        weakParents.compactMap(\.parent)
+        parentsLock { weakParents.compactMap(\.parent) }
     }
 
     /// Observed access to parents — registers observation tracking before reading.
     var observedParents: [AnyContext] {
         willAccessParents()
-        return weakParents.compactMap(\.parent)
+        return parents
     }
 
     var selfPath: AnyKeyPath { fatalError() }
@@ -681,19 +694,18 @@ class AnyContext: @unchecked Sendable {
         return snapshot.contains { $0.hasPendingStartTask }
     }
 
-    /// Returns the main registrar if the pair has already been allocated AND the main
-    /// channel has been created (lazy), or nil otherwise.
-    /// `_registrarBox` is a `let` constant; `_main` is `nonisolated(unsafe)` with single
-    /// nil→non-nil write under the hierarchy lock.
+    /// Returns the main registrar if the main channel has been created (lazy), or nil
+    /// otherwise. `_main` is lock-published, so the read takes the hierarchy lock too.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var mainObservationRegistrar: ObservationRegistrar? {
-        (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?._main
+        lock { (_registrarBox as? RegistrarBox)?.pair._main }
     }
 
-    /// Returns the background registrar if the pair has already been allocated, or nil otherwise.
+    /// Returns the background registrar if observation is enabled, or nil otherwise.
+    /// Lock-free: the box → pair → background chain is immutable.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var backgroundObservationRegistrar: ObservationRegistrar? {
-        (_registrarBox as? RegistrarBox).flatMap { $0._pair as? RegistrarPair }?.background
+        (_registrarBox as? RegistrarBox)?.pair.background
     }
 
     // Backward compatibility alias.
@@ -721,34 +733,30 @@ class AnyContext: @unchecked Sendable {
         #endif
     }
 
-    /// Returns the main registrar, allocating the `RegistrarPair` and the `_main` channel
-    /// lazily on first call. Only called when `useObservationRegistrar` is true, so
-    /// `_registrarBox` is non-nil.
+    /// Returns the main registrar, allocating the `_main` channel lazily on first call.
+    /// Only called when `useObservationRegistrar` is true, so `_registrarBox` is non-nil.
     ///
     /// Only invoked when `useMainThreadObservation == true` — contexts with the option
     /// disabled (every context on non-Apple) never reach here, so the main-channel allocation
     /// is paid only by trees that actually have a SwiftUI/UIKit/AppKit consumer.
+    /// The whole body runs under the hierarchy lock: an unlocked `_main` fast path would be
+    /// double-checked locking without atomics (a data race with the locked publication).
+    /// Main-channel callers are on write/registration paths that typically already hold the
+    /// (recursive) lock, so the re-acquisition is cheap.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var mainObservationRegistrarMakingIfNeeded: ObservationRegistrar {
-        let box = _registrarBox as! RegistrarBox
-        if let pair = box._pair as? RegistrarPair, let main = pair._main { return main }
+        let pair = (_registrarBox as! RegistrarBox).pair
         return lock {
-            if box._pair == nil { box._pair = RegistrarPair() }
-            let pair = box._pair as! RegistrarPair
             if pair._main == nil { pair._main = ObservationRegistrar() }
             return pair._main!
         }
     }
 
     /// Returns the background registrar. Only called when `useObservationRegistrar` is true.
+    /// Lock-free and race-free: the box → pair → background chain is immutable.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var backgroundObservationRegistrarMakingIfNeeded: ObservationRegistrar {
-        let box = _registrarBox as! RegistrarBox
-        if let pair = box._pair as? RegistrarPair { return pair.background }
-        return lock {
-            if box._pair == nil { box._pair = RegistrarPair() }
-            return (box._pair as! RegistrarPair).background
-        }
+        (_registrarBox as! RegistrarBox).pair.background
     }
 
     var lifetime: ModelLifetime {
@@ -798,10 +806,20 @@ class AnyContext: @unchecked Sendable {
 
     func onActivate() -> Bool {
         return lock {
-            defer {
+            switch modeLifeTime {
+            case .anchored:
                 modeLifeTime = .active
+                return true
+            case .initial, .active, .destructed, .frozenCopy:
+                // No transition. In particular never resurrect `.destructed`:
+                // `_performCollectionSet`'s re-activation loop runs OUTSIDE the
+                // hierarchy lock over a possibly-stale element list, so it can
+                // reach a context that a concurrent writer just destructed —
+                // flipping it back to `.active` would create a zombie
+                // (`isDestructed == false` forever) that no teardown path ever
+                // visits again.
+                return false
             }
-            return modeLifeTime == .anchored
         }
     }
 
@@ -813,6 +831,17 @@ class AnyContext: @unchecked Sendable {
         eventContinuations.removeAll()
         anyModificationCallbacks.removeAll()
         modeLifeTime = .destructed
+        // Seal the task registry in the same locked scope that flips the
+        // lifetime: a registration racing teardown (its context check passed
+        // just before destruct) would otherwise land in the store AFTER the
+        // `cancelAll()` in the deferred callback below has drained it — leaving
+        // its cancellation to `Cancellations.deinit`, which the last-seen TTL
+        // task can delay by seconds. A sealed store cancels post-seal
+        // registrations immediately (the test teardown path already seals via
+        // `sealRecursively()`). Create-if-nil first: a later lazy creation
+        // would otherwise produce an UNSEALED store, reopening the hole.
+        if cancellationsStore == nil { cancellationsStore = Cancellations() }
+        cancellationsStore!.seal()
         self.children.removeAll()
         dependencyContexts.removeAll()
         dependencyCache.removeAll()
@@ -1044,8 +1073,11 @@ class AnyContext: @unchecked Sendable {
         // child takes its own lock when `cancelAllRecursively` enters it, so
         // we never hold more than one context's lock at a time, matching the
         // parent→child convention `addParent` / `removeParent` use.
-        let children = lock { allChildren }
-        cancellationsStore?.cancelAll(for: id)
+        // Snapshot the store in the same locked scope as the children: the raw
+        // `cancellationsStore` read otherwise races a concurrent locked lazy
+        // creation of the registry.
+        let (children, store) = lock { (allChildren, cancellationsStore) }
+        store?.cancelAll(for: id)
         for child in children {
             child.cancelAllRecursively(for: id)
         }
@@ -1106,11 +1138,23 @@ class AnyContext: @unchecked Sendable {
 
     func onAnyModification(callback: @Sendable @escaping (_ModificationCallbackSource) -> (() -> Void)?) -> @Sendable () -> Void {
         let key = generateKey()
-        lock {
+        let registered = lock { () -> Bool in
+            // Destructed check in the SAME lock scope as the insert (mirrors
+            // `events()`): teardown drains `anyModificationCallbacks` under
+            // this lock, so an entry registered after the drain would never
+            // receive its `isFinished` call and would pin its captures for the
+            // context's remaining lifetime.
+            guard modeLifeTime != .destructed else { return false }
             anyModificationCallbacks[key] = callback
             withModificationActiveCount {
                 $0 += 1
             }
+            return true
+        }
+        guard registered else {
+            // Deliver the terminal signal the teardown drain would have sent.
+            callback(_ModificationCallbackSource(isFinished: true, kind: .all, depth: 0, origin: nil))?()
+            return {}
         }
 
         return { [weak self] in
