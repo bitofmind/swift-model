@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.9] — Concurrency-audit race fixes (TSan-clean) + macOS TSan CI gate
+
 ### Fixed
 
 - **The thread-local pending-construction stack now keeps a hard per-construction frame boundary (same-type nested-construction bleed).** Init-accessor stores merged into the top `PendingStorage` frame purely by `_State` *type*, with no notion of which construction the frame belonged to. A same-type model construction beginning while another's frame was still open — reachable when a default-value expression in a user-written init (transitively, e.g. via a conditional factory/registry) constructs another instance of the same model type — merged its prologue stores into the outer frame and its pop then *stole* that frame: cross-instance value bleed, the outer construction's `pendingID` adopted by the wrong instance, and the outer construction re-evaluating default expressions it had already evaluated (observable with impure defaults such as `UUID()`/counters, and as doubled side effects). Two local rules now bound every construction without any macro-emission change: index 0's `_threadLocalStoreFirst` always opens a fresh frame, and a keypath collision in a middle/last store (the top frame already holds that property) opens a fresh frame — complete for same-type nesting because a given model type always fires the same defaulted-property accessor sequence. Same thread-local family as 1.0.8's stale-`latest` fix. New `PendingConstructionBoundaryTests` cover the two failing default-expression shapes and pin the toolchain orderings the design rests on (accessors fire only from prologue default evaluation in declaration order — even for properties the body assigns; `_$modelSource`'s pop fires in the prologue before the body, so nested same-type construction in an init *body* and throwing-init residue are safe by ordering, and now also by the frame rules on any toolchain that orders differently).
