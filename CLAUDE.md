@@ -272,8 +272,7 @@ GitHub Actions (`.github/workflows/ci.yml`):
   Skips the one documented-unsupported interop test
   (`testObservedStreamWithModelAccessingObservable`, which races by design in test code).
   The suite has been TSan-clean since the 2026-07-02 concurrency-audit fixes — any report is a
-  regression. Don't raise the scale past ~9: `withTestTimeout_cancelsBodyThroughWaitPrimitive`
-  scales its 0.5 s timeout against a fixed 5 s block and inverts at scale ≥ 10.
+  regression.
 - **Linux** (matrix: `parallel` | `serial`): `ubuntu-latest`, `swift:6.3.0` container, `scripts/ci-test` (wraps `swift test` — see below).
 - **Android**: compile-only cross-compile to `aarch64-unknown-linux-android28`.
 - **WASM**: compile-only build to `wasm32-unknown-wasip1`.

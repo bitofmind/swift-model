@@ -270,9 +270,17 @@ struct ReactiveWaitInfrastructureTests {
     /// wall-clock cap.
     @Test func withTestTimeout_cancelsBodyThroughWaitPrimitive() async {
         let queue = BackgroundCallQueue()
-        // Block the drain for 5 s — well past the 0.5 s timeout we're testing.
+        // Block the drain well past the 0.5 s timeout we're testing. The block
+        // is the MARGIN the timer-fire → cancel-propagation chain has to beat:
+        // if the chain is slower than the block, the body unblocks first and
+        // returns `7` — a false failure. Scaled by `timeoutScale` (like this
+        // file's cancel→resume bounds): under TSan on a saturated CI runner the
+        // chain was measured taking > 5 s of wall-clock, so a fixed 5 s margin
+        // flakes exactly where the sanitizer job needs it to hold. A genuinely
+        // broken chain still fails — the body then blocks the full (scaled)
+        // duration and returns `7`.
         queue {
-            Thread.sleep(forTimeInterval: 5.0)
+            Thread.sleep(forTimeInterval: 5.0 * ModelTestingTraitOptions.timeoutScale)
         }
 
         do {
@@ -287,15 +295,16 @@ struct ReactiveWaitInfrastructureTests {
             Issue.record("expected _TestTimeoutError")
         } catch is _TestTimeoutError {
             // No upper-bound timing assertion. The body blocks on
-            // `queue.waitUntilIdle()` against a queue held busy for 5 s.
-            // If the cancel chain (timer → cancelAll → waitUntilIdle's
-            // cancellation handler → continuation resume → body unwind)
-            // were broken, the body would block the full 5 s and return
-            // `7`, hitting the `Issue.record("expected _TestTimeoutError")`
-            // branch above. Reaching this catch block already proves the
-            // chain works — asserting how *fast* it works is environment-
-            // dependent (GCD scheduling latency, cooperative pool
-            // contention) and not our property to test.
+            // `queue.waitUntilIdle()` against a queue held busy for the scaled
+            // block duration. If the cancel chain (timer → cancelAll →
+            // waitUntilIdle's cancellation handler → continuation resume →
+            // body unwind) were broken, the body would block the full scaled
+            // duration and return `7`, hitting the
+            // `Issue.record("expected _TestTimeoutError")` branch above.
+            // Reaching this catch block already proves the chain works —
+            // asserting how *fast* it works is environment-dependent (GCD
+            // scheduling latency, cooperative pool contention) and not our
+            // property to test.
         } catch {
             Issue.record("expected _TestTimeoutError, got \(type(of: error)): \(error)")
         }

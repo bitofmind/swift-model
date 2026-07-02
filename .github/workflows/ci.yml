@@ -75,11 +75,12 @@ jobs:
     #     BY DESIGN in its own test code — see CLAUDE.md "Known load-sensitive
     #     tests". Everything else must be clean.
     #   • `SWIFT_MODEL_TIMEOUT_SCALE=6` (not 3): TSan slows execution 5–15×,
-    #     so wait budgets need more headroom than the plain jobs. Do NOT raise
-    #     it past ~9: `withTestTimeout_cancelsBodyThroughWaitPrimitive` scales
-    #     its 0.5 s timeout but races a FIXED 5 s wall-clock block — at scale
-    #     ≥ 10 the timeout can no longer win and the test inverts. Scale 6
-    #     (3 s vs 5 s) is the validated sweet spot.
+    #     so wait budgets need more headroom than the plain jobs. The first CI
+    #     run of this job caught `withTestTimeout_cancelsBodyThroughWaitPrimitive`
+    #     flaking because its cancel-propagation margin was a FIXED 5 s (the
+    #     timer→cancelAll→resume chain measured > 5 s wall-clock under TSan on
+    #     the saturated runner); that margin now scales with this env var like
+    #     the file's other bounds, so raising the scale is safe if ever needed.
     #   • TSan reports do NOT fail `swift test`'s exit code (no
     #     `halt_on_error`); the follow-up step scans the log and fails on any
     #     `WARNING: ThreadSanitizer`, printing the full reports. Running to
