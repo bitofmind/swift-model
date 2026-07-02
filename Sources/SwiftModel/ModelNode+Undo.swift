@@ -219,7 +219,7 @@ private func installPropertyUndoUnchecked<M: Model, T>(
     // For Model/ModelContainer typed properties we use initialCopy (not frozenCopy) so that
     // restored values can be re-anchored by the context assignment path. Frozen copies are
     // rejected by the setter ("It is not allowed to add a destructed nor frozen model.").
-    let baseline = UnsafeSendableBox(snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: statePath], useInitialCopy: useInitialCopy))
+    let baseline = LockedSendableBox(snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: statePath], useInitialCopy: useInitialCopy))
     // Compose M-level path for Model/ModelContainer restore (triggers updateContext for re-anchoring).
     let mPath = M._modelStateKeyPath.appending(path: statePath) as WritableKeyPath<M, T>
     let sendableMPath = unsafeBitCast(mPath, to: (WritableKeyPath<M, T> & Sendable).self)
@@ -306,12 +306,28 @@ private func snapshotValue<T>(_ value: T, useInitialCopy: Bool) -> T {
     return frozenCopy(value)
 }
 
-/// A class box that allows capturing non-Sendable values in @Sendable closures via
-/// nonisolated(unsafe). Used in installPropertyUndoUnchecked where T may not be Sendable
-/// at the type-system level but is always Sendable in practice for @Model properties.
-private final class UnsafeSendableBox<T>: @unchecked Sendable {
-    var value: T
-    init(_ value: T) { self.value = value }
+/// A locked class box for the per-property undo baseline. The value is read from `onModify`
+/// callbacks (which run while the model's context lock is held) and written from restore
+/// closures and postLock callbacks that run outside that lock, so every access must go
+/// through the box's own lock to avoid torn values / ARC races on arbitrary `T`.
+///
+/// Lock ordering: the box's critical sections are leaf-level — a plain read or write with
+/// no callbacks inside — so this lock is never held while acquiring the context/hierarchy
+/// lock and no ordering cycle is possible.
+///
+/// `@unchecked Sendable` also stands in for a `T: Sendable` constraint that the
+/// ModelVisitor protocol cannot provide; all @Model stored properties are Sendable in
+/// practice (the macro enforces this).
+private final class LockedSendableBox<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: T
+
+    var value: T {
+        get { lock { _value } }
+        set { lock { _value = newValue } }
+    }
+
+    init(_ value: T) { self._value = value }
 }
 
 // MARK: - UndoCoalescer

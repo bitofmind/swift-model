@@ -181,13 +181,16 @@ extension TaskCancellable {
                 return Task(name: taskName, priority: priority, operation: operation)
             }
         }
-        // Install the box on the now-initialised instance. Readers that
-        // grab the cancellable through `Cancellations` after this point
-        // see the box; readers that race the init see `nil` →
-        // `hasStartedRunning` returns its default (`true`), which is
-        // conservatively "fine to settle" — strictly less safe than
-        // gating, but the race window is sub-microsecond.
-        self._hasStartedRunningBox = hasStartedRunningBox
+        // Install the box on the now-initialised instance, under `lock` so the
+        // store is ordered against concurrent `hasStartedRunning` readers (a
+        // settle thread can reach this instance through `Cancellations` the
+        // moment `register(self)` ran in the designated init). Readers that
+        // race the install see `nil` → `hasStartedRunning` returns `false` —
+        // the safe default (settle keeps waiting) — so the sub-microsecond
+        // window cannot declare quiet prematurely.
+        lock {
+            self._hasStartedRunningBox = hasStartedRunningBox
+        }
     }
 }
 

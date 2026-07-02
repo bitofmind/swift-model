@@ -279,33 +279,98 @@ public extension ModelNode {
         // the first change correctly reports (activationValue, firstChangedValue). When
         // `initial: true` the first emission has oldValue == newValue (initial call semantics).
         let previous = LockIsolated<Value?>(initial ? nil : idClosure())
-        let cancelPreviousKey = UUID()
 
-        return task(name, function: function, isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column) {
-            for await newValue in Observed(initial: initial, removeDuplicates: removeDuplicates, coalesceUpdates: coalesceUpdates, idClosure) {
-                guard !Task.isCancelled, !context.isDestructed else { return }
+        // Construct the Observed on the caller's thread so observation registration completes
+        // before this call returns — matching forEach(Observed(...)), task(id:), and the pack
+        // onChange overloads. Constructing it inside the task closure would leave a window
+        // (until the cooperative pool schedules the body) where a write is missed entirely;
+        // with `initial: false` that transition would be silently dropped. Emissions landing
+        // between registration and iteration are held by the stream's buffer.
+        let observed = Observed(initial: initial, removeDuplicates: removeDuplicates, coalesceUpdates: coalesceUpdates, idClosure)
 
-                // Update `previous` in the outer iteration loop BEFORE spawning any inner task.
-                // This ensures cancelled inner tasks (cancelPrevious: true) don't corrupt
-                // the previous-value tracking state.
-                let oldValue = previous.withValue { stored in
-                    defer { stored = newValue }
-                    return stored ?? newValue
-                }
+        guard cancelPrevious else {
+            return task(name, function: function, isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column) {
+                for await newValue in observed {
+                    guard !Task.isCancelled, !context.isDestructed else { return }
 
-                if cancelPrevious {
-                    task(isDetached: isDetached, priority: priority) {
-                        try await operation(oldValue, newValue)
-                    } catch: { onError($0) }
-                        .cancel(for: cancelPreviousKey, cancelInFlight: true)
-                        .inheritCancellationContext()
-                } else {
+                    let oldValue = previous.withValue { stored in
+                        defer { stored = newValue }
+                        return stored ?? newValue
+                    }
+
                     do {
                         try await operation(oldValue, newValue)
                     } catch {
                         onError(error)
                     }
                 }
+            }
+        }
+
+        let cancelPreviousKey = UUID()
+        let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
+        let modelName = typeDescription
+        let innerTaskName = name ?? "\(function) @ \(fileAndLine.description)"
+
+        return task(name, function: function, isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column) {
+            // Behaviour B (body serialization), mirroring `_forEachImpl`'s cancelPrevious
+            // branch: cancel the previous body's underlying Task AND await its full exit
+            // (including defers) before spawning the next one. `Task.cancel()` only flips a
+            // flag — without the await, the cancelled body's sync tail can interleave with the
+            // next body's prefix, producing "last writer wins on stale state" bugs. The inner
+            // TaskCancellable is constructed directly (rather than via `task(...)`) so we can
+            // await its `underlyingTask.value`; its unconditional outer `defer { onDone() }`
+            // makes that await deadlock-free even when cancellation lands before the body is
+            // scheduled. See `_forEachImpl` for the full rationale.
+            var previousInner: TaskCancellable? = nil
+
+            for await newValue in observed {
+                guard !Task.isCancelled, !context.isDestructed else { break }
+
+                // Step 1: cancel the previous body so it observes cancellation at its next
+                // suspension point (cooperative cancellation).
+                previousInner?.cancel()
+                // Step 2: await the previous body's wrapped Task to fully unwind before
+                // spawning the next one.
+                if let t = previousInner?.underlyingTask {
+                    _ = try? await t.value
+                }
+                previousInner = nil
+
+                // Update `previous` in the outer iteration loop BEFORE spawning the inner
+                // task, so cancelled inner tasks don't corrupt the previous-value tracking.
+                let oldValue = previous.withValue { stored in
+                    defer { stored = newValue }
+                    return stored ?? newValue
+                }
+
+                // Build the inner TaskCancellable inside a `cancellationContext` block so the
+                // body gets its own cancellation scope (matches the behaviour of calling
+                // `task(isDetached:priority:)` directly — preserves `inheritCancellationContext`
+                // propagation for any tasks the user closure itself spawns).
+                var captured: TaskCancellable? = nil
+                let cancellableWrapper = cancellationContext {
+                    captured = TaskCancellable(
+                        modelName: modelName,
+                        taskName: innerTaskName,
+                        fileAndLine: fileAndLine,
+                        context: context,
+                        isDetached: isDetached,
+                        priority: priority,
+                        operation: { try await operation(oldValue, newValue) },
+                        catch: { onError($0) }
+                    )
+                }
+                _ = cancellableWrapper
+                    .cancel(for: cancelPreviousKey, cancelInFlight: true)
+                    .inheritCancellationContext()
+                previousInner = captured
+            }
+            // Await the final body's wrapped Task before the outer task ends — so its
+            // lifecycle (cancellation, teardown side effects, test-settling counters) is
+            // fully observed by anyone waiting on the outer task's completion.
+            if let t = previousInner?.underlyingTask {
+                _ = try? await t.value
             }
         }
     }
@@ -406,8 +471,12 @@ public extension ModelNode {
                         operation: { try await operation(value) },
                         catch: {
                             if abortIfOperationThrows {
-                                cancelAll(for: abortKey)
+                                // Set the flag BEFORE cancelling: if this body throws before the
+                                // caller has registered the outer cancellable under `abortKey`,
+                                // `cancelAll` is a no-op and the caller's `hasBeenAborted` check
+                                // below is the only thing that stops the outer iteration.
                                 hasBeenAborted.setValue(true)
+                                cancelAll(for: abortKey)
                                 reportCatch($0)
                             }
                         }

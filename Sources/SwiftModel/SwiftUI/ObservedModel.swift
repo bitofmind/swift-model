@@ -532,11 +532,21 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
         _ model: M,
         suppressObjectWillChange: Bool = false
     ) {
+        // Resolve the context BEFORE taking `lock`. Context resolution takes other
+        // locks (the Reference lock today; the materializing `ModelContext.context`
+        // fallback even runs user `onActivate()` synchronously) — none of that may
+        // run while `ViewAccess.lock` is held: user code that writes an observed
+        // property re-enters this non-recursive lock on the same thread via the
+        // onModify post-lock callback (`lock({ self.debug })` in DEBUG, the
+        // `finished` cleanup branch in all builds), which would self-deadlock.
+        // Resolving once up front also makes the compare and the store below see
+        // the same context value.
+        let context = model.context
         lock.withLock {
-            if let root, root !== model.context {
+            if let root, root !== context {
                 observers.removeAll(keepingCapacity: true)
             }
-            self.root = model.context
+            self.root = context
             self.suppressObjectWillChange = suppressObjectWillChange
 
 #if DEBUG
@@ -645,17 +655,30 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
             return nil
         }
 
+        lock.lock()
+
+        // Read `root` under the lock — `updateObserved` replaces it under the lock
+        // from other threads, so an unlocked read would race the non-atomic
+        // strong-reference store. `root.isDestructed` takes the (recursive)
+        // hierarchy lock while `ViewAccess.lock` is held; that nesting order
+        // (`ViewAccess.lock → hierarchy lock`) is the established safe one — the
+        // DEBUG value capture below and `Observer.deinit` already rely on it, and
+        // writers only call back into `ViewAccess` from post-lock callbacks after
+        // the hierarchy lock has been released.
         if let root, root.isDestructed {
-            lock {
-                observers.removeAll(keepingCapacity: true)
-            }
+            observers.removeAll(keepingCapacity: true)
+            lock.unlock()
             return nil
         }
 
-        lock.lock()
-
         let observer = (observers[id] as? Observer<M>) ?? Observer(context: context, viewAccess: self)
         observers[id] = observer
+
+        // Set when we lose the registration race below — the loser's own
+        // just-created onModify registration, cancelled after the final unlock
+        // (the cancellation takes the hierarchy lock; calling it outside
+        // `ViewAccess.lock` keeps hold times minimal).
+        var staleAccess: (() -> Void)? = nil
 
         if observer.accesses[path] == nil {
 #if DEBUG
@@ -732,13 +755,17 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
             }
 #endif
 
-            lock.unlock()
-
             // Capture the suppress flag at registration time so the callback closure
-            // doesn't have to re-lock to read mutable state on every mutation. The
-            // flag never changes for the lifetime of a `ViewAccess` (set once in
-            // `updateObserved`), so the capture is safe.
+            // doesn't have to re-lock to read mutable state on every mutation.
+            // Captured while the lock is still held — `updateObserved` /
+            // `prepareForRender` write it under the lock from other threads, so
+            // reading it after the unlock below would be a data race. The value is
+            // constant in practice for the lifetime of a `ViewAccess` (the registrar
+            // decision is the same every render), so baking it into the closure is
+            // semantically safe.
             let suppressObjectWillChange = self.suppressObjectWillChange
+
+            lock.unlock()
 
             let access = context.onModify(for: path) { [weak self] finished, _ in
                 guard let self else {
@@ -779,10 +806,32 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
             }
 
             lock.lock()
-            observer.accesses[path] = access
-        }
 
-        observers[id] = observer
+            // The lock was dropped across `context.onModify`, so two threads
+            // reading the same path (the main-thread render plus a background
+            // read of a model copy stamped with this access — reachable because
+            // `shouldPropagateToChildren == true` propagates the stamp) can both
+            // pass the `accesses[path] == nil` check above and both register an
+            // onModify. Re-check who won: the loser must cancel its own
+            // registration rather than overwrite the winner's — overwriting
+            // would drop the winner's cancellation and leak its entry in
+            // `context.modifyCallbacks` for the context's lifetime (the callback
+            // strongly captures `context`, plus a duplicate
+            // `objectWillChange.send()` per mutation).
+            //
+            // Also re-check that `observer` is still the one installed for `id`:
+            // a concurrent root change (`updateObserved`) or destructed-root
+            // sweep may have run `observers.removeAll()` during the window.
+            // Storing into — or re-inserting — a removed observer would
+            // resurrect it for a root it no longer belongs to, so treat our
+            // registration as stale in that case too and let the next render
+            // re-register.
+            if (observers[id] as? Observer<M>) === observer, observer.accesses[path] == nil {
+                observer.accesses[path] = access
+            } else {
+                staleAccess = access
+            }
+        }
 
 #if DEBUG
         // Capture the access observer under lock, fire it AFTER releasing. This lets
@@ -793,6 +842,12 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
 #endif
 
         lock.unlock()
+
+        // Lost the registration race (or the observer went stale) — cancel our
+        // own onModify registration now that `ViewAccess.lock` is released. The
+        // cancellation takes the hierarchy lock; calling it here avoids nesting
+        // it under our lock at all.
+        staleAccess?()
 
 #if DEBUG
         if let accessObserver = capturedAccessObserver {

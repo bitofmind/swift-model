@@ -238,7 +238,12 @@ extension Trait where Self == BackgroundCallIsolationTrait {
 /// Collects failure messages from `reportIssue` calls without emitting them as test failures.
 final class CapturingIssueReporter: IssueReporter, @unchecked Sendable {
     private let lock = NSLock()
-    private(set) var messages: [String] = []
+    private var _messages: [String] = []
+
+    /// Locked read: `waitUntil { reporter.messages.contains(...) }` polls from the
+    /// GTS thread while `reportIssue` appends from a task's catch path — an
+    /// unlocked stored-property read here is a Swift access race (TSan-visible).
+    var messages: [String] { lock.withLock { _messages } }
 
     func reportIssue(
         _ message: @autoclosure () -> String?,
@@ -249,6 +254,6 @@ final class CapturingIssueReporter: IssueReporter, @unchecked Sendable {
         column: UInt
     ) {
         let m = message() ?? ""
-        lock.withLock { messages.append(m) }
+        lock.withLock { _messages.append(m) }
     }
 }

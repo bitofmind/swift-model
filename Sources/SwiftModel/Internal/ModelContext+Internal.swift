@@ -66,15 +66,22 @@ extension ModelContext {
     /// Transitions source to a frozen snapshot — used by shallowCopy.
     mutating func makeFrozen(id: ModelID) {
         let ref = _source.reference
-        guard !ref._stateCleared else { return }
-        _source = _ModelSourceBox(frozen: ref.state, id: id)
+        // Copy under the live hierarchy lock: the whole-struct read otherwise
+        // races concurrent locked writers / `Reference.clear()` (torn copy).
+        guard let state = ref.withHierarchyLockIfLive({ () -> M._ModelState? in
+            ref._stateCleared ? nil : ref.state
+        }) else { return }
+        _source = _ModelSourceBox(frozen: state, id: id)
     }
 
     /// Transitions source to a lastSeen snapshot — used by lastSeen snapshot.
     mutating func makeLastSeen(id: ModelID) {
         let ref = _source.reference
-        guard !ref._stateCleared else { return }
-        _source = _ModelSourceBox(lastSeen: ref.state, id: id)
+        // Same locked-copy discipline as `makeFrozen`.
+        guard let state = ref.withHierarchyLockIfLive({ () -> M._ModelState? in
+            ref._stateCleared ? nil : ref.state
+        }) else { return }
+        _source = _ModelSourceBox(lastSeen: state, id: id)
     }
 
     /// Sets the source to a new Reference (non-live) — used by anchoring and MakeInitialTransformer.

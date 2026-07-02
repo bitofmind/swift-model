@@ -246,14 +246,29 @@ internal func update<T: Sendable>(
     }
 
     @Sendable func updateInitial(with value: T) {
-        last.withValue { last in
-            if last.value == nil {
-                last.value = value
+        // The initial emission must participate in the same ordering discipline as
+        // update(with:index:). Dependencies are registered synchronously (inside
+        // observe()/reset) before this runs, so a concurrent write can already have
+        // recomputed and emitted a newer value (index > 0) by the time the initial
+        // value is delivered. Emitting the stale initial value after it would hand
+        // the consumer out-of-order values and — with isSame — cache a value that
+        // suppresses the eventual re-emission when state returns to the newer one.
+        // The first performUpdate always emits (the cache is still empty when it
+        // wins the race), so dropping the stale initial value here preserves the
+        // `initial: true` guarantee: the consumer's first emission is simply the
+        // fresher value.
+        updateLock.withLock {
+            let isFirst = last.withValue { last in
+                guard last.index == 0 else { return false }
+                if last.value == nil {
+                    last.value = value
+                }
+                return true
             }
-        }
 
-        if initial {
-            onUpdate(value)
+            if isFirst, initial {
+                onUpdate(value)
+            }
         }
     }
 
@@ -521,10 +536,11 @@ internal func update<T: Sendable>(
                 performUpdateBox.setValue(nil)
                 forceObserver.cancel()
                 // Cancel the gap-detector shadow's persistent per-(context, path)
-                // subscriptions. Empty reset diffs `added` (empty) against existing,
-                // cancelling every live subscription. See the shadow doc-comment
-                // at the top of this branch for the full rationale.
-                shadow.reset { }
+                // subscriptions. Sticky: an in-flight performUpdate that slipped
+                // past the hasBeenCancelled check cannot re-register through its
+                // shadow.reset once cancelled. See the shadow doc-comment at the
+                // top of this branch for the full rationale.
+                shadow.cancel()
             },
             forceNextUpdate: {
                 forceNext.setValue(true)
@@ -535,6 +551,11 @@ internal func update<T: Sendable>(
         let hasPendingUpdate = LockIsolated(false)
         
         let collector = AccessCollector { collector, force in
+            // Mirror the withObservationTracking path's hasBeenCancelled check: a
+            // subscription firing while cancellation is racing must not schedule
+            // further work into a finished consumer.
+            if collector.isCancelled { return nil }
+
             // Call didModify immediately when dependency changes (for dirty tracking).
             // `force` is true when the change was triggered by node.touch().
             didModify?(force)
@@ -557,6 +578,14 @@ internal func update<T: Sendable>(
             }
 
             let performUpdate: @Sendable () -> Void = {
+                // Same post-cancellation guard as the withObservationTracking path:
+                // a performUpdate already queued on the background call queue (or as
+                // a writer's post-lock callback) when cancel lands must not call
+                // access() on a possibly deactivated model, and must not recompute
+                // into a finished consumer. Re-registration after cancel is blocked
+                // independently — willAccess drops registrations once cancelled.
+                if collector.isCancelled { return }
+
                 let (value, index) = last.withValue { last in
                     last.index = last.index &+ 1
 
@@ -611,7 +640,7 @@ internal func update<T: Sendable>(
 
         return (
             cancel: {
-                collector.reset { }
+                collector.cancel()
             },
             forceNextUpdate: {
                 forceNext.setValue(true)
@@ -622,7 +651,7 @@ internal func update<T: Sendable>(
 
 private final class AccessCollector: ModelAccess, @unchecked Sendable {
     let onModify: @Sendable (AccessCollector, Bool) -> (@Sendable () -> Void)?
-    let active = LockIsolated<(active: [Key: @Sendable () -> Void], added: Set<Key>)>(([:], []))
+    let active = LockIsolated<(active: [Key: @Sendable () -> Void], added: Set<Key>, cancelled: Bool)>(([:], [], false))
 
     struct Key: Hashable, @unchecked Sendable {
         var id: ModelID
@@ -640,6 +669,30 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
         }
     }
 
+    var isCancelled: Bool {
+        active.value.cancelled
+    }
+
+    /// Sticky cancellation: once set, no subscription survives and none can be
+    /// (re-)registered. The registered onModify closures strongly capture the
+    /// collector, so any subscription that outlives cancellation keeps the whole
+    /// observer recomputing for the life of the context. Cancel must therefore win
+    /// even against an in-flight `reset` (e.g. a performUpdate already queued on the
+    /// background call queue): `willAccess` checks the flag — under the same lock —
+    /// both before registering and when storing a registration that raced with
+    /// cancel, and `reset`'s final diff drains everything once the flag is set.
+    func cancel() {
+        let cancels = active.withValue { state in
+            state.cancelled = true
+            defer { state.active.removeAll() }
+            return Array(state.active.values)
+        }
+
+        for cancel in cancels {
+            cancel()
+        }
+    }
+
     func reset<Value>(_ access: () -> Value) -> Value {
         let keys = active.withValue {
             $0.added.removeAll(keepingCapacity: true)
@@ -648,15 +701,19 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
 
         let value = access()
 
-        let cancels = active.withValue { active in
-            let noLongerActive = keys.subtracting(active.added)
-            let cancels = active.active.filter { noLongerActive.contains($0.key) }.map(\.value)
-            defer {
-                for key in noLongerActive {
-                    active.active.removeValue(forKey: key)
-                }
+        // Single critical section for the read-compute-swap of the active set: a
+        // concurrent cancel() can land anywhere around access(), so the diff must be
+        // computed against — and applied to — one consistent snapshot, with the
+        // cancelled check part of the same section. (The registrations themselves
+        // happen in willAccess and stay outside this lock.)
+        let cancels = active.withValue { state -> [@Sendable () -> Void] in
+            if state.cancelled {
+                defer { state.active.removeAll() }
+                return Array(state.active.values)
             }
-            return cancels
+
+            let noLongerActive = keys.subtracting(state.added)
+            return noLongerActive.compactMap { state.active.removeValue(forKey: $0) }
         }
 
         for cancel in cancels {
@@ -671,22 +728,32 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
     override func willAccess<M: Model, T>(from context: Context<M>, at path: KeyPath<M._ModelState, T>&Sendable) -> (() -> Void)? {
         let key = Key(id: context.anyModelID, path: path)
 
-        let isActive = active.withValue {
-            $0.added.insert(key)
-            return $0.active[key] != nil
+        let needsRegistration = active.withValue { state in
+            guard !state.cancelled else { return false }
+            state.added.insert(key)
+            return state.active[key] == nil
         }
 
-        if !isActive {
-            // Make sure to call this outside active lock to avoid dead-locks with context lock.
-            let cancellation = context.onModify(for: path) { finished, force in
-                if finished { return {} }
-                return self.onModify(self, force)
-            }
+        guard needsRegistration else { return nil }
 
-            active.withValue {
-                $0.active[key] = cancellation
-            }
+        // Make sure to call this outside active lock to avoid dead-locks with context lock.
+        let cancellation = context.onModify(for: path) { finished, force in
+            if finished { return {} }
+            return self.onModify(self, force)
         }
+
+        // A cancel() — or a concurrent reset registering the same key — may have won
+        // the race while the subscription was registered outside the lock. In either
+        // case this subscription must not be kept: cancel it instead of storing (or
+        // overwriting, which would leak the earlier registration as a zombie).
+        let stale = active.withValue { state -> (@Sendable () -> Void)? in
+            if state.cancelled || state.active[key] != nil {
+                return cancellation
+            }
+            state.active[key] = cancellation
+            return nil
+        }
+        stale?()
 
         return nil
     }

@@ -999,6 +999,12 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// keeping a wait from declaring quiescence while work is still in flight.
     var _lastActivityNs: UInt64 = 0
 
+    /// Locked read of `_lastActivityNs` for readers outside the `_noteActivity`
+    /// write path (the executor-drive fixpoint loop). Writes happen under `lock`;
+    /// reading the plain `var` without it is a data race even though the value is
+    /// a single aligned word.
+    var _lastActivityNsLocked: UInt64 { lock { _lastActivityNs } }
+
     func _noteActivity() {
         var wakes: [CheckedContinuation<PredicateOutcome, Never>] = []
         lock {

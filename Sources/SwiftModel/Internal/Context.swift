@@ -254,20 +254,24 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // deinits triggered by state release can re-enter the lock without exclusivity violations.
             let ref = reference
             let contextLock = self.lock
+            let generation = referenceGeneration
             callbacks.append {
                 contextLock.lock()
-                let stateToRelease = ref.clear()
+                let stateToRelease = ref.clear(ifGeneration: generation)
                 contextLock.unlock()
                 _fixLifetime(stateToRelease)
             }
             return
         }
 
+        let generation = referenceGeneration
         Task {
             try? await Task.sleep(nanoseconds: 1_000_000*UInt64(lastSeenTimeToLive*1000))
             // Same fix as the non-TTL path: hold AnyContext.lock while swapping state so that
             // concurrent property reads (which also hold this lock) cannot race on reference.state.
-            let stateToRelease = lock { reference.clear() }
+            // Generation-guarded: a re-anchor within the TTL window must not have its live
+            // state wiped by this stale task (see `clear(ifGeneration:)`).
+            let stateToRelease = lock { reference.clear(ifGeneration: generation) }
             _fixLifetime(stateToRelease)
         }
     }
@@ -606,13 +610,20 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     func onModify<T>(for path: KeyPath<M._ModelState, T>&Sendable, _ callback: @Sendable @escaping (_ finished: Bool, _ force: Bool) -> (() -> Void)?) -> @Sendable () -> Void {
-        guard !isDestructed else {
-            return {}
-        }
-
         let key = generateKey()
-        lock {
+        let registered = lock { () -> Bool in
+            // Destructed check in the SAME lock scope as the insert: teardown
+            // flips the lifetime and drains `modifyCallbacks` under this lock,
+            // so an entry registered through a pre-lock check-then-act gap
+            // would never be fired with `finished == true` and would pin its
+            // captures until the context deallocates. (`unprotected` is fine —
+            // we hold the lock.)
+            guard !unprotectedIsDestructed else { return false }
             modifyCallbacks[path, default: [:]][key] = callback
+            return true
+        }
+        guard registered else {
+            return {}
         }
 
         return { [weak self] in
@@ -1894,8 +1905,18 @@ extension Context {
         /// Returns the old state for deferred release after both locks are dropped — deinits
         /// triggered by the release may re-enter AnyContext.lock, so they must not run while
         /// either lock is held.
-        func clear() -> M._ModelState {
+        ///
+        /// Generation-guarded: `clear` fires long after removal (the last-seen TTL task
+        /// sleeps ~2 s; the non-TTL path runs from the deferred teardown-callbacks array).
+        /// If this Reference has been re-anchored in the meantime (`setContext` bumped
+        /// `_generation` — an undo-driven re-anchor, or a static `testValue` dependency
+        /// claimed by the next test), clearing now would wipe the NEW hierarchy's live
+        /// state — and race its writers, which operate under a *different* hierarchy lock
+        /// than the stale caller holds. Returns nil (no-op) when outdated; `Context.deinit`'s
+        /// `clearStateForGeneration` applies the same discipline.
+        func clear(ifGeneration generation: Int) -> M._ModelState? {
             lock {
+                guard generation == _generation else { return nil }
                 _stateCleared = true
                 let old = state
                 if _hasGenesis {
@@ -1903,6 +1924,29 @@ extension Context {
                 }
                 return old
             }
+        }
+
+        /// Runs `body` under the live hierarchy lock when one exists, so reads of
+        /// `state` / `_stateCleared` synchronize with concurrent locked writers
+        /// (property writes hold the hierarchy lock; `clear` holds it plus this
+        /// Reference's lock). For read paths reached OUTSIDE any locked scope —
+        /// deep-access visitors walking a value copy after `subscript.read`'s lock
+        /// scope ended, frozen/lastSeen whole-state copies — the raw read can tear
+        /// against a concurrent collection-write clearing a removed child
+        /// (TSan-confirmed). With no live context there is no locked concurrent
+        /// writer left to race: pre-anchor construction is thread-confined,
+        /// snapshot state is immutable, and both deferred `clear(ifGeneration:)`
+        /// paths run while the old context (and thus a discoverable lock) is
+        /// still alive.
+        ///
+        /// Lock-order note: the `context` read takes and releases `Reference.lock`
+        /// BEFORE the hierarchy lock is acquired — no held-across violation of the
+        /// AnyContext.lock → Reference.lock convention.
+        func withHierarchyLockIfLive<R>(_ body: () -> R) -> R {
+            if let context = self.context {
+                return context.lock { body() }
+            }
+            return body()
         }
 
         /// Atomically claims this Reference for a new Context, or creates a fresh

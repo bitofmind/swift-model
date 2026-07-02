@@ -133,8 +133,14 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     static func _globalSnapshot() -> (outstanding: Int, sinceActivityNs: UInt64) {
         let now = _drainMonotonicNs()
         let last = _globalLastActivityNs.load(ordering: .relaxed)
-        // Clamp the lookback to 1 s so a never-yet-active global counter (last == 0)
-        // doesn't read as "idle for the whole uptime".
+        // Floor `last` at (now − 1000 s) so a never-yet-active global counter
+        // (last == 0) reads as a large-but-bounded idle span instead of the whole
+        // monotonic uptime. NOTE: this expression CAPS `sinceActivityNs` at the
+        // lookback constant, so the constant must stay far above every grace
+        // window (`_expectGraceNs` is 2 s × scale) — a smaller "tidier" value
+        // like 1 s silently closes the global fail-gate forever (fails then only
+        // surface via the 120 s watchdog / test budgets; the deliberate-timeout
+        // meta-tests go from ~2 s to end-of-run).
         return (_globalOutstanding.load(ordering: .relaxed), now &- max(last, now &- 1_000_000_000_000))
     }
 
@@ -292,7 +298,7 @@ extension TestAccess {
                 if !main.isIdle { await main.waitForCurrentItems(deadline: hangDeadlineNs) }
                 let idleNow = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.context.hasPendingStartTask
                 if idleNow {
-                    let lastActivity = max(self._lastActivityNs, exec.lastEnqueueNs)
+                    let lastActivity = max(self._lastActivityNsLocked, exec.lastEnqueueNs)
                     let sinceActivity = _drainMonotonicNs() &- lastActivity
                     if sinceActivity >= graceNs {
                         return true   // idle, and no activity of any kind for a full grace window
@@ -434,6 +440,16 @@ extension TestAccess {
     func _resolveUnmetPredicatesAtFixpoint() {
         var wakes: [CheckedContinuation<PredicateOutcome, Never>] = []
         lock {
+            // Re-check cancellation INSIDE the lock. `expect()` cancels its
+            // driver before returning, and the test's *next* `expect` registers
+            // its predicate into `_pendingExpects` under this same lock — so if
+            // a fresh predicate is visible here, the cancel that preceded its
+            // registration is visible too (lock acquire orders both). The loop
+            // head's `Task.isCancelled` gate alone leaves a window where a stale
+            // driver, already past that check (e.g. its own `_noteActivity`
+            // resolved the current expect, which triggered the cancel), would
+            // fail the next predicate as `.timeout`.
+            guard !Task.isCancelled else { return }
             for i in (0..<_pendingExpects.count).reversed() {
                 let pending = _pendingExpects[i]
                 if case .predicate = pending.mode {
