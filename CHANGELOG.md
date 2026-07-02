@@ -40,6 +40,10 @@ Concurrency-audit fixes (full-codebase race/deadlock review + ThreadSanitizer/Ad
 
 - **Test-infrastructure races (no library behavior change):** `TestAccess._lastActivityNs` is now read under the lock by the executor-drive fixpoint loop (was the dominant TSan noise: 18 of 25 warnings); `_resolveUnmetPredicatesAtFixpoint` re-checks driver cancellation *inside* the `_pendingExpects` lock, closing the TOCTOU where a stale driver could fail the *next* `expect` as `.timeout`; the global-quiescence lookback comment was corrected — the 1000 s constant is load-bearing (it caps `sinceActivityNs`, so it must stay far above every grace window; the "1 s" the old comment described would close the fail-gate permanently); GTS timer deadlines use `UInt64` arithmetic (the old `Int(delayNs)` conversion trapped for delays > ~2.1 s on 32-bit-`Int` platforms); `TaskCancellable`'s `_hasStartedRunningBox` install is lock-ordered against concurrent readers and its safety comment stated the wrong polarity; `scheduleAfter`'s doc no longer overpromises that cancel prevents an in-flight callback (all in-tree consumers carry once-guards).
 
+### Added
+
+- **CI: `macOS (TSan)` job — a ThreadSanitizer gate over the full parallel suite.** Runs `swift test --parallel --sanitize=thread` (`SWIFT_MODEL_TIMEOUT_SCALE=6` — TSan slows execution 5–15×; do not raise past ~9, see the workflow comment) and fails on **any** `WARNING: ThreadSanitizer` in the log, printing the full reports (TSan does not fail the exit code by itself, so a log scan is the gate). Skips only the documented-unsupported Observable-interop test (`testObservedStreamWithModelAccessingObservable`), which races by design in its own test code. The suite has been TSan-clean since the concurrency-audit fixes above, so any report is a regression — this is the guard that keeps it that way.
+
 ### Changed
 
 - **Test-suite hardening only — no library change.** Two `.modelTesting` tests that flaked exclusively under `macOS (parallel)` CI saturation (and full-suite parallel `swift test` under load), while passing serially, on Linux, and in isolation, are now load-independent:
