@@ -470,6 +470,14 @@ private extension ModelNode {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
             context.willAccessSyntheticPath(\_StateObserver<M._ModelState>[memoizeKey: key, modelID: context.reference.modelID])
         }
+        // Shadow gap-race detector (withObservationTracking path): a memoize sentinel read
+        // inside an outer `observe()` body otherwise registers only with Apple's one-shot
+        // tracking — `_$modelContext.willAccess` below short-circuits on
+        // `isInsideMemoizeObserve`. The sentinel notifications in `onUpdate` /
+        // `wrappedOnUpdate` fire `modifyCallbacks[path]`, so subscribing on `path` closes
+        // the Gap A/B windows for nested memoize dependencies. See
+        // `Context.willAccessGapShadow`.
+        context.willAccessGapShadow(at: path)
         // ViewAccess/AccessCollector/TestAccess tracking via active access:
         _$modelContext.willAccess(at: path)?()
 
@@ -816,7 +824,16 @@ private extension ModelNode {
                                 }
                             }
 
+                            // Tier-2 performUpdate-enqueue deferral around the sentinel
+                            // notification drain: `postCallbacks` fires BOTH the gap-shadow's
+                            // `onObservedChange` post-callbacks (registered on `path` via
+                            // `willAccessGapShadow`) and Apple's registrar willSet/didSet —
+                            // both listeners must make their `hasPendingUpdate` dedup
+                            // decision before any performUpdate can start and clear the
+                            // flag. See `ThreadLocals.lockHeldBackgroundCalls`.
+                            let lhbcOwned = beginLockHeldBackgroundCallsScope()
                             for callback in postCallbacks { callback() }
+                            endLockHeldBackgroundCallsScope(lhbcOwned)
 
 #if DEBUG
                             if let debugPrint, let debugPreviousValue {
@@ -881,7 +898,11 @@ private extension ModelNode {
                         }
                     }
 
+                    // Same tier-2 deferral as the wrappedOnUpdate drain above — see the
+                    // comment there and `ThreadLocals.lockHeldBackgroundCalls`.
+                    let lhbcOwned = beginLockHeldBackgroundCallsScope()
                     for plc in postLockCallbacks { plc() }
+                    endLockHeldBackgroundCallsScope(lhbcOwned)
 
 #if DEBUG
                     // Debug: print trigger and change info after each update.

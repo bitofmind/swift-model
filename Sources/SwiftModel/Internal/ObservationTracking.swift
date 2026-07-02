@@ -311,6 +311,15 @@ internal func update<T: Sendable>(
         // `access` closure *actually reads*, so unrelated writes (and writes
         // to the same context's untracked properties) are correctly ignored.
         //
+        // Coverage spans BOTH read families: real `_State` reads dispatch the
+        // shadow in `Context.willAccessDirect`, and synthetic-path reads
+        // (memoize sentinels, environment/local storage, preferences, the
+        // parents relationship) dispatch it via `Context.willAccessGapShadow`
+        // — those would otherwise register only in Apple's one-shot tracking
+        // (`willAccessSyntheticPath`; `ModelContext.willAccess` short-circuits
+        // on `isInsideMemoizeObserve` for the whole observe() body), leaving
+        // Gaps A/B open for synthetic dependencies.
+        //
         // The shadow is dispatched via `threadLocals.gapShadowCollector` (not
         // via `usingActiveAccess`) because the existing `usingActiveAccess(nil)`
         // + `isInsideMemoizeObserve` machinery must be preserved inside
