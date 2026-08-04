@@ -95,10 +95,13 @@ let defaultIsolationTargets: [Target] = []
 // That root cause is now fixed upstream: xctest-dynamic-overlay 1.11.0 added
 // the `OMIT_DYNAMIC_TEST_SUPPORT` env lever
 // (pointfreeco/swift-issue-reporting#183), which makes the product's linkage
-// automatic instead of `.dynamic`, and the WASM CI job sets it. So this lever
-// is no longer load-bearing for linking — it now just trims the build to the
-// one target that carries WASM-relevant coverage. It may well be removable
-// altogether; that hasn't been re-tested since the upstream fix landed.
+// automatic instead of `.dynamic`, and the WASM CI job sets it.
+//
+// The lever is still required, though — for a second reason that only surfaced
+// once the WASM job moved to `swift build --build-tests`. That builds the whole
+// package rather than named targets, which pulls in the `SwiftModelBenchmarks`
+// executable, and its harness doesn't compile for WASI (see the removal block
+// at the bottom of this file).
 //
 // The Snapshot / Benchmark / MainActor / Macro tests don't add platform
 // coverage that the main SwiftModelTests suite doesn't already provide for
@@ -263,18 +266,27 @@ let package = Package(
 // targets was the workaround.
 //
 // See the `isWasiBuild` comment above: `OMIT_DYNAMIC_TEST_SUPPORT` (upstream
-// 1.11.0) now fixes that at the source, making this trimming a build-time
-// optimisation rather than a requirement.
+// 1.11.0) now fixes that at the source, so the trimming is no longer what makes
+// the link succeed — but it is still required, because `--build-tests` builds
+// every target in the package and not all of them compile for WASI.
 //
 // Keep:
-//   • `SwiftModel`            — the library under test
-//   • `SwiftModelMacros`      — host-built macro plugin (`@Model` expansion)
-//   • `SwiftModelTests`       — the test target we actually want to run
-//   • `SwiftModelBenchmarks`  — executable, unrelated to the test-link issue
+//   • `SwiftModel`        — the library under test
+//   • `SwiftModelMacros`  — host-built macro plugin (`@Model` expansion)
+//   • `SwiftModelTests`   — the test target we actually want to build
+//
+// `SwiftModelBenchmarks` is dropped too. It used to be kept here ("executable,
+// unrelated to the test-link issue"), which held only while the WASM job built
+// named targets — `swift build --build-tests` builds the whole package, and the
+// benchmark harness doesn't compile for WASI: it's built on `DispatchTime` and
+// `DispatchQueue.concurrentPerform`, neither of which exists there, and a
+// wall-clock/multicore benchmark would be meaningless on single-threaded WASI
+// regardless. It's a local executable, not a product, and nothing depends on it.
 if isWasiBuild {
     package.targets.removeAll { target in
         target.name == "SwiftModelBenchmarkTests"
             || target.name == "SwiftModelSnapshotTests"
             || target.name == "SwiftModelMacroTests"
+            || target.name == "SwiftModelBenchmarks"
     }
 }

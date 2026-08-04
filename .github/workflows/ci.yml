@@ -279,14 +279,15 @@ jobs:
     # same manifest configuration (a step that omitted one would force SwiftPM
     # to re-evaluate manifests and rebuild).
     #
-    #   SWIFTPM_TARGET_WASI  — ours: drops every test target except
-    #     `SwiftModelTests` (Snapshot / Benchmark / Macro / MainActor), which
-    #     add no WASM coverage `SwiftModelTests` doesn't already give. See the
-    #     manifest comment at the bottom of `Package.swift`. NOTE: this lever
-    #     was originally introduced *because of* the dynamic-product problem
-    #     below. Now that `OMIT_DYNAMIC_TEST_SUPPORT` fixes that at the root,
-    #     it may be redundant — nobody has re-tested with it unset. If you want
-    #     the extra targets compile-checked for WASM, try dropping it.
+    #   SWIFTPM_TARGET_WASI  — ours: trims the package to `SwiftModel`,
+    #     `SwiftModelMacros` and `SwiftModelTests`. It was introduced *because
+    #     of* the dynamic-product problem below, and `OMIT_DYNAMIC_TEST_SUPPORT`
+    #     now solves that at the root — but the lever is still required, for a
+    #     second reason that only surfaced once this job started running
+    #     `--build-tests`: that builds the whole package, including the
+    #     `SwiftModelBenchmarks` executable, whose harness is built on
+    #     `DispatchTime` / `DispatchQueue.concurrentPerform` and does not
+    #     compile for WASI. Don't drop this lever without also handling that.
     #
     #   OMIT_DYNAMIC_TEST_SUPPORT — xctest-dynamic-overlay's, added in 1.11.0
     #     via pointfreeco/swift-issue-reporting#183. Demotes the
