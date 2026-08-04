@@ -280,9 +280,13 @@ GitHub Actions (`.github/workflows/ci.yml`):
   `OMIT_DYNAMIC_TEST_SUPPORT=1` (xctest-dynamic-overlay ≥ 1.11.0, hence the
   `from: "1.11.0"` floor): WASI has no shared libraries, and without the lever
   SwiftPM materialises the `type: .dynamic` `IssueReportingTestSupport` product
-  into the test build plan regardless of platform conditions. Running the bundle
-  under wasmtime is still open — `GlobalTickScheduler` is GCD-backed and would
-  need a WASI-native path first.
+  into the test build plan regardless of platform conditions. It also needs
+  `SWIFTPM_TARGET_WASI=1`, which trims the package to `SwiftModel` /
+  `SwiftModelMacros` / `SwiftModelTests` — `--build-tests` builds *every* target,
+  and `SwiftModelBenchmarks` doesn't compile for WASI (`DispatchTime`,
+  `DispatchQueue.concurrentPerform`). Running the bundle under wasmtime is still
+  open — `GlobalTickScheduler` is GCD-backed and would need a WASI-native path
+  first.
 
 **Linux `swift test` goes through `scripts/ci-test`.** On Linux, swift-syntax's
 compiler-plugin message handler intermittently logs `Internal Error:
