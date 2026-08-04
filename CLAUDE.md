@@ -275,7 +275,14 @@ GitHub Actions (`.github/workflows/ci.yml`):
   regression.
 - **Linux** (matrix: `parallel` | `serial`): `ubuntu-latest`, `swift:6.3.0` container, `scripts/ci-test` (wraps `swift test` — see below).
 - **Android**: compile-only cross-compile to `aarch64-unknown-linux-android28`.
-- **WASM**: compile-only build to `wasm32-unknown-wasip1`.
+- **WASM**: build (no run) to `wasm32-unknown-wasip1` — the library on its own,
+  plus `--build-tests`, which links a full test executable. The link step needs
+  `OMIT_DYNAMIC_TEST_SUPPORT=1` (xctest-dynamic-overlay ≥ 1.11.0, hence the
+  `from: "1.11.0"` floor): WASI has no shared libraries, and without the lever
+  SwiftPM materialises the `type: .dynamic` `IssueReportingTestSupport` product
+  into the test build plan regardless of platform conditions. Running the bundle
+  under wasmtime is still open — `GlobalTickScheduler` is GCD-backed and would
+  need a WASI-native path first.
 
 **Linux `swift test` goes through `scripts/ci-test`.** On Linux, swift-syntax's
 compiler-plugin message handler intermittently logs `Internal Error:

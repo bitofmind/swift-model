@@ -82,16 +82,23 @@ let defaultIsolationTargets: [Target] = []
 // every test target except `SwiftModelTests`. This is the WASM CI's "run only
 // the main test target" lever.
 //
-// Why we need it: WASI doesn't support dynamic libraries, and
+// Why it was introduced: WASI doesn't support dynamic libraries, and
 // `IssueReportingTestSupport` is a `type:.dynamic` SwiftPM product. We
 // platform-condition the dep out of all five test targets (search this file
-// for `IssueReportingTestSupport`), but the `swift test` test-executable link
-// still tried to build `libIssueReportingTestSupport.wasm` regardless —
-// SwiftPM seems to materialise the product whenever ANY consumer in the
-// resolved graph references it, even via a platform-failed condition. Until
-// we figure out exactly what triggers that, physically removing the
-// non-essential test targets when targeting WASI is the surest way to keep
-// the dynamic product out of the link plan.
+// for `IssueReportingTestSupport`), but the test-executable link still tried
+// to build `libIssueReportingTestSupport.wasm` regardless — SwiftPM
+// materialises the product whenever ANY consumer in the resolved graph
+// references it, even via a platform-failed condition. Physically removing the
+// non-essential test targets was the surest way to keep it out of the link
+// plan.
+//
+// That root cause is now fixed upstream: xctest-dynamic-overlay 1.11.0 added
+// the `OMIT_DYNAMIC_TEST_SUPPORT` env lever
+// (pointfreeco/swift-issue-reporting#183), which makes the product's linkage
+// automatic instead of `.dynamic`, and the WASM CI job sets it. So this lever
+// is no longer load-bearing for linking — it now just trims the build to the
+// one target that carries WASM-relevant coverage. It may well be removable
+// altogether; that hasn't been re-tested since the upstream fix landed.
 //
 // The Snapshot / Benchmark / MainActor / Macro tests don't add platform
 // coverage that the main SwiftModelTests suite doesn't already provide for
@@ -128,7 +135,12 @@ let package = Package(
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.6"),
         .package(url: "https://github.com/apple/swift-collections", from: "1.1.0"),
         .package(url: "https://github.com/pointfreeco/swift-identified-collections", from: "1.1.0"), // Used by SwiftModelBenchmarks only
-        .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.9.0"),
+        // 1.11.0 is the floor: it ships the `OMIT_DYNAMIC_TEST_SUPPORT` env
+        // lever (pointfreeco/swift-issue-reporting#183) that demotes the
+        // `IssueReportingTestSupport` product from `.dynamic` to automatic
+        // linkage. That's what lets the WASM job link a test executable at all
+        // — see the `wasm` job in `.github/workflows/ci.yml`.
+        .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.11.0"),
         .package(url: "https://github.com/pointfreeco/swift-clocks", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),
     ],
@@ -155,6 +167,12 @@ let package = Package(
                 // reporter; the `WASIBridgeIssueReporter` in `Utilities.swift`
                 // re-registers as a swift-testing-bound reporter at process
                 // startup so failures still surface as `Issue.record(...)`.
+                //
+                // With `OMIT_DYNAMIC_TEST_SUPPORT` set (see the WASM CI job)
+                // the product links statically, so WASI could take the real
+                // dependency and drop the bridge. Left as-is deliberately: the
+                // suite doesn't run on WASI yet, so there's nothing to verify
+                // that switch against.
                 .product(
                     name: "IssueReportingTestSupport",
                     package: "xctest-dynamic-overlay",
@@ -236,14 +254,17 @@ let package = Package(
     swiftLanguageModes: [.v6]
 )
 
-// On WASI we want only `SwiftModelTests` linked into the test executable;
-// every other test target pulls in `IssueReportingTestSupport` (via direct
-// dep, MacroTesting, or InlineSnapshotTesting) — that's a `type:.dynamic`
-// SwiftPM product, and WASI's linker rejects dynamic libraries. Conditioning
-// the individual product deps with `.when(platforms:)` doesn't actually keep
-// the dynamic library out of the package test-executable link (something in
-// the resolved graph still materialises it). Physically removing the test
-// targets is the surest way to stop the dynamic product from being built.
+// On WASI we build only `SwiftModelTests` into the test executable; every
+// other test target pulls in `IssueReportingTestSupport` (via direct dep,
+// MacroTesting, or InlineSnapshotTesting) — a `type:.dynamic` SwiftPM product
+// that WASI's linker rejects. Conditioning the individual product deps with
+// `.when(platforms:)` doesn't keep it out of the test-executable link
+// (something in the resolved graph still materialises it), so trimming the
+// targets was the workaround.
+//
+// See the `isWasiBuild` comment above: `OMIT_DYNAMIC_TEST_SUPPORT` (upstream
+// 1.11.0) now fixes that at the source, making this trimming a build-time
+// optimisation rather than a requirement.
 //
 // Keep:
 //   • `SwiftModel`            — the library under test

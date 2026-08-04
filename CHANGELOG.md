@@ -6,6 +6,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- **WASM CI now links a test executable instead of only compile-checking targets.** The `wasm` job previously ran two `swift build --target …` compile checks, because the test-executable *link* was blocked outright: `IssueReportingTestSupport` is a `type: .dynamic` SwiftPM product, WASI has no shared-library support, and SwiftPM materialises that product into any test build plan where it's reachable in the resolved graph — even when every consumer-side target dep platform-conditions it out. Upstream now offers a lever for exactly this: `OMIT_DYNAMIC_TEST_SUPPORT` (contributed as [pointfreeco/swift-issue-reporting#183](https://github.com/pointfreeco/swift-issue-reporting/pull/183), shipped in xctest-dynamic-overlay 1.11.0) demotes the product's linkage from `.dynamic` to automatic. The job sets it and now runs `swift build --build-tests`, so a WASM link regression fails CI rather than going unnoticed. The minimum `xctest-dynamic-overlay` requirement moves from 1.9.0 to 1.11.0 accordingly.
+
+  Two follow-ups are deliberately left open, both noted in-place: our own `SWIFTPM_TARGET_WASI` lever is no longer load-bearing for linking (it now only trims the build to `SwiftModelTests`, and may be removable), and `SwiftModelTests` could take the real `IssueReportingTestSupport` dependency on WASI instead of the `WASIBridgeIssueReporter` fallback. Neither is worth changing while the suite doesn't actually *run* on WASI — running it needs a WASI-native scheduler path for `GlobalTickScheduler`, which is GCD-backed.
+
 ---
 
 ## [1.0.9] — Concurrency-audit race fixes (TSan-clean) + macOS TSan CI gate
