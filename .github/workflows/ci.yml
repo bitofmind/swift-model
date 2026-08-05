@@ -272,9 +272,35 @@ jobs:
     # (ObjectiveC, AppKit, UIKit) evaluate against the container OS, which
     # correctly reflects the WASM target's behaviour.
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 10
     container:
       image: swift:6.3.0
+    # Both levers are set job-wide so every `swift` invocation evaluates the
+    # same manifest configuration (a step that omitted one would force SwiftPM
+    # to re-evaluate manifests and rebuild).
+    #
+    #   SWIFTPM_TARGET_WASI  — ours: trims the package to `SwiftModel`,
+    #     `SwiftModelMacros` and `SwiftModelTests`. It was introduced *because
+    #     of* the dynamic-product problem below, and `OMIT_DYNAMIC_TEST_SUPPORT`
+    #     now solves that at the root — but the lever is still required, for a
+    #     second reason that only surfaced once this job started running
+    #     `--build-tests`: that builds the whole package, including the
+    #     `SwiftModelBenchmarks` executable, whose harness is built on
+    #     `DispatchTime` / `DispatchQueue.concurrentPerform` and does not
+    #     compile for WASI. Don't drop this lever without also handling that.
+    #
+    #   OMIT_DYNAMIC_TEST_SUPPORT — xctest-dynamic-overlay's, added in 1.11.0
+    #     via pointfreeco/swift-issue-reporting#183. Demotes the
+    #     `IssueReportingTestSupport` product from `.dynamic` to automatic
+    #     (static) linkage. WASI has no shared-library support, and SwiftPM
+    #     materialises that product into any test build plan where it's
+    #     reachable in the resolved graph — even when consumer-side target deps
+    #     platform-condition it out — so before 1.11.0 the test-executable link
+    #     failed unconditionally and this job could only compile-check
+    #     individual targets.
+    env:
+      SWIFTPM_TARGET_WASI: "1"
+      OMIT_DYNAMIC_TEST_SUPPORT: "1"
     steps:
       - uses: actions/checkout@v6
 
@@ -285,41 +311,28 @@ jobs:
             --checksum 9fa4016ee632c7e9e906608ec3b55cf13dfc4dff44e47574c5af58064dc33fd9
 
       - name: Build SwiftModel for WASM (compile check)
-        # `SWIFTPM_TARGET_WASI=1` tells `Package.swift` to drop every test
-        # target except `SwiftModelTests` — see the manifest comment at the
-        # bottom of `Package.swift`. The lever exists because WASI's no-
-        # dynamic-libraries rule made the package's test-executable link fail
-        # whenever `IssueReportingTestSupport` (a `type:.dynamic` product)
-        # was reachable from the test graph.
-        env:
-          SWIFTPM_TARGET_WASI: "1"
+        # The library on its own, with no test scaffolding in the graph — this
+        # is what an actual WASM consumer builds. Kept as a separate step so a
+        # library-level WASM break is distinguishable at a glance from a
+        # test-only one.
         run: |
           swift build \
             --swift-sdk swift-6.3-RELEASE_wasm \
             --target SwiftModel
 
-      - name: Build SwiftModelTests for WASM (compile check)
-        # See the previous step for `SWIFTPM_TARGET_WASI` rationale.
-        env:
-          SWIFTPM_TARGET_WASI: "1"
+      - name: Build test bundle for WASM (compile + link)
+        # `--build-tests` (rather than `--target SwiftModelTests`) is the point
+        # of this step: it links the test executable, which is strictly more
+        # than a compile check and is exactly what the dynamic-product problem
+        # used to block. See the job-level `env:` block above.
         run: |
-          swift build \
-            --swift-sdk swift-6.3-RELEASE_wasm \
-            --target SwiftModelTests
+          swift build --build-tests \
+            --swift-sdk swift-6.3-RELEASE_wasm
 
-      # Actually running the WASM test bundle is still blocked at the
-      # link stage by SwiftPM auto-materialising the
-      # `IssueReportingTestSupport` (`type:.dynamic`) product into any test
-      # build plan, regardless of platform conditions on consumer-side
-      # target deps. The workaround needs xctest-dynamic-overlay's manifest
-      # to drop the product when an env signal is set; that change has been
-      # prepared on the fork branch
-      #   https://github.com/mansbernhardt/swift-issue-reporting/tree/suppress-dynamic-on-wasi
-      # but can't be wired in here today because the fork's URL basename
-      # is `swift-issue-reporting` and SwiftPM derives package identity
-      # from URL basename — pulling the fork creates a duplicate-product
-      # identity conflict with the upstream `xctest-dynamic-overlay`
-      # identity that comes in transitively via swift-clocks etc.
-      #
-      # Open the upstream PR on pointfreeco/swift-issue-reporting; once
-      # merged + released, we get the env lever without an identity rename.
+      # Not yet done: actually *running* the bundle under wasmtime. That's no
+      # longer blocked by the toolchain — it's a test-suite question. WASI is
+      # single-threaded with no `DispatchQueue`, and `GlobalTickScheduler` (the
+      # deadline source behind `expect` / `settle` / `waitUntil`) is GCD-backed,
+      # so the wait primitives need a WASI-native scheduler path before the
+      # suite could run rather than hang. Compile + link is the useful gate
+      # until someone takes that on.
