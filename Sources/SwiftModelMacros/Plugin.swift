@@ -4,7 +4,7 @@ import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 
 @main
-struct OneStateMacroPlugin: CompilerPlugin {
+struct SwiftModelMacroPlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
         ModelMacro.self,
         ModelContainerMacro.self,

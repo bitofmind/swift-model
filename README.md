@@ -162,6 +162,8 @@ Clone the repo and open any example in Xcode to run it immediately.
 
 ## Acknowledgements
 
+SwiftModel grew out of [One State](https://github.com/bitofmind/swift-one-state), an earlier exploration of the same problem space that began in 2021. One State is now archived and superseded by SwiftModel, which keeps its core ideas — model composition, lifetime management, exhaustive testing — but rebuilds them around the `@Model` macro, so a model is a plain struct rather than a view into a central store.
+
 SwiftModel builds on several open-source libraries from [Point-Free](https://www.pointfree.co). [swift-dependencies](https://github.com/pointfreeco/swift-dependencies) powers the dependency injection system which means you can use community-built dependency wrappers directly. [swift-custom-dump](https://github.com/pointfreeco/swift-custom-dump) provides the structured diffs in test failure messages and debug output. And `reportIssue` (from [xctest-dynamic-overlay](https://github.com/pointfreeco/xctest-dynamic-overlay)) is how SwiftModel surfaces runtime warnings in tests and in Xcode's issue navigator.
 
 The ideas around exhaustive testing and structured async effects were directly inspired by [The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture) — SwiftModel takes a different approach, but Point-Free's work on the problem space has been invaluable.
