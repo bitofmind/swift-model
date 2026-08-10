@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.10] — Don't force custom-dump's `FoundationNetworking` trait on consumers
+
 ### Changed
 
 - **Linking SwiftModel no longer forces `swift-custom-dump`'s `FoundationNetworking` trait on your build.** SwiftPM enables a package trait if *any* dependent in the resolved graph asks for it, and SwiftModel's `swift-custom-dump` edge requested that package's *default* traits — which include `FoundationNetworking`, the trait gating its `NSURLRequest` / `URLRequest.NetworkServiceType` conformances. Because ours is a non-test edge it was sufficient on its own: no consumer could opt back out, not even by putting `traits: []` on their *own* custom-dump edge. SwiftModel uses neither conformance, so the edge is now declared `traits: []` (custom-dump declares exactly one trait, so this disables that one and nothing else). For SwiftModel's own builds it's a no-op — the test-only `swift-snapshot-testing` dependency unions the trait back on across the shared package identity, so the conformances stay available to the test suite. It matters for consumers that prune our test-only dependencies: an Android or WASM host linking SwiftModel now really does drop the trait, which on Android keeps the ~16 MB `libFoundationNetworking.so` out of the bridge's `DT_NEEDED`.
