@@ -132,7 +132,24 @@ let package = Package(
         // trait on across the shared `swift-custom-dump` identity — so a plain
         // version pin resolves cleanly. (History: the fork existed only because
         // upstream hadn't tagged the fix yet.)
-        .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.6.0"),
+        //
+        // `traits: []` because SwiftModel does not use the two conformances that
+        // trait gates (`NSURLRequest`, `URLRequest.NetworkServiceType`), and
+        // SwiftPM enables a trait if ANY dependent in the resolved graph requests
+        // it. Asking for custom-dump's DEFAULT traits (which include
+        // `FoundationNetworking`) therefore forces it on for everyone who links
+        // SwiftModel, and no `traits: []` on THEIR edge can undo it — this
+        // non-test edge is sufficient on its own.
+        //
+        // For SwiftModel's own builds this is a no-op: `swift-snapshot-testing`
+        // (test-only) unions the trait back on across the shared identity, so the
+        // conformances stay available to our tests. It matters for consumers that
+        // prune our test-only deps — an Android or WASM host linking SwiftModel
+        // then really does drop the trait, which on Android keeps the ~16 MB
+        // `libFoundationNetworking.so` out of the bridge's `DT_NEEDED`.
+        // `swift-custom-dump` declares exactly one trait, so `[]` disables that
+        // one and nothing else.
+        .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.6.0", traits: []),
         .package(url: "https://github.com/swiftlang/swift-syntax", from: "600.0.0"),
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.6.0"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.6"),
