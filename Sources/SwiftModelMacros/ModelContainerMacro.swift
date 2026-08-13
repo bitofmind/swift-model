@@ -277,9 +277,13 @@ public struct ModelContainerMacro: ExtensionMacro {
 }
 
 extension ModelContainerMacro: MemberMacro {
+    // See the note on `ModelMacro`'s `MemberMacro` conformance: implementing the
+    // `conformingTo:` overload is what swift-syntax 603 expects. `protocols` is unused —
+    // the members injected below are keyed off the enum's own inheritance clause.
     public static func expansion(
         of node: AttributeSyntax,
         providingMembersOf declaration: some DeclGroupSyntax,
+        conformingTo protocols: [TypeSyntax],
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
         guard let enumDecl = declaration.as(EnumDeclSyntax.self) else {
