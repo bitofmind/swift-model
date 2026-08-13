@@ -80,14 +80,23 @@ extension ModelMacro: ExtensionMacro {
             // own inheritance clause in that case.
             let requestedProtocols = Set(protocols.map { $0.trimmedDescription })
 
+            // Names written in the struct's own inheritance clause, reduced to their
+            // trailing identifier so `SwiftModel.Model` and `@unchecked Sendable`
+            // compare equal to `Model` / `Sendable`. Matching the identifier rather
+            // than doing substring containment on the printed type also keeps
+            // `ModelContainer` from being read as a `Model` conformance.
+            let declaredNames = Set(
+                structDecl.inheritanceClause?.inheritedTypes.compactMap {
+                    $0.type.trailingIdentifier
+                } ?? []
+            )
+
             func isNeeded(_ name: String) -> Bool {
                 if !requestedProtocols.isEmpty {
                     return requestedProtocols.contains(name)
                 }
                 // Fallback for MacroTesting (protocols is empty): check inheritance clause.
-                return !(structDecl.inheritanceClause.map {
-                    $0.inheritedTypes.contains(where: { $0.type.trimmedDescription.contains(name) })
-                } ?? false)
+                return !declaredNames.contains(name)
             }
 
             func addConformance(_ name: String, qualifiedName: String? = nil) {
@@ -154,10 +163,16 @@ extension ModelMacro: ExtensionMacro {
 }
 
 extension ModelMacro: MemberMacro {
+    // The `conformingTo:` overload is the one `MemberMacro` wants implemented; relying on
+    // the default that forwards to the `conformingTo:`-less form is deprecated as of
+    // swift-syntax 603. `protocols` is unused here — this macro's conformances are emitted
+    // by the `ExtensionMacro` conformance above, which gets the same list.
+    // (The parameter exists in swift-syntax 600 too, so this compiles across the range.)
     public static func expansion<Declaration: DeclGroupSyntax,
                                  Context: MacroExpansionContext>(
         of node: AttributeSyntax,
         providingMembersOf declaration: Declaration,
+        conformingTo protocols: [TypeSyntax],
         in context: Context
     ) throws -> [DeclSyntax] {
         guard let structDecl = declaration.as(StructDeclSyntax.self) else {

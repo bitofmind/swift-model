@@ -150,7 +150,40 @@ let package = Package(
         // `swift-custom-dump` declares exactly one trait, so `[]` disables that
         // one and nothing else.
         .package(url: "https://github.com/pointfreeco/swift-custom-dump", from: "1.6.0", traits: []),
-        .package(url: "https://github.com/swiftlang/swift-syntax", from: "600.0.0"),
+        // A RANGE, not `from:`. swift-syntax bumps its MAJOR version once per Swift
+        // release (600 ≙ Swift 6.0, 601 ≙ 6.1, 602 ≙ 6.2, 603 ≙ 6.3), so the
+        // `from: "600.0.0"` this used to carry meant `600.0.0..<601.0.0` — a hard
+        // ceiling at Swift 6.0's swift-syntax. SwiftPM resolves package versions for
+        // the whole graph regardless of platform conditions, so that ceiling was
+        // inherited by every consumer and made SwiftModel unresolvable alongside any
+        // package requiring a newer swift-syntax (e.g. swiftlang/swift-java, which
+        // needs ≥ 603) — on *all* platforms, not just the one that pulled it in.
+        //
+        // The upper bound matches the two point-free packages already in this graph —
+        // swift-macro-testing and swift-snapshot-testing both declare
+        // `"509.0.0"..<"605.0.0"`. Deliberately NOT tightened to the highest major
+        // verified here (603): a bound below theirs would make SwiftModel the binding
+        // constraint on swift-syntax again the moment 604 ships, which is the exact
+        // failure mode this change exists to remove. The lower bound stays at 600
+        // because that is the oldest major the macro plugin is actually built against
+        // — `swift-tools-version: 6.1` already puts the toolchain floor above what
+        // 509–511 were for.
+        //
+        // Verified across the range: 600.0.1, 601.0.1, 602.0.0 and 603.0.2 each build
+        // the macro plugin warning-free and produce byte-identical macro expansions
+        // (all 29 `SwiftModelMacroTests` snapshots pass unchanged on every one). 604 is
+        // prerelease-only at time of writing and SwiftPM won't select a prerelease from
+        // a range, so nothing resolves to it yet; re-run that four-major check when it
+        // tags, since swift-syntax majors do break source compatibility (600 → 603
+        // needed both of the workarounds below).
+        //
+        // Two source-level constraints follow from supporting the whole range; both
+        // are noted where they apply:
+        //   • `Helpers.swift`'s `trailingIdentifier` exists because 603 makes
+        //     `String.contains(_: String)` resolve to the macOS 13+ overload.
+        //   • Both `MemberMacro` conformances implement the `conformingTo:` overload,
+        //     which 603 deprecates the default forwarding for and 600 already offers.
+        .package(url: "https://github.com/swiftlang/swift-syntax", "600.0.0"..<"605.0.0"),
         .package(url: "https://github.com/pointfreeco/swift-macro-testing", from: "0.6.0"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.6"),
         .package(url: "https://github.com/apple/swift-collections", from: "1.1.0"),

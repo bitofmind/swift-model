@@ -244,3 +244,27 @@ extension VariableDeclSyntax {
         isFunctionType(bindings.first?.typeAnnotation?.type)
     }
 }
+
+extension TypeSyntaxProtocol {
+    /// The trailing identifier of a type as written, or `nil` for types that have none
+    /// (function types, tuples, …).
+    ///
+    /// `Model` → `"Model"`, `SwiftModel.Model` → `"Model"`, `@unchecked Sendable` →
+    /// `"Sendable"`. Used to compare an inheritance-clause entry against a bare protocol
+    /// name without resorting to substring matching on `trimmedDescription` — that would
+    /// both over-match (`ModelContainer` contains `Model`) and, since swift-syntax 603,
+    /// resolve to the macOS 13+ `StringProtocol.contains(_:)` overload, which this
+    /// macOS 11-deployment package can't use.
+    var trailingIdentifier: String? {
+        if let identifier = self.as(IdentifierTypeSyntax.self) {
+            return identifier.name.text
+        }
+        if let member = self.as(MemberTypeSyntax.self) {
+            return member.name.text
+        }
+        if let attributed = self.as(AttributedTypeSyntax.self) {
+            return attributed.baseType.trailingIdentifier
+        }
+        return nil
+    }
+}
