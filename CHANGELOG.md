@@ -6,7 +6,22 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every `@Model`-child write path now projects the stored child under the hierarchy lock before re-activating it.** Each of those paths runs its `stateTransaction` (read → mutate → write back, all locked) and then, *after* releasing the lock, re-reads `reference.state[keyPath:]` to activate the freshly-anchored child. Four of the five such reads were unlocked, and that is a **memory-safety** bug rather than a staleness one: a key-path projection loads the slot and only *then* retains what it loaded, so a concurrent writer that drops the old child's last reference in between hands that retain an already-freed object. Multi-word stored values (an `IdentifiedArray`, say) can additionally be read half-updated. The fixed sites, all now routed through the new `_ModelSourceBox._snapshotUnderLock` helper — which is also where the rationale lives:
+  - `subscript<T: Model>(write:access:)` — both the `child.context !== newValue.context` guard *before* the transaction and the `context?.onActivate()` re-activation after it.
+  - `subscript<T: ModelContainer>(write:access:)` — the `.activate()` re-activation.
+  - `_performContainerCollectionSet` — the `for element in …` re-activation loop.
+
+  `_performCollectionSet`'s loop already took the lock (6c9ca91); that fix simply missed the other four sites. The lock is held for the projection **only** — `activate()` / `onActivate()` still run outside it, so re-activation ordering and lock-hold duration are unchanged, and a snapshot may still be stale by the time it is activated (harmless: `onActivate()` refuses to resurrect a concurrently-destructed context).
+
+  Evidence: a production `SIGSEGV` whose faulting frame is exactly this read — `swift_retain` ← `initializeWithCopy` ← `swift_getAtKeyPath` ← `closure #3 in _ModelSourceBox.subscript.setter` ← a `@Model`-child property `.modify`, with three sibling threads active in the same hierarchy.
+
+  **Note for future work in this area: neither sanitizer can see this class of bug.** Both the load and the retain happen inside uninstrumented `libswiftCore`, so TSan and ASan are structurally blind to it. Measured on the unfixed code, the site was reached 24 000 times from four concurrent OS threads with zero reports from TSan, ASan or `MallocScribble`, and no crash. A clean TSan run is *not* evidence that an unlocked `reference.state[keyPath:]` read is safe.
+
 ### Tests
+
+- **`PostTransactionActivateTornReadTests`** drives every one of the above sites from concurrent writers and asserts that each stored child id is one the test actually wrote — an assertion that a projection reading freed or half-updated state would fail. Because the sanitizers are blind here (see above), these are concurrency *exercise* tests, not race detectors; the durable guard is that all five reads now go through `_snapshotUnderLock`.
 
 - **Every shorter-than-default `waitUntil(..., timeout:)` is gone; those waits now inherit the scaled 5 s default.** `waitUntil` is only load-tolerant when the executor-drive is installed — the drive keys failure on an *inactivity window* rather than wall-clock — and the drive is installed by `ModelTestingTrait` alone. A suite without `@Suite(.modelTesting)` falls back to the plain `timeout × SWIFT_MODEL_TIMEOUT_SCALE` budget, so a hard-coded value *below* the 5 s default is a fixed budget with no scheduler signal behind it, and scaling only stretches that smaller base. This surfaced as `ModelDependencyOverrideTests.sharedInjectedDepActivatedOnce` timing out on the `macOS (TSan)` job on 2026-08-13 (run 31711303262): its 3 s base became 18 s at scale 6 where the default would have given 30 s, and TSan's 5–15× slowdown plus parallel execution on a 2–3 core runner exceeded it. A bare `WaitUntilTimeoutError`, **not** a ThreadSanitizer report — the suite remains TSan-clean. A repo-wide audit found the same anti-pattern in three more drive-less suites, so all of them were converted:
   - `ModelDependencyOverrideTests` (23 waits at 3 s) — introduced wholesale when the file was added in 0335fc2, with no stated rationale.
