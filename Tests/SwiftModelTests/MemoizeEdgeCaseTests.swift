@@ -86,7 +86,7 @@ struct MemoizeEdgeCaseTests {
         }
 
         // Wait for the final value to be observed (avoids fixed sleep durations under load)
-        try await waitUntil(updates.value.contains(40), timeout: 5_000_000_000)
+        try await waitUntil(updates.value.contains(40))
         #expect(updates.value.contains(40), "Should have observed the final value 40")
     }
 
@@ -132,7 +132,7 @@ struct MemoizeEdgeCaseTests {
         #expect(finalValue == 20, "After nested transactions with final value=10, computed should be 20")
 
         // Wait for the update notification for the final value (10 * 2 = 20)
-        try await waitUntil(updates.value.contains(20), timeout: 5_000_000_000)
+        try await waitUntil(updates.value.contains(20))
         #expect(updates.value.contains(20), "Should have observed the final value 20")
     }
 

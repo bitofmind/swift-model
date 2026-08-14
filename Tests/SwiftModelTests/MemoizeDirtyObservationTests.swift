@@ -171,7 +171,7 @@ struct MemoizeDirtyObservationTests {
         // Wait for the scheduled performUpdate to fire
         // Note: performUpdate is scheduled via backgroundCall, which might take some time
         print("Waiting for performUpdate to fire...")
-        try await waitUntil(observationCount.value > initialObservationCount, timeout: 5_000_000_000)
+        try await waitUntil(observationCount.value > initialObservationCount)
 
         // After performUpdate fires, observation should be triggered and tracking re-established
         print("Observation fired: \(observationCount.value) times")
@@ -468,23 +468,23 @@ struct MemoizeDirtyObservationTests {
 
         // End hover → []
         model.hoverID = nil
-        try await waitUntil(updates.value.last == [], timeout: 2_000_000_000)
+        try await waitUntil(updates.value.last == [])
         updates.setValue([])
 
         // Hover over item 2 → [2]
         // BUG: Without the fix, this change is not observed because isDirty was
         // never cleared after performUpdate saw isSame([], [])==true for the nil state.
         model.hoverID = 2
-        try await waitUntil(updates.value.last == [2], timeout: 2_000_000_000)
+        try await waitUntil(updates.value.last == [2])
         #expect(updates.value.last == [2], "Should see [2] — memoize must still track hoverID")
 
         // Repeat the cycle to confirm tracking persists
         updates.setValue([])
         model.hoverID = nil
-        try await waitUntil(updates.value.last == [], timeout: 2_000_000_000)
+        try await waitUntil(updates.value.last == [])
         updates.setValue([])
         model.hoverID = 3
-        try await waitUntil(updates.value.last == [3], timeout: 2_000_000_000)
+        try await waitUntil(updates.value.last == [3])
         #expect(updates.value.last == [3], "Should see [3] — tracking must persist across cycles")
     }
 
@@ -517,10 +517,10 @@ struct MemoizeDirtyObservationTests {
         #expect(updates.value.last == [1], "[\(path)] Should see [1]")
 
         model.hoverID = nil
-        try await waitUntil(updates.value.last == [], timeout: 2_000_000_000)
+        try await waitUntil(updates.value.last == [])
 
         model.hoverID = 2
-        try await waitUntil(updates.value.last == [2], timeout: 2_000_000_000)
+        try await waitUntil(updates.value.last == [2])
         #expect(updates.value.last == [2], "[\(path)] Should see [2] — tracking must survive isSame=true")
     }
 
@@ -549,16 +549,16 @@ struct MemoizeDirtyObservationTests {
         // After 50 cycles the subscription must still be alive.
         for i in 1...50 {
             model.hoverID = i
-            try await waitUntil(updates.value.last == [i], timeout: 3_000_000_000)
+            try await waitUntil(updates.value.last == [i])
             #expect(updates.value.last == [i], "[\(path)] Cycle \(i): should see [\(i)]")
 
             model.hoverID = nil
-            try await waitUntil(updates.value.last == [], timeout: 3_000_000_000)
+            try await waitUntil(updates.value.last == [])
         }
 
         // Final check: subscription still alive after 10 cycles
         model.hoverID = 99
-        try await waitUntil(updates.value.last == [99], timeout: 3_000_000_000)
+        try await waitUntil(updates.value.last == [99])
         #expect(updates.value.last == [99], "[\(path)] Subscription must survive 10 isSame=true cycles")
     }
 

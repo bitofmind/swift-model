@@ -199,7 +199,7 @@ struct EnvironmentModelTests {
 
         // Mutate via the live model — the observer on the child side should see it.
         host.theme.colorScheme = "dark"
-        try await waitUntil(values.value.contains(.some("dark")), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains(.some("dark")))
         #expect(values.value.contains(.some("dark")),
                 "[\(path)] Context model mutation should notify observer, got \(values.value)")
     }

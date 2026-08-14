@@ -253,7 +253,7 @@ struct PreferenceStorageTests {
 
         // Child writes contribution — root aggregate should update
         root.branch.leaf.node.preference.totalCount = 7
-        try await waitUntil(values.value.contains(7), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains(7))
         #expect(values.value.contains(7), "[\(path)] Child write should notify ancestor observer, got \(values.value)")
     }
 
@@ -278,7 +278,7 @@ struct PreferenceStorageTests {
         #expect(values.value.first == 0)
 
         model.node.preference.totalCount = 42
-        try await waitUntil(values.value.contains(42), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains(42))
         #expect(values.value.contains(42), "[\(path)] Self write should notify self observer, got \(values.value)")
     }
 
@@ -303,7 +303,7 @@ struct PreferenceStorageTests {
         try await waitUntil(values.value.contains(5))
 
         root.branch.leaf.node.removePreference(\.totalCount)
-        try await waitUntil(values.value.contains(0), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains(0))
         #expect(values.value.contains(0), "[\(path)] Remove should notify ancestor observer, got \(values.value)")
     }
 

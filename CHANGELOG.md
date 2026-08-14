@@ -6,6 +6,16 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Tests
+
+- **Every shorter-than-default `waitUntil(..., timeout:)` is gone; those waits now inherit the scaled 5 s default.** `waitUntil` is only load-tolerant when the executor-drive is installed — the drive keys failure on an *inactivity window* rather than wall-clock — and the drive is installed by `ModelTestingTrait` alone. A suite without `@Suite(.modelTesting)` falls back to the plain `timeout × SWIFT_MODEL_TIMEOUT_SCALE` budget, so a hard-coded value *below* the 5 s default is a fixed budget with no scheduler signal behind it, and scaling only stretches that smaller base. This surfaced as `ModelDependencyOverrideTests.sharedInjectedDepActivatedOnce` timing out on the `macOS (TSan)` job on 2026-08-13 (run 31711303262): its 3 s base became 18 s at scale 6 where the default would have given 30 s, and TSan's 5–15× slowdown plus parallel execution on a 2–3 core runner exceeded it. A bare `WaitUntilTimeoutError`, **not** a ThreadSanitizer report — the suite remains TSan-clean. A repo-wide audit found the same anti-pattern in three more drive-less suites, so all of them were converted:
+  - `ModelDependencyOverrideTests` (23 waits at 3 s) — introduced wholesale when the file was added in 0335fc2, with no stated rationale.
+  - `ReduceHierarchyTests` (8 waits at 2–3 s) — drive-less for the same `waitUntilRemoved` reason.
+  - `MemoizeDirtyObservationTests` (8 waits at 2–3 s) — drive-less because `.backgroundCallIsolation` only swaps a `BackgroundCallQueue` task-local and installs no executor; five of these sit inside a 50-iteration loop, where any one slow wait fails the test.
+  - Redundant `timeout: 5_000_000_000` arguments (exactly the default, hence no-ops) dropped in `MemoizeEdgeCaseTests` and `InheritCancellationContextTests`, plus latent sub-default values in the drive-*backed* `EnvironmentModelTests` / `PreferenceStorageTests` / `ContextStorageTests`, where they are ignored under the drive but would apply on fallback hosts.
+
+  Deliberate *longer* budgets are untouched (`CancellationTests` 60 s, `DualRegistrarTests` 15 s, and the 10 s waits in `MemoizeDirtyObservationTests` / `InheritCancellationContextTests`). Test-only; no library change.
+
 ---
 
 ## [1.0.10] — Don't force custom-dump's `FoundationNetworking` trait on consumers
