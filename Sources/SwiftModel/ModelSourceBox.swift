@@ -641,6 +641,39 @@ extension _ModelSourceBox {
         }
     }
 
+    // MARK: Locked state projection
+
+    /// Projects `statePath` out of `context.reference.state` while holding the
+    /// hierarchy lock, and returns the resulting value.
+    ///
+    /// **Every `@Model`-child write path needs this.** Each one runs its
+    /// `stateTransaction` (read, mutate, write back — all under the hierarchy lock)
+    /// and then, once the lock has been *released*, re-reads the stored child to
+    /// activate it. A raw `context.reference.state[keyPath: statePath]` read at that
+    /// point races a concurrent writer's locked write-back on the same key path, and
+    /// that is a **memory-safety** bug rather than a staleness one: the key-path
+    /// projection loads the slot and only *then* retains what it loaded, so a writer
+    /// that drops the old child's last reference in between hands this retain an
+    /// already-freed object. The observed failure is a `SIGSEGV` inside `swift_retain`
+    /// under `initializeWithCopy` ← `swift_getAtKeyPath` ← the re-activation closure.
+    /// Multi-word stored values (an `IdentifiedArray`, say) can additionally be read
+    /// half-updated.
+    ///
+    /// Neither sanitizer sees this: both the load and the retain happen inside
+    /// uninstrumented `libswiftCore` (`swift_getAtKeyPath`, the value witness), so
+    /// TSan and ASan are structurally blind to it. Don't take a clean sanitizer run as
+    /// evidence that an unlocked `reference.state[keyPath:]` read is safe.
+    ///
+    /// Hold the lock for the projection **only**. `activate()` / `onActivate()` must
+    /// run outside it, as they always have. The returned value may therefore be stale
+    /// by the time it is activated — that is inherent to re-activating outside the
+    /// transaction, and harmless: `onActivate()` refuses to resurrect a
+    /// concurrently-destructed context, so a stale child is a no-op.
+    @inline(__always)
+    private func _snapshotUnderLock<T>(_ context: Context<M>, _ statePath: WritableKeyPath<M._ModelState, T>) -> T {
+        context.lock { context.reference.state[keyPath: statePath] }
+    }
+
     // MARK: Modify subscripts
 
     @_disfavoredOverload
@@ -780,7 +813,10 @@ extension _ModelSourceBox {
             }
             guard let context = _modifyContext(accessBox: accessBox) else { return }
 
-            guard context.reference.state[keyPath: statePath].context !== newValue.context else {
+            // Project the stored child under the hierarchy lock — a raw read here
+            // is a memory-safety bug, not just a staleness one. See `_snapshotUnderLock`.
+            let existingChildContext = _snapshotUnderLock(context, statePath).context
+            guard existingChildContext !== newValue.context else {
                 return
             }
 
@@ -816,13 +852,16 @@ extension _ModelSourceBox {
                 callback()
             }
 
+            // Snapshot before re-activating: this runs AFTER `stateTransaction`
+            // released the lock. `onActivate()` stays outside it. See `_snapshotUnderLock`.
+            let childContext = _snapshotUnderLock(context, statePath).context
             let access = accessBox._reference?.access ?? ModelAccess.current
             if let access, access.shouldPropagateToChildren {
                 usingAccess(access) {
-                    _ = context.reference.state[keyPath: statePath].context?.onActivate()
+                    _ = childContext?.onActivate()
                 }
             } else {
-                _ = context.reference.state[keyPath: statePath].context?.onActivate()
+                _ = childContext?.onActivate()
             }
         }
     }
@@ -899,14 +938,9 @@ extension _ModelSourceBox {
         }
 
         if structuralChange {
-            // Snapshot the elements under the hierarchy lock: this loop runs
-            // AFTER `stateTransaction` returned, so a raw `reference.state` read
-            // here races a concurrent writer's locked write-back on the same key
-            // path (torn collection read). The snapshot may still be stale by the
-            // time `activate()` runs — that's inherent to re-activating outside
-            // the transaction — but `onActivate()` refuses to resurrect
-            // concurrently-destructed contexts, so a stale element is a no-op.
-            let elements = context.lock { context.reference.state[keyPath: statePath] }
+            // Snapshot the elements before activating them: this loop runs AFTER
+            // `stateTransaction` returned, outside the lock. See `_snapshotUnderLock`.
+            let elements = _snapshotUnderLock(context, statePath)
             let access = accessBox._reference?.access ?? ModelAccess.current
             if let access, access.shouldPropagateToChildren {
                 usingAccess(access) {
@@ -996,15 +1030,18 @@ extension _ModelSourceBox {
         }
 
         if structuralChange {
+            // Snapshot before activating — same rationale as the
+            // `_performCollectionSet` loop above. See `_snapshotUnderLock`.
+            let elements = _snapshotUnderLock(context, statePath)
             let access = accessBox._reference?.access ?? ModelAccess.current
             if let access, access.shouldPropagateToChildren {
                 usingAccess(access) {
-                    for element in context.reference.state[keyPath: statePath] {
+                    for element in elements {
                         element.activate()
                     }
                 }
             } else {
-                for element in context.reference.state[keyPath: statePath] {
+                for element in elements {
                     element.activate()
                 }
             }
@@ -1070,13 +1107,16 @@ extension _ModelSourceBox {
             }
 
             if structuralChange {
+                // Snapshot before activating — this read runs after
+                // `stateTransaction` released the lock. See `_snapshotUnderLock`.
+                let container = _snapshotUnderLock(context, statePath)
                 let access = accessBox._reference?.access ?? ModelAccess.current
                 if let access, access.shouldPropagateToChildren {
                     usingAccess(access) {
-                        context.reference.state[keyPath: statePath].activate()
+                        container.activate()
                     }
                 } else {
-                    context.reference.state[keyPath: statePath].activate()
+                    container.activate()
                 }
             }
         }
