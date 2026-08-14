@@ -50,13 +50,26 @@ extension TestAccess {
     ///
     /// Class (not struct) so the evaluator can mutate it through a
     /// captured reference. `@unchecked Sendable` because synchronisation
-    /// is provided externally: writes happen INSIDE `TestAccess.lock`
-    /// (the evaluator is called from `_noteActivity` / `awaitPredicate`'s
-    /// initial check, both holding the lock). The post-await read in
-    /// `expect` happens AFTER `awaitPredicate` returns, which only
-    /// happens once the last evaluator run resumed our continuation;
-    /// the continuation-resume happens-before the await-return, so the
-    /// final snapshot write is visible.
+    /// is provided externally — and that synchronisation is **`TestAccess.lock`
+    /// on both sides**. Writes happen inside the lock (the evaluator is called
+    /// from `_noteActivity` / `awaitPredicate`'s initial check, both holding
+    /// it); every post-await read in `expect` must take the lock too.
+    ///
+    /// It is tempting to argue the read needs no lock, because `awaitPredicate`
+    /// only returns once an evaluator run resumed our continuation, and a
+    /// continuation-resume happens-before the await-return. **That argument is
+    /// wrong**, and this file used to make it. Resuming a continuation
+    /// re-enqueues the awaiting task, and its executor is free to pick it up on
+    /// a *different* thread than the one that ran the evaluator — so the write
+    /// and the read genuinely land on two threads with no edge between them.
+    /// ThreadSanitizer reports it (`_evaluateExpect` write vs `expect` read of
+    /// `capturedValueUpdates`); it is rare because the resumed task usually
+    /// lands back on the resuming thread.
+    ///
+    /// So: **copy the fields out under `lock` and work on the copy.** Do not
+    /// hold the lock across the reporting that follows — `diffMessage` walks
+    /// model state via `customMirror → willAccess → lock`, which deadlocks
+    /// cross-thread (`NSRecursiveLock` is not re-entrant across threads).
     fileprivate final class EvalSnapshot: @unchecked Sendable {
         var failures: [TesterAssertContext.Failure] = []
         var passedAccesses: [TesterAssertContext.Access] = []
@@ -114,10 +127,10 @@ extension TestAccess {
 
         switch outcome {
         case .passed:
-            // Latest eval succeeded. Snapshot's passedAccesses +
-            // capturedValueUpdates were stored under TestAccess.lock by
-            // the evaluator at that moment, so they're consistent.
-            let capturedUpdates = snapshot.capturedValueUpdates
+            // Latest eval succeeded. Copy out under the lock the evaluator
+            // wrote it under — the resumed task may be running on a different
+            // thread than the evaluator. See `EvalSnapshot`.
+            let capturedUpdates = lock { snapshot.capturedValueUpdates }
 
             if let resetting = settleResetting {
                 // Settling mode: predicate passed; now wait for the model
@@ -154,7 +167,10 @@ extension TestAccess {
         // which reads @ModelTracked properties, which calls willAccess →
         // rootPaths → acquires the same lock — deadlock if held.
         var reports: [[(String, FileAndLine)]] = []
-        for failure in snapshot.failures {
+        // Copy out under the lock (see `EvalSnapshot`), then report on the copy
+        // — the reporting below must NOT hold the lock.
+        let failures = lock { snapshot.failures }
+        for failure in failures {
             var messages: [(String, FileAndLine)] = []
             if let (lhs, rhs) = failure.predicate.values() {
                 let propertyNames = failure.accesses.compactMap { access in
