@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.11] — Depend on swift-syntax by range, not `from:`
+
 ### Changed
 
 - **The `swift-syntax` dependency is now a range, `"600.0.0"..<"605.0.0"`, instead of `from: "600.0.0"`.** swift-syntax bumps its *major* version once per Swift release (600 ≙ Swift 6.0, 601 ≙ 6.1, 602 ≙ 6.2, 603 ≙ 6.3), so `from: "600.0.0"` meant `600.0.0..<601.0.0` — a hard ceiling at Swift 6.0's swift-syntax that every consumer inherited. Because SwiftPM resolves package versions for the whole graph irrespective of platform conditions, that ceiling made SwiftModel unresolvable alongside any package requiring a newer swift-syntax (for example [swift-java](https://github.com/swiftlang/swift-java), which needs ≥ 603) on *every* platform, not just the one that pulled it in. The upper bound matches `swift-macro-testing` and `swift-snapshot-testing`, which are already in this graph declaring `"509.0.0"..<"605.0.0"`, so no single dependency is the binding constraint on swift-syntax. The macro plugin is verified against every major in the range: 600.0.1, 601.0.1, 602.0.0 and 603.0.2 all build warning-free and produce byte-identical macro expansions (every `SwiftModelMacroTests` snapshot passes unchanged on all four). Nothing about the minimum toolchain, the `swift-tools-version: 6.1` floor, or the `.macOS(.v11)` / `.iOS(.v14)` platform floors changes.
