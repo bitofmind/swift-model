@@ -241,7 +241,7 @@ struct ReduceHierarchyTests {
         #expect(values.value.first == 0)
 
         model.value = 42
-        try await waitUntil(values.value.contains(42), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains(42))
         #expect(values.value.contains(42), "Property change on self should trigger observation re-evaluation, got \(values.value)")
     }
 
@@ -266,7 +266,7 @@ struct ReduceHierarchyTests {
         #expect(values.value.first == 0)
 
         model.child.value = 77
-        try await waitUntil(values.value.contains(77), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains(77))
         #expect(values.value.contains(77), "Property change on child should trigger observation re-evaluation, got \(values.value)")
     }
 
@@ -312,7 +312,7 @@ struct ReduceHierarchyTests {
         model.name = "updated-grandparent"
 
         // Both observation paths correctly track ancestor property accesses.
-        try await waitUntil(values.value.contains("updated-grandparent"), timeout: 2_000_000_000)
+        try await waitUntil(values.value.contains("updated-grandparent"))
         #expect(values.value.contains("updated-grandparent"),
                 "[\(path)] Ancestor property change should trigger re-evaluation, got: \(values.value)")
     }
@@ -340,7 +340,7 @@ struct ReduceHierarchyTests {
 
         model.parent.name = "updated-parent"
 
-        try await waitUntil(values.value.contains("updated-parent"), timeout: 2_000_000_000)
+        try await waitUntil(values.value.contains("updated-parent"))
         #expect(values.value.contains("updated-parent"),
                 "[\(path)] Parent property change should trigger re-evaluation, got: \(values.value)")
     }
@@ -379,7 +379,7 @@ struct ReduceHierarchyTests {
         // Adding the child to the parent changes the parents relationship.
         parent.children.append(orphan)
 
-        try await waitUntil(values.value.contains { $0 >= 0 }, timeout: 2_000_000_000)
+        try await waitUntil(values.value.contains { $0 >= 0 })
         #expect(values.value.contains { $0 >= 0 },
                 "[\(path)] Adding child to parent should trigger re-evaluation via parents observation, got \(values.value)")
     }
@@ -415,7 +415,7 @@ struct ReduceHierarchyTests {
         // Remove the first child — middle child should now be at index 0.
         parent.children.removeFirst()
 
-        try await waitUntil(values.value.contains(0), timeout: 2_000_000_000)
+        try await waitUntil(values.value.contains(0))
         #expect(values.value.contains(0),
                 "[\(path)] Removing earlier sibling should update indexInParent to 0, got \(values.value)")
     }
@@ -449,7 +449,7 @@ struct ReduceHierarchyTests {
 
         parent.children.removeFirst()
 
-        try await waitUntil(values.value.contains(0), timeout: 2_000_000_000)
+        try await waitUntil(values.value.contains(0))
         #expect(values.value.contains(0),
                 "[\(path)] Memoized indexInParent should re-evaluate when sibling is removed, got \(values.value)")
     }
@@ -537,7 +537,7 @@ struct ReduceHierarchyTests {
         // Adding the leaf to target gives it an AncestorContainer ancestor.
         target.leaves.append(leaf)
 
-        try await waitUntil(values.value.contains(true), timeout: 2_000_000_000)
+        try await waitUntil(values.value.contains(true))
         #expect(values.value.contains(true),
                 "[\(path)] Memoized ancestor-type search should re-evaluate when ancestor appears, got \(values.value)")
     }
@@ -573,7 +573,7 @@ struct ReduceHierarchyTests {
         // Remove the leaf from the container — it no longer has AncestorContainer as an ancestor.
         target.leaves.removeFirst()
 
-        try await waitUntil(values.value.contains(false), timeout: 2_000_000_000)
+        try await waitUntil(values.value.contains(false))
         #expect(values.value.contains(false),
                 "[\(path)] Memoized ancestor-type search should re-evaluate when ancestor disappears, got \(values.value)")
     }

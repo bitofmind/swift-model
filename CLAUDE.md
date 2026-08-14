@@ -229,12 +229,27 @@ The remaining flake surface is tests where the assertion's success depends on a 
   • `MemoizeTests.testMemoizeWithNestedModelMutations` (`.accessCollector`) and `testMemoizeWithBranchingDependencies_WithAnchor` (`.withObservationTracking`) — both wait on `expect` that the memoize's recompute has settled to the expected final value after rapid-fire mutations. Under parallel-test load the OT `performUpdate` Task and the test's `expect` evaluator interleave in ways that can let the predicate see partial state; rate ~1–2/100 at x100 parallel.
   • `StandupsTests.testRecordTranscript` / `testSpeechRecognitionFailure_Continue` (Examples/Standups) — `await clock.advance(by: .seconds(6))` releases 6 timer wake-ups at once; under x1000 saturation the 6 tick-processing steps don't all get CPU slots before the next `expect`'s budget expires.
   • `DualRegistrarTests.testObservedStreamWithModelAccessingObservable` — Observable interop, not officially supported. Listed for completeness; expected to flake.
-  • `ModelDependencyTests.testSharedDependency` — `waitUntil(testResult.value.contains("(->5)(->5)"), timeout: 10s)` polls for two deinit-chain log entries to appear. The deinit chain runs as the last strong reference to the dep model is released; under x1000 parallel-test stress the cooperative pool can take longer than 10 s to schedule those deinits. Rate ~2/1000.
   • `UpdateStreamTests.testRaceVariant` (and `testRace`) — two unstructured `Task {}` (one writes `count = 7`, one starts a `forEach(Observed)` collector) racing the Observed registration gap; asserts convergence (`counts.last == 7`). A lost update in the gap (rare, ~per-1000) fails it. Pre-existing on both flag states; not specific to the executor-drive.
 
 These are a small remnant of a much larger tail that the executor-drive removed: on the legacy wall-clock path (which now survives only as the automatic fallback for test hosts that can't run the drive — pre-macOS-15 / pre-iOS-18 / older Swift / WASM), the dev-machine `--parallel` flake population was ~5–10× larger. The drive is the unconditional default wherever it can run; there is no opt-out flag. See `Docs/test-determinism-executor-drain.md`.
 
 When investigating new load flakes, check first whether the test matches this pattern (asserting a property whose truth requires N cooperative-pool slots to land within a fixed wall-clock budget, or relying on coalescing/observation timing that the cooperative scheduler doesn't guarantee) before chasing a library bug.
+
+**Never hard-code a *shorter-than-default* `waitUntil(..., timeout:)` in a
+drive-less suite.** `waitUntil` only becomes load-tolerant when the executor-drive
+is installed — and the drive is installed by `ModelTestingTrait` **only**. A suite
+written without `@Suite(.modelTesting)` falls back to the plain wall-clock budget
+`timeout × SWIFT_MODEL_TIMEOUT_SCALE`. Two families of suite are drive-less:
+the `waitUntilRemoved` / post-deallocation pattern (`ModelDependencyTests`,
+`ModelDependencyOverrideTests`, `ReduceHierarchyTests`, …), and suites carrying
+only `.backgroundCallIsolation` (`MemoizeDirtyObservationTests`) — that trait
+swaps a `BackgroundCallQueue` task-local and installs no executor. An explicit timeout
+*shorter* than the 5 s default is therefore a fixed budget with no scheduler signal
+behind it, and scaling only stretches that smaller base: 3 s becomes 18 s on the TSan
+job (scale 6) where the default would give 30 s, and TSan's 5–15× slowdown plus
+parallel execution on a 2–3 core runner can exceed 18 s. That is exactly how `ModelDependencyOverrideTests.sharedInjectedDepActivatedOnce`
+flaked on 2026-08-13 (run 31711303262, no TSan report — a bare timeout). Omit the
+argument and inherit the 5 s default unless a test genuinely needs a *longer* one.
 
 ## Building and testing with MCP
 

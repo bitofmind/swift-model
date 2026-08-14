@@ -170,12 +170,12 @@ struct MetadataEnvironmentTests {
 
         // Write on root — should propagate down to child
         root.node.environment.isDarkMode = true
-        try await waitUntil(values.value.contains(true), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains(true))
         #expect(values.value.contains(true), "[\(path)] Writing on root should notify descendant observer, got \(values.value)")
 
         // Write on root again — should propagate down to child
         root.node.environment.isDarkMode = false
-        try await waitUntil(values.value.filter({ !$0 }).count >= 2, timeout: 3_000_000_000)
+        try await waitUntil(values.value.filter({ !$0 }).count >= 2)
         #expect(values.value.filter({ !$0 }).count >= 2, "[\(path)] Second write on root should notify descendant again, got \(values.value)")
     }
 
@@ -202,7 +202,7 @@ struct MetadataEnvironmentTests {
 
         // Write on self — observer should be notified
         model.node.environment.isDarkMode = true
-        try await waitUntil(values.value.contains(true), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains(true))
         #expect(values.value.contains(true), "[\(path)] Writing on self should notify self observer, got \(values.value)")
     }
 
@@ -230,12 +230,12 @@ struct MetadataEnvironmentTests {
 
         // Write on parent — child should be notified
         parent.node.environment.theme = "dark"
-        try await waitUntil(values.value.contains("dark"), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains("dark"))
         #expect(values.value.contains("dark"), "[\(path)] Writing on parent should notify child observer, got \(values.value)")
 
         // Write on parent again
         parent.node.environment.theme = "high-contrast"
-        try await waitUntil(values.value.contains("high-contrast"), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains("high-contrast"))
         #expect(values.value.contains("high-contrast"), "[\(path)] Second write on parent should notify child observer again, got \(values.value)")
     }
 
@@ -298,12 +298,12 @@ struct MetadataEnvironmentTests {
 
         // Grandparent writes — grandchild observer should fire (no intermediate override)
         root.node.environment.isDarkMode = true
-        try await waitUntil(values.value.contains(true), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains(true))
         #expect(values.value.contains(true), "[\(path)] Grandparent write should notify grandchild, got \(values.value)")
 
         // Intermediate parent now sets an override (false) — grandchild should see the override
         root.parent.node.environment.isDarkMode = false
-        try await waitUntil(values.value.filter({ !$0 }).count >= 2, timeout: 3_000_000_000)
+        try await waitUntil(values.value.filter({ !$0 }).count >= 2)
         #expect(values.value.filter({ !$0 }).count >= 2, "[\(path)] Intermediate override should notify grandchild, got \(values.value)")
 
         // Grandparent writes again — grandchild should NOT change (intermediate still overrides)
@@ -371,7 +371,7 @@ struct MetadataEnvironmentTests {
 
         // Remove the value — observer should see false (default)
         model.node.removeEnvironment(\.isDarkMode)
-        try await waitUntil(values.value.contains(false), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains(false))
         #expect(values.value.contains(false), "[\(path)] Remove should notify observer, got \(values.value)")
     }
 
@@ -397,7 +397,7 @@ struct MetadataEnvironmentTests {
 
         // Remove intermediate override — grandchild should now see grandparent's true
         root.parent.node.removeEnvironment(\.isDarkMode)
-        try await waitUntil(values.value.contains(true), timeout: 3_000_000_000)
+        try await waitUntil(values.value.contains(true))
         #expect(values.value.contains(true), "[\(path)] Removing intermediate override should notify descendant observer, got \(values.value)")
     }
 

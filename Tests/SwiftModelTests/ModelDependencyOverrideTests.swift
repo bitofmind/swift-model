@@ -466,7 +466,7 @@ struct ModelDependencyOverrideTests {
             customDep.state = "changed"
 
             // The consumer's Observed loop must fire with the new state.
-            try await waitUntil(testResult.value.contains("obs:1:changed"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("obs:1:changed"))
             #expect(testResult.value.contains("obs:1:changed"),
                     "[\(path)] Observed on injected dep must fire. Got: \(testResult.value)")
 
@@ -498,7 +498,7 @@ struct ModelDependencyOverrideTests {
 
             // Change only depA — only consumer 1 should fire.
             depA.state = "A2"
-            try await waitUntil(testResult.value.contains("obs:1:A2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("obs:1:A2"))
             #expect(testResult.value.contains("obs:1:A2"),
                     "[\(path)] Consumer 1 must observe depA change. Got: \(testResult.value)")
             #expect(!testResult.value.contains("obs:2:A2"),
@@ -506,7 +506,7 @@ struct ModelDependencyOverrideTests {
 
             // Change only depB — only consumer 2 should fire.
             depB.state = "B2"
-            try await waitUntil(testResult.value.contains("obs:2:B2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("obs:2:B2"))
             #expect(testResult.value.contains("obs:2:B2"),
                     "[\(path)] Consumer 2 must observe depB change. Got: \(testResult.value)")
             #expect(!testResult.value.contains("obs:1:B2"),
@@ -541,7 +541,7 @@ struct ModelDependencyOverrideTests {
             // Remove consumer 1 — depA must be deactivated, depB must survive.
             host.items.remove(at: 0)
 
-            try await waitUntil(testResult.value.contains("X:alpha"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("X:alpha"))
             #expect(testResult.value.contains("X:alpha"),
                     "depA must be deactivated after consumer 1 removed. Got: \(testResult.value)")
             #expect(!testResult.value.contains("X:beta"),
@@ -551,7 +551,7 @@ struct ModelDependencyOverrideTests {
 
             // depB still observable after sibling removal.
             depB.state = "beta2"
-            try await waitUntil(testResult.value.contains("obs:2:beta2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("obs:2:beta2"))
             #expect(testResult.value.contains("obs:2:beta2"),
                     "Consumer 2 must still observe depB after sibling removal. Got: \(testResult.value)")
 
@@ -577,7 +577,7 @@ struct ModelDependencyOverrideTests {
 
             host.items.removeAll()
 
-            try await waitUntil(testResult.value.contains("X:solo"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("X:solo"))
             #expect(testResult.value.contains("X:solo"),
                     "dep must be deactivated after child removed. Got: \(testResult.value)")
             #expect(dep.lifetime == .destructed, "dep lifetime must be .destructed")
@@ -610,7 +610,7 @@ struct ModelDependencyOverrideTests {
 
             // Mutation on the dep must trigger the consumer's Observed loop.
             dep.state = "dynamic2"
-            try await waitUntil(testResult.value.contains("obs:7:dynamic2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("obs:7:dynamic2"))
             #expect(testResult.value.contains("obs:7:dynamic2"),
                     "[\(path)] Dynamically added child must observe injected dep. Got: \(testResult.value)")
 
@@ -643,7 +643,7 @@ struct ModelDependencyOverrideTests {
 
             // Change default dep — only consumer 1 fires.
             defaultDep.state = "default2"
-            try await waitUntil(testResult.value.contains("obs:1:default2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("obs:1:default2"))
             #expect(testResult.value.contains("obs:1:default2"),
                     "[\(path)] Consumer 1 (default dep) must observe default dep change. Got: \(testResult.value)")
             #expect(!testResult.value.contains("obs:2:default2"),
@@ -651,7 +651,7 @@ struct ModelDependencyOverrideTests {
 
             // Change custom dep — only consumer 2 fires.
             customDep.state = "custom2"
-            try await waitUntil(testResult.value.contains("obs:2:custom2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("obs:2:custom2"))
             #expect(testResult.value.contains("obs:2:custom2"),
                     "[\(path)] Consumer 2 must observe custom dep change. Got: \(testResult.value)")
             #expect(!testResult.value.contains("obs:1:custom2"),
@@ -700,8 +700,7 @@ struct ModelDependencyOverrideTests {
             depA.state = "sharedA2"
             try await waitUntil(
                 testResult.value.contains("obs:1:sharedA2") &&
-                testResult.value.contains("obs:3:sharedA2"),
-                timeout: 3_000_000_000
+                testResult.value.contains("obs:3:sharedA2")
             )
             #expect(testResult.value.contains("obs:1:sharedA2"),
                     "Consumer 1 must observe sharedA mutation. Log: \(testResult.value)")
@@ -747,7 +746,7 @@ struct ModelDependencyOverrideTests {
             // Mutate the dep — child Item must observe it even though the dep was
             // injected at the Container level, not the Item level.
             customDep.state = "inherited2"
-            try await waitUntil(testResult.value.contains("itemObs:1:inherited2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("itemObs:1:inherited2"))
             #expect(testResult.value.contains("itemObs:1:inherited2"),
                     "[\(path)] Child Item must observe dep inherited from Container. Got: \(testResult.value)")
 
@@ -781,7 +780,7 @@ struct ModelDependencyOverrideTests {
 
             // Mutate containerDep — only Item 1 (which inherits it) should fire.
             containerDep.state = "container2"
-            try await waitUntil(testResult.value.contains("itemObs:1:container2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("itemObs:1:container2"))
             #expect(testResult.value.contains("itemObs:1:container2"),
                     "[\(path)] Item 1 (inheriting container dep) must observe mutation. Got: \(testResult.value)")
             #expect(!testResult.value.contains("itemObs:2:container2"),
@@ -789,7 +788,7 @@ struct ModelDependencyOverrideTests {
 
             // Mutate overrideDep — only Item 2 should fire.
             overrideDep.state = "override2"
-            try await waitUntil(testResult.value.contains("itemObs:2:override2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("itemObs:2:override2"))
             #expect(testResult.value.contains("itemObs:2:override2"),
                     "[\(path)] Item 2 (override dep) must observe its own dep mutation. Got: \(testResult.value)")
             #expect(!testResult.value.contains("itemObs:1:override2"),
@@ -821,7 +820,7 @@ struct ModelDependencyOverrideTests {
 
             // Mutate dep — dynamically-added child must observe it.
             customDep.state = "live2"
-            try await waitUntil(testResult.value.contains("itemObs:5:live2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("itemObs:5:live2"))
             #expect(testResult.value.contains("itemObs:5:live2"),
                     "[\(path)] Dynamically-added plain child must observe inherited dep. Got: \(testResult.value)")
 
@@ -859,7 +858,7 @@ struct ModelDependencyOverrideTests {
 
             // Mutate overrideDep — only Item 2 must fire.
             overrideDep.state = "override2"
-            try await waitUntil(testResult.value.contains("itemObs:2:override2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("itemObs:2:override2"))
             #expect(testResult.value.contains("itemObs:2:override2"),
                     "[\(path)] Item 2 must observe overrideDep mutation. Got: \(testResult.value)")
             #expect(!testResult.value.contains("itemObs:1:override2"),
@@ -895,7 +894,7 @@ struct ModelDependencyOverrideTests {
 
             // Mutate depA — only Item 1 (inside container A) must fire.
             depA.state = "envA2"
-            try await waitUntil(testResult.value.contains("itemObs:1:envA2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("itemObs:1:envA2"))
             #expect(testResult.value.contains("itemObs:1:envA2"),
                     "[\(path)] Item in container A must observe depA change. Got: \(testResult.value)")
             #expect(!testResult.value.contains("itemObs:2:envA2"),
@@ -903,7 +902,7 @@ struct ModelDependencyOverrideTests {
 
             // Mutate depB — only Item 2 (inside container B) must fire.
             depB.state = "envB2"
-            try await waitUntil(testResult.value.contains("itemObs:2:envB2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("itemObs:2:envB2"))
             #expect(testResult.value.contains("itemObs:2:envB2"),
                     "[\(path)] Item in container B must observe depB change. Got: \(testResult.value)")
             #expect(!testResult.value.contains("itemObs:1:envB2"),
@@ -954,7 +953,7 @@ struct ModelDependencyOverrideTests {
 
             // Mutate isolatedDep — only Item 2 must fire.
             isolatedDep.state = "isolated2"
-            try await waitUntil(testResult.value.contains("itemObs:2:isolated2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("itemObs:2:isolated2"))
             #expect(testResult.value.contains("itemObs:2:isolated2"),
                     "[\(path)] Item 2 must observe isolatedDep mutation. Got: \(testResult.value)")
             #expect(!testResult.value.contains("itemObs:1:isolated2"),
@@ -1003,7 +1002,7 @@ struct ModelDependencyOverrideTests {
 
             // Mutate the dep — child must observe it.
             customDep.state = "custom2"
-            try await waitUntil(testResult.value.contains("childObs:custom2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("childObs:custom2"))
             #expect(testResult.value.contains("childObs:custom2"),
                     "[\(path)] Child must observe dep mutation from parent. Got: \(testResult.value)")
 
@@ -1038,7 +1037,7 @@ struct ModelDependencyOverrideTests {
 
             // Mutate depA — only child of parent A must fire.
             depA.state = "depA2"
-            try await waitUntil(testResult.value.contains("childObs:depA2"), timeout: 3_000_000_000)
+            try await waitUntil(testResult.value.contains("childObs:depA2"))
             #expect(testResult.value.contains("childObs:depA2"),
                     "[\(path)] Child A must observe depA mutation. Got: \(testResult.value)")
             #expect(!testResult.value.contains("childObs:depB2"),
@@ -1144,8 +1143,7 @@ struct ModelDependencyOverrideTests {
             // Leaves added to `overriding` must see "override", NOT "rootDep".
             try await waitUntil(
                 testResult.value.contains("leafOn:1:rootDep") &&
-                testResult.value.contains("leafOn:1:override"),
-                timeout: 3_000_000_000
+                testResult.value.contains("leafOn:1:override")
             )
             #expect(testResult.value.contains("leafOn:1:rootDep"),
                     "Leaf in plain container must see rootDep. Got: \(testResult.value)")
@@ -1196,8 +1194,7 @@ struct ModelDependencyOverrideTests {
             root.shouldPopulate = true
 
             try await waitUntil(
-                testResult.value.contains("selfLeafOn:1:"),
-                timeout: 3_000_000_000
+                testResult.value.contains("selfLeafOn:1:")
             )
             #expect(testResult.value.contains("selfLeafOn:1:leafOverride"),
                     "Leaf's self-injected dep override must be honoured even when added from a background task. Got: \(testResult.value)")
@@ -1249,8 +1246,7 @@ struct ModelDependencyOverrideTests {
 
             // Wait for AuxDepChild to activate — it logs "auxChildOn:<tag>".
             try await waitUntil(
-                testResult.value.contains("auxChildOn:"),
-                timeout: 3_000_000_000
+                testResult.value.contains("auxChildOn:")
             )
             #expect(testResult.value.contains("auxChildOn:leafSecondary"),
                     "AuxDepChild (inside a dep-model set up via setupModelDependency) must see the leaf-level SecondaryDep override. Got: \(testResult.value)")
