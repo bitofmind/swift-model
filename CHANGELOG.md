@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.12] — `reference.state` use-after-free sweep + `TaskCancellable` lock-order deadlock
+
 ### Fixed
 
 - **`TaskCancellable.init` no longer resolves `context.cancellations` while holding its own lock, closing an AB-BA deadlock between the hierarchy lock and a task's `NSLock`.** The capture-list expression `[weak cancellations = context.cancellations]` sat *inside* `lock { }`, and capture lists are evaluated at closure-formation time — i.e. inside the enclosing critical section. Since `AnyContext.cancellations` takes the per-context hierarchy lock (**H**) and the instance lock is **T**, registering a task ran **T→H**. Teardown runs the opposite order: a subtree replacement reaches `AnyContext.onRemoval` → `Cancellations.cancelAll()` → `TaskCancellable.onCancel`, which blocks on T — **H→T**. Two threads, opposite orders, permanent hang at 0% CPU. (That arm needs care to state correctly: `AnyContext.onRemoval()` drains its callbacks *outside* its own `lock`, so `cancelAll` looks unlocked and the arm looks refuted. What supplies H is the enclosing `node.transaction`, which holds it across its entire body.) The registry is now resolved once into a local before the lock and captured from there, making the order uniformly H-before-T; this costs nothing, since `init` already needed that value on its first line.
