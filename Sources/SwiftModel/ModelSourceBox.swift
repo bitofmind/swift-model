@@ -358,18 +358,27 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             // nil `_context` across the suite. The issue report stays OUTSIDE the lock
             // (`reportIssue` can re-enter model reads).
             //
-            // PERF: for non-snapshot references this costs a weak `_context` load (side-table
-            // traffic) before any lock is taken — ~+64% on pre-anchor reads and ~+48% on the
-            // `forceDirectAccess` per-element `.id` reads used by collection reconciliation.
+            // PERF: for non-snapshot references this costs one hierarchy-lock acquisition.
             // The anchored+tracked path is unaffected (it already locks via
-            // `context[statePath:observeCallback:]`). Recovering that cost means hoisting the
-            // lock to the traversal instead of paying it per element — see the
-            // `hierarchyLockHeld` parameter on `withContextAdded` for the existing precedent.
+            // `context[statePath:observeCallback:]`). `withHierarchyLockIfLive` has since
+            // been cut to roughly the lock pair itself — it caches the lock strongly rather
+            // than resolving the weak `_context`, and takes both locks without Foundation's
+            // non-inlinable generic `withLock`. Pre-anchor reads are back to their pre-lock
+            // cost; the `forceDirectAccess` per-element `.id` read used by collection
+            // reconciliation is now *below* it, because the traversal sites also stopped
+            // entering the thread-local scope through the keypath-based `withValue` helper.
+            //
+            // Do NOT try to recover the remaining lock pair by hoisting to the traversal
+            // via `hierarchyLockHeld`: an element met mid-walk can still be anchored in a
+            // DIFFERENT hierarchy, guarded by a different lock (hence the
+            // `existing.lock === self.lock` guards in `findOrTrackChild` / `childContext`).
+            // This call locks that element's own hierarchy; a `hierarchyLockHeld` skip
+            // would hold an unrelated lock and reopen the use-after-free.
             //
             // Snapshot references (frozen / lastSeen) short-circuit: `clear()` only ever runs
             // against a Context's own reference and a snapshot has no context, so no concurrent
             // clearer can exist. `_snapshotLifetime` is an immutable `let`, so this check needs
-            // no lock and skips the weak load entirely.
+            // no lock and skips the lock resolution entirely.
             if reference.isSnapshot {
                 return reference.state[keyPath: path]
             }

@@ -40,7 +40,7 @@ public extension MutableCollection where Self: ModelContainer, Element: Identifi
     func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
         for index in indices {
             let element = self[index]
-            let id = threadLocals.withValue(true, at: \.forceDirectAccess) { element.id }
+            let id = threadLocals.withForceDirectAccess { element.id }
             let anyID = AnyHashable(id)
 
             // Fast path: if the element is already registered and up-to-date, skip all cursor

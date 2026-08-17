@@ -345,7 +345,7 @@ extension TestAccess {
         let isEqualIncludingIds: Bool = {
             guard !snapshot.passedAccesses.isEmpty else { return true }
             return threadLocals.withValue(true, at: \.isApplyingSnapshot) {
-                threadLocals.withValue(true, at: \.forceDirectAccess) {
+                threadLocals.withForceDirectAccess {
                     threadLocals.withValue(true, at: \.includeImplicitIDInMirror) {
                         snapshot.passedAccesses.reduce(true) { result, access in
                             if access.skipEqualityCheck { return result }

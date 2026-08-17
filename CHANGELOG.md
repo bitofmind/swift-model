@@ -6,6 +6,27 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Performance
+
+- **The locked `dynamicMember` projection is no longer the cost it was, and the O(N) traversal that wraps it got cheaper than it was *before* the lock landed.** The read-path use-after-free fix below (`#50`) paid for its correctness with a weak `_context` load plus two closure-based lock acquisitions on every read that reaches `_ModelSourceBox.subscript(dynamicMember:)`. Three changes, none of which touch the locking discipline itself:
+
+  - **`Reference` now caches the hierarchy lock strongly** (`_hierarchyLock`), maintained in exact lockstep with `_context` at the only two sites that assign it. `_context` has to stay `weak` — the Context holds the Reference strongly, so a strong back-reference would be a retain cycle — but the lock is a *leaf* object that references nothing, so holding it strongly is cycle-free and gives `withHierarchyLockIfLive` the one thing it actually needs. `swift_weakLoadStrong`'s side-table traffic measured ~43 ns/read on its own.
+  - **Both lock acquisitions use explicit `lock()`/`unlock()`** instead of `NSLocking.callAsFunction`, whose underlying `withLock<R>` is a non-inlinable generic in Foundation — a real call plus a reabstraction thunk per read. `Reference.context`, the hottest resolution on *every* read path, gets the same treatment: 68 → 17 ns for the nil case.
+  - **`threadLocals.withValue(true, at: \.forceDirectAccess)` is replaced by a direct-field `withForceDirectAccess` scope** at all six traversal sites. The generic helper applies a `ReferenceWritableKeyPath` three times per scope (one get, two sets), each a `swift_getAtKeyPath`/`swift_setAtKeyPath` runtime call: **275 ns per scope**, several times the cost of the `.id` read it wraps. Direct field access is ~2 ns. Same precedent as `withUntrackedModelReads`, which already avoids the helper for the same reason.
+
+  **Measured in Release on one machine**, `DynamicMemberPathBenchmark`, ns/op, two runs per arm:
+
+  | read path | pre-`#50` | `#50` | now |
+  | --- | --- | --- | --- |
+  | pre-anchor (`context == nil`) | 165 / 166 | 269 / 270 | 171 / 167 |
+  | snapshot (frozen copy) | 163 / 158 | 171 / 170 | 126 / 121 |
+  | `forceDirectAccess`, keypath TL scope | 379 / 374 | 535 / 546 | 468 / 451 |
+  | `forceDirectAccess`, direct TL scope | 96 / 96 | 256 / 261 | 176 / 169 |
+
+  Pre-anchor is fully back to its pre-`#50` cost. Snapshot reads end up *below* it — they never took the hierarchy lock, but they do resolve `reference.context` on the way in. The last row is the one that multiplies across an O(N) reconciliation walk, and it is the honest before/after for the traversal: the walk used the keypath scope before, so its real per-element cost was **374 ns and is now 169**. Against a like-for-like scope, `#50`'s remaining charge is ~73 ns of lock acquisition, down from ~165 — the rest is the lock pair itself and is inherent to the fix. The anchored+tracked path is untouched throughout; it already locks via `context[statePath:observeCallback:]`.
+
+  **What was considered and rejected:** hoisting the lock to the traversal via the `hierarchyLockHeld` flag, as the `#50` entry proposed. Two problems. The flag is not universally available — `updateContext(for container:)` and `updateContextForContainerCollection` do always hold the lock, but the same visitor code runs with `hierarchyLockHeld: false` from the initial anchor walk, and `ModelContainer.visit` / `subscript(cursor:)` have no way to know. More importantly, holding the lock is not the same as holding *this element's* lock: an element encountered mid-walk may still be anchored in a **different** hierarchy, guarded by a different lock — a case this codebase explicitly anticipates via the `existing.lock === self.lock` guards in `findOrTrackChild` and `childContext`. `withHierarchyLockIfLive` locks that element's own hierarchy; a `hierarchyLockHeld` skip would lock nothing relevant and reopen exactly the use-after-free `#50` closed. The remaining ~44 ns on the live path is the lock acquisition itself and is inherent to the fix.
+
 ---
 
 ## [1.0.12] — `reference.state` use-after-free sweep + `TaskCancellable` lock-order deadlock
@@ -32,7 +53,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
   The safety of `withHierarchyLockIfLive` here rests on every `clear(ifGeneration:)` running while its context is still discoverable. That was **verified rather than assumed**: instrumenting `clear` to count calls with a nil `_context` found **0 of 8700+** across the full suite. Worth stating explicitly, because the doc comment this fix replaces made a synchronisation argument that turned out to be false.
 
-  **Cost, measured in Release (min of rounds):** pre-anchor reads ~+64% (167 → 274 ns/op) and `forceDirectAccess` reads ~+48% (370 → 548 ns/op); snapshot reads are unchanged thanks to the short-circuit, and the anchored+tracked path is untouched because it already locks via `context[statePath:observeCallback:]`. `forceDirectAccess` wraps the per-element `.id` reads in collection reconciliation, so this is O(N)-traversal cost and is being tracked for follow-up — the fix is to hoist the lock to the traversal instead of paying it per element (see the `hierarchyLockHeld` parameter on `withContextAdded` for the precedent). Landed on correctness grounds ahead of that optimisation.
+  **Cost, measured in Release (min of rounds):** pre-anchor reads ~+64% (167 → 274 ns/op) and `forceDirectAccess` reads ~+48% (370 → 548 ns/op); snapshot reads are unchanged thanks to the short-circuit, and the anchored+tracked path is untouched because it already locks via `context[statePath:observeCallback:]`. `forceDirectAccess` wraps the per-element `.id` reads in collection reconciliation, so this is O(N)-traversal cost and was tracked for follow-up. Landed on correctness grounds ahead of that optimisation; see the Performance entry above for how it was recovered — **not** by the hoist-to-the-traversal approach suggested here, which turns out to be unsound.
 
 - **Every `@Model`-child write path now projects the stored child under the hierarchy lock before re-activating it.** Each of those paths runs its `stateTransaction` (read → mutate → write back, all locked) and then, *after* releasing the lock, re-reads `reference.state[keyPath:]` to activate the freshly-anchored child. Four of the five such reads were unlocked, and that is a **memory-safety** bug rather than a staleness one: a key-path projection loads the slot and only *then* retains what it loaded, so a concurrent writer that drops the old child's last reference in between hands that retain an already-freed object. Multi-word stored values (an `IdentifiedArray`, say) can additionally be read half-updated. The fixed sites, all now routed through the new `_ModelSourceBox._snapshotUnderLock` helper — which is also where the rationale lives:
   - `subscript<T: Model>(write:access:)` — both the `child.context !== newValue.context` guard *before* the transaction and the `context?.onActivate()` re-activation after it.

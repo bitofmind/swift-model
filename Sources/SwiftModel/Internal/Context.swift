@@ -1769,7 +1769,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
         for index in collection.indices {
             let element = collection[index]
-            let id = threadLocals.withValue(true, at: \.forceDirectAccess) { element.id }
+            let id = threadLocals.withForceDirectAccess { element.id }
 
             var elementVisitor = AnchorVisitorForContainerElement(
                 value: element,
@@ -1818,6 +1818,22 @@ extension Context {
         let modelID: ModelID
         private let lock = NSRecursiveLock()
         private weak var _context: Context<M>?
+        /// Strong reference to the live context's hierarchy lock, maintained in exact
+        /// lockstep with `_context` (set in `setContext`, cleared in
+        /// `clearStateForGeneration` — the only two sites that touch `_context`).
+        ///
+        /// `_context` has to stay `weak`: the Context holds this Reference strongly, so a
+        /// strong back-reference would be a retain cycle and no Context would ever deinit.
+        /// The hierarchy lock is a *leaf* object though — an `NSRecursiveLock` references
+        /// nothing — so holding it strongly is cycle-free while giving
+        /// `withHierarchyLockIfLive` the one thing it actually needs. That skips the weak
+        /// load (side-table traffic, ~40 ns measured in Release) on every read that routes
+        /// through the `dynamicMember` getter, which is the O(N) per-element cost during
+        /// collection reconciliation.
+        ///
+        /// Non-nil exactly when `_context` is non-nil, so `withHierarchyLockIfLive` locks
+        /// under precisely the same condition as before.
+        private var _hierarchyLock: NSRecursiveLock?
         private var _isDestructed = false
         /// Monotonically-increasing generation counter. Incremented each time `setContext` runs
         /// (including re-anchoring). `Context` stores its own generation so `deinit` can call
@@ -1923,7 +1939,13 @@ extension Context {
 
         @usableFromInline
         var context: Context<M>? {
-            lock { _context }
+            // Explicit lock()/unlock() rather than `lock { _context }`: the latter routes
+            // through `NSLocking.callAsFunction` → Foundation's non-inlinable generic
+            // `withLock<R>`, adding a call plus a reabstraction thunk to what is the
+            // single hottest resolution on every read path.
+            lock.lock()
+            defer { lock.unlock() }
+            return _context
         }
 
         var isDestructed: Bool {
@@ -2008,13 +2030,31 @@ extension Context {
         /// paths run while the old context (and thus a discoverable lock) is
         /// still alive.
         ///
-        /// Lock-order note: the `context` read takes and releases `Reference.lock`
+        /// Lock-order note: the `_hierarchyLock` read takes and releases `Reference.lock`
         /// BEFORE the hierarchy lock is acquired — no held-across violation of the
         /// AnyContext.lock → Reference.lock convention.
+        ///
+        /// PERF: this is the per-read cost of the locked `dynamicMember` projection, paid
+        /// O(N) times during collection reconciliation, so it is written for cost rather
+        /// than for brevity:
+        /// - it reads `_hierarchyLock` (a strong `let`-shaped leaf object) instead of the
+        ///   `context` weak var, skipping `swift_weakLoadStrong`'s side-table traffic;
+        /// - it takes the locks with explicit `lock()` / `unlock()` rather than
+        ///   `NSLocking.callAsFunction`, whose underlying `withLock<R>` is a
+        ///   non-inlinable generic in Foundation — a real call plus a reabstraction
+        ///   thunk on every read.
+        ///
+        /// Both are pure call-shape changes; the locking discipline is byte-for-byte the
+        /// one PR #50 established.
         func withHierarchyLockIfLive<R>(_ body: () -> R) -> R {
-            if let context = self.context {
-                return context.lock { body() }
-            }
+            lock.lock()
+            let hierarchyLock = _hierarchyLock
+            lock.unlock()
+
+            guard let hierarchyLock else { return body() }
+
+            hierarchyLock.lock()
+            defer { hierarchyLock.unlock() }
             return body()
         }
 
@@ -2081,6 +2121,7 @@ extension Context {
                     _liveContextCount += 1
                 }
                 _context = context
+                _hierarchyLock = context.lock
                 return _generation
             }
         }
@@ -2094,6 +2135,7 @@ extension Context {
                 if _liveContextCount <= 0 {
                     _liveContextCount = 0
                     _context = nil  // Eliminate race: _context must be nil whenever _liveContextCount == 0
+                    _hierarchyLock = nil // Kept in lockstep with `_context` — see its doc comment.
                 }
             }
         }
