@@ -182,12 +182,12 @@ struct ContainerCursor<ID: Hashable, Root, Value>: Hashable, @unchecked Sendable
 extension ModelContainer {
     subscript<ID: Hashable, Value>(cursor cursor: ContainerCursor<ID, Self, Value>) -> Value {
         get {
-            threadLocals.withValue(true, at: \.forceDirectAccess) {
+            threadLocals.withForceDirectAccess {
                 cursor.get(self)
             }
         }
         set {
-            threadLocals.withValue(true, at: \.forceDirectAccess) {
+            threadLocals.withForceDirectAccess {
                 cursor.set(&self, newValue)
             }
         }
@@ -208,12 +208,12 @@ extension MutableCollection where Self: Sendable, Element: Identifiable & Sendab
     @_disfavoredOverload
     subscript<ID: Hashable, Value>(cursor cursor: ContainerCursor<ID, Self, Value>) -> Value {
         get {
-            threadLocals.withValue(true, at: \.forceDirectAccess) {
+            threadLocals.withForceDirectAccess {
                 cursor.get(self)
             }
         }
         set {
-            threadLocals.withValue(true, at: \.forceDirectAccess) {
+            threadLocals.withForceDirectAccess {
                 cursor.set(&self, newValue)
             }
         }

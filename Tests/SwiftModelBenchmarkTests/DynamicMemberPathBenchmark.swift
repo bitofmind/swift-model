@@ -15,9 +15,18 @@ import Foundation
 /// Added when that getter was changed to project under the hierarchy lock (it
 /// previously read `reference.state[keyPath:]` unlocked, racing
 /// `Reference.clear(ifGeneration:)`'s state swap). That fix is what makes these
-/// numbers worth tracking: the locked projection costs a weak `_context` load on
-/// every non-snapshot read. Absolute times are machine-dependent — compare
-/// branches on one machine rather than reading the constants.
+/// numbers worth tracking: the locked projection costs a lock acquisition on every
+/// non-snapshot read. Absolute times are machine-dependent — compare branches on one
+/// machine rather than reading the constants.
+///
+/// Two `forceDirectAccess` cases are measured because the thread-local scope, not the
+/// read, used to dominate them:
+/// - `forceDirectAccess read` keeps the `withValue(_:at:)` keypath helper the traversal
+///   sites originally used. Kept unchanged so the number stays comparable across
+///   branches back through the pre-#50 baseline.
+/// - `forceDirectAccess, direct TL scope` enters the scope by direct field access, which
+///   is what those sites do now (`ThreadLocals.withForceDirectAccess`). This is the
+///   per-element figure that actually multiplies across an O(N) reconciliation walk.
 @Suite(.serialized, .tags(.benchmark))
 struct DynamicMemberPathBenchmark {
 
@@ -44,10 +53,23 @@ struct DynamicMemberPathBenchmark {
             }
         }
 
+        // Same read, but with the thread-local scope entered by direct field access rather
+        // than the `ReferenceWritableKeyPath`-based `withValue(_:at:)` helper — this is the
+        // shape the traversal call sites actually use. Written out longhand (rather than
+        // calling the shared helper) so the case compiles identically on either branch.
+        let directFastNs = measureNs(iterations: iterations) {
+            let tl = threadLocals
+            let previous = tl.forceDirectAccess
+            tl.forceDirectAccess = true
+            dmSink &+= anchored.value
+            tl.forceDirectAccess = previous
+        }
+
         print("📊 DYNAMICMEMBER PATHS (\(iterations) iterations, min of rounds)")
         print(String(format: "  pre-anchor read (context == nil)   %8.1f ns/op", preAnchorNs))
         print(String(format: "  frozen-copy read                   %8.1f ns/op", frozenNs))
         print(String(format: "  forceDirectAccess read (has ctx)   %8.1f ns/op", directNs))
+        print(String(format: "  forceDirectAccess, direct TL scope %8.1f ns/op", directFastNs))
     }
 }
 

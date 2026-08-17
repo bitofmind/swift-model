@@ -476,7 +476,7 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
 
         for index in value[keyPath: path].indices {
             let element = value[keyPath: path][index]
-            let id = threadLocals.withValue(true, at: \.forceDirectAccess) { element.id }
+            let id = threadLocals.withForceDirectAccess { element.id }
 
             var elementVisitor = AnchorVisitorForContainerElement(
                 value: element,

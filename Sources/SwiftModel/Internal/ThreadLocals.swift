@@ -205,6 +205,26 @@ final class ThreadLocals: @unchecked Sendable {
         pendingStack.stack.removeAll()
     }
 
+    /// `withValue(true, at: \.forceDirectAccess)` specialised to a direct field access.
+    ///
+    /// Every `ModelContainer` traversal wraps its per-element `.id` read in this scope
+    /// (`MutableCollection.visit`, `AnchorVisitor.visitContainerCollection`,
+    /// `updateContextForContainerCollection`, both `subscript(cursor:)` pairs), so it is
+    /// paid O(N) times per reconciliation walk. The generic `withValue(_:at:)` helper
+    /// applies a `ReferenceWritableKeyPath` three times per scope — one get and two sets,
+    /// each a `swift_getAtKeyPath`/`swift_setAtKeyPath` runtime call — which measures
+    /// ~270 ns per scope in Release, several times the cost of the read it wraps.
+    /// Touching the stored property directly is ~2 ns.
+    ///
+    /// Same precedent (and same reasoning) as `withUntrackedModelReads`.
+    @inline(__always)
+    func withForceDirectAccess<T>(perform: () throws -> T) rethrows -> T {
+        let previous = forceDirectAccess
+        forceDirectAccess = true
+        defer { forceDirectAccess = previous }
+        return try perform()
+    }
+
     func withValue<Value, T>(_ value: Value, at path: ReferenceWritableKeyPath<ThreadLocals, Value>, perform: () throws -> T) rethrows -> T {
         let prevValue = self[keyPath: path]
         defer {
