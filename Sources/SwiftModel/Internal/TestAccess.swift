@@ -1617,7 +1617,24 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         // (valueUpdates), use the pre-captured snapshot when provided: it was captured inside
         // the same lock as the clearing block, eliminating the race window where a concurrent
         // activeAccessCallback could write a new entry between clearing and this read.
-        let snap = lock { (expectedState, lastState, valueUpdates) }
+        //
+        // The two state trees are DEEP-copied, not just read out. Copying the root alone
+        // looks sufficient but is not: `didModify` updates `lastState` by mutating the
+        // existing frozen tree IN PLACE (`_writeToFrozenState`, installing freshly-built
+        // frozen child references), so a root copy still shares those mutable `Reference`
+        // objects. The diff below must run OUTSIDE this lock — `diffMessage` walks model
+        // state via `customMirror`, which re-enters the lock and would deadlock
+        // cross-thread — so without the deep copy it walks a tree another thread is
+        // concurrently editing, reading `Reference`s published after our lock acquire and
+        // therefore with no happens-before edge to us. ThreadSanitizer reports that as
+        // `Reference.context.getter` / `Reference.isSnapshot.getter` racing
+        // `Reference.init` under `_ModelSourceBox.init(frozen:id:)`.
+        //
+        // `frozenCopy` rebuilds every node while preserving each `modelID`, so layer 2's
+        // identity-only diff is unaffected. Cost is one deep copy per exhaustion check
+        // (i.e. per `expect`), against `didModify`'s existing per-write copy of just the
+        // changed value — the cheaper side of the trade, since writes outnumber expects.
+        let snap = lock { (frozenCopy(expectedState), frozenCopy(lastState), valueUpdates) }
         let lastAsserted = snap.0
         let actual = snap.1
         let snapshotUpdates = capturedUpdates ?? snap.2
