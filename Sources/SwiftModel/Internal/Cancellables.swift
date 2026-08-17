@@ -67,15 +67,38 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
     var hasStartedRunning: Bool { _hasStartedRunningBox?.value ?? false }
 
     init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
-        self.cancellations = context.cancellations
-        let id = context.cancellations.nextId
+        // Resolve the registry ONCE, before `lock` is taken. `AnyContext.cancellations`
+        // acquires the per-context hierarchy lock (H); this instance's `lock` is T.
+        // Evaluating `context.cancellations` *inside* `lock { }` — as the capture-list
+        // expression below used to — orders this init T→H, while teardown runs H→T:
+        // a subtree replacement reaches `AnyContext.onRemoval` →
+        // `Cancellations.cancelAll()` → `TaskCancellable.onCancel`, which blocks on T.
+        // That is an AB-BA cycle, and it hangs hard: 0% CPU, pinned indefinitely.
+        //
+        // READ THE H→T ARM CAREFULLY — `AnyContext.onRemoval()` drains its callbacks
+        // OUTSIDE its own `lock`, so `cancelAll` looks unlocked and the arm looks
+        // refuted. It isn't: what supplies H is the ENCLOSING `node.transaction`,
+        // which holds it across its entire body (`Context.transaction`), so the drain
+        // still runs under H. Citing `onRemoval` alone gets this dismissed on review.
+        //
+        // Hoisting is free — the value is needed on the first line anyway, so this
+        // takes and releases H exactly where it already did, just once. The ordering
+        // is now uniformly H-before-T and the cycle is gone by construction.
+        //
+        // Same family as the `reduceHierarchy` (#29) and `memoize` (#30) inversions:
+        // whenever a leaf lock is held, do not evaluate anything that reaches a
+        // context lock — including capture-list expressions, which are evaluated at
+        // closure-formation time, i.e. inside the enclosing critical section.
+        let cancellations = context.cancellations
+        self.cancellations = cancellations
+        let id = cancellations.nextId
         self.id = id
         self.modelName = modelName
         self.taskName = taskName
         self.fileAndLine = fileAndLine
         self.task = nil
 
-        context.cancellations.register(self)
+        cancellations.register(self)
 
         lock {
             guard !self.hasBeenCancelled else {
@@ -83,7 +106,7 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
                 // the underlying Task stays nil and never runs.
                 return
             }
-            self.task = task { [weak cancellations = context.cancellations] in
+            self.task = task { [weak cancellations] in
                 _ = cancellations?.unregister(id)
             }
         }
