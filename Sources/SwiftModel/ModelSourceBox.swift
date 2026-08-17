@@ -338,13 +338,51 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
 
     public subscript<T>(dynamicMember path: WritableKeyPath<M._ModelState, T>) -> T {
         get {
-            if reference._stateCleared {
-                if !reference._hasGenesis {
-                    reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
-                }
-                return reference._hasGenesis ? reference._genesisState[keyPath: path] : _zeroInit()
+            // Read under the live hierarchy lock, exactly as `_modelState` does — the raw
+            // version of this read is a MEMORY-SAFETY bug, not just a staleness one.
+            // `Reference.clear(ifGeneration:)` swaps `state` for `_genesisState` under the
+            // hierarchy lock; a key-path projection loads the slot and only THEN retains what
+            // it loaded, so a clear that drops the old state's last reference in between hands
+            // this retain an already-freed object. Same failure shape as the write-path bug
+            // fixed by `_snapshotUnderLock`, and just as invisible to the sanitizers
+            // (`swift_getAtKeyPath` and the value witness are uninstrumented `libswiftCore`).
+            // TSan only ever caught the `_stateCleared` / `_hasGenesis` halves of it, because
+            // those are plain `Bool`s it can see.
+            //
+            // The `_stateCleared` check and the projection must be in the SAME locked scope:
+            // checking the flag and then projecting outside the lock just moves the TOCTOU.
+            //
+            // `withHierarchyLockIfLive` only locks when a context is discoverable. That is
+            // sound because every `clear(ifGeneration:)` runs while the old context is still
+            // alive — verified by instrumenting `clear` and finding 0 of 8700+ calls with a
+            // nil `_context` across the suite. The issue report stays OUTSIDE the lock
+            // (`reportIssue` can re-enter model reads).
+            //
+            // PERF: for non-snapshot references this costs a weak `_context` load (side-table
+            // traffic) before any lock is taken — ~+64% on pre-anchor reads and ~+48% on the
+            // `forceDirectAccess` per-element `.id` reads used by collection reconciliation.
+            // The anchored+tracked path is unaffected (it already locks via
+            // `context[statePath:observeCallback:]`). Recovering that cost means hoisting the
+            // lock to the traversal instead of paying it per element — see the
+            // `hierarchyLockHeld` parameter on `withContextAdded` for the existing precedent.
+            //
+            // Snapshot references (frozen / lastSeen) short-circuit: `clear()` only ever runs
+            // against a Context's own reference and a snapshot has no context, so no concurrent
+            // clearer can exist. `_snapshotLifetime` is an immutable `let`, so this check needs
+            // no lock and skips the weak load entirely.
+            if reference.isSnapshot {
+                return reference.state[keyPath: path]
             }
-            return reference.state[keyPath: path]
+            let (readFromClearedModel, value) = reference.withHierarchyLockIfLive { () -> (Bool, T) in
+                if reference._stateCleared {
+                    return (!reference._hasGenesis, reference._hasGenesis ? reference._genesisState[keyPath: path] : _zeroInit())
+                }
+                return (false, reference.state[keyPath: path])
+            }
+            if readFromClearedModel {
+                reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
+            }
+            return value
         }
         set {
             if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
