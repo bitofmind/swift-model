@@ -6,6 +6,16 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **A deadlock in model code no longer hangs a test forever: the `.modelTesting` wall-clock cap now has an absolute ceiling behind its inactivity watchdog.** When the executor drive is installed (the default on macOS 15+), the 30 s cap is not an absolute deadline — `ModelTestingTrait` wires it to `activityProbe = { exec.activityNs }` and it becomes an *inactivity* watchdog. `_DrainTestExecutor.activityNs` returns `now` whenever `outstanding > 0`, and a deadlocked job never returns from `runSynchronously`, so `outstanding` never drops: the probe reports "actively working" forever and the window never elapses. **The hang detector is disabled by the hang.** Measured before this change: two model tasks deadlocked against each other ran ~8 minutes with no result and no `[TRAIT timeout]` against a 30 s cap, and would have run indefinitely. Only an out-of-process timeout (e.g. `xcodebuild`'s `-default-test-execution-time-allowance`) could end it — which is why the deadlock fixed in `#52` presented downstream as a silent 60-minute CI wedge rather than a test failure.
+
+  The `outstanding > 0 ⇒ now` rule is **not** the bug and is deliberately left alone: it exists so a healthy-but-slow test whose jobs queue behind hundreds on the shared drain queue doesn't trip, and a process-global activity signal was already considered and rejected upstream because it stops catching one hung test while the rest of the suite is busy. Telling a deadlock apart from a long computation is undecidable in general, so rather than make detection cleverer — and risk failing healthy tests, which is worse than the hang — this only guarantees **termination**: an absolute ceiling at `10 ×` the window, which no test finishing in a sane time can reach. It scales with the window, so `SWIFT_MODEL_TIMEOUT_SCALE` carries through (the TSan job at scale 6 gets 6× it too).
+
+  Hitting the ceiling is *diagnostic*, and its message says so: reaching `10 ×` the window while the watchdog never fired means the executor claimed to be busy the entire span — a job entered `runSynchronously` and never returned — which is a deadlock signature, not slowness. The message names the likely cause (lock-order inversion) and points at `sample <pid>`.
+
+  Verified red→green on a real deadlock: two model tasks taking two locks in opposite orders previously hung indefinitely and had to be killed; they now fail at the ceiling with the diagnostic. `withTestTimeout_absoluteCeilingFiresWhenActivityProbeNeverGoesStale` pins it deterministically by handing `_withTestTimeout` a probe that never goes stale — exactly what a deadlocked executor reports — so the regression test needs no real locks and no timing luck.
+
 ### Performance
 
 - **The locked `dynamicMember` projection is no longer the cost it was, and the O(N) traversal that wraps it got cheaper than it was *before* the lock landed.** The read-path use-after-free fix below (`#50`) paid for its correctness with a weak `_context` load plus two closure-based lock acquisitions on every read that reaches `_ModelSourceBox.subscript(dynamicMember:)`. Three changes, none of which touch the locking discipline itself:

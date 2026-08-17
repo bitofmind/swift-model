@@ -609,7 +609,37 @@ package func _withTestTimeout<R: Sendable>(
             } else {
                 await _parkUntilDeadlineOrCancel(deadlineNs: deadlineNs)
             }
-            return .timeout
+            return .timeout(.window)
+        }
+        if activityProbe != nil {
+            // BACKSTOP for the one failure the inactivity watchdog structurally
+            // cannot see: a DEADLOCK.
+            //
+            // `activityNs` reports `now` whenever `outstanding > 0`, and a job that
+            // deadlocks never returns from `runSynchronously`, so `outstanding` never
+            // drops. The probe therefore reports "actively working" forever and the
+            // window never elapses — the hang detector is disabled by the hang.
+            // Measured: two model tasks deadlocked against each other ran ~8 minutes
+            // with no result and no `[TRAIT timeout]` against a 30 s cap, and would
+            // have run indefinitely.
+            //
+            // The `outstanding > 0 ⇒ now` rule is NOT the bug and is left alone: it
+            // exists so a healthy-but-slow test whose jobs queue behind hundreds on
+            // the shared drain queue doesn't trip, and a process-global activity
+            // signal was deliberately rejected because it stops catching one hung
+            // test while the rest of the suite is busy (see `activityNs`). Telling a
+            // deadlock apart from a long computation is undecidable in general, so
+            // rather than make detection cleverer — and risk failing healthy tests,
+            // which is worse than the hang — this only guarantees TERMINATION via a
+            // ceiling no test finishing in a sane time can reach.
+            //
+            // Scales with the window, so `SWIFT_MODEL_TIMEOUT_SCALE` carries through
+            // (the TSan job at scale 6 gets 6× this too).
+            let ceilingNs = monotonicNanoseconds() &+ windowNs &* UInt64(_traitAbsoluteCeilingMultiple)
+            group.addTask {
+                await _parkUntilDeadlineOrCancel(deadlineNs: ceilingNs)
+                return .timeout(.absoluteCeiling)
+            }
         }
         guard let first = try await group.next() else {
             // Unreachable: at least one child task always returns
@@ -619,24 +649,56 @@ package func _withTestTimeout<R: Sendable>(
         switch first {
         case .body(let value):
             return value
-        case .timeout:
+        case .timeout(let kind):
             if reportIssueOnTimeout {
-                reportIssue(
-                    "[TRAIT timeout] test=\"\(testTag)\" exceeded \(seconds)s wall-clock cap. " +
-                    "A correct test should complete in milliseconds even under heavy CI load. " +
-                    "Hitting this cap surfaces a real bug: deadlock, runaway loop, or a " +
-                    "predicate that doesn't react to model state (contract violation).",
-                    fileID: fileID, filePath: filePath, line: line, column: column
-                )
+                switch kind {
+                case .window:
+                    reportIssue(
+                        "[TRAIT timeout] test=\"\(testTag)\" exceeded \(seconds)s wall-clock cap. " +
+                        "A correct test should complete in milliseconds even under heavy CI load. " +
+                        "Hitting this cap surfaces a real bug: deadlock, runaway loop, or a " +
+                        "predicate that doesn't react to model state (contract violation).",
+                        fileID: fileID, filePath: filePath, line: line, column: column
+                    )
+                case .absoluteCeiling:
+                    let ceilingSeconds: Double = seconds * Double(_traitAbsoluteCeilingMultiple)
+                    var message = "[TRAIT timeout — ABSOLUTE CEILING] test=\"\(testTag)\" ran "
+                    message += "\(ceilingSeconds)s without completing, and the inactivity watchdog "
+                    message += "never fired. That combination is diagnostic: the executor reported "
+                    message += "itself busy the whole time, i.e. a job entered `runSynchronously` "
+                    message += "and never returned. Almost certainly a DEADLOCK in model code (a "
+                    message += "lock-order inversion), not slowness — the watchdog cannot see this "
+                    message += "class, which is why this ceiling exists. Capture a stack with "
+                    message += "`sample <pid>` to find the two inverted acquisitions."
+                    reportIssue(
+                        "\(message)",
+                        fileID: fileID, filePath: filePath, line: line, column: column
+                    )
+                }
             }
             throw _TestTimeoutError(testTag: testTag, seconds: seconds)
         }
     }
 }
 
+/// How many inactivity windows a test may burn before the absolute ceiling fires.
+///
+/// Only reachable when the executor drive is installed (otherwise the cap is already
+/// absolute). Sized so no healthy test can reach it: the watchdog fires after one
+/// window of genuine quiet, so reaching `multiple × window` means the executor claimed
+/// to be busy for the entire span — the deadlock signature described at the use site.
+let _traitAbsoluteCeilingMultiple = 10
+
 package enum _TimedResult<T: Sendable>: Sendable {
     case body(T)
-    case timeout
+    case timeout(_TimeoutKind)
+}
+
+package enum _TimeoutKind: Sendable {
+    /// The normal cap — absolute deadline, or one full window of executor inactivity.
+    case window
+    /// The deadlock backstop: the executor claimed to be busy for the entire ceiling.
+    case absoluteCeiling
 }
 
 package struct _TestTimeoutError: Error, Equatable {

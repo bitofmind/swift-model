@@ -259,6 +259,48 @@ struct ReactiveWaitInfrastructureTests {
         #expect(result == "ok")
     }
 
+    /// The inactivity watchdog cannot see a deadlock, so an absolute ceiling
+    /// backstops it. This pins the ceiling's existence.
+    ///
+    /// A deadlocked job never returns from `runSynchronously`, so `outstanding`
+    /// never drops and `_DrainTestExecutor.activityNs` reports `now` forever —
+    /// the watchdog's window never elapses and the hang detector is disabled by
+    /// the hang. Measured before the ceiling existed: two model tasks deadlocked
+    /// against each other ran ~8 minutes with no result and no `[TRAIT timeout]`
+    /// against a 30 s cap, and would have run indefinitely.
+    ///
+    /// The probe here returns `now` on every call, which is exactly what a
+    /// deadlocked executor reports — so this reproduces the condition
+    /// deterministically, with no real locks and no reliance on timing.
+    @Test func withTestTimeout_absoluteCeilingFiresWhenActivityProbeNeverGoesStale() async {
+        let startNs = DispatchTime.now().uptimeNanoseconds
+        let seconds = 0.2
+        do {
+            _ = try await _withTestTimeout(
+                seconds: seconds,
+                testTag: "validation-pinned-activity",
+                reportIssueOnTimeout: false,
+                // Never goes stale — the deadlock signature.
+                activityProbe: { DispatchTime.now().uptimeNanoseconds }
+            ) { () async throws -> String in
+                // Never returns on its own; only cancellation can end this.
+                while true { try await Task.sleep(nanoseconds: 20_000_000) }
+            }
+            Issue.record("expected _TestTimeoutError; the ceiling did not fire")
+        } catch is _TestTimeoutError {
+            // Expected: the ceiling, not the window, ended it.
+        } catch {
+            Issue.record("expected _TestTimeoutError, got \(type(of: error)): \(error)")
+        }
+
+        // Lower bound is the point: it must NOT fire at the window (0.2 s) —
+        // that would mean the watchdog saw staleness it cannot actually see.
+        // Upper bound is loose; only termination is being asserted.
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds &- startNs) / 1_000_000_000
+        let ceiling = seconds * Double(_traitAbsoluteCeilingMultiple)
+        #expect(elapsed >= ceiling * 0.5, "fired at \(elapsed)s, before the \(ceiling)s ceiling")
+    }
+
     /// End-to-end: timer fires → `cancelAll` cancels body → body's wait
     /// primitive (`BackgroundCallQueue.waitUntilIdle`) observes cancel and
     /// resumes its parked continuation → body unwinds → `_TestTimeoutError`
