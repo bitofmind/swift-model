@@ -620,7 +620,15 @@ package func _withTestTimeout<R: Sendable>(
             } else {
                 await _parkUntilDeadlineOrCancel(deadlineNs: deadlineNs)
             }
-            return .timeout(.window)
+            // The park also returns when the TASK IS CANCELLED (an external
+            // kill — e.g. xcodebuild's per-test allowance — or the sibling
+            // watchdog winning). A cancelled watchdog must not masquerade as
+            // an elapsed one: it races the body's (slower) cancellation
+            // unwind through `group.next()` and used to win, stamping a
+            // spurious `[TRAIT timeout]` over the real cause. Observed in the
+            // wild as `exceeded 150 s` / `ran 1500 s` reports inside a run
+            // only 280 s old.
+            return Task.isCancelled ? .cancelled : .timeout(.window)
         }
         if activityProbe != nil {
             // BACKSTOP for the one failure the inactivity watchdog structurally
@@ -649,17 +657,32 @@ package func _withTestTimeout<R: Sendable>(
             let ceilingNs = monotonicNanoseconds() &+ windowNs &* UInt64(_traitAbsoluteCeilingMultiple)
             group.addTask {
                 await _parkUntilDeadlineOrCancel(deadlineNs: ceilingNs)
-                return .timeout(.absoluteCeiling)
+                return Task.isCancelled ? .cancelled : .timeout(.absoluteCeiling)
             }
         }
-        guard let first = try await group.next() else {
-            // Unreachable: at least one child task always returns
-            throw CancellationError()
+        // Consume children until the body or a GENUINE timeout resolves. A
+        // `.cancelled` watchdog (unparked by external cancellation, not by its
+        // deadline) is skipped: the body is unwinding and will surface the
+        // cancellation itself — via its thrown `CancellationError` (rethrown
+        // here by `group.next()`) or its normal return value. Reporting the
+        // watchdog's message there would stamp a spurious `[TRAIT timeout]`
+        // over the real cause.
+        var first: _TimedResult<R>? = nil
+        while first == nil {
+            guard let next = try await group.next() else {
+                // All children drained without a body result or genuine
+                // timeout — only possible when everything was cancelled.
+                throw CancellationError()
+            }
+            if case .cancelled = next { continue }
+            first = next
         }
         group.cancelAll()
-        switch first {
+        switch first! {
         case .body(let value):
             return value
+        case .cancelled:
+            throw CancellationError()   // unreachable: filtered above
         case .timeout(let kind):
             if reportIssueOnTimeout {
                 switch kind {
@@ -705,6 +728,10 @@ let _traitAbsoluteCeilingMultiple = ModelTestingTraitOptions.absoluteCeilingMult
 package enum _TimedResult<T: Sendable>: Sendable {
     case body(T)
     case timeout(_TimeoutKind)
+    /// A watchdog child unparked by CANCELLATION rather than its deadline —
+    /// carries no verdict; the consumer skips it and keeps waiting for the
+    /// body (whose thrown `CancellationError` reports the real cause).
+    case cancelled
 }
 
 package enum _TimeoutKind: Sendable {

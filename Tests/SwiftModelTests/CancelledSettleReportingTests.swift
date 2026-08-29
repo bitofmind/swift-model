@@ -47,6 +47,39 @@ struct CancelledSettleReportingTests {
         }
     }
 
+    /// External cancellation of a `_withTestTimeout`-wrapped body (xcodebuild's
+    /// per-test allowance, a parent teardown) must NEVER surface as a
+    /// `[TRAIT timeout]`: the parked watchdog children also unpark on
+    /// cancellation and used to race the body's slower unwind through
+    /// `group.next()`, stamping a spurious timeout report (observed in the
+    /// wild as an "ran 1500 s" ceiling message inside a 280 s test run). The
+    /// probe returns `now` so no genuine window can elapse — only
+    /// cancellation can unpark the watchdogs here.
+    @Test func externallyCancelledTraitCapDoesNotReportTimeout() async {
+        let task = Task {
+            try await _withTestTimeout(
+                seconds: 60,
+                testTag: "cancel-race",
+                activityProbe: { DispatchTime.now().uptimeNanoseconds }
+            ) { () -> Int in
+                try? await Task.sleep(nanoseconds: 3_600_000_000_000)
+                return 7
+            }
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+        switch await task.result {
+        case .success(let value):
+            #expect(value == 7)
+        case .failure(let error):
+            #expect(!(error is _TestTimeoutError),
+                    "external cancellation must not be reported as a trait timeout")
+        }
+        // The absence of a recorded `[TRAIT timeout]` issue is the other half
+        // of the assertion — pre-fix, the racing watchdog's reportIssue fails
+        // this test on its own.
+    }
+
     /// CONTROL: the cancellation check must not suppress normal resolution — an
     /// uncancelled settle on a quiescent model still reaches its fixpoint.
     @Test func uncancelledSettleOnQuiescentModelSettles() async {
