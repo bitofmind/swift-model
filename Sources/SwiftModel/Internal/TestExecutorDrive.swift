@@ -400,7 +400,20 @@ extension TestAccess {
     /// Grace window for `settle`'s fixpoint debounce. `settle` is forgiving (a
     /// slightly early settle just means the next line re-settles), so it uses a
     /// short grace. Tunable knob.
-    static var _settleGraceNs: UInt64 { 30_000_000 }   // 30 ms
+    ///
+    /// Scaled by `SWIFT_MODEL_TIMEOUT_SCALE`, like `_expectGraceNs`: the grace
+    /// measures "how much silence means the model is done", and on an
+    /// environment whose execution is uniformly slower (TSan 5–15×, saturated
+    /// small CI runners) the same real scheduling gap spans proportionally
+    /// more wall-clock — an unscaled 30 ms reads a mid-chain 5 ms hop as
+    /// quiet and settles prematurely (the
+    /// `settleIsLoadIndependentAcrossChildTasks` TSan-CI flake shape). This is
+    /// measurement calibration, not a failure deadline: settle still never
+    /// fails on wall-clock, it only waits `scale`-proportionally longer before
+    /// declaring quiet.
+    static var _settleGraceNs: UInt64 {
+        UInt64(30_000_000 * ModelTestingTraitOptions.timeoutScale)   // 30 ms × scale
+    }
 
     /// Runaway-fire bound: how many deliveries a SINGLE reactive call-site may
     /// accumulate within one drive wait before the wait fails as a runaway.
