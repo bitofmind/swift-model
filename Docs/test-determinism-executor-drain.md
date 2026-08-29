@@ -997,3 +997,29 @@ Each step is independently shippable and reversible.
 > "convergent cascade settles / non-convergent never does" mechanism is the
 > Update 21–23 dedup story (env writes dedup for Equatable values; `Observed`
 > dedups on `isSame` output).
+>
+> **Update 27 — cancelled settle no longer misreports; hang watchdog scales.**
+> Second field report from `parallel-apple` (the ShowcaseTests flake handover, a
+> 6-target parallel `xcodebuild` plan at `SWIFT_MODEL_TIMEOUT_SCALE=5`): failing
+> runs showed a constant set of `settle() timed out: model never reached a
+> fixpoint` issues alongside dozens of `[TRAIT timeout]`s, and the fixpoint
+> messages sent the investigation chasing the model task named in the
+> diagnostics. Two infrastructure findings:
+>
+> 1. `_driveToStableFixpoint` returns `false` for BOTH the hang watchdog and
+>    Task cancellation, and `waitUntilSettled`'s drive path failed on either —
+>    so a trait-cap teardown (or `xcodebuild`'s per-test allowance) with a
+>    settle in flight recorded the fixpoint message as a spurious secondary
+>    issue. The wall-clock path always suppressed its `.cancelled` outcome; the
+>    drive path now gates the fail on `!Task.isCancelled`
+>    (`CancelledSettleReportingTests`, verified red pre-fix).
+> 2. `_executorHangDeadlineNs` was a fixed 120 s while every other timeout
+>    scales. The fixpoint check waits on drains that empty on the ONE shared
+>    main thread (`main.waitForCurrentItems` — §Update 12), and with several
+>    saturated test *processes* competing for the machine those drains can push
+>    a healthy settle past an unscaled 120 s — a false non-fixpoint the scale
+>    knob couldn't relieve. The window (`_executorHangWindowNs`, shared with
+>    `waitUntil`'s absolute backstop) is now `120 s × scale`; the orderings stay
+>    scale-invariant (trait inactivity window `30×scale` < watchdog `120×scale`
+>    < absolute ceiling `300×scale`), pinned by
+>    `hangWatchdogStaysBetweenTraitWindowAndCeiling`.

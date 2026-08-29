@@ -92,7 +92,7 @@ package func waitUntil(
     }
     #endif
     let absoluteTimeout = activityProbe != nil
-        ? 120_000_000_000   // watchdog backstop (see `_executorHangDeadlineNs`)
+        ? _executorHangWindowNs()   // watchdog backstop, 120 s × scale (see `_executorHangDeadlineNs`)
         : UInt64(Double(timeout) * ModelTestingTraitOptions.timeoutScale)
     try await _waitUntil(
         condition: condition,

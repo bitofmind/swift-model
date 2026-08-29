@@ -41,8 +41,21 @@ enum _TestExecutorBox {
 /// long before this. **Tunable knob** (maintainer judgment): large enough to
 /// never fire on a healthy wait under heavy parallel load; small enough that an
 /// interactive deadlock surfaces in reasonable time.
+///
+/// Scaled by `SWIFT_MODEL_TIMEOUT_SCALE`, like every other infrastructure
+/// timeout. The drive's fixpoint check waits on the shared main thread
+/// (`main.waitForCurrentItems`) among other drains, and on a machine
+/// oversubscribed by several concurrent test *processes* those drains can
+/// stretch past an unscaled 120 s on a perfectly healthy test — exactly the
+/// environment the scale knob exists for. The ordering invariants hold at
+/// every scale: the watchdog (120×scale) stays above the trait's inactivity
+/// window (30×scale) and below its absolute ceiling (300×scale).
+func _executorHangWindowNs() -> UInt64 {
+    UInt64(120_000_000_000 * ModelTestingTraitOptions.timeoutScale)   // 120 s × scale
+}
+
 func _executorHangDeadlineNs() -> UInt64 {
-    _drainMonotonicNs() &+ 120_000_000_000   // 120 s
+    _drainMonotonicNs() &+ _executorHangWindowNs()
 }
 
 private final class _GTSSleepState: @unchecked Sendable {

@@ -93,7 +93,14 @@ extension TestAccess {
         // fails. See docs/test-determinism-executor-drain.md.
         if _isExecutorDriveActive {
             let reached = await _driveToStableFixpoint(hangDeadlineNs: _executorHangDeadlineNs(), graceNs: Self._settleGraceNs)
-            if !reached, !cleanup {
+            // `_driveToStableFixpoint` returns `false` for BOTH the hang
+            // watchdog and Task cancellation. Only the watchdog is settle's
+            // own finding; a cancelled wait (the trait cap tearing the test
+            // down, or an external kill) has already been reported by whoever
+            // cancelled — mirroring the wall-clock path's `.cancelled` case
+            // below. Reporting it here as "never reached a fixpoint" buries
+            // the real signal under a misleading secondary issue.
+            if !reached, !cleanup, !Task.isCancelled {
                 fail("settle() timed out: model never reached a fixpoint (deadlock or runaway).\n\(settleDiagnostics())", at: fileAndLine)
             }
             return reached
