@@ -61,20 +61,130 @@ struct CancelledSettleReportingTests {
         }
     }
 
-    /// The hang watchdog now scales with `SWIFT_MODEL_TIMEOUT_SCALE`; pin the
-    /// ordering that makes that safe at every scale: above the trait cap's
-    /// inactivity window (a busy-but-healthy test is judged by the watchdog,
-    /// not the cap) and below the trait's absolute deadlock ceiling (a
-    /// never-quiescent wait still fails via the watchdog's catchable report
-    /// before the ceiling tears the test down).
-    @Test func hangWatchdogStaysBetweenTraitWindowAndCeiling() {
+    /// Pin the timeout orderings that keep the drive's bounds coherent at
+    /// every `SWIFT_MODEL_TIMEOUT_SCALE`:
+    ///   • `waitUntil`'s absolute backstop sits above the trait cap's
+    ///     inactivity window (a busy test hasn't tripped that) and below the
+    ///     trait's absolute ceiling (so a never-true `waitUntil` fails via the
+    ///     catchable `WaitUntilTimeoutError` before the uncatchable trait
+    ///     ceiling).
+    ///   • The drive's last-resort termination ceiling sits ABOVE the trait's
+    ///     absolute ceiling, so wherever the trait is present its more
+    ///     specific diagnostics always fire first and the drive wait is
+    ///     cancelled (reported silently) rather than racing it.
+    @Test func driveBoundsKeepTheirOrderingAtEveryScale() {
         // `SWIFT_MODEL_TEST_TIMEOUT` overrides the trait window absolutely,
-        // decoupling it from the scale this invariant is about.
+        // decoupling it from the scale these invariants are about.
         guard ProcessInfo.processInfo.environment["SWIFT_MODEL_TEST_TIMEOUT"] == nil else { return }
-        let watchdogSeconds = Double(_executorHangWindowNs()) / 1_000_000_000
+        let backstopSeconds = Double(_executorHangWindowNs()) / 1_000_000_000
         let traitWindowSeconds = ModelTestingTraitOptions.testWallClockSeconds
-        #expect(watchdogSeconds > traitWindowSeconds)
-        #expect(watchdogSeconds < traitWindowSeconds * Double(_traitAbsoluteCeilingMultiple))
+        let traitCeilingSeconds = traitWindowSeconds * Double(ModelTestingTraitOptions.absoluteCeilingMultiple)
+        let driveCeilingSeconds = Double(_driveCeilingDeadlineNs() &- DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
+        #expect(backstopSeconds > traitWindowSeconds)
+        #expect(backstopSeconds < traitCeilingSeconds)
+        #expect(driveCeilingSeconds > traitCeilingSeconds)
+    }
+}
+
+/// Regression coverage for the drive's **evidence-based runaway verdict**.
+///
+/// The drive never judges a wait on wall-clock: a healthy settle waits as long
+/// as load requires, and the failure discriminator for "never reaches a
+/// fixpoint" is WORK — one reactive call-site accumulating an unbounded number
+/// of deliveries within a single wait (`_settleRunawayFireBound`). This suite
+/// ignites a genuine feedback loop (an `onChange` that writes its own source)
+/// and asserts settle fails on the fire evidence, promptly and with the
+/// runaway wording — replacing the old fixed 120 s watchdog, which was both
+/// too slow interactively and falsely trippable by a merely-starved healthy
+/// wait under multi-process load.
+@Suite("drive settle() runaway evidence")
+struct DriveRunawaySettleTests {
+
+    @Test func feedbackLoopFailsSettleOnFireEvidence() async {
+        guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) else { return }
+        await TestAccessOverrides.$settleRunawayFireBound.withValue(200) {
+            await withModelTesting(.off) {
+                let model = RunawayFeedbackModel().withAnchor()
+                await withKnownIssue {
+                    model.count = 1   // ignite the feedback loop
+                    // Bound the meta-test on REGRESSION only: if the runaway
+                    // verdict never lands, cancel the settle (silent — the
+                    // cancellation fix above) so `withKnownIssue` fails fast
+                    // with "no known issue recorded" instead of parking on the
+                    // drive's multi-minute termination ceiling. On the normal
+                    // path the verdict arrives within ~a check interval and
+                    // the guard never fires.
+                    let settleTask = Task { await settle() }
+                    let guardSeconds = 20 * ModelTestingTraitOptions.timeoutScale
+                    let guardTask = Task {
+                        try? await Task.sleep(nanoseconds: UInt64(guardSeconds * 1_000_000_000))
+                        settleTask.cancel()
+                    }
+                    await settleTask.value
+                    guardTask.cancel()
+                } matching: { issue in
+                    String(describing: issue).contains("runaway")
+                }
+                // Quench the loop before leaving the test so teardown (cleanup
+                // settle, exhaustion diff) runs against a convergent model —
+                // and prove settle recovers once the feedback is broken.
+                model.stopped = true
+                await settle()
+            }
+        }
+    }
+}
+
+/// Feedback loop: every change to `count` re-fires the `onChange`, which
+/// writes `count` again — the canonical non-converging reactive cascade
+/// (Update 26's consumer-reported shape). `stopped` lets the test quench the
+/// loop deterministically before teardown. Declared at file scope because
+/// `@Model` cannot be applied to a nested type.
+@Model private struct RunawayFeedbackModel {
+    var count = 0
+    var stopped = false
+    func onActivate() {
+        node.onChange(of: count, initial: false) { _, _ in
+            if !stopped { count += 1 }
+        }
+    }
+}
+
+/// Unit coverage for the progress signals feeding the `.modelTesting` trait
+/// cap's inactivity watchdog. The watchdog's probe is the union of executor
+/// activity and the scope's `progressNs` (model activity + main/background
+/// observation drains) — so a test legitimately parked on a slow main-thread
+/// drain keeps resetting its window instead of being declared inactive (the
+/// trait-timeout cascade observed under multi-process saturation).
+@Suite("trait inactivity-probe progress signals")
+struct TraitProgressSignalTests {
+
+    @Test func mainQueueStampsProgressOnDrain() async {
+        let q = MainCallQueue()
+        #expect(q.lastProgressNs == 0)
+        // Enqueue from off-main so the enqueue path (not the on-main inline
+        // fast-path) is exercised — the case the drain stamp exists for.
+        await Task.detached { q {} }.value
+        await q.waitUntilIdle()
+        #expect(q.lastProgressNs > 0)
+    }
+
+    @Test func backgroundQueueStampsProgressOnDrain() async {
+        let q = BackgroundCallQueue()
+        #expect(q.lastProgressNs == 0)
+        q {}
+        await q.waitUntilIdle()
+        #expect(q.lastProgressNs > 0)
+    }
+
+    /// Model activity (`_noteActivity`: writes / events / probes / task
+    /// starts) must surface through the scope's `progressNs`, which is what
+    /// the trait's probe reads.
+    @Test func modelActivityFeedsScopeProgress() async {
+        let tester = ModelTester(CancelledSettleModel(), exhaustivity: .off)
+        let scope = _ConcreteModelTestScope(tester: tester)
+        tester.access._noteActivity()
+        #expect(scope.progressNs > 0)
     }
 }
 

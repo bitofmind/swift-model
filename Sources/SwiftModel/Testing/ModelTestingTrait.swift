@@ -519,11 +519,22 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
             // watchdog resets its window on every executor advance and only
             // fires after a full window of NO activity (a genuine stall). Flag
             // off ⇒ `activityProbe` is nil ⇒ the original absolute cap, unchanged.
+            // The probe is the union of every progress conduit this test's
+            // work can flow through: the drain executor (enqueues/completions)
+            // AND the scope's `progressNs` (model activity, main/background
+            // observation drains — the same conduits the drive's fixpoint
+            // check waits on). Executor activity alone under-counts: a test
+            // legitimately parked on a starved main-thread drain (several
+            // saturated test processes sharing one machine) shows no executor
+            // activity for the whole stall and was declared "inactive" —
+            // trait-cap cascades observed in the field (parallel-apple,
+            // 2026-08). With the union, a test is only inactive when NOTHING
+            // of its own moves for a full window.
             let activityProbe: (@Sendable () -> UInt64)?
             #if canImport(Dispatch)
             if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
                let exec = execBox as? _DrainTestExecutor {
-                activityProbe = { exec.activityNs }
+                activityProbe = { max(exec.activityNs, pending.progressNs) }
             } else {
                 activityProbe = nil
             }
@@ -687,7 +698,9 @@ package func _withTestTimeout<R: Sendable>(
 /// absolute). Sized so no healthy test can reach it: the watchdog fires after one
 /// window of genuine quiet, so reaching `multiple × window` means the executor claimed
 /// to be busy for the entire span — the deadlock signature described at the use site.
-let _traitAbsoluteCeilingMultiple = 10
+/// The value lives in `ModelTestingTraitOptions` so the executor drive (compiled on
+/// every platform) can derive its own last-resort ceiling from the same constant.
+let _traitAbsoluteCeilingMultiple = ModelTestingTraitOptions.absoluteCeilingMultiple
 
 package enum _TimedResult<T: Sendable>: Sendable {
     case body(T)

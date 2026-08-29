@@ -92,18 +92,39 @@ extension TestAccess {
         // necessary; only a genuine deadlock (no fixpoint within the watchdog)
         // fails. See docs/test-determinism-executor-drain.md.
         if _isExecutorDriveActive {
-            let reached = await _driveToStableFixpoint(hangDeadlineNs: _executorHangDeadlineNs(), graceNs: Self._settleGraceNs)
-            // `_driveToStableFixpoint` returns `false` for BOTH the hang
-            // watchdog and Task cancellation. Only the watchdog is settle's
-            // own finding; a cancelled wait (the trait cap tearing the test
-            // down, or an external kill) has already been reported by whoever
-            // cancelled — mirroring the wall-clock path's `.cancelled` case
-            // below. Reporting it here as "never reached a fixpoint" buries
-            // the real signal under a misleading secondary issue.
-            if !reached, !cleanup, !Task.isCancelled {
-                fail("settle() timed out: model never reached a fixpoint (deadlock or runaway).\n\(settleDiagnostics())", at: fileAndLine)
+            let outcome = await _driveToStableFixpoint(
+                hangDeadlineNs: _driveCeilingDeadlineNs(),
+                graceNs: Self._settleGraceNs,
+                runawayBound: Self._settleRunawayFireBound
+            )
+            switch outcome {
+            case .reached:
+                return true
+            case .runaway(_, let fires):
+                // Evidence-based verdict: one reactive call-site did `fires`
+                // deliveries within this one settle without ever letting the
+                // model go quiet — unbounded same-site work, which no amount
+                // of load can produce from a healthy (bounded) pending set.
+                // `settleDiagnostics()` names the site via the runaway callout.
+                if !cleanup {
+                    fail("settle() timed out: model never reached a fixpoint — a reactive source fired \(fires)× within this settle without a single quiet gap (runaway).\n\(settleDiagnostics())", at: fileAndLine)
+                }
+                return false
+            case .gaveUp:
+                // Cancellation (the trait cap tearing the test down, or an
+                // external kill) is the canceller's report, not settle's —
+                // mirroring the wall-clock path's `.cancelled` case below.
+                // Reporting it here as "never reached a fixpoint" buries the
+                // real signal under a misleading secondary issue. An
+                // uncancelled `.gaveUp` is the last-resort termination ceiling
+                // (`_driveCeilingDeadlineNs`): a wait that produced neither a
+                // fixpoint nor runaway evidence for the whole span — a
+                // deadlocked drain, or a non-reactive runaway writer.
+                if !cleanup, !Task.isCancelled {
+                    fail("settle() timed out: model never reached a fixpoint (deadlock or runaway).\n\(settleDiagnostics())", at: fileAndLine)
+                }
+                return false
             }
-            return reached
         }
 
         let window = cleanup ? Self.settleDebounceCleanupNs : Self.settleDebounceInTestNs

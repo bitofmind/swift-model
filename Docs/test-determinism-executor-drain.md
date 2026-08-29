@@ -998,28 +998,56 @@ Each step is independently shippable and reversible.
 > Update 21–23 dedup story (env writes dedup for Equatable values; `Observed`
 > dedups on `isSame` output).
 >
-> **Update 27 — cancelled settle no longer misreports; hang watchdog scales.**
-> Second field report from `parallel-apple` (the ShowcaseTests flake handover, a
-> 6-target parallel `xcodebuild` plan at `SWIFT_MODEL_TIMEOUT_SCALE=5`): failing
-> runs showed a constant set of `settle() timed out: model never reached a
-> fixpoint` issues alongside dozens of `[TRAIT timeout]`s, and the fixpoint
-> messages sent the investigation chasing the model task named in the
-> diagnostics. Two infrastructure findings:
+> **Update 27 — the fail path goes evidence-based: runaway-fire verdict, no
+> wall-clock discriminator, and a progress-complete trait probe.** Second field
+> report from `parallel-apple` (the ShowcaseTests flake handover, a 6-target
+> parallel `xcodebuild` plan at `SWIFT_MODEL_TIMEOUT_SCALE=5`): failing runs
+> showed a constant set of `settle() timed out: model never reached a fixpoint`
+> issues alongside dozens of `[TRAIT timeout]`s, on tests that pass 198/198 in
+> isolation. Root cause: six saturated test *processes* starve the ONE shared
+> main thread that the fixpoint check's observation drains empty onto
+> (§Update 12), so healthy settles blow the fixed 120 s watchdog — and the
+> trait cap's executor-only inactivity probe reads the same main-parked tests
+> as "inactive" and cuts them down in a cascade. The 120 s watchdog was the
+> last wall-clock *discriminator* left on the fail path, and it embodied the
+> disease this whole document is about: wall-clock cannot distinguish a
+> runaway (fail fast!) from a starved healthy wait (never fail!). Scaling it
+> would have been timeout-hunting. Three changes instead:
 >
-> 1. `_driveToStableFixpoint` returns `false` for BOTH the hang watchdog and
->    Task cancellation, and `waitUntilSettled`'s drive path failed on either —
->    so a trait-cap teardown (or `xcodebuild`'s per-test allowance) with a
->    settle in flight recorded the fixpoint message as a spurious secondary
->    issue. The wall-clock path always suppressed its `.cancelled` outcome; the
->    drive path now gates the fail on `!Task.isCancelled`
->    (`CancelledSettleReportingTests`, verified red pre-fix).
-> 2. `_executorHangDeadlineNs` was a fixed 120 s while every other timeout
->    scales. The fixpoint check waits on drains that empty on the ONE shared
->    main thread (`main.waitForCurrentItems` — §Update 12), and with several
->    saturated test *processes* competing for the machine those drains can push
->    a healthy settle past an unscaled 120 s — a false non-fixpoint the scale
->    knob couldn't relieve. The window (`_executorHangWindowNs`, shared with
->    `waitUntil`'s absolute backstop) is now `120 s × scale`; the orderings stay
->    scale-invariant (trait inactivity window `30×scale` < watchdog `120×scale`
->    < absolute ceiling `300×scale`), pinned by
->    `hangWatchdogStaysBetweenTraitWindowAndCeiling`.
+> 1. **Cancelled settle no longer misreports.** `_driveToStableFixpoint`
+>    returns non-`.reached` for BOTH the termination ceiling and Task
+>    cancellation, and the settle path failed on either — so a trait-cap
+>    teardown with a settle in flight recorded the fixpoint message as a
+>    spurious secondary issue (these were the field report's 7 recurring
+>    "settle timeouts", which sent the investigation chasing the model task
+>    named in the diagnostics). The drive path now mirrors the wall-clock
+>    path's `.cancelled` suppression (`CancelledSettleReportingTests`,
+>    verified red pre-fix).
+> 2. **The fail verdict is WORK, not time.** A wait fails as a runaway when
+>    one reactive call-site accumulates `_settleRunawayFireBound` (50 000;
+>    task-local override for meta-tests) deliveries within that single wait
+>    while still firing — Update 26's runaway *diagnostic* promoted to the
+>    *trigger*. A healthy wait's pending work is bounded regardless of how
+>    slowly load drains it, so it can never produce this evidence; a feedback
+>    loop produces it in milliseconds interactively (~0.1 s in
+>    `DriveRunawaySettleTests`, vs 120 s before) and merely later under load.
+>    Wiring this up exposed that `_onChangeImpl`'s two delivery loops never
+>    called `reactiveBodyFired` (only `_forEachImpl` did) — an `onChange`
+>    feedback loop, the exact shape Update 26 described, was invisible to the
+>    callout. Both loops are now instrumented. The only remaining deadline is
+>    a pure TERMINATION ceiling at 2× the trait's absolute ceiling
+>    (`_driveCeilingDeadlineNs`, derived from the trait's own constants) for
+>    trait-less contexts (`withModelTesting`) and non-reactive stalls; the
+>    busy-side waits wake on a 1 s cadence purely to re-inspect the evidence.
+> 3. **The trait probe is progress-complete.** The inactivity watchdog's probe
+>    was `exec.activityNs` alone; it now unions the scope's `progressNs` —
+>    model activity (`_noteActivity`) plus per-batch drain stamps on the
+>    main/background call queues, i.e. every conduit the fixpoint check itself
+>    waits on. A test parked on a slow main drain keeps resetting its window
+>    as batches land; only a test where nothing of its own moves for a full
+>    window trips the cap (`TraitProgressSignalTests`).
+>
+> `waitUntil`'s absolute backstop under the drive now scales (120 s × scale)
+> purely to keep its ordering catchable-in-test at every scale; the invariants
+> (trait window < backstop < trait ceiling < drive termination ceiling) are
+> pinned by `driveBoundsKeepTheirOrderingAtEveryScale`.

@@ -42,6 +42,10 @@ package protocol _AnyModelTestScope: AnyObject, Sendable {
     func cancelAndCleanup()
     func waitForTeardown() async
     var exhaustivity: _ExhaustivityBits { get set }
+    /// Monotonic-ns of this test's most recent non-executor progress (model
+    /// activity, main/background observation drains — `TestAccess._progressNs`).
+    /// Feeds the trait cap's inactivity watchdog; `0` when unknown.
+    var progressNs: UInt64 { get }
 }
 
 // MARK: - Task-local test scope
@@ -96,6 +100,11 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
 
     package var concrete: (any _AnyModelTestScope)? { lock.withLock { _concrete } }
     package var registrationFileAndLine: FileAndLine? { lock.withLock { _registrationFileAndLine } }
+
+    /// Forwards to the concrete scope once `withAnchor()` has registered one;
+    /// `0` before that (the trait cap's window then rests on executor activity
+    /// alone, exactly as before this signal existed).
+    package var progressNs: UInt64 { concrete?.progressNs ?? 0 }
 
     package func assert(settleResetting: _ExhaustivityBits? = nil, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt, predicates: [AssertBuilder.Predicate]) async {
         guard let c = concrete else {
@@ -161,6 +170,8 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
     package init(tester: ModelTester<M>) {
         self.tester = tester
     }
+
+    package var progressNs: UInt64 { tester.access._progressNs }
 
     package func assert(
         settleResetting: _ExhaustivityBits? = nil,

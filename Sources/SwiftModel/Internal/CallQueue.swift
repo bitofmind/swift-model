@@ -23,7 +23,7 @@ private struct CallQueueState {
 /// Drain loop for `MainCallQueue`. Runs on `@MainActor` until the queue is empty,
 /// then cancels the task and fires idle callbacks.
 @MainActor
-private func mainCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
+private func mainCallQueueDrainLoop(state: LockIsolated<CallQueueState?>, progress: LockIsolated<UInt64>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
             guard $0 != nil else { return ([], []) }
@@ -40,6 +40,7 @@ private func mainCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async 
         for f in onIdle { f() }
         guard !batch.isEmpty else { break }
         for call in batch { call() }
+        progress.setValue(monotonicNanoseconds())
         await Task.yield()
     }
 }
@@ -55,7 +56,7 @@ private func mainCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async 
 /// Bonus: per-test `BackgroundCallQueue` drains no longer all compete for
 /// `DispatchQueue.global(.userInitiated)`'s bounded kernel pool, removing a
 /// shared-resource contention bottleneck under parallel test load.
-private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) async {
+private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>, progress: LockIsolated<UInt64>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
             guard $0 != nil else { return ([], []) }
@@ -72,6 +73,7 @@ private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>) 
         for f in onIdle { f() }
         guard !batch.isEmpty else { break }
         for call in batch { call() }
+        progress.setValue(monotonicNanoseconds())
         await Task.yield()
     }
 }
@@ -243,6 +245,15 @@ private func callQueueWait(
 /// background thread before this call).
 struct MainCallQueue: @unchecked Sendable {
     private let state = LockIsolated<CallQueueState?>(nil)
+    /// Monotonic-ns of the most recent processed batch — a "this queue is
+    /// making progress" signal for the `.modelTesting` trait's inactivity
+    /// watchdog (a test parked waiting on a slow main drain is progressing,
+    /// not stalled). Stamped once per drained batch, so the production cost
+    /// is one locked store per drain cycle, not per item.
+    private let progress = LockIsolated<UInt64>(0)
+
+    /// Monotonic-ns of the last drained batch; `0` if nothing was ever drained.
+    var lastProgressNs: UInt64 { progress.value }
 
     // MARK: Enqueue
 
@@ -259,7 +270,7 @@ struct MainCallQueue: @unchecked Sendable {
         state.withValue {
             if $0 == nil {
                 $0 = CallQueueState(task: Task(priority: .userInitiated) { @MainActor in
-                    await mainCallQueueDrainLoop(state: self.state)
+                    await mainCallQueueDrainLoop(state: self.state, progress: self.progress)
                 }, calls: [callback])
             } else {
                 $0!.calls.append(callback)
@@ -284,6 +295,7 @@ struct MainCallQueue: @unchecked Sendable {
         MainActor.assumeIsolated {
             for call in calls { call() }
         }
+        progress.setValue(monotonicNanoseconds())
     }
 
     /// Drains pending callbacks if currently on the main thread; no-op otherwise.
@@ -315,6 +327,11 @@ struct MainCallQueue: @unchecked Sendable {
 /// Delivers Observed pipeline updates on a detached cooperative-pool Task.
 struct BackgroundCallQueue: @unchecked Sendable {
     private let state = LockIsolated<CallQueueState?>(nil)
+    /// See `MainCallQueue.progress` — same progress signal, per drained batch.
+    private let progress = LockIsolated<UInt64>(0)
+
+    /// Monotonic-ns of the last drained batch; `0` if nothing was ever drained.
+    var lastProgressNs: UInt64 { progress.value }
 
     // MARK: Enqueue
 
@@ -323,7 +340,7 @@ struct BackgroundCallQueue: @unchecked Sendable {
         state.withValue {
             if $0 == nil {
                 $0 = CallQueueState(task: Task.detached(priority: .userInitiated) {
-                    await backgroundCallQueueDrainLoop(state: self.state)
+                    await backgroundCallQueueDrainLoop(state: self.state, progress: self.progress)
                 }, calls: [callback])
             } else {
                 $0!.calls.append(callback)
