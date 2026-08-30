@@ -354,7 +354,23 @@ extension TestAccess {
                 if !main.isIdle { await main.waitForCurrentItems(deadline: checkDeadline) }
                 let idleNow = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.context.hasPendingStartTask
                 if idleNow {
-                    let lastActivity = max(self._lastActivityNsLocked, exec.lastEnqueueNs)
+                    // Debounce against COMPLETIONS too, not just writes and
+                    // enqueues (`exec.activityNs` when idle = max(birth,
+                    // lastEnqueue, lastCompletion)). A task suspended at
+                    // `Task.yield` ends its job (executor idle) and re-enqueues
+                    // only after a scheduler hop; measuring the grace from the
+                    // last ENQUEUE — stamped before that job even ran, so
+                    // pre-aged by the job's queue-wait plus run time under load
+                    // — let the window be already-expired at the completion
+                    // instant, and settle declared a fixpoint inside the
+                    // completion→re-enqueue gap with the child mid-chain
+                    // (`settleIsLoadIndependentAcrossChildTasks` on saturated
+                    // CI runners, plain-parallel and TSan alike). A completion
+                    // IS evidence the model just did work; requiring the grace
+                    // of silence AFTER it closes the gap without widening the
+                    // window — the corroborate-with-completed-work fix the
+                    // grace-scaling revert called for.
+                    let lastActivity = max(self._lastActivityNsLocked, exec.activityNs)
                     let sinceActivity = _drainMonotonicNs() &- lastActivity
                     if sinceActivity >= graceNs {
                         return .reached   // idle, and no activity of any kind for a full grace window
