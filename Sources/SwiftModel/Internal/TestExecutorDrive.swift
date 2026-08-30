@@ -354,7 +354,23 @@ extension TestAccess {
                 if !main.isIdle { await main.waitForCurrentItems(deadline: checkDeadline) }
                 let idleNow = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.context.hasPendingStartTask
                 if idleNow {
-                    let lastActivity = max(self._lastActivityNsLocked, exec.lastEnqueueNs)
+                    // Debounce against COMPLETIONS too, not just writes and
+                    // enqueues (`exec.activityNs` when idle = max(birth,
+                    // lastEnqueue, lastCompletion)). A task suspended at
+                    // `Task.yield` ends its job (executor idle) and re-enqueues
+                    // only after a scheduler hop; measuring the grace from the
+                    // last ENQUEUE — stamped before that job even ran, so
+                    // pre-aged by the job's queue-wait plus run time under load
+                    // — let the window be already-expired at the completion
+                    // instant, and settle declared a fixpoint inside the
+                    // completion→re-enqueue gap with the child mid-chain
+                    // (`settleIsLoadIndependentAcrossChildTasks` on saturated
+                    // CI runners, plain-parallel and TSan alike). A completion
+                    // IS evidence the model just did work; requiring the grace
+                    // of silence AFTER it closes the gap without widening the
+                    // window — the corroborate-with-completed-work fix the
+                    // grace-scaling revert called for.
+                    let lastActivity = max(self._lastActivityNsLocked, exec.activityNs)
                     let sinceActivity = _drainMonotonicNs() &- lastActivity
                     if sinceActivity >= graceNs {
                         return .reached   // idle, and no activity of any kind for a full grace window
@@ -401,19 +417,24 @@ extension TestAccess {
     /// slightly early settle just means the next line re-settles), so it uses a
     /// short grace. Tunable knob.
     ///
-    /// Scaled by `SWIFT_MODEL_TIMEOUT_SCALE`, like `_expectGraceNs`: the grace
-    /// measures "how much silence means the model is done", and on an
-    /// environment whose execution is uniformly slower (TSan 5–15×, saturated
-    /// small CI runners) the same real scheduling gap spans proportionally
-    /// more wall-clock — an unscaled 30 ms reads a mid-chain 5 ms hop as
-    /// quiet and settles prematurely (the
-    /// `settleIsLoadIndependentAcrossChildTasks` TSan-CI flake shape). This is
-    /// measurement calibration, not a failure deadline: settle still never
-    /// fails on wall-clock, it only waits `scale`-proportionally longer before
-    /// declaring quiet.
-    static var _settleGraceNs: UInt64 {
-        UInt64(30_000_000 * ModelTestingTraitOptions.timeoutScale)   // 30 ms × scale
-    }
+    /// **Deliberately NOT scaled by `SWIFT_MODEL_TIMEOUT_SCALE`** (unlike
+    /// `_expectGraceNs`). 1.0.13 scaled it as "measurement calibration" for the
+    /// TSan environment (uniform slowdown made few-ms scheduling hops read as
+    /// 30 ms of quiet → rare premature fixpoints), and the field immediately
+    /// falsified it: at a consumer's scale 5, the quiet bar became 150 ms, and
+    /// a model in a legitimate tight retry loop — whose activity gaps clear
+    /// 30 ms but not 150 ms under a full parallel plan — could never settle
+    /// again, deterministically hanging two of that consumer's tests into their
+    /// 120 s allowance (parallel-phoenix-apple#1065, three consecutive CI runs,
+    /// the last on a fully quiet machine). The general law it taught: the grace
+    /// is not a tolerance to widen but a CONVERGENCE THRESHOLD — every
+    /// millisecond added excludes another class of legitimately-busy model from
+    /// ever settling, and scaling it couples settle's convergence to machine
+    /// congestion, the exact disease the drive exists to avoid. The rare TSan
+    /// premature-fixpoint tail is accepted (and documented) instead; if it ever
+    /// needs closing, the fix must be evidence-based (e.g. corroborating a
+    /// quiet window with completed-work accounting), never a wider window.
+    static var _settleGraceNs: UInt64 { 30_000_000 }   // 30 ms, all scales
 
     /// Runaway-fire bound: how many deliveries a SINGLE reactive call-site may
     /// accumulate within one drive wait before the wait fails as a runaway.
