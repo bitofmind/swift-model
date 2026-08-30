@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.13] — Evidence-based drive verdicts + cancellation-silent test reporting
+
 ### Fixed
 
 - **A cancelled `settle()` no longer reports `settle() timed out: model never reached a fixpoint`.** On the executor-drive path, `_driveToStableFixpoint` returns `false` for *both* the hang watchdog and Task cancellation, and `waitUntilSettled` reported the fixpoint failure for either — so when the `.modelTesting` trait cap (or an external kill such as `xcodebuild`'s per-test allowance) cancelled a test with a settle in flight, the genuine `[TRAIT timeout]` was buried under a misleading secondary issue whose diagnostics pointed at whatever model task happened to be active. The wall-clock path always suppressed its `.cancelled` outcome for exactly this reason ("the trait already reported"); the drive path now checks `Task.isCancelled` and does the same. Surfaced by a downstream field report: a 6-target parallel `xcodebuild` plan where trait-cap teardowns showed up as 7 recurring "never reached a fixpoint" failures, sending the investigation chasing the named model task instead of the cap. `CancelledSettleReportingTests` pins it deterministically (cancel-before-settle → `false` with no recorded issue; verified red pre-fix).
