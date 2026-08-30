@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.14] — Completion-debounced settle fixpoint + grace-scaling revert
+
 ### Fixed
 
 - **The settle fixpoint's grace now debounces against executor COMPLETIONS, closing the premature-fixpoint gap the grace scaling was (wrongly) reaching for.** The quiet window measured silence since the last model write or executor *enqueue* — but a task suspended at `Task.yield` ends its job (executor reads idle) and re-enqueues only after a scheduler hop, and the last enqueue was stamped *before* that job ran, pre-aged by its queue-wait plus run time under load. So at the completion instant the window could already be expired, and `settle` declared a fixpoint inside the completion→re-enqueue gap with a child's chain still mid-flight — `settleIsLoadIndependentAcrossChildTasks` flaking on saturated CI runners, plain-parallel and TSan alike. The grace now debounces against `max(model activity, executor enqueue, executor completion)`: a completion is direct evidence the model just did work, so quiet must last a full grace *after* it. This is the corroborate-quiet-with-completed-work fix — evidence-based, load-independent, and it widens nothing.
