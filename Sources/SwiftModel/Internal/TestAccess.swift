@@ -120,6 +120,10 @@ func yieldToScheduler() async {
 /// reactive migration even though it's no longer a "hard cap" per se.
 enum TestAccessOverrides {
     @TaskLocal static var hardCapNanoseconds: UInt64? = nil
+    /// Meta-test override for the drive's runaway-fire bound (see
+    /// `TestAccess._settleRunawayFireBound`), so runaway-detection tests can
+    /// trigger on a few hundred fires instead of burning the real bound.
+    @TaskLocal static var settleRunawayFireBound: Int? = nil
 }
 
 // Key for tracking context storage writes on dependency models (which have no root-relative keypath).
@@ -1010,6 +1014,22 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// reading the plain `var` without it is a data race even though the value is
     /// a single aligned word.
     var _lastActivityNsLocked: UInt64 { lock { _lastActivityNs } }
+
+    /// Most recent progress signal from ANY of this test's work conduits: model
+    /// activity (writes / events / probes / task starts via `_noteActivity`),
+    /// the per-context main observation queue, and the per-test background
+    /// (`Observed`) queue — the same conduits the executor drive's fixpoint
+    /// check waits on. Feeds the `.modelTesting` trait cap's inactivity
+    /// watchdog alongside executor activity, so a test that is demonstrably
+    /// progressing through a starved main-thread drain is not declared
+    /// inactive; only a test where NOTHING moves for a full window trips the
+    /// cap.
+    var _progressNs: UInt64 {
+        max(
+            _lastActivityNsLocked,
+            max(context.mainCallQueue.lastProgressNs, backgroundCall.lastProgressNs)
+        )
+    }
 
     func _noteActivity() {
         var wakes: [CheckedContinuation<PredicateOutcome, Never>] = []

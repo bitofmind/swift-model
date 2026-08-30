@@ -289,9 +289,15 @@ public extension ModelNode {
         let observed = Observed(initial: initial, removeDuplicates: removeDuplicates, coalesceUpdates: coalesceUpdates, idClosure)
 
         guard cancelPrevious else {
+            let fireFL = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
             return task(name, function: function, isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column) {
                 for await newValue in observed {
                     guard !Task.isCancelled, !context.isDestructed else { return }
+                    // Count this delivery for the settle-timeout runaway trigger and
+                    // diagnostic (no-op outside tests). See ModelAccess.reactiveBodyFired.
+                    // `_forEachImpl` has the same instrumentation; an `onChange` feedback
+                    // loop that writes its own source is the other canonical runaway.
+                    ModelAccess.current?.reactiveBodyFired(fireFL)
 
                     let oldValue = previous.withValue { stored in
                         defer { stored = newValue }
@@ -326,6 +332,9 @@ public extension ModelNode {
 
             for await newValue in observed {
                 guard !Task.isCancelled, !context.isDestructed else { break }
+                // Count this delivery for the settle-timeout runaway trigger and
+                // diagnostic (no-op outside tests). See ModelAccess.reactiveBodyFired.
+                ModelAccess.current?.reactiveBodyFired(fileAndLine)
 
                 // Step 1: cancel the previous body so it observes cancellation at its next
                 // suspension point (cooperative cancellation).

@@ -35,14 +35,47 @@ enum _TestExecutorBox {
     @TaskLocal static var current: (any Sendable)?
 }
 
-/// Generous deadlock watchdog: how long a wait will drive toward a fixpoint
-/// before giving up and reporting (a true deadlock / runaway never reaches a
-/// fixpoint). NOT a per-wait budget — a healthy wait resolves at its fixpoint
-/// long before this. **Tunable knob** (maintainer judgment): large enough to
-/// never fire on a healthy wait under heavy parallel load; small enough that an
-/// interactive deadlock surfaces in reasonable time.
-func _executorHangDeadlineNs() -> UInt64 {
-    _drainMonotonicNs() &+ 120_000_000_000   // 120 s
+/// Outcome of `_driveToStableFixpoint` — see its doc comment.
+enum _DriveFixpointOutcome: Sendable, Equatable {
+    case reached
+    /// One reactive call-site accumulated `fires` deliveries since the wait
+    /// began and was still firing — unbounded same-site work (feedback loop /
+    /// non-`isSame` source). Evidence-based: judged on work done, not time.
+    case runaway(site: FileAndLine, fires: Int)
+    /// Cancelled (the canceller owns the report), or the last-resort
+    /// termination ceiling elapsed.
+    case gaveUp
+}
+
+/// Absolute backstop for `waitUntil` under the drive (see
+/// `WaitUntilCallback.swift`): the case its inactivity window structurally
+/// cannot catch is an executor that stays continuously active while the
+/// polled condition never becomes true. Scaled by `SWIFT_MODEL_TIMEOUT_SCALE`
+/// so the ordering is scale-invariant: above the trait cap's inactivity
+/// window (30×scale — a busy test hasn't tripped that) and below the trait's
+/// absolute ceiling (300×scale — so a never-true `waitUntil` fails via the
+/// catchable `WaitUntilTimeoutError`, absorbable by `withKnownIssue`, before
+/// the trait's uncatchable `_TestTimeoutError` tears the test down).
+func _executorHangWindowNs() -> UInt64 {
+    UInt64(120_000_000_000 * ModelTestingTraitOptions.timeoutScale)   // 120 s × scale
+}
+
+/// Last-resort termination ceiling for the drive loop — NOT a failure
+/// discriminator. The drive judges a wait on **evidence**, never wall-clock:
+/// it resolves at the model's fixpoint however long that takes, and fails
+/// early only on the runaway-fire bound (unbounded same-site reactive work —
+/// see `_settleRunawayFireBound`). This deadline exists purely so a wait whose
+/// evidence never arrives (a deadlocked drain, a non-reactive `while true`
+/// writer) still terminates in contexts the trait cap doesn't cover
+/// (`withModelTesting` installs the drive but no cap). Derived from the trait
+/// cap's own constants at 2× its absolute ceiling, so wherever the trait IS
+/// present, its more specific inactivity-watchdog / ceiling diagnostics always
+/// fire first and cancel this wait (which settle reports silently — the trait
+/// already did).
+func _driveCeilingDeadlineNs() -> UInt64 {
+    let ceilingSeconds = ModelTestingTraitOptions.testWallClockSeconds
+        * Double(2 * ModelTestingTraitOptions.absoluteCeilingMultiple)
+    return _drainMonotonicNs() &+ UInt64(ceilingSeconds * 1_000_000_000)
 }
 
 private final class _GTSSleepState: @unchecked Sendable {
@@ -255,10 +288,20 @@ extension TestAccess {
     }
 
     /// Drive the model to a STABLE fixpoint (quiescent across two consecutive
-    /// checks). Returns `true` at the fixpoint, `false` if the deadlock watchdog
-    /// (`hangDeadlineNs`) fires or the Task is cancelled. No executor → `true`
-    /// (callers gate on `_isExecutorDriveActive`).
-    func _driveToStableFixpoint(hangDeadlineNs: UInt64, graceNs: UInt64) async -> Bool {
+    /// checks). Outcomes:
+    ///   • `.reached` — the fixpoint (however long it took; wall clock never
+    ///     decides this).
+    ///   • `.runaway` — evidence-based early fail: one reactive call-site
+    ///     accumulated `_settleRunawayFireBound` fires since this wait began
+    ///     and was still firing — unbounded same-site work, the runaway
+    ///     signature, judged on work done rather than time elapsed so the
+    ///     verdict is load-independent (a loaded machine reaches it later,
+    ///     never falsely).
+    ///   • `.gaveUp` — the Task was cancelled (trait cap / external kill;
+    ///     the canceller owns the report) or the last-resort termination
+    ///     ceiling (`_driveCeilingDeadlineNs`) elapsed.
+    /// No executor → `.reached` (callers gate on `_isExecutorDriveActive`).
+    func _driveToStableFixpoint(hangDeadlineNs: UInt64, graceNs: UInt64, runawayBound: Int? = nil) async -> _DriveFixpointOutcome {
         #if canImport(Dispatch)
         if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
            let exec = _TestExecutorBox.current as? _DrainTestExecutor {
@@ -291,17 +334,30 @@ extension TestAccess {
             // wait lasts as long as necessary and only declares quiescence once
             // the system is genuinely done. NON-STARVABLE throughout (counter +
             // GTS, never `.background`).
+            // Runaway detection baseline: per-call-site reactive fire counts at
+            // wait entry. A wait that never reaches its fixpoint because ONE
+            // registration keeps firing accumulates an unbounded delta against
+            // this snapshot; bounded pending work — however slowly load lets it
+            // drain — cannot. The busy-side waits below are bounded to a short
+            // re-check cadence (not the ceiling) so a runaway that never lets
+            // the executor go idle is still inspected periodically.
+            let fireBaseline = runawayBound != nil ? _reactiveFireStats() : [:]
             while !Task.isCancelled {
-                if _drainMonotonicNs() >= hangDeadlineNs { return false }
-                await exec.waitUntilIdleOrDeadline(hangDeadlineNs)
-                if !bg.isIdle { await bg.waitForCurrentItems(deadline: hangDeadlineNs) }
-                if !main.isIdle { await main.waitForCurrentItems(deadline: hangDeadlineNs) }
+                let now = _drainMonotonicNs()
+                if now >= hangDeadlineNs { return .gaveUp }
+                if let runawayBound, let runaway = _runawayFireDelta(since: fireBaseline, bound: runawayBound) {
+                    return .runaway(site: runaway.site, fires: runaway.fires)
+                }
+                let checkDeadline = min(hangDeadlineNs, now &+ Self._runawayCheckIntervalNs)
+                await exec.waitUntilIdleOrDeadline(checkDeadline)
+                if !bg.isIdle { await bg.waitForCurrentItems(deadline: checkDeadline) }
+                if !main.isIdle { await main.waitForCurrentItems(deadline: checkDeadline) }
                 let idleNow = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.context.hasPendingStartTask
                 if idleNow {
                     let lastActivity = max(self._lastActivityNsLocked, exec.lastEnqueueNs)
                     let sinceActivity = _drainMonotonicNs() &- lastActivity
                     if sinceActivity >= graceNs {
-                        return true   // idle, and no activity of any kind for a full grace window
+                        return .reached   // idle, and no activity of any kind for a full grace window
                     }
                     // Idle but recent activity — wait out the remainder of the
                     // grace (non-starvable), then re-check; a resuming task will
@@ -309,16 +365,70 @@ extension TestAccess {
                     await _gtsSleep(graceNs &- sinceActivity, hangDeadlineNs: hangDeadlineNs)
                 }
             }
-            return false
+            return .gaveUp
         }
         #endif
-        return true
+        return .reached
+    }
+
+    /// How often the busy-side waits in `_driveToStableFixpoint` wake to
+    /// re-inspect the runaway-fire delta (and the termination ceiling) while
+    /// the model stays continuously busy. Cadence only — never a verdict.
+    static var _runawayCheckIntervalNs: UInt64 { 1_000_000_000 }   // 1 s
+
+    /// The call-site with the largest reactive-fire delta since `baseline`,
+    /// if any site both crossed `bound` and was still firing within the last
+    /// second (a site that stopped firing lets the model reach its fixpoint
+    /// on its own — only a still-hot site is runaway evidence).
+    func _runawayFireDelta(
+        since baseline: [FileAndLine: (count: Int, lastFireNs: UInt64)],
+        bound: Int
+    ) -> (site: FileAndLine, fires: Int)? {
+        let now = _drainMonotonicNs()
+        let stillFiringWindowNs: UInt64 = 1_000_000_000
+        var best: (site: FileAndLine, fires: Int)?
+        for (fl, s) in _reactiveFireStats() {
+            let delta = s.count - (baseline[fl]?.count ?? 0)
+            guard delta >= bound,
+                  s.lastFireNs != 0, now >= s.lastFireNs,
+                  now &- s.lastFireNs <= stillFiringWindowNs else { continue }
+            if best == nil || delta > best!.fires { best = (fl, delta) }
+        }
+        return best
     }
 
     /// Grace window for `settle`'s fixpoint debounce. `settle` is forgiving (a
     /// slightly early settle just means the next line re-settles), so it uses a
     /// short grace. Tunable knob.
-    static var _settleGraceNs: UInt64 { 30_000_000 }   // 30 ms
+    ///
+    /// Scaled by `SWIFT_MODEL_TIMEOUT_SCALE`, like `_expectGraceNs`: the grace
+    /// measures "how much silence means the model is done", and on an
+    /// environment whose execution is uniformly slower (TSan 5–15×, saturated
+    /// small CI runners) the same real scheduling gap spans proportionally
+    /// more wall-clock — an unscaled 30 ms reads a mid-chain 5 ms hop as
+    /// quiet and settles prematurely (the
+    /// `settleIsLoadIndependentAcrossChildTasks` TSan-CI flake shape). This is
+    /// measurement calibration, not a failure deadline: settle still never
+    /// fails on wall-clock, it only waits `scale`-proportionally longer before
+    /// declaring quiet.
+    static var _settleGraceNs: UInt64 {
+        UInt64(30_000_000 * ModelTestingTraitOptions.timeoutScale)   // 30 ms × scale
+    }
+
+    /// Runaway-fire bound: how many deliveries a SINGLE reactive call-site may
+    /// accumulate within one drive wait before the wait fails as a runaway.
+    /// This is the drive's failure discriminator for "never reaches a
+    /// fixpoint" — a unit of WORK, not time, so the verdict is
+    /// load-independent: a saturated machine reaches the bound later, but a
+    /// healthy wait (whose pending work is bounded, however slowly it drains)
+    /// never reaches it at all. Sized orders of magnitude above any legitimate
+    /// same-site burst observed in practice (tests deliver tens to hundreds of
+    /// fires per site per wait; a feedback loop crosses this in seconds while
+    /// unloaded). Meta-tests lower it via
+    /// `TestAccessOverrides.$settleRunawayFireBound`.
+    static var _settleRunawayFireBound: Int {
+        TestAccessOverrides.settleRunawayFireBound ?? 50_000
+    }
 
     /// **`expect` inactivity-fail window (option A — see Update 12/13).** `expect`
     /// NEVER self-fails at a mere fixpoint sample: a predicate that becomes true
@@ -336,8 +446,9 @@ extension TestAccess {
     /// (the model goes quiet at once → fail in ~one window). 2 s default keeps
     /// that interactive fail reasonably fast while being robust to realistic
     /// resume delays; scaled by `timeoutScale` so CI gets proportionally more
-    /// slack. (The deadlock watchdog, `_executorHangDeadlineNs`, remains the
-    /// last-resort cap for a model that never goes quiet at all.)
+    /// slack. (For a model that never goes quiet at all, the runaway-fire bound
+    /// is the discriminator and `_driveCeilingDeadlineNs` the termination
+    /// backstop.)
     static var _expectGraceNs: UInt64 {
         UInt64(2_000_000_000 * ModelTestingTraitOptions.timeoutScale)
     }
@@ -380,12 +491,12 @@ extension TestAccess {
         #if canImport(Dispatch)
         if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
            _TestExecutorBox.current is _DrainTestExecutor {
-            let hang = _executorHangDeadlineNs()
+            let hang = _driveCeilingDeadlineNs()
             let grace = Self._expectGraceNs
             return Task { [weak self] in
                 guard let self else { return }
                 while !Task.isCancelled {
-                    let reached = await self._driveToStableFixpoint(hangDeadlineNs: hang, graceNs: grace)
+                    let outcome = await self._driveToStableFixpoint(hangDeadlineNs: hang, graceNs: grace, runawayBound: Self._settleRunawayFireBound)
                     // CRITICAL: bail the instant this driver is cancelled, BEFORE
                     // touching the shared `_pendingExpects`. `expect()` cancels its
                     // driver the moment its own `awaitPredicate` resolves; the very
@@ -397,9 +508,19 @@ extension TestAccess {
                     // fast, window-independent false failure (the dominant
                     // executor-drive residual: lost last element of an accumulated
                     // Observed/onChange sequence). `_driveToStableFixpoint` returns
-                    // `false` on BOTH cancellation and the hang watchdog, so gate on
+                    // non-`.reached` on BOTH cancellation and the ceiling, so gate on
                     // `Task.isCancelled` specifically.
                     if Task.isCancelled { break }
+                    // A runaway in THIS test is decisive on its own: the model
+                    // will never quiesce, so waiting for the global lull below
+                    // would defer the fail forever (the runaway IS what keeps
+                    // the process busy). Fail the pending predicates now —
+                    // evidence-based, not wall-clock — and stop driving.
+                    if case .runaway = outcome {
+                        self._resolveUnmetPredicatesAtFixpoint()
+                        break
+                    }
+                    let reached = outcome == .reached
                     self._noteActivity()                      // resolve now-true predicates as .passed
                     // GLOBAL-quiescence gate on the FAIL (not per-test): only commit
                     // a fail when the WHOLE process is quiescent — no ready job in ANY
@@ -419,7 +540,7 @@ extension TestAccess {
                     let globalQuiescent = g.outstanding == 0 && g.sinceActivityNs >= grace
                     if globalQuiescent {
                         self._resolveUnmetPredicatesAtFixpoint()  // fail still-unmet predicates
-                        if !reached { break }                     // watchdog tripped (deadlock)
+                        if !reached { break }                     // ceiling tripped (deadlock)
                         await Task.yield()
                     } else {
                         // Per-test quiescent but the global system is busy — defer the
@@ -466,6 +587,6 @@ extension TestAccess {
     /// must live in the class body — Swift forbids overriding in an extension).
     func _driveToStableFixpointErasedImpl() async -> Bool {
         guard _isExecutorDriveActive else { return true }
-        return await _driveToStableFixpoint(hangDeadlineNs: _executorHangDeadlineNs(), graceNs: Self._expectGraceNs)
+        return await _driveToStableFixpoint(hangDeadlineNs: _driveCeilingDeadlineNs(), graceNs: Self._expectGraceNs) == .reached
     }
 }

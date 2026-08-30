@@ -51,4 +51,11 @@ enum ModelTestingTraitOptions {
         }
         return 30 * timeoutScale
     }
+
+    /// How many inactivity windows a test may burn before the trait cap's
+    /// absolute ceiling fires — the deadlock backstop behind the inactivity
+    /// watchdog (see `_withTestTimeout`). Lives here (not in the trait file)
+    /// because the executor drive derives its own last-resort ceiling from it
+    /// and must compile on platforms without swift-testing.
+    static let absoluteCeilingMultiple = 10
 }
