@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reverted 1.0.13's settle-grace scaling — the quiet window is a convergence threshold, not a tolerance.** Scaling `_settleGraceNs` by `SWIFT_MODEL_TIMEOUT_SCALE` was framed as measurement calibration for uniformly-slow environments, and the field falsified it within a day: at a consumer's scale 5 the quiet bar became 150 ms, and a model in a legitimate tight retry loop — whose activity gaps clear 30 ms but not 150 ms under a full parallel test plan — could never reach a settle fixpoint again. Two of that consumer's grace-window tests hung deterministically into their 120 s per-test allowance across three consecutive CI runs, the last on a fully idle machine (parallel-phoenix-apple#1065). The grace is back to a fixed 30 ms at every scale, with the law recorded at the definition: every millisecond added to the quiet window excludes another class of legitimately-busy model from settling, and scaling it couples settle's convergence to machine congestion — the disease the drive exists to avoid. The rare TSan premature-fixpoint tail that motivated the scaling is accepted and documented instead; a future fix must corroborate quiet with completed-work evidence, never widen the window. `_expectGraceNs` is unaffected — it gates only *when a failure may be declared* (deferral), never whether a wait can converge.
+
 ---
 
 ## [1.0.13] — Evidence-based drive verdicts + cancellation-silent test reporting
