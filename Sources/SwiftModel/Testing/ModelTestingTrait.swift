@@ -354,13 +354,19 @@ public func withExhaustivity(
 /// Dependency overrides passed here are applied before any overrides in `withAnchor()`,
 /// so `withAnchor`-level overrides win (same precedence as `.modelTesting(dependencies:)`).
 ///
+/// Exhaustivity and dependencies both inherit from the enclosing scope, so a scope
+/// nested in a `@Suite(.modelTesting(exhaustivity: .off))` runs at `.off` too. Pass an
+/// absolute preset to override that deliberately.
+///
 /// - Parameters:
-///   - exhaustivity: Exhaustivity modifier to apply. Defaults to `.full`. Pass an absolute
-///     preset (`.off`, `.full`, `.state`) or a relative modifier (`.removing(.events)`).
+///   - exhaustivity: Exhaustivity modifier to apply. Defaults to `.inherited` — the
+///     enclosing scope's exhaustivity, or `.full` when there is no enclosing scope. Pass
+///     an absolute preset (`.off`, `.full`, `.state`) to override the inherited value, or
+///     a relative modifier (`.removing(.events)`) to compose with it.
 ///   - dependencies: A closure to override dependencies for all models anchored in this scope.
 ///   - body: The test body. Call `withAnchor()` inside to connect a model to the scope.
 public func withModelTesting(
-    exhaustivity: Exhaustivity = .full,
+    exhaustivity: Exhaustivity = .inherited,
     dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in },
     fileID: StaticString = #fileID,
     filePath: StaticString = #filePath,
@@ -439,7 +445,24 @@ private func _withModelTestingImpl(
         parentDependencies(&deps)
         dependencies(&deps)
     }
-    let pending = _PendingModelTestScope(exhaustivity: resolvedExhaustivity, dependencies: mergedDependencies)
+    // When this scope resolves to something other than what it inherited, the resulting
+    // exhaustion failures are reported at the `withAnchor()` line and mention neither the
+    // policy nor its origin — which reads as "the enclosing suite trait didn't apply here".
+    // Name the scope instead. Nothing is attached when the scope simply inherits (the
+    // default), so ordinary failures are unchanged.
+    let exhaustionNote: String? = {
+        guard _ModelTestingLocals.scope != nil, resolvedExhaustivity != parentExhaustivity else { return nil }
+        return """
+            (Exhaustivity here is \(resolvedExhaustivity), set by the withModelTesting scope at \
+            \(fileID):\(line) — it overrides the enclosing scope's \(parentExhaustivity). \
+            Omit the exhaustivity argument to inherit instead.)
+            """
+    }()
+    let pending = _PendingModelTestScope(
+        exhaustivity: resolvedExhaustivity,
+        dependencies: mergedDependencies,
+        exhaustionNote: exhaustionNote
+    )
     let testQueue = BackgroundCallQueue()
     let execBox = _makeTestExecutorBox()
     try await _BackgroundCallLocals.$queue.withValue(testQueue) {
@@ -953,19 +976,23 @@ extension Trait where Self == ModelTestingTrait {
     /// ```
     ///
     /// - Parameters:
-    ///   - exhaustivity: Exhaustivity modifier to apply. Defaults to `.full`. Pass an absolute
-    ///     preset (`.off`, `.full`, `.state`) or a relative modifier (`.removing(.events)`).
+    ///   - exhaustivity: Exhaustivity modifier to apply. Defaults to `.inherited` — the
+    ///     enclosing scope's exhaustivity, or `.full` when there is no enclosing scope. Pass
+    ///     an absolute preset (`.off`, `.full`, `.state`) to override the inherited value, or
+    ///     a relative modifier (`.removing(.events)`) to compose with it.
     ///   - dependencies: A closure to override dependencies for the model.
     public static func modelTesting(
-        exhaustivity: Exhaustivity = .full,
+        exhaustivity: Exhaustivity = .inherited,
         dependencies: @escaping @Sendable (inout ModelDependencies) -> Void = { _ in }
     ) -> Self {
         Self(modifier: exhaustivity, dependencies: dependencies)
     }
 
     /// Activates model testing infrastructure with default settings.
+    ///
+    /// Exhaustivity is `.inherited`: the enclosing scope's, or `.full` when there is none.
     public static var modelTesting: Self {
-        Self(modifier: Exhaustivity { _ in .full }, dependencies: { _ in })
+        Self(modifier: .inherited, dependencies: { _ in })
     }
 }
 

@@ -157,6 +157,11 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     var exhaustivity: _ExhaustivityBits = .full
     var showSkippedAssertions = false
 
+    // Provenance appended to exhaustion failures when the enclosing scope overrode the
+    // exhaustivity it inherited. Without it the failure lands on the `withAnchor()` line
+    // and names neither the policy nor the scope that set it. Guarded by `lock`.
+    private var exhaustionNote: String?
+
     // Pending unasserted state transitions, keyed by root-relative keypath. Populated by
     // didModify; front entries are consumed when the corresponding path is asserted. Any
     // remaining entries at exhaustion time are reported as failures.
@@ -1568,12 +1573,19 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         reportIssue(message, fileID: fileAndLine.fileID, filePath: fileAndLine.filePath, line: fileAndLine.line, column: fileAndLine.column)
     }
 
+    func setExhaustionNote(_ note: String?) {
+        lock { exhaustionNote = note }
+    }
+
     func fail(_ message: String, for area: _ExhaustivityBits, at fileAndLine: FileAndLine) {
+        // Every exhaustion failure routes through here, so this is the one place the
+        // scope provenance needs to be attached.
+        let annotated = lock { exhaustionNote }.map { "\(message)\n\n\($0)" } ?? message
         if lock({ exhaustivity.contains(area) }) {
-            fail(message, at: fileAndLine)
+            fail(annotated, at: fileAndLine)
         } else if lock({ showSkippedAssertions }) {
             withExpectedIssue {
-                fail(message, at: fileAndLine)
+                fail(annotated, at: fileAndLine)
             }
         }
     }

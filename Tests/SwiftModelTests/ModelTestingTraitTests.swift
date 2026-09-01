@@ -1,5 +1,6 @@
 import Testing
 import Observation
+import IssueReporting
 @testable import SwiftModel
 import SwiftModel
 
@@ -265,5 +266,105 @@ struct NestedModifierTests {
             }
         }
         // After block, baseline (.full − .events) restored — no pending side effects here.
+    }
+}
+
+// MARK: - Scope inheritance (`.inherited` default)
+
+// Regression tests for the `withModelTesting` / `.modelTesting` defaults. The mechanism
+// always read the enclosing scope (`_withModelTestingImpl` resolves against
+// `_ModelTestingLocals.scope`), but the default argument used to be `.full` — an absolute
+// preset that discards its base — so a nested scope that stated no opinion silently ran at
+// full exhaustivity inside an `.off` suite. The default is now `.inherited`.
+@Suite(.modelTesting(exhaustivity: .off))
+struct NestedScopeInheritanceTests {
+
+    // A bare nested scope inherits the suite's .off — the unhandled event is not reported.
+    @Test func bareWithModelTestingInheritsSuiteOff() async {
+        let reporter = CapturingIssueReporter()
+        await withIssueReporters([reporter]) {
+            await withModelTesting {
+                let model = TraitCounter().withAnchor()
+                model.increment()
+                // Neither the state change nor the .incremented event is asserted.
+            }
+        }
+        #expect(reporter.messages.isEmpty)
+    }
+
+    // A bare nested trait inherits too — same defect, same fix, via the trait path.
+    @Test(.modelTesting) func bareNestedTraitInheritsSuiteOff() async {
+        let model = TraitCounter().withAnchor()
+        model.increment()
+        // Nothing asserted; suite's .off is inherited rather than reset to .full.
+    }
+
+    // An explicit absolute preset still overrides the inherited value...
+    @Test func explicitFullStillOverrides() async {
+        let reporter = CapturingIssueReporter()
+        await withIssueReporters([reporter]) {
+            await withModelTesting(exhaustivity: .full) {
+                let model = TraitCounter().withAnchor()
+                model.increment()
+            }
+        }
+        #expect(reporter.messages.contains { $0.contains("was not handled") })
+    }
+
+    // ...and when it does, the failure names the scope that set the policy. Without this
+    // the message lands on the `withAnchor()` line and mentions neither the exhaustivity
+    // nor its origin, which reads as if the suite trait had failed to apply.
+    @Test func overridingScopeIsNamedInTheFailure() async {
+        let reporter = CapturingIssueReporter()
+        await withIssueReporters([reporter]) {
+            await withModelTesting(exhaustivity: .full) {
+                let model = TraitCounter().withAnchor()
+                model.increment()
+            }
+        }
+        let joined = reporter.messages.joined(separator: "\n")
+        #expect(joined.contains("withModelTesting scope at"))
+        #expect(joined.contains("overrides the enclosing scope's .off"))
+    }
+
+    // Any resolved value differing from the inherited one is annotated, not just .full.
+    @Test func partialPresetOverrideIsAlsoAnnotated() async {
+        let reporter = CapturingIssueReporter()
+        await withIssueReporters([reporter]) {
+            await withModelTesting(exhaustivity: .events) {
+                let model = TraitCounter().withAnchor()
+                model.increment()
+            }
+        }
+        // .events differs from the inherited .off, so this one *is* annotated.
+        #expect(reporter.messages.contains { $0.contains("withModelTesting scope at") })
+    }
+}
+
+// A top-level scope with nothing to inherit from still defaults to full exhaustivity.
+@Suite
+struct TopLevelScopeDefaultTests {
+
+    @Test func topLevelDefaultsToFull() async {
+        let reporter = CapturingIssueReporter()
+        await withIssueReporters([reporter]) {
+            await withModelTesting {
+                let model = TraitCounter().withAnchor()
+                model.increment()
+            }
+        }
+        #expect(reporter.messages.contains { $0.contains("was not handled") })
+    }
+
+    // Nothing was overridden, so no provenance note is attached.
+    @Test func topLevelFailureCarriesNoProvenanceNote() async {
+        let reporter = CapturingIssueReporter()
+        await withIssueReporters([reporter]) {
+            await withModelTesting {
+                let model = TraitCounter().withAnchor()
+                model.increment()
+            }
+        }
+        #expect(!reporter.messages.contains { $0.contains("withModelTesting scope at") })
     }
 }

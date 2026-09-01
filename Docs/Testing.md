@@ -84,6 +84,12 @@ Scope a test to fewer categories with an absolute set or a relative modifier, at
 await withExhaustivity(.off) { model.triggerSideEffects() }  // for part of a body
 ```
 
+Scopes nest, and a scope that states no opinion inherits the enclosing one — the default
+is `.inherited`, so a bare `withModelTesting { }` or `@Test(.modelTesting)` inside a
+`@Suite(.modelTesting(exhaustivity: .off))` runs at `.off` too. Absolute presets
+(`.full`, `.off`, `.state`, …) *override* what they inherit; relative modifiers
+(`.adding`, `.removing`) compose with it. With no enclosing scope the base is `.full`.
+
 ### Settling
 
 A model that does async work during activation — loading in `onActivate()`, subscribing to streams — may not be ready when `withAnchor()` returns, and asserting every intermediate activation change is brittle. `settle()` waits for activation to quiesce, then resets the exhaustivity baseline so your test covers only what happens *after*:

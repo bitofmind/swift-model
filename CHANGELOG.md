@@ -6,6 +6,16 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- **A nested testing scope now inherits the enclosing scope's exhaustivity instead of resetting to `.full`.** `withModelTesting` and `.modelTesting` always read the scope they are nested in — `_withModelTestingImpl` and `provideScope` both resolve the modifier against `_ModelTestingLocals.scope?.exhaustivity ?? .full`, and relative modifiers (`.adding`/`.removing`) composed correctly. But the *default argument* was `.full`, and `.full` is an absolute preset (`Self { _ in .full }`) that discards its base by construction — so `.full.apply(to: .off) == .full`. A scope that stated no opinion was therefore the one case guaranteed **not** to inherit: `await withModelTesting { … }` inside a `@Suite(.modelTesting(exhaustivity: .off))` silently ran at full exhaustivity. The default is now the new `Exhaustivity.inherited` identity modifier (`Self { $0 }`) for `withModelTesting(exhaustivity:)`, `.modelTesting(exhaustivity:)`, and bare `.modelTesting`. Top-level scopes are unaffected — with no enclosing scope the implicit base is still `.full` — and `exhaustivity: .full` still resets deliberately.
+
+  This was a real trap, not a theoretical one: it was hit and worked around **twice, independently, in the same downstream repo**, each time ending in the same `(exhaustivity: .off)` patch, and both times it only surfaced once a model under test started sending events — until then the affected tests had been running at an exhaustivity nobody had chosen. Three things say it was an oversight rather than a decision: the positional overload's own documentation already promised the opposite ("nested calls compose rather than reset"), `dependencies` in the very same function inherit with a comment saying so, and trait-level composition worked. Note this is a semantic change for anyone who *relied* on the reset — though a survey of every call site in this package and in the largest known consumer found not one that omitted the argument, so in practice it is behaviour-neutral. Someone who wants a reset inside a laxer suite should write `.full` explicitly.
+
+### Fixed
+
+- **An exhaustion failure under an overriding scope now names the scope that set the policy.** The failure was reported at the `withAnchor()` line and mentioned neither the effective exhaustivity nor where it came from, so a nested scope running at an exhaustivity the enclosing suite did not ask for produced a bare `Event … was not handled` with nothing to connect it to the policy. The evidence that this is more than cosmetic: a downstream author debugged the trap above far enough to ship a *correct* workaround and still recorded the wrong mechanism in a code comment — "the suite trait does not reach into it" — when the trait reaches in fine and the default threw the resolved value away. `withModelTesting` already captured its own `#fileID`/`#line` and dropped them unused; they now feed a provenance note appended to the scope's exhaustion failures, naming the resolved exhaustivity, the scope's source location, and the inherited value it overrides. The note is attached only when the scope actually overrode what it inherited, so ordinary failures are unchanged.
+
 ---
 
 ## [1.0.14] — Completion-debounced settle fixpoint + grace-scaling revert
