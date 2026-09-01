@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.15] — Scope-named exhaustion failures + inherited exhaustivity default
+
 ### Changed
 
 - **A nested testing scope now inherits the enclosing scope's exhaustivity instead of resetting to `.full`.** `withModelTesting` and `.modelTesting` always read the scope they are nested in — `_withModelTestingImpl` and `provideScope` both resolve the modifier against `_ModelTestingLocals.scope?.exhaustivity ?? .full`, and relative modifiers (`.adding`/`.removing`) composed correctly. But the *default argument* was `.full`, and `.full` is an absolute preset (`Self { _ in .full }`) that discards its base by construction — so `.full.apply(to: .off) == .full`. A scope that stated no opinion was therefore the one case guaranteed **not** to inherit: `await withModelTesting { … }` inside a `@Suite(.modelTesting(exhaustivity: .off))` silently ran at full exhaustivity. The default is now the new `Exhaustivity.inherited` identity modifier (`Self { $0 }`) for `withModelTesting(exhaustivity:)`, `.modelTesting(exhaustivity:)`, and bare `.modelTesting`. Top-level scopes are unaffected — with no enclosing scope the implicit base is still `.full` — and `exhaustivity: .full` still resets deliberately.
