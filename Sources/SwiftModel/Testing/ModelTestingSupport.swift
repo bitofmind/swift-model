@@ -39,6 +39,9 @@ package protocol _AnyModelTestScope: AnyObject, Sendable {
 
     func install(_ probes: [TestProbe])
     func checkExhaustion(at fileAndLine: FileAndLine) async
+    /// Provenance appended to this scope's exhaustion failures — see
+    /// `_PendingModelTestScope.exhaustionNote`.
+    func setExhaustionNote(_ note: String?)
     func cancelAndCleanup()
     func waitForTeardown() async
     var exhaustivity: _ExhaustivityBits { get set }
@@ -74,17 +77,28 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
     package let initialExhaustivity: _ExhaustivityBits
     package let dependencies: @Sendable (inout ModelDependencies) -> Void
 
-    package init(exhaustivity: _ExhaustivityBits, dependencies: @escaping @Sendable (inout ModelDependencies) -> Void) {
+    /// Appended to every exhaustion failure raised in this scope, naming the scope that
+    /// set the exhaustivity policy. Set only when the scope *overrode* what it inherited:
+    /// without it a failure points at the `withAnchor()` line and says nothing about the
+    /// policy or where it came from, which reads as "the enclosing trait didn't apply".
+    package let exhaustionNote: String?
+
+    package init(
+        exhaustivity: _ExhaustivityBits,
+        dependencies: @escaping @Sendable (inout ModelDependencies) -> Void,
+        exhaustionNote: String? = nil
+    ) {
         self.initialExhaustivity = exhaustivity
         self._exhaustivity = exhaustivity
         self.dependencies = dependencies
+        self.exhaustionNote = exhaustionNote
     }
 
     func register(_ concrete: any _AnyModelTestScope, at fileAndLine: FileAndLine) {
-        let probestoFlush: [TestProbe] = lock.withLock {
+        let probestoFlush: [TestProbe]? = lock.withLock {
             if _concrete != nil {
                 // Multiple withAnchor() calls in one .modelTesting test — only first is root.
-                return []
+                return nil
             }
             _concrete = concrete
             _registrationFileAndLine = fileAndLine
@@ -92,9 +106,14 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
             _pendingProbes = []
             return pending
         }
+        // Only the root registration adopts the scope's probes and exhaustion note.
+        guard let probestoFlush else { return }
         // Flush probes that were registered before withAnchor() was called.
         if !probestoFlush.isEmpty {
             concrete.install(probestoFlush)
+        }
+        if let exhaustionNote {
+            concrete.setExhaustionNote(exhaustionNote)
         }
     }
 
@@ -141,6 +160,10 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
 
     package func checkExhaustion(at fileAndLine: FileAndLine) async {
         await concrete?.checkExhaustion(at: fileAndLine)
+    }
+
+    package func setExhaustionNote(_ note: String?) {
+        concrete?.setExhaustionNote(note)
     }
 
     package func cancelAndCleanup() {
@@ -205,6 +228,10 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         for probe in probes {
             tester.access.install(probe)
         }
+    }
+
+    package func setExhaustionNote(_ note: String?) {
+        tester.access.setExhaustionNote(note)
     }
 
     package func checkExhaustion(at fileAndLine: FileAndLine) async {

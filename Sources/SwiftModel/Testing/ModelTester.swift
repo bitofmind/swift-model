@@ -171,6 +171,24 @@ package struct _ExhaustivityBits: OptionSet, Equatable, Sendable {
     package static let full: Self = [.state, .events, .tasks, .probes, .local, .environment, .preference]
 }
 
+extension _ExhaustivityBits: CustomStringConvertible {
+    /// Source-shaped rendering (`.full`, `.off`, `[.state, .events]`) for diagnostics.
+    package var description: String {
+        if self == .full { return ".full" }
+        if self == .off { return ".off" }
+        // `.transitions` is opt-in and not part of `.full`, so the common opted-in
+        // configuration would otherwise render as all eight category names.
+        if self == .full.union(.transitions) { return ".full + .transitions" }
+        let names: [(Self, String)] = [
+            (.state, ".state"), (.events, ".events"), (.tasks, ".tasks"), (.probes, ".probes"),
+            (.local, ".local"), (.preference, ".preference"), (.environment, ".environment"),
+            (.transitions, ".transitions")
+        ]
+        let present = names.filter { contains($0.0) }.map(\.1)
+        return present.count == 1 ? present[0] : "[\(present.joined(separator: ", "))]"
+    }
+}
+
 /// Controls which categories of side effects the testing framework checks for exhaustion.
 ///
 /// Pass an `Exhaustivity` value to `@Test(.modelTesting(exhaustivity:))`,
@@ -180,7 +198,7 @@ package struct _ExhaustivityBits: OptionSet, Equatable, Sendable {
 /// **Absolute presets** set exhaustivity regardless of the parent scope:
 /// ```swift
 /// @Suite(.modelTesting(exhaustivity: .off))    // → no checks
-/// @Suite(.modelTesting(exhaustivity: .full))   // → all standard checks (default)
+/// @Suite(.modelTesting(exhaustivity: .full))   // → all standard checks
 /// @Suite(.modelTesting(exhaustivity: .state))  // → state only
 /// ```
 ///
@@ -193,7 +211,12 @@ package struct _ExhaustivityBits: OptionSet, Equatable, Sendable {
 /// ```swift
 /// @Suite(.modelTesting(.removing(.events)))    // → inherited − .events
 /// @Suite(.modelTesting(.adding(.transitions))) // → inherited + .transitions
+/// @Suite(.modelTesting(.inherited))            // → inherited, unchanged (the default)
 /// ```
+///
+/// Scopes nest, and a scope that states no opinion inherits the enclosing one — the
+/// default for `.modelTesting` and `withModelTesting` is `.inherited`, not `.full`.
+/// With no enclosing scope the implicit base is `.full`.
 ///
 /// **Instance chaining** chains from a preset:
 /// ```swift
@@ -229,7 +252,11 @@ public struct Exhaustivity: Sendable, ExpressibleByArrayLiteral {
 
     // MARK: - Absolute presets (ignore the inherited exhaustivity)
 
-    /// All standard exhaustivity checks. This is the default.
+    /// All standard exhaustivity checks.
+    ///
+    /// This is the implicit base for a scope with no enclosing scope, and — being an
+    /// absolute preset — it *overrides* any enclosing scope rather than composing with
+    /// it. Use `.inherited` (the default) to compose.
     public static var full: Self { Self { _ in .full } }
 
     /// No exhaustivity checks.
@@ -271,6 +298,27 @@ public struct Exhaustivity: Sendable, ExpressibleByArrayLiteral {
     public static var transitions: Self { Self { _ in .transitions } }
 
     // MARK: - Relative factories (compose with the inherited exhaustivity)
+
+    /// Returns the enclosing scope's exhaustivity unchanged (the identity modifier).
+    ///
+    /// This is the default for `.modelTesting` and `withModelTesting`, so a scope that
+    /// states no opinion inherits the one it is nested in:
+    ///
+    /// ```swift
+    /// @Suite(.modelTesting(exhaustivity: .off))
+    /// struct MyTests {
+    ///     @Test func example() async {
+    ///         await withModelTesting {   // → .off, inherited from the suite
+    ///             …
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// With no enclosing scope the implicit base is `.full`, so top-level scopes are
+    /// unaffected. Pass an absolute preset (`.full`, `.off`, …) to override the
+    /// inherited value instead of composing with it.
+    public static var inherited: Self { Self { $0 } }
 
     /// Returns an exhaustivity that adds the given categories to the inherited exhaustivity.
     ///
