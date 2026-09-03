@@ -114,19 +114,30 @@ struct ExistentialPropertyTests {
         await expect(m.service.name() == "B")
     }
 
-    @Test func optionalAndClassBoundExistentials() async {
-        let o = UserInitOptional(service: ServiceA()).withAnchor()
-        await expect(o.service?.name() == "A")
-        let c = UserInitClassBound(service: ClassServiceImpl()).withAnchor()
-        await expect(c.service.name() == "class")
+    // One anchored root per test: a scope tracks exactly one tree, so these four shapes
+    // get a test each rather than sharing a scope.
+
+    @Test func optionalExistential() async {
+        let m = UserInitOptional(service: ServiceA()).withAnchor()
+        await expect(m.service?.name() == "A")
     }
 
-    @Test func anyAndWrappedExistentials() async {
-        let a = UserInitAny(payload: 42).withAnchor()
-        await expect(a.payload as? Int == 42)
-        let w = UserInitWrapped(wrapper: Wrapper(service: ServiceB(), label: "w")).withAnchor()
-        await expect(w.wrapper.service.name() == "B")
-        await expect(w.wrapper.label == "w")
+    @Test func classBoundExistential() async {
+        let m = UserInitClassBound(service: ClassServiceImpl()).withAnchor()
+        await expect(m.service.name() == "class")
+    }
+
+    @Test func anyPayload() async {
+        let m = UserInitAny(payload: 42).withAnchor()
+        await expect(m.payload as? Int == 42)
+    }
+
+    @Test func existentialWrappedInStruct() async {
+        let m = UserInitWrapped(wrapper: Wrapper(service: ServiceB(), label: "w")).withAnchor()
+        await expect {
+            m.wrapper.service.name() == "B"
+            m.wrapper.label == "w"
+        }
     }
 
     @Test func initBodyCanReadAndMutateBeforeFrameIsComplete() async {
