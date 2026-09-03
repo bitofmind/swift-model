@@ -86,9 +86,11 @@ struct FrozenChildObservationTests {
         let child = p.children.first { $0.id == 1 }!
         #expect(child.id == 1)                       // domain id (Identifiable.id)
         // A second, distinct instance reusing the same domain id has a different
-        // instance identity — only reachable via `modelID`.
-        let other = FCChild(id: 1).withAnchor()
-        await settle {}
+        // instance identity — only reachable via `modelID`. It is anchored with
+        // returningAnchor(): the scope tracks one root, and this instance only has to
+        // be live long enough to read its identity, not to be asserted on.
+        let (other, otherAnchor) = FCChild(id: 1).returningAnchor()
+        defer { withExtendedLifetime(otherAnchor) {} }
         #expect(other.id == child.id)                // domain ids match
         #expect(other.modelID != child.modelID)      // instances differ
     }

@@ -20,6 +20,9 @@ public extension Model {
     ///
     /// When called inside a `@Test(.modelTesting)` function, `withAnchor()` automatically
     /// connects the model to the test scope — no `ModelTester` reference is needed.
+    /// A scope tracks a single anchored root, so a second model has to be a child of that
+    /// root or be anchored inside a nested `withModelTesting { }` scope of its own; a second
+    /// `withAnchor()` in the same scope reports an issue naming both models.
     ///
     /// - Parameters:
     ///   - dependencies: A closure for overriding dependencies that will be accessed by the model.

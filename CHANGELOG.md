@@ -6,6 +6,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **A second `withAnchor()` in one testing scope is now reported instead of silently dropped.** A scope tracks exactly one root — `expect`/`require` wake on that root's `TestAccess`, exhaustion is checked against its tree — so `_PendingModelTestScope.register` refused any later registration. It refused it silently, and nothing retained the `ModelTester` built for the rejected model, so it was deallocated on return from `withAnchor()` and its context torn down. What the author saw was a live-looking model whose writes and events vanished, whose dependencies fell back to their test values, and an `expect { }` that timed out on stale state — with nothing pointing at the anchor. The second `withAnchor()` now reports an issue at its own call site naming both models and the first one's source location, and lists the three ways out: make the second model a child of the anchored root, give it a nested `withModelTesting { }` scope of its own, or anchor it with `returningAnchor()` outside the scope's tracking. The rejected root is also torn down there and then rather than in the tester's `deinit`, which would otherwise run an exhaustion check on a model the scope never tracked and report a second, misleading failure.
+
+  This one cost a downstream author hours, twice, and it published a wrong design constraint in between ("a second anchored root is untestable" — it is testable, in its own scope). It was also live in this package, in four tests that the new diagnostic turned up immediately: the two lock-order smoke tests (`HierarchyLockOrderDeadlockTests`, `MemoizeLockOrderDeadlockTests`) anchor a deep hierarchy 30 and 40 times in a loop, and only iteration 1 was ever connected — every later iteration was torn down on return while `settle()` kept waiting on iteration 1's scope, so each was doing a thirtieth/fortieth of the concurrent activation its author intended; they now open a `withModelTesting { }` scope per iteration. `PostTransactionActivateTornReadTests.concurrentMixedChildWritesAndReads` anchored two peer hosts to drive both child-write shapes at once, so half the concurrency it was written to exercise was running against a dead context; the two hosts are now children of one root. `FrozenChildObservationTests` and `PendingConstructionBoundaryTests` each anchored a second model only to compare `modelID`s and now use `returningAnchor()`.
+
 ---
 
 ## [1.0.15] — Scope-named exhaustion failures + inherited exhaustivity default

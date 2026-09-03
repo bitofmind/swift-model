@@ -213,6 +213,46 @@ struct ModelTestingTraitTests {
             model.didSend(.incremented)
         }
     }
+
+    // A scope tracks one root, so a second withAnchor() in the same scope is reported
+    // rather than silently dropped — naming both models and the ways out.
+    @Test func secondWithAnchorInSameScopeIsReported() async {
+        let model = TraitCounter().withAnchor()
+
+        withKnownIssue {
+            _ = TraitLoader().withAnchor()
+        } matching: { issue in
+            let text = issue.comments.map(\.rawValue).joined()
+            return text.contains("withAnchor() was already called in this test scope")
+                && text.contains("TraitCounter")      // the connected root
+                && text.contains("TraitLoader")       // the rejected one
+                && text.contains("withModelTesting")  // the way out
+        }
+
+        // The scope's own root is unaffected by the rejected registration.
+        model.increment()
+        await expect {
+            model.count == 1
+            model.didSend(.incremented)
+        }
+    }
+
+    // The way out the diagnostic points at: a nested scope gets its own root, which is
+    // live and assertable for the duration of the closure.
+    @Test func nestedWithModelTestingAnchorsItsOwnRoot() async {
+        let model = TraitCounter().withAnchor()
+        model.increment()
+        await expect {
+            model.count == 1
+            model.didSend(.incremented)
+        }
+
+        await withModelTesting {
+            let loader = TraitLoader().withAnchor()
+            loader.load(value: "hello")
+            await expect(loader.item == "hello")
+        }
+    }
 }
 
 // Nested-suite scope-composition tests:
