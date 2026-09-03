@@ -39,6 +39,14 @@ private enum TornReadStep: Identifiable {
     var steps: [TornReadStep] = []
 }
 
+/// Holds both single-child hosts so the mixed-shape test can drive them concurrently
+/// from one anchored tree — a scope tracks one root, and two peer `withAnchor()` calls
+/// would leave the second host torn down and its writes unobserved.
+@Model private struct TornReadMixedHost {
+    var optional = TornReadOptionalHost()
+    var model = TornReadModelHost()
+}
+
 // MARK: - Tests
 
 /// Concurrent-writer coverage for the **post-transaction re-activation** step of the
@@ -153,8 +161,9 @@ private struct PostTransactionActivateTornReadTests {
     /// Both child shapes driven at once, with concurrent readers of the stored children,
     /// so the locked read path overlaps the post-transaction re-activation.
     @Test func concurrentMixedChildWritesAndReads() async {
-        let optionalHost = TornReadOptionalHost().withAnchor()
-        let modelHost = TornReadModelHost().withAnchor()
+        let host = TornReadMixedHost().withAnchor()
+        let optionalHost = host.optional
+        let modelHost = host.model
 
         await concurrently(3) { worker in
             for i in 0..<Self.writes {

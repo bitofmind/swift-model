@@ -49,6 +49,9 @@ package protocol _AnyModelTestScope: AnyObject, Sendable {
     /// activity, main/background observation drains — `TestAccess._progressNs`).
     /// Feeds the trait cap's inactivity watchdog; `0` when unknown.
     var progressNs: UInt64 { get }
+    /// The root model type this scope is bound to. Used only to name the models in
+    /// the duplicate-`withAnchor()` diagnostic, so it is never computed on a hot path.
+    var rootModelTypeName: String { get }
 }
 
 // MARK: - Task-local test scope
@@ -94,27 +97,85 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
         self.exhaustionNote = exhaustionNote
     }
 
+    /// Connects the first `withAnchor()` of a scope as its root, and reports the second.
+    ///
+    /// A test scope tracks exactly one root: `expect`/`require` wake on that root's
+    /// `TestAccess` activity, and exhaustion is checked against its tree. A second
+    /// `withAnchor()` therefore cannot be adopted — and because nothing retains the tester
+    /// built for it, it is deallocated on return from `withAnchor()`, which tears its
+    /// context down. Undiagnosed, that surfaces as a live-looking model whose writes
+    /// vanish, so the rejection names both call sites and the ways out.
     func register(_ concrete: any _AnyModelTestScope, at fileAndLine: FileAndLine) {
-        let probestoFlush: [TestProbe]? = lock.withLock {
-            if _concrete != nil {
-                // Multiple withAnchor() calls in one .modelTesting test — only first is root.
-                return nil
+        enum Outcome {
+            case adopted([TestProbe])
+            case rejected(first: any _AnyModelTestScope, at: FileAndLine?)
+        }
+        let outcome: Outcome = lock.withLock {
+            if let existing = _concrete {
+                return .rejected(first: existing, at: _registrationFileAndLine)
             }
             _concrete = concrete
             _registrationFileAndLine = fileAndLine
             let pending = _pendingProbes
             _pendingProbes = []
-            return pending
+            return .adopted(pending)
         }
-        // Only the root registration adopts the scope's probes and exhaustion note.
-        guard let probestoFlush else { return }
-        // Flush probes that were registered before withAnchor() was called.
-        if !probestoFlush.isEmpty {
-            concrete.install(probestoFlush)
+        switch outcome {
+        case let .rejected(first, firstFileAndLine):
+            reportDuplicateAnchor(
+                first: first,
+                firstFileAndLine: firstFileAndLine,
+                second: concrete,
+                secondFileAndLine: fileAndLine
+            )
+            // Tear the rejected root down here rather than leaving it to the tester's
+            // deinit, which would also run an exhaustion check on a model the scope never
+            // tracked — a second, misleading failure on top of the one above.
+            concrete.cancelAndCleanup()
+
+        case let .adopted(probesToFlush):
+            // Only the root registration adopts the scope's probes and exhaustion note.
+            // Flush probes that were registered before withAnchor() was called.
+            if !probesToFlush.isEmpty {
+                concrete.install(probesToFlush)
+            }
+            if let exhaustionNote {
+                concrete.setExhaustionNote(exhaustionNote)
+            }
         }
-        if let exhaustionNote {
-            concrete.setExhaustionNote(exhaustionNote)
-        }
+    }
+
+    private func reportDuplicateAnchor(
+        first: any _AnyModelTestScope,
+        firstFileAndLine: FileAndLine?,
+        second: any _AnyModelTestScope,
+        secondFileAndLine: FileAndLine
+    ) {
+        let firstName = first.rootModelTypeName
+        let secondName = second.rootModelTypeName
+        let firstSite = firstFileAndLine.map { " at \($0.fileID):\($0.line)" } ?? ""
+        reportIssue(
+            """
+            withAnchor() was already called in this test scope, by \(firstName)\(firstSite). \
+            A scope tracks exactly one anchored root, so this \(secondName) is not connected to \
+            it: it is torn down as withAnchor() returns, and its writes, events and tasks are \
+            dropped — expect { } and exhaustivity never see them.
+
+            Ways out, in order of preference:
+            • Make \(secondName) a child of the anchored \(firstName). One tree per scope is the \
+            supported shape, and expect { } then covers both models.
+            • Give it a scope of its own: await withModelTesting { \(secondName)().withAnchor() … }. \
+            Scopes nest sequentially — the inner model is torn down when its closure returns, and \
+            expect { } inside it sees only that model.
+            • If the test only needs a second live model that the scope should not track, anchor \
+            it with returningAnchor() and hold the returned anchor. expect { } will not wake on \
+            its activity.
+            """,
+            fileID: secondFileAndLine.fileID,
+            filePath: secondFileAndLine.filePath,
+            line: secondFileAndLine.line,
+            column: secondFileAndLine.column
+        )
     }
 
     package var concrete: (any _AnyModelTestScope)? { lock.withLock { _concrete } }
@@ -124,6 +185,8 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
     /// `0` before that (the trait cap's window then rests on executor activity
     /// alone, exactly as before this signal existed).
     package var progressNs: UInt64 { concrete?.progressNs ?? 0 }
+
+    package var rootModelTypeName: String { concrete?.rootModelTypeName ?? "an unregistered model" }
 
     package func assert(settleResetting: _ExhaustivityBits? = nil, fileID: StaticString, filePath: StaticString, line: UInt, column: UInt, predicates: [AssertBuilder.Predicate]) async {
         guard let c = concrete else {
@@ -195,6 +258,8 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
     }
 
     package var progressNs: UInt64 { tester.access._progressNs }
+
+    package var rootModelTypeName: String { String(describing: M.self) }
 
     package func assert(
         settleResetting: _ExhaustivityBits? = nil,

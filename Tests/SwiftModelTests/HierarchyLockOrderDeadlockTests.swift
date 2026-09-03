@@ -101,17 +101,23 @@ struct HierarchyLockOrderDeadlockTests {
     /// context→TestAccess order pre-fix) while writers fire `Context._modify`
     /// (TestAccess→context). With the fix every iteration settles and stays correct.
     /// (See the file header on why this is a smoke test, not a deterministic repro.)
+    /// Each iteration anchors in its own `withModelTesting` scope: a scope tracks one
+    /// root, so anchoring all 30 in the test's own scope would connect only the first
+    /// — the other 29 would be torn down on return and `settle()` would keep waiting on
+    /// iteration 1, which is not the concurrent activation this test means to exercise.
     @Test func deepConcurrentActivationReadAndWriteStaySettled() async {
         for _ in 0 ..< 30 {
-            let root = DeepRoot(children: (0 ..< 3).map { _ in
-                DeepA(children: (0 ..< 3).map { _ in
-                    DeepB(children: (0 ..< 3).map { _ in
-                        DeepC(leaves: (0 ..< 3).map { _ in DeepLeaf() })
+            await withModelTesting {
+                let root = DeepRoot(children: (0 ..< 3).map { _ in
+                    DeepA(children: (0 ..< 3).map { _ in
+                        DeepB(children: (0 ..< 3).map { _ in
+                            DeepC(leaves: (0 ..< 3).map { _ in DeepLeaf() })
+                        })
                     })
-                })
-            }).withAnchor()
-            await settle()
-            #expect(root.children.count == 3)
+                }).withAnchor()
+                await settle()
+                #expect(root.children.count == 3)
+            }
         }
     }
 }

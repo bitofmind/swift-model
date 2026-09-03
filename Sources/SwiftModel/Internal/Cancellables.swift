@@ -56,17 +56,26 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
     /// doc-comment for why this matters.
     ///
     /// Set via a `LockIsolated<Bool>` captured by the body wrapper in the
-    /// convenience init (see below). The box is created BEFORE `self.init`
-    /// runs (since the factory closure is constructed before designated-init
-    /// completes), then stored on the instance afterwards. The brief window
-    /// where `register(self)` has run inside the designated init but
-    /// `_hasStartedRunningBox` is still `nil` reports `hasStartedRunning ==
-    /// false` (the safe default — settle keeps waiting), so a settle racing
-    /// this init never declares quiet prematurely.
-    var _hasStartedRunningBox: LockIsolated<Bool>?
-    var hasStartedRunning: Bool { _hasStartedRunningBox?.value ?? false }
+    /// convenience init, which creates the box BEFORE `self.init` (the factory
+    /// closure is constructed before designated-init completes) and passes it
+    /// in. It is a `let` assigned before `register(self)` publishes this
+    /// instance, so a settle thread reaching it through `Cancellations` reads an
+    /// immutable reference — the box's own lock covers the `Bool`.
+    ///
+    /// It used to be a `var` installed after `self.init` under `lock`, read
+    /// without that lock on the theory that a racing reader sees `nil` and
+    /// reports the safe default. That is a data race on the reference itself,
+    /// and TSan caught it (`_driveToStableFixpoint` → `hasPendingStartTask`
+    /// racing a `forEach` task registration). Passing the box in removes the
+    /// window rather than defending it; the observable value is unchanged
+    /// (`false` until the body runs).
+    let _hasStartedRunningBox: LockIsolated<Bool>
+    var hasStartedRunning: Bool { _hasStartedRunningBox.value }
 
-    init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
+    init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, hasStartedRunningBox: LockIsolated<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
+        // Assigned before `cancellations.register(self)` below publishes this
+        // instance to any settle thread — see `_hasStartedRunningBox`.
+        self._hasStartedRunningBox = hasStartedRunningBox
         // Resolve the registry ONCE, before `lock` is taken. `AnyContext.cancellations`
         // acquires the per-context hierarchy lock (H); this instance's `lock` is T.
         // Evaluating `context.cancellations` *inside* `lock { }` — as the capture-list
@@ -146,7 +155,7 @@ extension TaskCancellable {
         // Stored on `self` AFTER self.init completes — see `_hasStartedRunningBox`.
         let hasStartedRunningBox = LockIsolated(false)
 
-        self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, context: context) { onDone in
+        self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, context: context, hasStartedRunningBox: hasStartedRunningBox) { onDone in
             let contexts = AnyCancellable.contexts
             let operation = { @Sendable in
                 do {
@@ -203,16 +212,6 @@ extension TaskCancellable {
             } else {
                 return Task(name: taskName, priority: priority, operation: operation)
             }
-        }
-        // Install the box on the now-initialised instance, under `lock` so the
-        // store is ordered against concurrent `hasStartedRunning` readers (a
-        // settle thread can reach this instance through `Cancellations` the
-        // moment `register(self)` ran in the designated init). Readers that
-        // race the install see `nil` → `hasStartedRunning` returns `false` —
-        // the safe default (settle keeps waiting) — so the sub-microsecond
-        // window cannot declare quiet prematurely.
-        lock {
-            self._hasStartedRunningBox = hasStartedRunningBox
         }
     }
 }
