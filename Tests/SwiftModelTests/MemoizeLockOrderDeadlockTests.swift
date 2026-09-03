@@ -77,16 +77,22 @@ struct MemoizeLockOrderDeadlockTests {
     /// `Context._modify` (TestAccess→context). Pre-fix this wedged on the AB-BA
     /// inversion and never reached a `settle()` fixpoint; with the fix every
     /// iteration settles and stays correct.
+    /// Each iteration anchors in its own `withModelTesting` scope: a scope tracks one
+    /// root, so anchoring all 40 in the test's own scope would connect only the first —
+    /// the other 39 would be torn down on return and `settle()` would keep waiting on
+    /// iteration 1, which is not the concurrent activation this test means to exercise.
     @Test func memoizeFirstAccessConcurrentWithWritesStaysSettled() async {
         for _ in 0 ..< 40 {
-            let root = MemoRoot(branches: (0 ..< 4).map { _ in
-                MemoBranch(leaves: (0 ..< 5).map { i in MemoLeaf(n: i) })
-            }).withAnchor()
-            await settle()
-            // Reaching here at all is the assertion that matters: pre-fix the
-            // AB-BA deadlock meant `settle()` never returned (hung to the cap).
-            #expect(root.branches.count == 4)
-            #expect(root.branches.allSatisfy { $0.leaves.count == 5 })
+            await withModelTesting {
+                let root = MemoRoot(branches: (0 ..< 4).map { _ in
+                    MemoBranch(leaves: (0 ..< 5).map { i in MemoLeaf(n: i) })
+                }).withAnchor()
+                await settle()
+                // Reaching here at all is the assertion that matters: pre-fix the
+                // AB-BA deadlock meant `settle()` never returned (hung to the cap).
+                #expect(root.branches.count == 4)
+                #expect(root.branches.allSatisfy { $0.leaves.count == 5 })
+            }
         }
     }
 }

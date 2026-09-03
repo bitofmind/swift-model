@@ -207,8 +207,12 @@ private struct PendingConstructionBoundaryTests {
 
         // And a second, independent construction gets its own identity.
         let second = try! ThrowingBoundaryModel(a: 2, c: "two", fail: false)
-        let a = fresh.withAnchor()
-        let b = second.withAnchor()
+        // Both anchored with returningAnchor(): a scope tracks one root, and neither
+        // instance is asserted on with expect { } — they only have to be live to have
+        // an identity to compare.
+        let (a, aAnchor) = fresh.returningAnchor()
+        let (b, bAnchor) = second.returningAnchor()
+        defer { withExtendedLifetime((aAnchor, bAnchor)) {} }
         #expect(a.modelID != b.modelID)
         #expect(a.a == 1 && b.a == 2)
     }

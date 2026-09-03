@@ -27,6 +27,16 @@ Assertions `await` because state and event propagation are asynchronous.
 
 > On Swift 6.0 the `.modelTesting` trait isn't available (it needs 6.1+); wrap the body in `await withModelTesting { … }` instead.
 
+### One anchored root per scope
+
+A test scope tracks exactly one anchored model: `expect { }` wakes on that model's activity, and exhaustivity is checked against its tree. A second `withAnchor()` in the same scope is reported as an issue — it cannot be connected, and the model it returns is torn down immediately.
+
+If the test needs a second model:
+
+- **Make it a child** of the anchored root. One tree per scope is the supported shape, and `expect { }` then covers both models — this is usually the right answer even when the two models look like peers in production.
+- **Give it a scope of its own** with a nested `await withModelTesting { … }`. Scopes nest sequentially: the inner model is torn down when the closure returns, and `expect { }` inside it sees only that model.
+- **Anchor it outside the scope** with `returningAnchor()`, holding the returned anchor yourself, when the test only needs a second live model that the scope should not track. `expect { }` will not wake on its activity.
+
 ### Asserting state, callbacks, and events
 
 `expect { }` accepts any number of `Bool` predicates and waits for them all to become true; `==` gives a pretty-printed diff on failure. Use `require` to wait for an optional child to appear before interacting with it:
