@@ -63,7 +63,7 @@ struct ModelMacroTests {
         } expansion: {
             #"""
             struct MyModel {
-                var count = 0 {
+                var count {
                     @storageRestrictions(initializes: _$modelAccess, _$modelSource)
                     init(newValue) {
                         _$modelAccess = _ModelAccessBox()
@@ -72,6 +72,9 @@ struct ModelMacroTests {
                     }
                     _read {
                         yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                    }
+                    nonmutating set {
+                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
                     }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.count, access: _$modelAccess]
@@ -88,7 +91,7 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 
@@ -181,6 +184,9 @@ struct ModelMacroTests {
                     get {
                         _$modelSource[read: \_State.handler, access: _$modelAccess]
                     }
+                    nonmutating set {
+                        _$modelSource[write: \_State.handler, access: _$modelAccess] = newValue
+                    }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.handler, access: _$modelAccess]
                     }
@@ -197,7 +203,7 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
                     _State(handler: pending.value(for: \.handler, default: {
                             }))
                 }
@@ -289,6 +295,9 @@ struct ModelMacroTests {
                     _read {
                         yield _$modelSource[read: \_State.activateCount, access: _$modelAccess]
                     }
+                    nonmutating set {
+                        _$modelSource[write: \_State.activateCount, access: _$modelAccess] = newValue
+                    }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.activateCount, access: _$modelAccess]
                     }
@@ -308,8 +317,11 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
-                    _State(activateCount: pending.value(for: \.activateCount, default: _zeroInit()))
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
+                    guard pending.hasValue(for: \.activateCount) else {
+                        return nil
+                    }
+                    return _State(activateCount: pending.value(for: \.activateCount))
                 }
 
                 private nonisolated var _modelState: _State {
@@ -382,7 +394,7 @@ struct ModelMacroTests {
         } expansion: {
             #"""
             struct MyModel: Hashable {
-                var count = 0 {
+                var count {
                     @storageRestrictions(initializes: _$modelAccess, _$modelSource)
                     init(newValue) {
                         _$modelAccess = _ModelAccessBox()
@@ -391,6 +403,9 @@ struct ModelMacroTests {
                     }
                     _read {
                         yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                    }
+                    nonmutating set {
+                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
                     }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.count, access: _$modelAccess]
@@ -415,7 +430,7 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 
@@ -540,7 +555,7 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 
@@ -614,7 +629,7 @@ struct ModelMacroTests {
         } expansion: {
             #"""
             struct MyModel {
-                private(set) var count = 0 {
+                private(set) var count {
                     @storageRestrictions(initializes: _$modelAccess, _$modelSource)
                     init(newValue) {
                         _$modelAccess = _ModelAccessBox()
@@ -623,6 +638,9 @@ struct ModelMacroTests {
                     }
                     _read {
                         yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                    }
+                    nonmutating set {
+                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
                     }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.count, access: _$modelAccess]
@@ -639,7 +657,7 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 
@@ -713,7 +731,7 @@ struct ModelMacroTests {
         } expansion: {
             #"""
             struct MyModel {
-                private var animating = false {
+                private var animating {
                     @storageRestrictions(initializes: _$modelAccess, _$modelSource)
                     init(newValue) {
                         _$modelAccess = _ModelAccessBox()
@@ -722,6 +740,9 @@ struct ModelMacroTests {
                     }
                     _read {
                         yield _$modelSource[read: \_State.animating, access: _$modelAccess]
+                    }
+                    nonmutating set {
+                        _$modelSource[write: \_State.animating, access: _$modelAccess] = newValue
                     }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.animating, access: _$modelAccess]
@@ -738,7 +759,7 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
                     _State(animating: pending.value(for: \.animating, default: false))
                 }
 
@@ -815,7 +836,7 @@ struct ModelMacroTests {
         } expansion: {
             #"""
             struct MyModel {
-                var count = 0 {
+                var count {
                     @storageRestrictions(initializes: _$modelAccess)
                     init(newValue) {
                         _$modelAccess = _ModelAccessBox()
@@ -823,6 +844,9 @@ struct ModelMacroTests {
                     }
                     _read {
                         yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                    }
+                    nonmutating set {
+                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
                     }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.count, access: _$modelAccess]
@@ -837,19 +861,25 @@ struct ModelMacroTests {
                     _read {
                         yield _$modelSource[read: \_State.label, access: _$modelAccess]
                     }
+                    nonmutating set {
+                        _$modelSource[write: \_State.label, access: _$modelAccess] = newValue
+                    }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.label, access: _$modelAccess]
                     }
                 }
 
                 var _$private1: Void
-                var flag = false {
+                var flag {
                     @storageRestrictions(initializes: _$modelSource)
                     init(newValue) {
                         _$modelSource = _ModelSourceBox<Self>._threadLocalStoreAndPop(\.flag, newValue, Self._makeState)
                     }
                     _read {
                         yield _$modelSource[read: \_State.flag, access: _$modelAccess]
+                    }
+                    nonmutating set {
+                        _$modelSource[write: \_State.flag, access: _$modelAccess] = newValue
                     }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.flag, access: _$modelAccess]
@@ -870,8 +900,11 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
-                    _State(count: pending.value(for: \.count, default: 0), label: pending.value(for: \.label, default: _zeroInit()), flag: pending.value(for: \.flag, default: false))
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
+                    guard pending.hasValue(for: \.label) else {
+                        return nil
+                    }
+                    return _State(count: pending.value(for: \.count, default: 0), label: pending.value(for: \.label), flag: pending.value(for: \.flag, default: false))
                 }
 
                 private nonisolated var _modelState: _State {
@@ -949,7 +982,7 @@ struct ModelMacroTests {
             struct MyModel {
                 let id: Int
                 var tag: String
-                var count = 0 {
+                var count {
                     @storageRestrictions(initializes: _$modelAccess, _$modelSource)
                     init(newValue) {
                         _$modelAccess = _ModelAccessBox()
@@ -958,6 +991,9 @@ struct ModelMacroTests {
                     }
                     _read {
                         yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                    }
+                    nonmutating set {
+                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
                     }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.count, access: _$modelAccess]
@@ -975,7 +1011,7 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 
@@ -1050,7 +1086,7 @@ struct ModelMacroTests {
         } expansion: {
             #"""
             struct ParentModel {
-                var counter = ChildModel() {
+                var counter {
                     @storageRestrictions(initializes: _$modelAccess, _$modelSource)
                     init(newValue) {
                         _$modelAccess = _ModelAccessBox()
@@ -1059,6 +1095,9 @@ struct ModelMacroTests {
                     }
                     _read {
                         yield _$modelSource[read: \_State.counter, access: _$modelAccess]
+                    }
+                    nonmutating set {
+                        _$modelSource[write: \_State.counter, access: _$modelAccess] = newValue
                     }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.counter, access: _$modelAccess]
@@ -1075,7 +1114,7 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
                     _State(counter: pending.value(for: \.counter, default: ChildModel()))
                 }
 
@@ -1309,7 +1348,7 @@ struct ModelMacroTests {
         } expansion: {
             #"""
             struct MyModel: CustomStringConvertible {
-                var count = 0 {
+                var count {
                     @storageRestrictions(initializes: _$modelAccess, _$modelSource)
                     init(newValue) {
                         _$modelAccess = _ModelAccessBox()
@@ -1318,6 +1357,9 @@ struct ModelMacroTests {
                     }
                     _read {
                         yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                    }
+                    nonmutating set {
+                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
                     }
                     nonmutating _modify {
                         yield &_$modelSource[write: \_State.count, access: _$modelAccess]
@@ -1335,7 +1377,7 @@ struct ModelMacroTests {
 
                 public typealias _ModelState = _State
 
-                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
                     _State(count: pending.value(for: \.count, default: 0))
                 }
 

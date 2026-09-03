@@ -5,13 +5,25 @@ import SwiftSyntaxMacros
 
 // MARK: - Shared helpers
 
-/// Builds the `_read`/`nonmutating _modify` accessor pair (or `nonmutating set` for willSet/didSet).
+/// Builds the `_read` / `nonmutating set` / `nonmutating _modify` accessors (or `_read` +
+/// `nonmutating set` for willSet/didSet).
 ///
 /// Normal properties use `_read` + `nonmutating _modify` for efficient coroutine-based access
-/// and proper observation coalescing. Properties with `willSet`/`didSet` use `nonmutating set`.
+/// and proper observation coalescing, plus a `nonmutating set` for whole-value assignment.
+/// The setter matters in a user-written init: a property with no default value has no
+/// storage until it is assigned, and `_modify` would have to *read* it first to yield — the
+/// setter routes `self.x = value` straight into the construction frame instead.
+/// Properties with `willSet`/`didSet` use only `nonmutating set`.
 ///
-/// Both write paths include a pending-state guard (`_storePendingIfNeeded`) for user-written
-/// inits where the setter fires instead of the init accessor.
+/// Both setter paths route pre-anchor writes into the Reference (`_storePendingIfNeeded` /
+/// the `[write:]` subscript setter) for user-written inits where the setter fires instead of
+/// the init accessor.
+///
+/// Note on the macro-expansion snapshots: once a `set` accessor is present, swift-macro-testing
+/// renders the property as computed and drops its `= default` initializer from the expansion
+/// text (`var count = 0 {` becomes `var count {`). That is a rendering choice of the test
+/// expander only — the compiler keeps the initializer, and the init accessors still fire for
+/// defaulted properties (pinned at runtime by `PendingConstructionBoundaryTests`).
 ///
 /// `isFunctionType` properties get a plain `get` instead of `_read` **when this macro plugin
 /// is built with Swift 6.3**: swift-frontend 6.3 SIGSEGVs during IRGen when emitting a `_read`
@@ -79,10 +91,17 @@ private func makeGetSet(
     } else {
         writeAccessor =
         """
+        nonmutating set {
+            _$modelSource[write: \\_State.\(raw: identifier), access: _$modelAccess] = newValue
+        }
+        """
+        let modifyAccessor: AccessorDeclSyntax =
+        """
         nonmutating _modify {
             yield &_$modelSource[write: \\_State.\(raw: identifier), access: _$modelAccess]
         }
         """
+        return [readAccessor, writeAccessor, modifyAccessor]
     }
 
     return [readAccessor, writeAccessor]

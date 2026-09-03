@@ -1851,20 +1851,69 @@ extension Context {
         /// Cleared (set to nil) after first use in `materializeLazyContext()`.
         /// Returns nil if the parent context was deallocated before the child was materialized.
         private var _lazyContextCreator: (() -> Context<M>?)?
-        /// Live/lastSeen/snapshot state. Non-optional — always holds a valid value.
-        /// After `clear()`, replaced with genesis state to release live-model references.
-        @usableFromInline var state: M._ModelState
+        /// Backing storage for `state`. Allocated once per Reference and initialised either in
+        /// `init` (an explicit state, or a construction frame that is already complete) or by
+        /// `_materializeState()` once the last required property has been assigned.
+        ///
+        /// A raw pointer rather than an `Optional` so the `state` accessors can yield the value
+        /// *in place* (`pointee` is an addressor): every keypath projection on the read path
+        /// borrows the struct without copying it, exactly as the former stored property did.
+        /// `Optional` storage would turn each `state[keyPath:]` into a whole-struct copy.
+        private let _stateStorage: UnsafeMutablePointer<M._ModelState> = .allocate(capacity: 1)
+        /// True once `_stateStorage` holds a fully built value. False only while a user-written
+        /// `init` body is still assigning properties that have no default value (see `_pending`).
+        ///
+        /// Read without the lock on the hot path. That is sound because the flag flips exactly
+        /// once, under the lock, and — in every well-formed flow — *inside* the constructing
+        /// `init` body: the last required assignment materialises synchronously, before the
+        /// model value can escape to another thread. A Reference that never materialises (an
+        /// init that skipped a required property) traps on first whole-state use regardless
+        /// of which thread gets there first.
+        private(set) var _hasMaterializedState: Bool
+        /// The construction frame, kept until every required property has been assigned.
+        /// Properties are read and written through it in the meantime (`_readPending`,
+        /// `_pendingBox`, `_writeDirect`). Nil once materialised.
+        private var _pending: PendingStorage<M._ModelState>?
+        /// The macro-generated `_makeState`: builds `_State` from `_pending`, or returns nil
+        /// (recording the missing key path on the frame) while a required property is unassigned.
+        private var _factory: ((PendingStorage<M._ModelState>) -> M._ModelState?)?
+
+        /// Live/lastSeen/snapshot state. After `clear()`, replaced with genesis state to release
+        /// live-model references.
+        ///
+        /// Whole-state access on an unmaterialised Reference materialises it first, trapping
+        /// with the property name if a required property was never assigned — the model is
+        /// being anchored, copied, or read as a whole before its `init` finished the job.
+        @usableFromInline var state: M._ModelState {
+            _read {
+                if !_hasMaterializedState { _materializeState() }
+                yield _stateStorage.pointee
+            }
+            set {
+                if _hasMaterializedState {
+                    _stateStorage.pointee = newValue
+                } else {
+                    _adoptState(newValue)
+                }
+            }
+            _modify {
+                if !_hasMaterializedState { _materializeState() }
+                yield &_stateStorage.pointee
+            }
+        }
         /// True after `clear()`. Reads from a cleared reference will reportIssue and
         /// return a genesis fallback.
         @usableFromInline var _stateCleared: Bool = false
         /// Genesis state captured at the first `setContext` call (post-`withContextAdded`).
         /// All property values are correct at that point (no self-referencing closures yet).
         /// Used to restore `state` when re-anchoring a static dependency model, and as a
-        /// safe fallback for reads on a cleared reference. Stored inline — always needed for
-        /// every anchored model, so boxing would only add malloc overhead with no saving.
-        /// Initialized to `state` in Reference.init as a safe placeholder (never read until
-        /// _hasGenesis = true, at which point setContext overwrites it with the correct value).
-        @usableFromInline var _genesisState: M._ModelState
+        /// safe fallback for reads on a cleared reference. Falls back to `state` until
+        /// captured (never read before `_hasGenesis = true` in practice).
+        private var _genesisStorage: M._ModelState?
+        @usableFromInline var _genesisState: M._ModelState {
+            get { _genesisStorage ?? state }
+            set { _genesisStorage = newValue }
+        }
         /// True once genesis has been captured (set in `setContext` on first anchor).
         @usableFromInline var _hasGenesis: Bool = false
         /// Incremented by `_ModelSourceBox.subscript[write:access:]._modify` whenever a tracked
@@ -1914,20 +1963,126 @@ extension Context {
         /// Creates a live Reference with initial state.
         init(modelID: ModelID, state: M._ModelState) {
             self.modelID = modelID
-            self.state = state
-            self._genesisState = state
+            _stateStorage.initialize(to: state)
+            _hasMaterializedState = true
             self._snapshotLifetime = nil
+        }
+
+        /// Creates a live Reference from a construction frame. Builds `state` immediately when
+        /// the frame is complete (memberwise init, or a user-written init whose every tracked
+        /// property has a default); otherwise keeps the frame and lets the init body's
+        /// assignments complete it — see `_writeDirect`. No placeholder value is ever
+        /// fabricated for an unassigned property: there is no bit pattern that is valid for
+        /// every type (an all-zero existential, for one, crashes on its first copy).
+        init(modelID: ModelID, pending: PendingStorage<M._ModelState>, factory: @escaping (PendingStorage<M._ModelState>) -> M._ModelState?) {
+            self.modelID = modelID
+            self._snapshotLifetime = nil
+            if let built = factory(pending) {
+                _stateStorage.initialize(to: built)
+                _hasMaterializedState = true
+            } else {
+                _hasMaterializedState = false
+                _pending = pending
+                _factory = factory
+            }
         }
 
         /// Creates a snapshot Reference (frozen or lastSeen) with independent state.
         init(modelID: ModelID, state: M._ModelState, lifetime: ModelLifetime) {
             self.modelID = modelID
-            self.state = state
-            self._genesisState = state
+            _stateStorage.initialize(to: state)
+            _hasMaterializedState = true
             self._snapshotLifetime = lifetime
         }
 
         deinit {
+            if _hasMaterializedState {
+                _stateStorage.deinitialize(count: 1)
+            }
+            _stateStorage.deallocate()
+        }
+
+        // MARK: Construction frame (pre-materialisation)
+
+        /// Installs a fully built state. Must be called with the lock held or from `init`.
+        private func _installState(_ built: M._ModelState) {
+            _stateStorage.initialize(to: built)
+            _hasMaterializedState = true
+            _pending = nil
+            _factory = nil
+        }
+
+        /// Whole-state assignment on an unmaterialised Reference: the value *is* the state.
+        private func _adoptState(_ built: M._ModelState) {
+            lock.lock()
+            defer { lock.unlock() }
+            if _hasMaterializedState {
+                _stateStorage.pointee = built
+            } else {
+                _installState(built)
+            }
+        }
+
+        /// Builds `state` from the construction frame. Reached by any whole-state access
+        /// (anchoring, `frozenCopy`, `_modelState`, a keypath projection through `state`)
+        /// that arrives before the init body has assigned every required property — which
+        /// means the model escaped its `init` incomplete, so this traps naming the property.
+        private func _materializeState() {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !_hasMaterializedState else { return }
+            guard let pending = _pending, let factory = _factory else {
+                preconditionFailure("SwiftModel: Reference has neither state nor a construction frame — this is a bug in SwiftModel.")
+            }
+            guard let built = factory(pending) else {
+                fatalError(pending.neverAssignedMessage(modelType: M.self))
+            }
+            _installState(built)
+        }
+
+        /// Reads `path` from the construction frame (or from `state` once materialised).
+        /// Traps naming the property if it has not been assigned yet — reading a property
+        /// in an init body before assigning it.
+        func _readPending<T>(_ path: WritableKeyPath<M._ModelState, T>) -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            if _hasMaterializedState {
+                return _stateStorage.pointee[keyPath: path]
+            }
+            guard let pending = _pending else {
+                preconditionFailure("SwiftModel: Reference has neither state nor a construction frame — this is a bug in SwiftModel.")
+            }
+            return pending.value(for: path, modelType: M.self)
+        }
+
+        /// The frame's box for `path`, so an in-place mutation (`_modify`) in an init body can
+        /// yield straight into the frame. Traps naming the property if it has not been assigned.
+        func _pendingBox<T>(_ path: WritableKeyPath<M._ModelState, T>) -> TypedPendingValue<T> {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let pending = _pending, let box = pending.box(for: path) else {
+                fatalError(PendingStorage<M._ModelState>.neverAssignedMessage(for: path, modelType: M.self))
+            }
+            return box
+        }
+
+        /// Pre-anchor write. Into `state` when materialised; otherwise into the construction
+        /// frame — and, if that assignment completed the frame, materialises `state` right
+        /// here, synchronously, inside the init body that made it.
+        func _writeDirect<T>(_ path: WritableKeyPath<M._ModelState, T>, _ value: T) {
+            lock.lock()
+            defer { lock.unlock() }
+            if _hasMaterializedState {
+                _stateStorage.pointee[keyPath: path] = value
+                return
+            }
+            guard let pending = _pending, let factory = _factory else {
+                preconditionFailure("SwiftModel: Reference has neither state nor a construction frame — this is a bug in SwiftModel.")
+            }
+            pending.store(path, value)
+            if let built = factory(pending) {
+                _installState(built)
+            }
         }
 
         var lifetime: ModelLifetime {
@@ -1981,10 +2136,11 @@ extension Context {
         }
 
         /// Replaces `state` with genesis to release live-model references and break retain
-        /// cycles after the last-seen TTL expires. Using genesis (pre-anchor state, no live
-        /// child contexts) avoids _zeroInit(), which crashes for property types with class
-        /// references (e.g. SwiftUI.ScrollPosition). If no genesis was captured the model
-        /// was never anchored, so there are no retain cycles to break.
+        /// cycles after the last-seen TTL expires. Genesis is the pre-anchor state (no live
+        /// child contexts) and always a valid value — a zero-filled placeholder is not, for
+        /// any type carrying a class reference (e.g. SwiftUI.ScrollPosition) or an existential.
+        /// If no genesis was captured the model was never anchored, so there are no retain
+        /// cycles to break.
         /// `_context` is intentionally NOT cleared here — that happens in `clearStateForGeneration`
         /// (called from Context.deinit). Clearing `_context` here would make `ModelNode.isDestructed`
         /// return `true` before `onCancel` callbacks fire, causing dependency lookups to fall
@@ -2196,24 +2352,6 @@ private final class PathCollector<M: Model>: ModelAccess, @unchecked Sendable {
 /// Re-entrant: if `postLockFlushes` is already non-nil (we're nested inside another
 /// `runPostLockCallbacks` call), we simply run `callbacks` without wrapping, allowing the outer
 /// invocation to drain the accumulated flushes.
-/// Returns a zero-initialized value of type T. Defensive fallback for destructed contexts
-/// and as a placeholder for unassigned properties during `_makeState` construction.
-///
-/// String is special-cased because its zero bit pattern is indistinguishable from
-/// `Optional<T>.none` when T contains a String at the offset used for Optional's
-/// spare-bit discriminator. This causes `Optional<_State>` to read as nil even
-/// though a value was stored. Using `String()` produces a valid empty string with
-/// proper internal representation that doesn't collide with Optional's nil pattern.
-public func _zeroInit<T>() -> T {
-    if T.self == String.self {
-        return unsafeBitCast(String(), to: T.self)
-    }
-    return withUnsafeTemporaryAllocation(of: T.self, capacity: 1) { buf in
-        _ = memset(buf.baseAddress!, 0, MemoryLayout<T>.size)
-        return buf[0]
-    }
-}
-
 func runPostLockCallbacks(_ callbacks: [() -> Void]?) {
     guard let callbacks else { return }
     guard threadLocals.postLockFlushes == nil else {
