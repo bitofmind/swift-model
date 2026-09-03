@@ -285,29 +285,43 @@ extension ModelMacro: MemberMacro {
 
             result.append("public typealias _ModelState = _State")
 
-            // _makeState: builds _State from PendingStorage, providing defaults for properties
-            // whose init accessors didn't fire (user-written inits that skip some assignments).
-            // Note: _zeroInit() is intentional here — for user-written inits, _$modelSource's
-            // default fires in Swift phase-1 init (before the init body) when the pending
-            // storage is still empty. _zeroInit() provides a placeholder; the init body then
-            // overwrites it via setter → _storePendingIfNeeded. Without _zeroInit(), all
-            // user-written inits would fatalError before the body runs.
+            // _makeState: builds _State from PendingStorage. Properties with a default value
+            // fall back to that default; properties without one are *required* — if any is
+            // still unassigned the factory returns nil (recording which one on the frame) and
+            // the Reference keeps the frame open. That is the user-written-init case:
+            // _$modelSource's default fires in Swift phase-1 init (before the init body), so
+            // the body's assignments arrive afterwards via the setter and complete the frame.
+            // No placeholder value is ever fabricated for an unassigned property — there is
+            // no bit pattern that is valid for every type (an all-zero existential crashes on
+            // its first copy).
+            var requiredChecks: [String] = []
             let makeStateArgs = trackedMutableVars.compactMap { member -> String? in
                 guard let identifier = member.identifier?.text,
                       let binding = member.bindings.first else { return nil }
                 if let initExpr = binding.initializer?.value.trimmedDescription {
                     return "\(identifier): pending.value(for: \\.\(identifier), default: \(initExpr))"
                 } else {
-                    return "\(identifier): pending.value(for: \\.\(identifier), default: _zeroInit())"
+                    requiredChecks.append("pending.hasValue(for: \\.\(identifier))")
+                    return "\(identifier): pending.value(for: \\.\(identifier))"
                 }
             }
             let makeStateBody = makeStateArgs.joined(separator: ", ")
-            result.append(
-            """
-            private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State {
-                _State(\(raw: makeStateBody))
+            if requiredChecks.isEmpty {
+                result.append(
+                """
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
+                    _State(\(raw: makeStateBody))
+                }
+                """)
+            } else {
+                result.append(
+                """
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
+                    guard \(raw: requiredChecks.joined(separator: ", ")) else { return nil }
+                    return _State(\(raw: makeStateBody))
+                }
+                """)
             }
-            """)
 
             // _modelState: private computed property used only within this type.
             // Enables \Self._modelState inside _modelStateKeyPath (formed in concrete context).
@@ -331,9 +345,10 @@ extension ModelMacro: MemberMacro {
             // `initializes: _$modelSource` (so the default is NOT evaluated). In user-written
             // inits the default fires in the prologue, after all tracked-property defaults
             // (declaration order — macro-added members come last) and BEFORE the init body:
-            // it captures the default-fired entries; body assignments then overwrite the
-            // zero-init placeholders via setter → _storePendingIfNeeded. Verified orderings
-            // are pinned by PendingConstructionBoundaryTests.
+            // it captures the default-fired entries; body assignments then complete the
+            // frame via the setter (`_writeDirect`), which builds `_State` once the last
+            // required property lands. Verified orderings are pinned by
+            // PendingConstructionBoundaryTests.
             result.append("private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)")
 
             // No explicit init generated — the compiler-synthesized memberwise init is used.

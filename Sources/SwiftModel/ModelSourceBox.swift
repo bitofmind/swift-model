@@ -28,13 +28,20 @@ public struct _ModelAccessBox: @unchecked Sendable {
 public final class PendingStorage<State>: @unchecked Sendable {
     var storage: [AnyKeyPath: PendingValue] = [:]
     let pendingID: ModelID = .generate()
+    /// The key path `hasValue(for:)` most recently reported absent. Lets the framework name
+    /// the offending property when a construction frame is used before it is complete.
+    private(set) var missingPath: AnyKeyPath?
 
     public func value<V>(for path: WritableKeyPath<State, V>) -> V {
         guard let entry = storage[path] as? TypedPendingValue<V> else {
-            fatalError(
-                "@Model: property '\(path)' was never assigned during init. " +
-                "Assign a value before anchoring the model."
-            )
+            fatalError(Self.neverAssignedMessage(for: path, modelType: nil))
+        }
+        return entry.value
+    }
+
+    func value<V>(for path: WritableKeyPath<State, V>, modelType: Any.Type) -> V {
+        guard let entry = storage[path] as? TypedPendingValue<V> else {
+            fatalError(Self.neverAssignedMessage(for: path, modelType: modelType))
         }
         return entry.value
     }
@@ -46,12 +53,41 @@ public final class PendingStorage<State>: @unchecked Sendable {
         return entry.value
     }
 
+    /// Whether `path` has been assigned. Used by the macro-generated `_makeState` to decide
+    /// whether the frame is complete; records the first absent path so a later trap can name it.
+    public func hasValue<V>(for path: WritableKeyPath<State, V>) -> Bool {
+        if storage[path] != nil { return true }
+        missingPath = path
+        return false
+    }
+
+    func box<V>(for path: WritableKeyPath<State, V>) -> TypedPendingValue<V>? {
+        storage[path] as? TypedPendingValue<V>
+    }
+
     func store<V>(_ path: WritableKeyPath<State, V>, _ value: V) {
         storage[path] = TypedPendingValue(value)
     }
 
     func contains(_ path: AnyKeyPath) -> Bool {
         storage[path] != nil
+    }
+
+    /// The diagnostic for a construction frame used as a whole while a required property
+    /// is still unassigned (the model was anchored, copied, or read as a whole before its
+    /// `init` assigned every property that has no default value).
+    func neverAssignedMessage(modelType: Any.Type) -> String {
+        Self.neverAssignedMessage(for: missingPath, modelType: modelType)
+    }
+
+    static func neverAssignedMessage(for path: AnyKeyPath?, modelType: Any.Type?) -> String {
+        let property = path.map { p -> String in
+            let full = String(describing: p)
+            return full.split(separator: ".").last.map(String.init) ?? full
+        } ?? "<unknown>"
+        let owner = modelType.map { "\($0)" } ?? "@Model"
+        return "\(owner): property '\(property)' was never assigned during init. " +
+            "Every init must assign it (or give it a default value) before the model is read, copied, or anchored."
     }
 }
 
@@ -62,9 +98,11 @@ class PendingValue: @unchecked Sendable {
     fileprivate init() {}
 }
 
-/// Typed subclass that preserves the concrete type `V`.
+/// Typed subclass that preserves the concrete type `V`. `value` is mutable so an in-place
+/// mutation in a user-written init body (`self.items.append(x)` before the frame is complete)
+/// can yield straight into the frame — see `Reference._pendingBox`.
 final class TypedPendingValue<V>: PendingValue, @unchecked Sendable {
-    let value: V
+    var value: V
     init(_ v: V) { value = v; super.init() }
 }
 
@@ -313,9 +351,12 @@ extension _ModelStateType {
 ///
 /// **Pending storage design**:
 /// Init accessors store values to a thread-local `PendingStorage` via `_threadLocalStore`.
-/// At pop time (`_threadLocalStoreAndPop` or `_popFromThreadLocal`), a macro-generated
-/// factory builds `_State` from the accumulated values, creates a Reference with `state`
-/// populated, and returns a `.regular` source box. All pre-anchor copies share the same
+/// At pop time (`_threadLocalStoreAndPop` or `_popFromThreadLocal`), the frame is handed
+/// to a Reference together with the macro-generated `_makeState` factory. The Reference
+/// builds `_State` at once when the frame is complete; in a user-written init that still
+/// has required (no-default) properties to assign, it keeps the frame and builds `_State`
+/// the moment the init body's last required assignment lands. Either way the result is a
+/// `.regular` source box. All pre-anchor copies share the same
 /// Reference. `_transitionToLive()` switches the case to `.live` for internal copies.
 @dynamicMemberLookup
 public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
@@ -382,9 +423,15 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             if reference.isSnapshot {
                 return reference.state[keyPath: path]
             }
+            // Inside a user-written init body whose required properties aren't all assigned
+            // yet there is no `_State` value at all — read the property from the
+            // construction frame (traps naming the property if it isn't assigned either).
+            if !reference._hasMaterializedState {
+                return reference._readPending(path)
+            }
             let (readFromClearedModel, value) = reference.withHierarchyLockIfLive { () -> (Bool, T) in
                 if reference._stateCleared {
-                    return (!reference._hasGenesis, reference._hasGenesis ? reference._genesisState[keyPath: path] : _zeroInit())
+                    return (!reference._hasGenesis, reference._hasGenesis ? reference._genesisState[keyPath: path] : reference.state[keyPath: path])
                 }
                 return (false, reference.state[keyPath: path])
             }
@@ -418,7 +465,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             // report happens outside the lock.
             let (readFromClearedModel, value) = reference.withHierarchyLockIfLive { () -> (Bool, M._ModelState) in
                 if reference._stateCleared {
-                    return (!reference._hasGenesis, reference._hasGenesis ? reference._genesisState : _zeroInit())
+                    return (!reference._hasGenesis, reference._hasGenesis ? reference._genesisState : reference.state)
                 }
                 return (false, reference.state)
             }
@@ -444,12 +491,14 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
         reference.state[keyPath: path] = value
     }
 
-    /// Stores a value into the Reference's `state` directly (if pre-anchor and unlinked).
-    /// Used by willSet/didSet `nonmutating set` to short-circuit writes before anchoring.
+    /// Stores a value into the Reference directly (if pre-anchor and unlinked) — into `state`,
+    /// or into the construction frame while a user-written init body is still assigning
+    /// required properties. Used by willSet/didSet `nonmutating set` to short-circuit writes
+    /// before anchoring.
     @discardableResult
     public func _storePendingIfNeeded<T>(_ path: WritableKeyPath<M._ModelState, T>, _ value: T) -> Bool {
         guard !_isLive, reference.context == nil, !reference.isSnapshot, !reference.hasLazyContextCreator else { return false }
-        reference.state[keyPath: path] = value
+        reference._writeDirect(path, value)
         return true
     }
 
@@ -493,21 +542,19 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
 
     /// **Last/Only property**: stores the value, pops the `PendingStorage` from the
     /// thread-local stack, builds `_State` via factory, and creates a pre-anchor Reference.
-    public static func _threadLocalStoreAndPop<V>(_ path: WritableKeyPath<M._ModelState, V>, _ value: V, _ factory: (PendingStorage<M._ModelState>) -> M._ModelState) -> _ModelSourceBox {
+    public static func _threadLocalStoreAndPop<V>(_ path: WritableKeyPath<M._ModelState, V>, _ value: V, _ factory: @escaping (PendingStorage<M._ModelState>) -> M._ModelState?) -> _ModelSourceBox {
         _PendingStack.store(path, value)
         let pending = _PendingStack.popOrCreate(M._ModelState.self)
-        let state = factory(pending)
-        let ref = Context<M>.Reference(modelID: pending.pendingID, state: state)
+        let ref = Context<M>.Reference(modelID: pending.pendingID, pending: pending, factory: factory)
         return _ModelSourceBox(reference: ref)
     }
 
     /// Pops the thread-local pending storage, builds `_State` via factory, and creates
     /// a pre-anchor source box with a Reference.
     /// Used as the default value for `_$modelSource` — fires after all init accessors.
-    public static func _popFromThreadLocal(_ factory: (PendingStorage<M._ModelState>) -> M._ModelState) -> _ModelSourceBox {
+    public static func _popFromThreadLocal(_ factory: @escaping (PendingStorage<M._ModelState>) -> M._ModelState?) -> _ModelSourceBox {
         let pending = _PendingStack.popOrCreate(M._ModelState.self)
-        let state = factory(pending)
-        let ref = Context<M>.Reference(modelID: pending.pendingID, state: state)
+        let ref = Context<M>.Reference(modelID: pending.pendingID, pending: pending, factory: factory)
         return _ModelSourceBox(reference: ref)
     }
 
@@ -738,19 +785,19 @@ extension _ModelSourceBox {
                     reference.state[keyPath: statePath] = value
                     reference._stateVersion &+= 1
                 } else if reference.context == nil && !reference.isSnapshot {
-                    // Pre-anchor: storage MAY still be zero-init (a property with
-                    // no default value the user hasn't yet assigned in their init).
-                    // The local-copy pattern's initial `var value = reference.state[keyPath:]`
-                    // performs a `swift_readAtKeyPath` whose `_pop<RawKeyPathComponent.Header>`
-                    // traps with "UnsafeRawBufferPointer with negative count" against
-                    // certain zero-init bit patterns. Mirror the `T: Model` overload
-                    // and yield directly into the keypath instead — the keypath
-                    // setter doesn't take the same read path. Trade-off: a compound
-                    // pre-anchor write whose RHS reads `self` could trip Swift's
-                    // exclusivity check, but RMW during init is rare and the trap is
-                    // worse. Track pre-anchor mutations so `Context.init` can detect
+                    // Pre-anchor in-place mutation. Inside a user-written init body the
+                    // `_State` value may not exist yet (a required property is still
+                    // unassigned); the frame then holds this property's box, and we yield
+                    // straight into it. Either way, yield directly rather than
+                    // local-copy + write-back. Trade-off: a compound pre-anchor write whose
+                    // RHS reads `self` could trip Swift's exclusivity check, but RMW during
+                    // init is rare. Track pre-anchor mutations so `Context.init` can detect
                     // dep model pollution.
-                    yield &reference.state[keyPath: statePath]
+                    if reference._hasMaterializedState {
+                        yield &reference.state[keyPath: statePath]
+                    } else {
+                        yield &reference._pendingBox(statePath).value
+                    }
                     reference._stateVersion &+= 1
                 } else {
                     var value = self[dynamicMember: statePath]
@@ -759,6 +806,22 @@ extension _ModelSourceBox {
                 return
             }
             yield &context[statePath: statePath, isSame: nil, accessBox: accessBox]
+        }
+        nonmutating set {
+            // Whole-value assignment. Distinct from `_modify` so that assigning a property
+            // that has no default value in a user-written init never has to *read* it
+            // first — there is nothing to read until it has been assigned.
+            guard let context = _modifyContext(accessBox: accessBox) else {
+                if _isLive {
+                    reference.state[keyPath: statePath] = newValue
+                    reference._stateVersion &+= 1
+                } else if reference.context == nil && !reference.isSnapshot {
+                    reference._writeDirect(statePath, newValue)
+                    reference._stateVersion &+= 1
+                }
+                return
+            }
+            context[statePath: statePath, isSame: nil, accessBox: accessBox] = newValue
         }
     }
 
@@ -774,9 +837,13 @@ extension _ModelSourceBox {
                     reference.state[keyPath: statePath] = value
                     reference._stateVersion &+= 1
                 } else if reference.context == nil && !reference.isSnapshot {
-                    // Pre-anchor: direct-yield to dodge the keypath read trap on
-                    // zero-init storage. See disfavoured generic overload.
-                    yield &reference.state[keyPath: statePath]
+                    // Pre-anchor: direct-yield, into the construction frame while the
+                    // `_State` value doesn't exist yet. See disfavoured generic overload.
+                    if reference._hasMaterializedState {
+                        yield &reference.state[keyPath: statePath]
+                    } else {
+                        yield &reference._pendingBox(statePath).value
+                    }
                     reference._stateVersion &+= 1
                 } else {
                     var value = self[dynamicMember: statePath]
@@ -785,6 +852,20 @@ extension _ModelSourceBox {
                 return
             }
             yield &context[statePath: statePath, isSame: ==, accessBox: accessBox]
+        }
+        nonmutating set {
+            // See disfavoured generic overload.
+            guard let context = _modifyContext(accessBox: accessBox) else {
+                if _isLive {
+                    reference.state[keyPath: statePath] = newValue
+                    reference._stateVersion &+= 1
+                } else if reference.context == nil && !reference.isSnapshot {
+                    reference._writeDirect(statePath, newValue)
+                    reference._stateVersion &+= 1
+                }
+                return
+            }
+            context[statePath: statePath, isSame: ==, accessBox: accessBox] = newValue
         }
     }
 
@@ -800,9 +881,13 @@ extension _ModelSourceBox {
                     reference.state[keyPath: statePath] = value
                     reference._stateVersion &+= 1
                 } else if reference.context == nil && !reference.isSnapshot {
-                    // Pre-anchor: direct-yield to dodge the keypath read trap on
-                    // zero-init storage. See disfavoured generic overload.
-                    yield &reference.state[keyPath: statePath]
+                    // Pre-anchor: direct-yield, into the construction frame while the
+                    // `_State` value doesn't exist yet. See disfavoured generic overload.
+                    if reference._hasMaterializedState {
+                        yield &reference.state[keyPath: statePath]
+                    } else {
+                        yield &reference._pendingBox(statePath).value
+                    }
                     reference._stateVersion &+= 1
                 } else {
                     var value = self[dynamicMember: statePath]
@@ -812,30 +897,40 @@ extension _ModelSourceBox {
             }
             yield &context[statePath: statePath, isSame: isSame, accessBox: accessBox]
         }
+        nonmutating set {
+            // See disfavoured generic overload.
+            guard let context = _modifyContext(accessBox: accessBox) else {
+                if _isLive {
+                    reference.state[keyPath: statePath] = newValue
+                    reference._stateVersion &+= 1
+                } else if reference.context == nil && !reference.isSnapshot {
+                    reference._writeDirect(statePath, newValue)
+                    reference._stateVersion &+= 1
+                }
+                return
+            }
+            context[statePath: statePath, isSame: isSame, accessBox: accessBox] = newValue
+        }
     }
 
     public subscript<T: Model>(write statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
         get { self[read: statePath, access: accessBox] }
         nonmutating _modify {
             guard _modifyContext(accessBox: accessBox) != nil else {
-                // Pre-anchor or live: yield directly into state storage, bypassing the getter.
-                // The getter reads reference.state[keyPath:] which traps on zero-initialized
-                // @Model fields — _zeroInit() produces a bit pattern that is invalid for the
-                // spare-bit _Mode enum in _ModelSourceBox, causing KeyPath._projectReadOnly to
-                // trap in _pop<RawKeyPathComponent.Header>. This happens when _$modelSource's
-                // default fires before the user assigns the property in a user-written init.
-                //
-                // The local-copy + write-back pattern used by the non-Model write subscripts
-                // (and by `Context.subscript[statePath:isSame:accessBox:]._modify`) cannot be
-                // applied here: the initial `var value = reference.state[keyPath: …]` read
-                // would itself trap for the same zero-init reason. So this branch keeps the
-                // live yield. A compound write through a child `@Model` property during
-                // `init()` whose RHS reads `self` — e.g. `self.child.field = self.child.foo`
-                // — can therefore still trip Swift's exclusivity check. The fully-anchored
-                // path below uses the safe local-copy pattern, which is the common case after
-                // construction.
+                // Pre-anchor or live: yield directly into storage, bypassing the getter.
+                // Inside a user-written init body the `_State` value may not exist yet
+                // (a required property is still unassigned); the construction frame then
+                // holds this child's box and we yield straight into it. The local-copy +
+                // write-back pattern used by the fully-anchored path isn't used here: a
+                // compound write through a child `@Model` property during `init()` whose
+                // RHS reads `self` — e.g. `self.child.field = self.child.foo` — can
+                // therefore still trip Swift's exclusivity check, which is rare in practice.
                 if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
-                    yield &reference.state[keyPath: statePath]
+                    if reference._hasMaterializedState {
+                        yield &reference.state[keyPath: statePath]
+                    } else {
+                        yield &reference._pendingBox(statePath).value
+                    }
                     reference._stateVersion &+= 1
                 } else {
                     var value = self[read: statePath, access: accessBox]
@@ -855,7 +950,7 @@ extension _ModelSourceBox {
             // Pre-anchor or live: store directly without anchoring semantics.
             // _modifyContext returns nil for this case and would silently drop the write.
             if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
-                reference.state[keyPath: statePath] = newValue
+                reference._writeDirect(statePath, newValue)
                 return
             }
             guard let context = _modifyContext(accessBox: accessBox) else { return }
@@ -943,7 +1038,7 @@ extension _ModelSourceBox {
         newValue: C
     ) where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
         if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
-            reference.state[keyPath: statePath] = newValue
+            reference._writeDirect(statePath, newValue)
             return
         }
         guard let context = _modifyContext(accessBox: accessBox) else { return }
@@ -1020,7 +1115,7 @@ extension _ModelSourceBox {
         newValue: C
     ) where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
         if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
-            reference.state[keyPath: statePath] = newValue
+            reference._writeDirect(statePath, newValue)
             return
         }
         let context: Context<M>
@@ -1101,7 +1196,7 @@ extension _ModelSourceBox {
             // Pre-anchor: store directly without anchoring semantics.
             // _modifyContext returns nil for this case and would silently drop the write.
             if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
-                reference.state[keyPath: statePath] = newValue
+                reference._writeDirect(statePath, newValue)
                 return
             }
             // For live (_isLive == true, e.g. _modelSeed in context.transaction(at:)), route

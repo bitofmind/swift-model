@@ -6,6 +6,14 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `@Model` can now store an existential (`any P`, `Any`, or a struct wrapping one) and assign it in a user-written `init`.** Previously a user-written init materialised the model's `_State` struct in Swift's phase-1 init — before the init body ran — and padded every property the body had not assigned yet with `_zeroInit()`, a raw memset. Zero bytes are not a valid value for every type: for an opaque existential they are a null metadata pointer, and the placeholder crashed the process on its very first copy (inside `_zeroInit` itself, `OpaqueExistentialBox::initializeWithCopy`). Because the crash took down the whole test host, every other suite in the process reported `Exceeded max restart count`, which made it look like unrelated failures. This was the third distinct crash from the same placeholder (after the class-reference `_genesisState` and `clear()` cases fixed earlier), so the placeholder is gone rather than special-cased once more.
+
+  The construction frame (`PendingStorage`) is now kept by the `Reference` until every property without a default value has been assigned. Property reads and in-place mutations in the init body go through the frame, whole-value assignment stores into it, and `_State` is built the moment the last required assignment lands — synchronously, inside the init body, so no placeholder value ever exists and no bit pattern is ever fabricated. Memberwise inits and user inits whose every property has a default are unaffected (the frame is complete at construction and `_State` is built at once, as before). The `@_ModelTracked` accessors gain a `nonmutating set` alongside `_modify` so plain assignment never has to read the property first; `_makeState` now returns `_State?` and reports which property is missing. A user init that *never* assigns a required property used to get silent zero bytes (`0`, `""`, a null reference); it now traps at the first whole-state use — anchoring, copying, or reading `_modelState` — naming the model and the property. `Reference.state` is backed by a raw allocation so the read path still borrows the struct in place; the only new cost is one predicted branch on a `Bool`.
+
+  `_zeroInit()` and the unconstrained public `ModelContext.init()` are removed; the no-argument init remains only for models with no tracked properties (`_ModelState == _EmptyModelState`). Regression coverage in `ExistentialPropertyTests` (memberwise, user-init, defaulted, optional, class-bound, `Any`, wrapped-struct, plus an init body that reads, mutates in place, assigns a child model, a collection and a `didSet` property before the frame is complete).
+
 ---
 
 ## [1.0.15] — Scope-named exhaustion failures + inherited exhaustivity default

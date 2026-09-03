@@ -42,9 +42,12 @@ public struct ModelContext<M: Model> {
     /// Public so macro-generated `_updateContext` (in user modules) can read/write it.
     public var _source: _ModelSourceBox<M>
 
-    public init() {
+    /// Used by macro-generated code for models with no tracked mutable properties
+    /// (`_ModelState == _EmptyModelState`), the only case where a state value can be
+    /// conjured without any property values.
+    public init() where M._ModelState == _EmptyModelState {
         _access = _ModelAccessBox()
-        _source = _ModelSourceBox(reference: .init(modelID: .generate(), state: _zeroInit()))
+        _source = _ModelSourceBox(reference: .init(modelID: .generate(), state: _EmptyModelState()))
     }
 
     /// Public so macro-generated computed `_$modelContext` (in user modules) can construct it.
