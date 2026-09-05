@@ -240,13 +240,22 @@ struct MainCallQueueCoalescingTests {
         withObservationTracking { regA.access(_StateObserver<Int>(), keyPath: kpA) } onChange: { log.withValue { $0.append("A") } }
         withObservationTracking { regB.access(_StateObserver<Int>(), keyPath: kpB) } onChange: { log.withValue { $0.append("B") } }
         nonisolated(unsafe) let a = kpA, b = kpB
+        let gate = LockIsolated(false)
+        let parked = LockIsolated(false)
 
         await Task.detached {
+            // The position rule is per drain cycle, so the five enqueues below must land
+            // in ONE cycle: park the drain (runs on main) first and wait until it IS
+            // parked, otherwise a batch taken between two enqueues splits the sequence
+            // (seen once in 20 stress iterations as ["c1", "A", "c2", "B", "c3"]).
+            queue { parked.setValue(true); while !gate.value { usleep(100) } }
+            while !parked.value { usleep(100) }
             queue { log.withValue { $0.append("c1") } }
             queue.notifyRegistrar(regA, contextID: 5, keyPath: a)
             queue { log.withValue { $0.append("c2") } }
             queue.notifyRegistrar(regB, contextID: 5, keyPath: b)
             queue { log.withValue { $0.append("c3") } }
+            gate.setValue(true)
         }.value
         await queue.waitUntilIdle()
 
