@@ -12,6 +12,11 @@ import Foundation
 //   # enough samples:
 //   swift run -c release SwiftModelBenchmarks --loop
 //
+//   # Contention / scaling tables (ns per op per thread at 1/2/4/8 threads),
+//   # and a single-row loop to profile under `sample` / Instruments:
+//   swift run -c release SwiftModelBenchmarks --contention
+//   swift run -c release SwiftModelBenchmarks --profile "c3 tracked read distinct trees" 8
+//
 //   # Or build first, then profile with xctrace directly:
 //   swift build -c release --product SwiftModelBenchmarks
 //   xcrun xctrace record \
@@ -25,6 +30,22 @@ print("SwiftModel Benchmarks")
 print("Build: \(loopMode ? "loop mode (attach Instruments now, PID \(ProcessInfo.processInfo.processIdentifier))" : "single pass")")
 if loopMode {
     print("Press Ctrl-C to stop.\n")
+}
+
+// Contention probes run OFF the main thread so the MainActor can drain
+// SwiftModel's main-registrar notification queue — see ContentionBenchmarks.swift.
+if #available(macOS 15.0, *) {
+    if let i = CommandLine.arguments.firstIndex(of: "--profile") {
+        setvbuf(stdout, nil, _IONBF, 0)
+        let name = CommandLine.arguments[i + 1], n = Int(CommandLine.arguments[i + 2])!
+        Thread { profileScenario(name, threads: n); exit(0) }.start()
+        dispatchMain()
+    }
+    if CommandLine.arguments.contains("--contention") {
+        setvbuf(stdout, nil, _IONBF, 0)
+        Thread { benchContention(); exit(0) }.start()
+        dispatchMain()
+    }
 }
 
 func runAll() {
