@@ -271,15 +271,38 @@ extension ModelMacro: MemberMacro {
                 }
             }
 
+            // Tracked-property index table (framework-facing, `_`-prefixed, not API): a stable
+            // zero-based index per `_State` field in declaration order, derived from the very
+            // same list that produced `stateFields` so the index set is exactly the field set.
+            // Computed rather than `static let`: `PartialKeyPath` is not `Sendable`, and Swift
+            // forbids static stored properties in generic types (`_State` is generic whenever
+            // the model — or a type enclosing it — is). `_trackedPropertyIndex(of:)` comes from
+            // the `_ModelStateType` default, which scans this array. Nothing on the read/write
+            // path consumes the table yet; the accessor's `@_ModelTracked(index, count:)` argument
+            // is the same declaration-order index and is where a literal could be passed later.
+            let trackedKeyPaths = trackedMutableVars.compactMap { member -> String? in
+                guard let identifier = member.identifier,
+                      let binding = member.bindings.first,
+                      binding.typeAnnotation != nil || binding.initializer != nil else { return nil }
+                return "\\Self.\(identifier)"
+            }
+
             // _State is public (required for public _ModelState typealias) but NOT Sendable —
             // protected by the framework's internal lock. Conforms to _ModelStateType to
             // provide synthetic keypath subscripts for modifyCallbacksStore observation.
             // nonisolated: opts out of the containing module's default actor isolation so that
-            // SwiftModel's non-@MainActor framework code can access _State members via keypaths.
+            // SwiftModel's non-@MainActor framework code can access _State members via keypaths;
+            // the static members below inherit that.
             result.append(
             """
             public nonisolated struct _State: _ModelStateType {
                 \(raw: stateFields.joined(separator: "\n    "))
+                public static var _trackedPropertyCount: Int {
+                    \(raw: trackedKeyPaths.count)
+                }
+                public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                    [\(raw: trackedKeyPaths.joined(separator: ", "))]
+                }
             }
             """)
 
