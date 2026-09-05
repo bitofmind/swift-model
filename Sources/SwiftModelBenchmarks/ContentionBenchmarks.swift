@@ -94,6 +94,29 @@ func buildScenarios() {
     let wone = wdm[0]
     add("c4 write ONE shared model", perThread: 3_000) { _ in for _ in 0..<3_000 { wone.count &+= 1 } }
 
+    // C4m: the same writes against models that have a MAIN registrar — they were
+    // tracked-read on the main thread once, as any model a SwiftUI view has rendered
+    // has been. From then on every off-main write must hand its main-registrar
+    // willSet/didSet to `MainCallQueue` for delivery on the main actor (which is
+    // draining here). The rows above never take that path: nothing in this file runs
+    // on main, so those models have no main registrar at all.
+    let (tlist, tla) = BenchList(items: IdentifiedArray(uniqueElements: (0..<8).map { BenchItem(id: $0) })).returningAnchor()
+    keepAlive.append(tla)
+    let tchildren = (0..<8).map { tlist.items[id: $0]! }
+    var tdistinct: [BenchCounter] = []
+    for _ in 0..<8 { let (m, a) = BenchCounter().returningAnchor(); tdistinct.append(m); keepAlive.append(a) }
+    let tdm = tdistinct
+    DispatchQueue.main.sync {
+        withObservationTracking {
+            for c in tchildren { blackhole &+= c.value }
+            for m in tdm { blackhole &+= m.count }
+        } onChange: {}
+    }
+    add("c4m write children of ONE tree, main-tracked", perThread: 3_000) { i in let m = tchildren[i]; for _ in 0..<3_000 { m.value &+= 1 } }
+    add("c4m write ONE shared model, main-tracked", perThread: 3_000) { _ in let m = tdm[0]; for _ in 0..<3_000 { m.count &+= 1 } }
+    add("c4m write distinct trees, main-tracked", perThread: 3_000) { i in let m = tdm[i]; for _ in 0..<3_000 { m.count &+= 1 } }
+    add("c4m burst 100k writes ONE model, main-tracked", perThread: 100_000) { _ in let m = tdm[1]; for _ in 0..<100_000 { m.count &+= 1 } }
+
     // C5 mixed
     let (mlist, mla) = BenchList(items: IdentifiedArray(uniqueElements: (0..<8).map { BenchItem(id: $0) })).returningAnchor()
     keepAlive.append(mla)
@@ -169,4 +192,51 @@ func profileScenario(_ name: String, threads: Int) {
         reps += 1
     }
     print("done \(reps) reps")
+}
+
+/// Off-main write burst against ONE model that has a main registrar, in Release:
+/// the write-phase cost per write and how long main takes to drain afterwards,
+/// with main draining concurrently and with main blocked for the whole write
+/// phase (a busy UI thread — layout, a long body, a synchronous load).
+///
+///   swift run -c release SwiftModelBenchmarks --burst
+@available(macOS 15.0, *)
+func benchBurst() {
+    let writes = 100_000
+    printHeader("Burst: \(writes / 1000)k off-main writes to ONE main-tracked model (3 passes each)")
+    let (m, a) = BenchCounter().returningAnchor()
+    keepAlive.append(a)
+    DispatchQueue.main.sync {
+        withObservationTracking { blackhole &+= m.count } onChange: {}
+    }
+    for (label, blockMain) in [("main draining", false), ("main blocked during writes", true)] {
+        for _ in 0..<3 {
+            let fired = Mutex<(UInt64, Bool)?>(nil)
+            DispatchQueue.main.sync {
+                withObservationTracking { blackhole &+= m.count } onChange: {
+                    fired.withLock { $0 = (DispatchTime.now().uptimeNanoseconds, Thread.isMainThread) }
+                }
+            }
+            let release = DispatchSemaphore(value: 0)
+            if blockMain {
+                DispatchQueue.main.async { release.wait() }
+                usleep(20_000)
+            }
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            for _ in 0..<writes { m.count &+= 1 }
+            let writeNs = DispatchTime.now().uptimeNanoseconds &- t0
+            if blockMain { release.signal() }
+            // Main-queue FIFO: this lands behind the drain job that the first write
+            // enqueued, which delivers everything queued so far in one batch.
+            let drained = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async { drained.signal() }
+            drained.wait()
+            let totalNs = DispatchTime.now().uptimeNanoseconds &- t0
+            // The tracking registered above is on the MAIN registrar, so its onChange
+            // proves the bridge is engaged (and ran on main); it precedes the marker.
+            let first = fired.withLock { $0 }.map { String(format: "%.1f ms on %@", Double($0.0 &- t0) / 1e6, $0.1 ? "main" : "NOT main") } ?? "never"
+            print(String(format: "  %-28@  writes %7.1f ms (%6.0f ns/write)   drained at %7.1f ms   first main delivery %@",
+                         label as NSString, Double(writeNs) / 1e6, Double(writeNs) / Double(writes), Double(totalNs) / 1e6, first as NSString))
+        }
+    }
 }
