@@ -220,7 +220,7 @@ func benchBurst() {
             let release = DispatchSemaphore(value: 0)
             if blockMain {
                 DispatchQueue.main.async { release.wait() }
-                usleep(20_000)
+                Thread.sleep(forTimeInterval: 0.02)  // not usleep: absent on Android
             }
             let t0 = DispatchTime.now().uptimeNanoseconds
             for _ in 0..<writes { m.count &+= 1 }
