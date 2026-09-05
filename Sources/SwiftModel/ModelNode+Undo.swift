@@ -262,7 +262,7 @@ private func installPropertyUndoUnchecked<M: Model, T>(
                         } else {
                             // Scalar: write directly via stateTransaction to avoid the _isLive
                             // bypass and ensure modifyCallbacksStore callbacks fire.
-                            context.stateTransaction(at: sendableStatePath, isSame: nil, accessBox: .init(), modify: { $0 = v })
+                            context.stateTransaction(at: sendableStatePath, isSame: { _, _ in false }, accessBox: .init(), modify: { $0 = v })
                         }
                     }
                 }

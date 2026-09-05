@@ -8,7 +8,16 @@ import Observation
 @usableFromInline
 final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
-    private var modifyCallbacksStore: [PartialKeyPath<M._ModelState>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]]?
+    /// Backing store for `modifyCallbacks`. `nil` while no `onModify` callback is
+    /// registered on this context — the common case for a property write — so the write
+    /// path consults `hasModifyCallbacks` first and only hashes a key path against this
+    /// dictionary when there is something to find. Only touched under `lock`;
+    /// `@exclusivity(unchecked)` per the note at `AnyContext._modificationCount`.
+    @exclusivity(unchecked) private var modifyCallbacksStore: [PartialKeyPath<M._ModelState>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]]?
+    /// `modifyCallbacksStore != nil`, maintained by the `_modify` accessor below (the only
+    /// mutation route). Read on every property write: a plain `Bool` load, so the check
+    /// needs neither the dictionary's generic metadata nor a `PartialKeyPath` hash.
+    @exclusivity(unchecked) private var hasModifyCallbacks = false
     var modifyCallbacks: [PartialKeyPath<M._ModelState>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] {
         _read { yield modifyCallbacksStore ?? [:] }
         _modify {
@@ -20,6 +29,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 yield &temp
                 if !temp.isEmpty { modifyCallbacksStore = temp }
             }
+            // Only the two assignments above change the store's nil-ness, and both run after
+            // the yield, so the flag can never disagree with the store — not even when the
+            // caller's access is abandoned mid-yield (nothing after the yield runs then).
+            hasModifyCallbacks = modifyCallbacksStore != nil
         }
     }
     @usableFromInline let reference: Reference
@@ -389,8 +402,8 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // it, the shadow subscription registered by `willAccessGapShadow` could schedule a
         // duplicate performUpdate for a write Apple already handled. See
         // `ThreadLocals.lockHeldBackgroundCalls`.
-        let lhbcOwned = beginLockHeldBackgroundCallsScope()
-        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
+        let lhbcOwned = beginLockHeldBackgroundCallsScope(threadLocals)
+        defer { endLockHeldBackgroundCallsScope(threadLocals, lhbcOwned) }
         // Batch all ObservationRegistrar willSet/didSet notifications so that the two
         // invokeDidModify calls below (untyped + typed paths) fire only one drain at the end
         // instead of one per call.
@@ -527,8 +540,8 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // Same tier-2 performUpdate-enqueue deferral as `didModifyStorage` (see the comment
         // there) — covers this context AND the entire `notifyPreferenceChange` parent-chain
         // walk (nested scopes share the outer array).
-        let lhbcOwned = beginLockHeldBackgroundCallsScope()
-        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
+        let lhbcOwned = beginLockHeldBackgroundCallsScope(threadLocals)
+        defer { endLockHeldBackgroundCallsScope(threadLocals, lhbcOwned) }
         // Batch all registrar notifications across this context's two invokeDidModify calls
         // AND the entire parent-chain walk (notifyPreferenceChange), so there is one drain
         // at the end rather than one per context level.
@@ -609,8 +622,8 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // Same tier-2 performUpdate-enqueue deferral as `didModifyPreference` (usually a
         // nested no-op — that caller already opened the scope — but upward propagation can
         // also be entered directly, e.g. from teardown paths).
-        let lhbcOwned = beginLockHeldBackgroundCallsScope()
-        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
+        let lhbcOwned = beginLockHeldBackgroundCallsScope(threadLocals)
+        defer { endLockHeldBackgroundCallsScope(threadLocals, lhbcOwned) }
         let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[preferenceKey: storage.key]
         lock { self.didModify() }
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
@@ -737,7 +750,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// explicit notifications for scalar writes that bypass `stateTransaction`.
     func transaction<Value, T>(at path: WritableKeyPath<M, Value>&Sendable, statePath: WritableKeyPath<M._ModelState, Value>&Sendable, isSame: ((Value, Value) -> Bool)?, modelContext: ModelContext<M>, modify: (inout Value) throws -> T) rethrows -> T {
         // Lock-order inversion guard — see the matching comment in
-        // `subscript[statePath:isSame:accessBox:]._modify` (line ~990) and
+        // `beginDirectWrite` and
         // the `transaction(_:)` variant below (line ~1201) for the full
         // rationale. Acquire `TestAccess.lock` BEFORE `context.lock` to
         // match the reader's order (`TestAccess → context`); without this
@@ -751,8 +764,8 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // lock-held + postLockCallbacks phases finish. See the helper definitions
         // (`beginLockHeldBackgroundCallsScope` / `endLockHeldBackgroundCallsScope`)
         // and `ThreadLocals.lockHeldBackgroundCalls` for rationale.
-        let lhbcOwned = beginLockHeldBackgroundCallsScope()
-        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
+        let lhbcOwned = beginLockHeldBackgroundCallsScope(threadLocals)
+        defer { endLockHeldBackgroundCallsScope(threadLocals, lhbcOwned) }
         lock.lock()
         let result: T
         do {
@@ -774,7 +787,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             let activeAccessCallback = modelContext.invokeDidModify(at: statePath)
 
 #if DEBUG
-            let postLockCallbacks = buildPostLockCallbacksWithPropDesc(for: statePath)
+            let postLockCallbacks = buildPostLockCallbacksWithPropDesc(for: statePath, tl: threadLocals)
 #else
             let postLockCallbacks = buildPostLockCallbacks(for: statePath)
 #endif
@@ -987,20 +1000,37 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// Invokes post-modify observation notifications without constructing a ModelContext.
     /// Returns the active-access callback for the caller to execute after releasing the lock.
     ///
-    /// Uses `_StateObserver` for registrar calls (no Model instance needed).
-    /// Uses `_StateObserver` for registrar calls; delegates to `activeAccess.willAccess/didModify(from:at:)` for TestAccess.
+    /// Uses `_StateObserver` for registrar calls (no Model instance needed); delegates to
+    /// `activeAccess.didModify(from:at:)` for TestAccess / AccessCollector.
+    ///
+    /// Must be called with `lock` held (both callers are inside `finishWrite`): the main
+    /// registrar is read through `unprotectedMainObservationRegistrar` on that basis.
+    ///
+    /// - Parameter activeAccess: the caller's resolved `ModelAccess.active ??
+    ///   accessBox._reference?.access ?? ModelAccess.current` — the same chain the write lock
+    ///   was taken on, passed down rather than re-reading both task-locals here.
+    /// - Parameter tl: the caller's `threadLocals` handle.
     @discardableResult
-    func invokeDidModifyDirect<T>(statePath: WritableKeyPath<M._ModelState, T>, accessBox: _ModelAccessBox) -> (() -> Void)? {
-        let access = accessBox._reference?.access ?? ModelAccess.current
-        let activeAccess = ModelAccess.active ?? access
+    func invokeDidModifyDirect<T>(statePath: WritableKeyPath<M._ModelState, T>, activeAccess: ModelAccess?, tl: ThreadLocals) -> (() -> Void)? {
+        // The access callback is the only consumer of the `& Sendable` view of `statePath`.
+        // Forming that view (`unsafeBitCast` to a protocol composition) costs an existential
+        // metadata lookup, and holding it in an `Optional` a second lookup plus an opaque
+        // copy — so it is built only when there is an access to hand it to.
+        @inline(__always) func accessCallback() -> (() -> Void)? {
+            guard let activeAccess else { return nil }
+            return activeAccess.didModify(from: self, at: unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self))
+        }
 
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar {
             let observer = _StateObserver<M._ModelState>()
             // Use cached KP to avoid per-write _swift_getKeyPath allocation (same rationale as willAccessDirect).
             let contextID = UInt(bitPattern: ObjectIdentifier(self))
             nonisolated(unsafe) let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = _stateObserverKP(contextID: contextID, statePath: statePath)
-            let sendableStatePath: (WritableKeyPath<M._ModelState, T> & Sendable)? = activeAccess != nil ? unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self) : nil
             let useMain = useMainThreadObservation
+            // Resolved once per write — the box → pair → background chain is immutable and
+            // non-nil whenever `useObservationRegistrar` holds, so one borrowed read serves
+            // willSet and didSet alike (no `Optional` of the resilient registrar to copy).
+            let backgroundReg = backgroundObservationRegistrarMakingIfNeeded
 
             // Ordering rule for the main registrar:
             //   - When already on the main thread, the strict `willSet → mutation → didSet`
@@ -1014,15 +1044,15 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // thread).
             let mainOnMain = useMain && isOnMainThread
 
-            if threadLocals.pendingObservationNotifications != nil {
+            if tl.pendingObservationNotifications != nil {
                 // Batched: the mutation has already happened by the time we drain the pending
                 // list, so strict willSet-before-mutation is unreachable for either registrar.
                 // Fire both as post-mutation bundles. Main goes through `mainCallQueue` which
                 // runs inline if we drain on main, otherwise enqueues onto `@MainActor`.
-                let callback = sendableStatePath.flatMap { [self] path in activeAccess?.didModify(from: self, at: path) }
-                threadLocals.pendingObservationNotifications!.append {
-                    self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                    self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
+                let callback = accessCallback()
+                tl.pendingObservationNotifications!.append {
+                    backgroundReg.willSet(observer, keyPath: observerKP)
+                    backgroundReg.didSet(observer, keyPath: observerKP)
                     if useMain, let mainReg = self.mainObservationRegistrar {
                         self.mainCallQueue {
                             mainReg.willSet(observer, keyPath: observerKP)
@@ -1033,135 +1063,246 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 return callback
             } else {
                 // Non-batched: emit willSet eagerly so background — and main when already on
-                // main — see the strict pre-mutation notification. didSet fires in `defer`
-                // after the caller has performed the mutation.
-                backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                // main — see the strict pre-mutation notification. didSet fires after the
+                // access callback has been captured and (on main) the queue drained — the
+                // sequence a `defer` used to produce, written out inline so the
+                // `_StateObserver<M._ModelState>: Observable` witness table and the registrar
+                // metadata are resolved once per write rather than once here and again in
+                // the defer's separate function.
+                backgroundReg.willSet(observer, keyPath: observerKP)
                 if mainOnMain {
-                    mainObservationRegistrar?.willSet(observer, keyPath: observerKP)
+                    unprotectedMainObservationRegistrar?.willSet(observer, keyPath: observerKP)
                 }
-                defer {
-                    self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
-                    if useMain, let mainReg = self.mainObservationRegistrar {
-                        if mainOnMain {
-                            // Synchronous on the mutating (main) thread: matches strict ordering.
+                let callback = accessCallback()
+                if mainOnMain {
+                    // `drainIfOnMain` is a no-op off the main thread; skipping the call there
+                    // saves its own `Thread.isMainThread` query.
+                    mainCallQueue.drainIfOnMain()
+                }
+                backgroundReg.didSet(observer, keyPath: observerKP)
+                if useMain, let mainReg = unprotectedMainObservationRegistrar {
+                    if mainOnMain {
+                        // Synchronous on the mutating (main) thread: matches strict ordering.
+                        mainReg.didSet(observer, keyPath: observerKP)
+                    } else {
+                        // Off-main: bundle main `willSet/didSet` onto `@MainActor`.
+                        mainCallQueue {
+                            mainReg.willSet(observer, keyPath: observerKP)
                             mainReg.didSet(observer, keyPath: observerKP)
-                        } else {
-                            // Off-main: bundle main `willSet/didSet` onto `@MainActor`.
-                            self.mainCallQueue {
-                                mainReg.willSet(observer, keyPath: observerKP)
-                                mainReg.didSet(observer, keyPath: observerKP)
-                            }
                         }
                     }
-                }
-                let callback = sendableStatePath.flatMap { [self] path in activeAccess?.didModify(from: self, at: path) }
-                if useMain {
-                    mainCallQueue.drainIfOnMain()
                 }
                 return callback
             }
         } else {
-            let sendableStatePath2: (WritableKeyPath<M._ModelState, T> & Sendable)? = activeAccess != nil ? unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self) : nil
-            let callback = sendableStatePath2.flatMap { [self] path in activeAccess?.didModify(from: self, at: path) }
-            if useMainThreadObservation, threadLocals.pendingObservationNotifications == nil {
+            let callback = accessCallback()
+            if useMainThreadObservation, tl.pendingObservationNotifications == nil {
                 mainCallQueue.drainIfOnMain()
             }
             return callback
         }
     }
 
-    /// Modifies a property directly on Reference._state using access box for observation.
+    /// How a direct `_State` write completes. Decided under `lock` before the caller's
+    /// mutation runs (`beginDirectWrite`) and acted on after it (`endDirectWrite`).
+    enum DirectWriteMode {
+        /// Live model: the value is written back and observers are notified.
+        case live
+        /// Destructed but not yet cleared: the value is written back, nobody is notified.
+        case destructedSilent
+        /// Destructed and cleared: the write is intentionally dropped.
+        case dropped
+    }
+
+    /// What `beginDirectWrite` hands its caller for the duration of a direct write: the
+    /// locks and scope it took, and how the write is to complete.
     ///
-    /// Yields a local copy and writes back after the user's mutation closure returns.
-    /// This is the same shape `stateTransaction` already uses, and the reason is the
-    /// same: yielding `&reference.state[keyPath: …]` directly would hold an *exclusive*
-    /// dynamic borrow on `reference.state` for the entire duration of the user's
-    /// mutation. While that borrow is held, any access on `reference.state` (read or
-    /// write, regardless of key path) from inside the user's expression — e.g.
-    /// `m.x = m.y + 1` or the optional-chained `m.x?.field = m.x.map { … }` pattern —
-    /// trips Swift's law of exclusivity with a fatal "Simultaneous accesses to 0x…,
-    /// but modification requires exclusive access" trap. Copying through a local
-    /// `var value` ends the borrow before the yield and re-acquires it briefly only
-    /// for the single write-back store after the yield returns.
-    subscript<T>(statePath statePath: WritableKeyPath<M._ModelState, T>, isSame isSame: ((T, T) -> Bool)?, accessBox accessBox: _ModelAccessBox) -> T {
-        _read { fatalError() }
-        _modify {
-            // Lock-order inversion guard. The writer's `activeAccessCallback` (which
-            // appends to `TestAccess.valueUpdates` and updates `lastState`) runs AFTER
-            // `lock.unlock()` below, and acquires `TestAccess.lock` at that time.
-            // Readers (predicate evaluators) hold `TestAccess.lock` and then take
-            // `context.lock` — opposite order. Without serialization the reader can
-            // observe the new `reference.state` (after our `lock.unlock()`) before
-            // `TestAccess.valueUpdates` has the corresponding entry, miss the entry in
-            // its clearing pass, and leave it surviving to end-of-test exhaustion.
-            // Taking the access's write lock BEFORE the context lock matches the
-            // reader's order and closes the window. No-op when `activeAccess` is nil
-            // (production) or a non-test `ModelAccess` (View/AccessCollector — they
-            // don't queue state behind the reference write).
-            let writeLockHolder = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
-            writeLockHolder?.acquireWriteLock()
-            defer { writeLockHolder?.releaseWriteLock() }
-            // Defer `ObservationTracking.onObservedChange`'s `backgroundCallQueue(performUpdate)`
-            // enqueue until AFTER this write's lock-held + postLockCallbacks phases finish.
-            // See the helper definitions (`beginLockHeldBackgroundCallsScope` /
-            // `endLockHeldBackgroundCallsScope`) and `ThreadLocals.lockHeldBackgroundCalls`
-            // for the rationale on why an inline enqueue races against the writer's
-            // own dedup decisions (shadow `onModify`'s `hasPendingUpdate` check vs
-            // `performUpdate`'s clear).
-            let lhbcOwned = beginLockHeldBackgroundCallsScope()
-            defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
-            lock.lock()
-            if unprotectedIsDestructed {
-                if reference._stateCleared {
-                    if !reference._hasGenesis {
-                        reportIssue("Modifying a fully destructed model with no last-seen snapshot.")
-                    }
-                    // Already isolated from `reference.state`: writes to a cleared model
-                    // are intentionally dropped, so no write-back happens here.
-                    var value: T = reference.state[keyPath: statePath]
-                    yield &value
-                } else {
-                    // Destructed-but-not-cleared: writes still take effect (matching the
-                    // previous live-yield behaviour) but no observers are notified.
-                    var value: T = reference.state[keyPath: statePath]
-                    let oldValue = value
-                    defer { _fixLifetime(oldValue) }
-                    yield &value
-                    reference.state[keyPath: statePath] = value
+    /// The shape exists so that the write's yield happens in the *caller's* coroutine
+    /// (`_ModelSourceBox`'s write `_modify`). The previous design had that `_modify` yield
+    /// into a second `_modify` on `Context`, which cost every write:
+    ///   • a second heap-allocated coroutine frame — a generic `_modify` cannot size its
+    ///     frame statically, so each one is a `swift_coroFrameAlloc` (malloc + free; on the
+    ///     current allocator the free alone includes a `mach_absolute_time` call);
+    ///   • a heap-boxed closure for the sameness check — `isSame` had to cross a coroutine
+    ///     boundary, and a closure argument to a coroutine is not stack-promoted even when
+    ///     non-escaping, so the `Equatable` overload's `==` thunk (which captures `T`'s
+    ///     witness table) was a `swift_allocObject` + `free` per write.
+    /// With the caller yielding its own local there is one coroutine per write, and the
+    /// `Equatable` overload compares with a direct `==`.
+    ///
+    /// Deliberately *not* generic over the property type: the value being written stays a
+    /// plain local in the caller's frame. A first cut carried `value`/`oldValue` in a
+    /// `Frame<T>`, and every unspecialised caller then instantiated that struct's metadata
+    /// through the runtime's locked cache three times per write (its `init`, the `defer`
+    /// borrowing it, the caller's copy) — a tenth of the write. Also why the `defer` that
+    /// closes the write captures this `let` and nothing else: a `var` captured across a
+    /// yield is boxed on the heap.
+    struct DirectWriteScope {
+        let writeLockHolder: ModelAccess?
+        let tl: ThreadLocals
+        let lhbcOwned: Bool
+        let mode: DirectWriteMode
+    }
+
+    /// Opens a direct write: takes the access write lock, opens the `lockHeldBackgroundCalls`
+    /// scope, takes `lock` and decides the `DirectWriteMode`. Returns with `lock` HELD. The
+    /// caller then reads the current value out of `reference.state`, mutates a local copy
+    /// (typically by yielding it) and calls `endDirectWrite` — and must
+    /// `defer { closeDirectWrite(scope) }` right after this call so the outer lock and scope
+    /// are released even if its access is abandoned mid-yield.
+    ///
+    /// The value round-trips through a local rather than being yielded straight out of
+    /// `reference.state[keyPath: …]`: that would hold an *exclusive* dynamic borrow on
+    /// `reference.state` for the whole of the user's mutation, and any access on
+    /// `reference.state` from inside the expression — `m.x = m.y + 1`, or the
+    /// optional-chained `m.x?.field = m.x.map { … }` pattern — would trip Swift's law of
+    /// exclusivity with a fatal "Simultaneous accesses to 0x…, but modification requires
+    /// exclusive access" trap. The copy ends the borrow before the yield; the write-back
+    /// re-acquires it briefly for a single store.
+    @inline(__always)
+    func beginDirectWrite(accessBox: _ModelAccessBox) -> DirectWriteScope {
+        // Lock-order inversion guard. The writer's `activeAccessCallback` (which
+        // appends to `TestAccess.valueUpdates` and updates `lastState`) runs AFTER
+        // `lock.unlock()` in `finishWrite`, and acquires `TestAccess.lock` at that time.
+        // Readers (predicate evaluators) hold `TestAccess.lock` and then take
+        // `context.lock` — opposite order. Without serialization the reader can
+        // observe the new `reference.state` (after our `lock.unlock()`) before
+        // `TestAccess.valueUpdates` has the corresponding entry, miss the entry in
+        // its clearing pass, and leave it surviving to end-of-test exhaustion.
+        // Taking the access's write lock BEFORE the context lock matches the
+        // reader's order and closes the window. No-op when `activeAccess` is nil
+        // (production) or a non-test `ModelAccess` (View/AccessCollector — they
+        // don't queue state behind the reference write).
+        //
+        // The chain is resolved once here and carried in the scope: `finishWrite` reuses
+        // it as the active access, so the two task-locals are read once per write.
+        let writeLockHolder = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
+        writeLockHolder?.acquireWriteLock()
+        // Defer `ObservationTracking.onObservedChange`'s `backgroundCallQueue(performUpdate)`
+        // enqueue until AFTER this write's lock-held + postLockCallbacks phases finish.
+        // See the helper definitions (`beginLockHeldBackgroundCallsScope` /
+        // `endLockHeldBackgroundCallsScope`) and `ThreadLocals.lockHeldBackgroundCalls`
+        // for the rationale on why an inline enqueue races against the writer's
+        // own dedup decisions (shadow `onModify`'s `hasPendingUpdate` check vs
+        // `performUpdate`'s clear).
+        let tl = threadLocals
+        let lhbcOwned = beginLockHeldBackgroundCallsScope(tl)
+        lock.lock()
+        let mode: DirectWriteMode
+        if unprotectedIsDestructed {
+            if reference._stateCleared {
+                if !reference._hasGenesis {
+                    reportIssue("Modifying a fully destructed model with no last-seen snapshot.")
                 }
-                lock.unlock()
+                mode = .dropped
             } else {
-                var value: T = reference.state[keyPath: statePath]
-                let oldValue = value
-                // Pin old value alive past the yield so its deinit cannot fire while
-                // reference.state is briefly held during the write-back, preventing
-                // Swift exclusivity violations from a deinit that reads model state.
-                defer { _fixLifetime(oldValue) }
-                yield &value
-                reference.state[keyPath: statePath] = value
-
-                if let isSame, isSame(value, oldValue) {
-                    return lock.unlock()
-                }
-
-                self.didModify()
-                let activeAccessCallback = invokeDidModifyDirect(statePath: statePath, accessBox: accessBox)
-#if DEBUG
-                let postLockCallbacks = buildPostLockCallbacksWithPropDesc(for: statePath)
-#else
-                let postLockCallbacks = buildPostLockCallbacks(for: statePath)
-#endif
-                lock.unlock()
-
-                activeAccessCallback?()
-                runPostLockCallbacks(postLockCallbacks)
+                mode = .destructedSilent
             }
+        } else {
+            mode = .live
+        }
+        return DirectWriteScope(writeLockHolder: writeLockHolder, tl: tl, lhbcOwned: lhbcOwned, mode: mode)
+    }
+
+    /// Completes a direct write opened by `beginDirectWrite`: writes `value` back (unless
+    /// dropped), releases `lock`, and — for a live model whose value actually changed —
+    /// notifies observers through `finishWrite`. `isSame` is the caller's verdict on `value`
+    /// vs `oldValue` (`==` for `Equatable`, `false` when there is nothing to compare with);
+    /// a same-value write releases the lock and notifies nobody, exactly as before.
+    ///
+    /// `oldValue` is pinned until this returns for the same reason the old `_modify` held it
+    /// past the yield with `_fixLifetime`: its deinit must not run while `reference.state`
+    /// is briefly held for the store.
+    @inline(__always)
+    func endDirectWrite<T>(_ scope: DirectWriteScope, statePath: WritableKeyPath<M._ModelState, T>, value: T, oldValue: T, isSame: Bool) {
+        defer { _fixLifetime(oldValue) }
+        switch scope.mode {
+        case .dropped:
+            // Already isolated from `reference.state`: nothing is written back.
+            lock.unlock()
+        case .destructedSilent:
+            reference.state[keyPath: statePath] = value
+            lock.unlock()
+        case .live:
+            reference.state[keyPath: statePath] = value
+            if isSame {
+                lock.unlock()
+                return
+            }
+            finishWrite(statePath: statePath, activeAccess: scope.writeLockHolder, tl: scope.tl)
         }
     }
 
+    /// Releases what `beginDirectWrite` took *outside* `lock`: the background-call scope
+    /// (draining it) and the access write lock, in that order — the order the two `defer`s
+    /// of the old `_modify` unwound in. Callers run this from a `defer` registered right
+    /// after `beginDirectWrite`, so it also runs when the access is abandoned mid-yield;
+    /// `lock` itself is released only by `endDirectWrite`, as before.
+    @inline(__always)
+    func closeDirectWrite(_ scope: DirectWriteScope) {
+        endLockHeldBackgroundCallsScope(scope.tl, scope.lhbcOwned)
+        scope.writeLockHolder?.releaseWriteLock()
+    }
+
+    /// Whole-value assignment of the property at `statePath` — the `set` accessor's
+    /// counterpart to the caller-yielded `beginDirectWrite`/`endDirectWrite` pair. Plain
+    /// assignment is the most common write in application code (`isLoading = true`) and
+    /// never needs a yield, so it is a plain function: no coroutine, no frame allocation.
+    /// `isSame` is non-escaping (a plain `(T, T) -> Bool`, never optional), so the
+    /// `Equatable` overload's `==` costs no heap allocation here either.
+    func setValue<T>(_ newValue: T, statePath: WritableKeyPath<M._ModelState, T>, isSame: (T, T) -> Bool, accessBox: _ModelAccessBox) {
+        let scope = beginDirectWrite(accessBox: accessBox)
+        defer { closeDirectWrite(scope) }
+        let oldValue: T = reference.state[keyPath: statePath]
+        endDirectWrite(scope, statePath: statePath, value: newValue, oldValue: oldValue, isSame: isSame(newValue, oldValue))
+    }
+
+    /// Coroutine form of the direct write, for a caller that cannot yield its own local.
+    ///
+    /// Used only by the parameter-pack (tuple property) overload of `_ModelSourceBox`'s
+    /// write subscript: SILGen (Swift 6.3) crashes lowering the caller-owned form for a
+    /// `(repeat each T)` value, so tuple properties keep yielding through here, where `T`
+    /// is an ordinary generic parameter. This path still pays the second coroutine frame
+    /// and the heap-boxed `isSame` closure that the scalar overloads no longer do; tuple
+    /// properties are rare enough for that to be fine.
+    subscript<T>(yieldingStatePath statePath: WritableKeyPath<M._ModelState, T>, isSame isSame: (T, T) -> Bool, accessBox accessBox: _ModelAccessBox) -> T {
+        _read { fatalError() }
+        _modify {
+            let scope = beginDirectWrite(accessBox: accessBox)
+            defer { closeDirectWrite(scope) }
+            var value: T = reference.state[keyPath: statePath]
+            let oldValue = value
+            yield &value
+            endDirectWrite(scope, statePath: statePath, value: value, oldValue: oldValue, isSame: isSame(value, oldValue))
+        }
+    }
+
+    /// Shared tail of every direct `_State` write (`endDirectWrite` — behind both the
+    /// caller-yielded `_modify` and `setValue` — and `stateTransaction`): bumps the
+    /// modification count, fires the registrar and
+    /// access notifications, builds the post-lock callbacks, releases `lock`, then runs
+    /// the callbacks. Entered with `lock` held; returns with it released.
+    ///
+    /// `activeAccess` is the caller's resolved `ModelAccess.active ?? accessBox._reference?.access
+    /// ?? ModelAccess.current` chain — the same value it took the write lock on — and `tl` its
+    /// `threadLocals` handle, so the two task-locals and the TLS slot are each read once per write.
+    private func finishWrite<T>(statePath: WritableKeyPath<M._ModelState, T>, activeAccess: ModelAccess?, tl: ThreadLocals) {
+        didModify()
+        let activeAccessCallback = invokeDidModifyDirect(statePath: statePath, activeAccess: activeAccess, tl: tl)
+#if DEBUG
+        let postLockCallbacks = buildPostLockCallbacksWithPropDesc(for: statePath, tl: tl)
+#else
+        let postLockCallbacks = buildPostLockCallbacks(for: statePath, tl: tl)
+#endif
+        lock.unlock()
+
+        activeAccessCallback?()
+        runPostLockCallbacks(postLockCallbacks)
+    }
+
     /// Transaction-based modification using state paths and access box.
-    func stateTransaction<Value, T>(at statePath: WritableKeyPath<M._ModelState, Value>, isSame: ((Value, Value) -> Bool)?, accessBox: _ModelAccessBox, modify: (inout Value) throws -> T) rethrows -> T {
-        // See the matching comment in `subscript[statePath:isSame:accessBox:]._modify`.
+    func stateTransaction<Value, T>(at statePath: WritableKeyPath<M._ModelState, Value>, isSame: (Value, Value) -> Bool, accessBox: _ModelAccessBox, modify: (inout Value) throws -> T) rethrows -> T {
+        // See the matching comment in `beginDirectWrite`.
         // Take the access's write lock BEFORE the context lock so we match the reader's
         // lock order (TestAccess.lock → context.lock) and writers don't race the
         // valueUpdates append against a concurrent predicate evaluation.
@@ -1172,8 +1313,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // lock-held + postLockCallbacks phases finish. See the helper definitions
         // (`beginLockHeldBackgroundCallsScope` / `endLockHeldBackgroundCallsScope`)
         // and `ThreadLocals.lockHeldBackgroundCalls` for rationale.
-        let lhbcOwned = beginLockHeldBackgroundCallsScope()
-        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
+        let tl = threadLocals
+        let lhbcOwned = beginLockHeldBackgroundCallsScope(tl)
+        defer { endLockHeldBackgroundCallsScope(tl, lhbcOwned) }
         lock.lock()
         let result: T
         if unprotectedIsDestructed {
@@ -1194,21 +1336,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             result = try modify(&value)
             reference.state[keyPath: statePath] = value
 
-            if let isSame, isSame(value, oldValue) {
+            if isSame(value, oldValue) {
                 lock.unlock()
                 return result
             }
 
-            didModify()
-            let activeAccessCallback = invokeDidModifyDirect(statePath: statePath, accessBox: accessBox)
-#if DEBUG
-            let postLockCallbacks = buildPostLockCallbacksWithPropDesc(for: statePath)
-#else
-            let postLockCallbacks = buildPostLockCallbacks(for: statePath)
-#endif
-            lock.unlock()
-            activeAccessCallback?()
-            runPostLockCallbacks(postLockCallbacks)
+            finishWrite(statePath: statePath, activeAccess: writeLockHolder, tl: tl)
         }
         return result
     }
@@ -1220,7 +1353,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// Resolves the property name eagerly inside the lock via Mirror + property name cache.
     /// Safe: _modelSeed uses .live source (no observation side-effects during Mirror traversal),
     /// and the propertyName cache lock ordering (context lock → cache lock) is consistent here.
-    private func buildPostLockCallbacksWithPropDesc<T>(for statePath: WritableKeyPath<M._ModelState, T>) -> [() -> Void]? {
+    private func buildPostLockCallbacksWithPropDesc<T>(for statePath: WritableKeyPath<M._ModelState, T>, tl: ThreadLocals) -> [() -> Void]? {
         let name: String? = usingActiveAccess(nil) {
             propertyName(from: _modelSeed, path: M._modelStateKeyPath.appending(path: statePath))
         }
@@ -1230,17 +1363,27 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         } else {
             desc = nil
         }
-        return buildPostLockCallbacks(for: statePath, propertyDescription: desc)
+        return buildPostLockCallbacks(for: statePath, propertyDescription: desc, tl: tl)
     }
 #endif
 
     /// Builds the post-lock callbacks array for a property modification.
     /// Returns nil when there is nothing to do, avoiding the array allocation entirely.
     /// Must be called while the context lock is held.
-    private func buildPostLockCallbacks(for path: PartialKeyPath<M._ModelState>, kind: ModificationKind = .properties, propertyDescription: (@Sendable () -> String?)? = nil) -> [() -> Void]? {
-        // Fast path: skip allocation when no observers exist and we're not in a batched transaction.
-        guard modifyCallbacks[path] != nil || anyModificationActiveCount > 0 || threadLocals.postTransactions != nil else {
-            return nil
+    private func buildPostLockCallbacks(for path: PartialKeyPath<M._ModelState>, kind: ModificationKind = .properties, propertyDescription: (@Sendable () -> String?)? = nil, tl: ThreadLocals = threadLocals) -> [() -> Void]? {
+        // Fast path: nothing to build when no observer of any kind is registered and we're
+        // not inside a batched transaction. Checked in cost order — two plain loads first,
+        // and the key-path hash (`modifyCallbacksStore[path]`) only once this context is
+        // known to hold `onModify` callbacks. The previous `modifyCallbacks[path] != nil`
+        // paid, on every observer-less write, for the `_read` accessor's `?? [:]` (a
+        // `Dictionary.init(dictionaryLiteral:)` in unspecialised generic code, which
+        // instantiates the `(key:value:)` tuple metadata through the runtime's locked
+        // cache), a copy of the dictionary, the `Hashable` witness for
+        // `PartialKeyPath<M._ModelState>`, and the structural hash of the key path itself.
+        if anyModificationActiveCount == 0 && tl.postTransactions == nil {
+            guard hasModifyCallbacks, modifyCallbacksStore?[path] != nil else {
+                return nil
+            }
         }
         var postLockCallbacks: [() -> Void] = []
         onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
@@ -1338,8 +1481,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // This defer is registered FIRST so it runs LAST (LIFO) — after
         // `runPostLockCallbacks` below, ensuring all observation dedup decisions
         // have completed before any `performUpdate` is enqueued.
-        let lhbcOwned = beginLockHeldBackgroundCallsScope()
-        defer { endLockHeldBackgroundCallsScope(lhbcOwned) }
+        let tl = threadLocals
+        let lhbcOwned = beginLockHeldBackgroundCallsScope(tl)
+        defer { endLockHeldBackgroundCallsScope(tl, lhbcOwned) }
 
         var postLockCallbacks: [() -> Void] = []
         defer {
@@ -1347,7 +1491,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
 
         // Lock-order inversion guard — same shape as the one in
-        // `subscript[statePath:isSame:accessBox:]._modify` (line ~990) and
+        // `beginDirectWrite` and
         // `stateTransaction` (line ~1058). Acquire `TestAccess.lock` BEFORE
         // `context.lock` to match the reader's order.
         //
@@ -2371,22 +2515,24 @@ func runPostLockCallbacks(_ callbacks: [() -> Void]?) {
 /// already open (caller is nested — the outer caller will drain).
 ///
 /// Paired with `endLockHeldBackgroundCallsScope`. See `ThreadLocals.lockHeldBackgroundCalls`
-/// for rationale.
-func beginLockHeldBackgroundCallsScope() -> Bool {
-    if threadLocals.lockHeldBackgroundCalls == nil {
-        threadLocals.lockHeldBackgroundCalls = []
-        return true
-    }
-    return false
+/// and `ThreadLocals.isLockHeldBackgroundCallsScopeOpen` for rationale. Takes the
+/// caller's `threadLocals` handle so a write resolves the TLS slot once.
+func beginLockHeldBackgroundCallsScope(_ tl: ThreadLocals) -> Bool {
+    if tl.isLockHeldBackgroundCallsScopeOpen { return false }
+    tl.isLockHeldBackgroundCallsScopeOpen = true
+    return true
 }
 
 /// Close a `lockHeldBackgroundCalls` scope opened by `beginLockHeldBackgroundCallsScope`.
-/// If `owned` is `true`, drains the accumulated calls on the current thread and clears
-/// the scope. If `false`, this is a no-op (the nested caller's outer scope will drain).
-func endLockHeldBackgroundCallsScope(_ owned: Bool) {
+/// If `owned` is `true`, closes the scope and drains the accumulated calls (if any) on
+/// the current thread. If `false`, this is a no-op (the nested caller's outer scope will
+/// drain). The scope is closed *before* the drain, so a call that itself reaches
+/// `onObservedChange` enqueues inline rather than into a scope that is being torn down.
+func endLockHeldBackgroundCallsScope(_ tl: ThreadLocals, _ owned: Bool) {
     guard owned else { return }
-    let calls = threadLocals.lockHeldBackgroundCalls!
-    threadLocals.lockHeldBackgroundCalls = nil
+    tl.isLockHeldBackgroundCallsScopeOpen = false
+    guard let calls = tl.lockHeldBackgroundCalls else { return }
+    tl.lockHeldBackgroundCalls = nil
     for f in calls { f() }
 }
 

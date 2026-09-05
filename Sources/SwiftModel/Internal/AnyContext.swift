@@ -161,7 +161,9 @@ class AnyContext: @unchecked Sendable {
     /// `Any` because the generic element type isn't visible at this layer.
     nonisolated(unsafe) var collectionElementPathMakersStore: [AnyKeyPath: @Sendable (AnyHashable, Any) -> AnyKeyPath]?
 
-    private var modeLifeTime: ModelLifetime = .anchored
+    /// Read on every property write (`unprotectedIsDestructed`). `@exclusivity(unchecked)`:
+    /// see `_modificationCount` below.
+    @exclusivity(unchecked) private var modeLifeTime: ModelLifetime = .anchored
 
     private var eventContinuationsStore: [Int: AsyncStream<EventInfo>.Continuation]?
     private var eventContinuations: [Int: AsyncStream<EventInfo>.Continuation] {
@@ -274,7 +276,9 @@ class AnyContext: @unchecked Sendable {
     /// Called once by `Context<M>.onActivate()` and then cleared.
     var pendingActivation: (() -> Void)?
 
-    private(set) var anyModificationActiveCount = 0
+    /// Read on every property write (`buildPostLockCallbacks`). `@exclusivity(unchecked)`:
+    /// see `_modificationCount` below.
+    @exclusivity(unchecked) private(set) var anyModificationActiveCount = 0
     private var anyModificationCallbacksStore: [Int: (_ModificationCallbackSource) -> (() -> Void)?]?
     private var anyModificationCallbacks: [Int: (_ModificationCallbackSource) -> (() -> Void)?] {
         _read { yield anyModificationCallbacksStore ?? [:] }
@@ -289,7 +293,18 @@ class AnyContext: @unchecked Sendable {
             }
         }
     }
-    private var _modificationCount = 0
+    /// Bumped on every property write (`didModify()`), always under `lock`.
+    ///
+    /// `@exclusivity(unchecked)` on this and the other per-write stored properties
+    /// (`modeLifeTime`, `anyModificationActiveCount`, `Context.modifyCallbacksStore` /
+    /// `hasModifyCallbacks`) drops the dynamic exclusivity bookkeeping —
+    /// `swift_beginAccess`/`swift_endAccess`, a per-thread access-set lookup and insert on
+    /// every read or write, ~25 ns each — that the compiler adds to every class stored
+    /// property. Those checks only ever catch an overlapping access on the *same* thread;
+    /// cross-thread ordering is the lock's job, and none of these properties has an
+    /// accessor that yields into user code while the access is open, so there is no
+    /// same-thread overlap to catch. Nothing observable changes.
+    @exclusivity(unchecked) private var _modificationCount = 0
 
     /// Paths excluded from `observeModifications()` notifications. Nil means no exclusions.
     /// Set by `ModelNode.excludeFromModifications`. Only checked for `.properties` kind changes.
@@ -808,6 +823,20 @@ class AnyContext: @unchecked Sendable {
         lock { (_registrarBox as? RegistrarBox)?.pair._main }
     }
 
+    /// `mainObservationRegistrar` for callers that already hold `lock`.
+    ///
+    /// `_main` is published under the hierarchy lock, so a reader holding that lock sees
+    /// it consistently without re-entering it; the `NSRecursiveLock` round-trip in
+    /// `mainObservationRegistrar` (two `objc_msgSend`s and a mutex acquire/release) is
+    /// pure overhead there. Used by `Context.invokeDidModifyDirect`, whose two callers
+    /// both sit between `lock.lock()` and `lock.unlock()`. This is NOT an unlocked
+    /// fast path — see `RegistrarPair._main` — it relies on the caller's lock.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    var unprotectedMainObservationRegistrar: ObservationRegistrar? {
+        guard let box = _registrarBox else { return nil }
+        return unsafeDowncast(box, to: RegistrarBox.self).pair._main
+    }
+
     /// Returns the background registrar if observation is enabled, or nil otherwise.
     /// Lock-free: the box → pair → background chain is immutable.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
@@ -861,9 +890,15 @@ class AnyContext: @unchecked Sendable {
 
     /// Returns the background registrar. Only called when `useObservationRegistrar` is true.
     /// Lock-free and race-free: the box → pair → background chain is immutable.
+    ///
+    /// `unsafeDowncast` rather than `as!`: the box is only ever a `RegistrarBox` (it is
+    /// stored as `AnyObject` solely to keep the `@available` off the stored property), and
+    /// the checked cast is a `swift_dynamicCastClass` call plus a retain/release of the box
+    /// on every read and write, whereas the unchecked cast keeps the whole `let` chain
+    /// borrowed.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     var backgroundObservationRegistrarMakingIfNeeded: ObservationRegistrar {
-        (_registrarBox as! RegistrarBox).pair.background
+        unsafeDowncast(_registrarBox.unsafelyUnwrapped, to: RegistrarBox.self).pair.background
     }
 
     var lifetime: ModelLifetime {

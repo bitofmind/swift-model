@@ -779,7 +779,7 @@ extension _ModelSourceBox {
                     // Live (internal direct-access): storage is fully initialised.
                     // Local-copy + write-back keeps the user's mutation expression
                     // from running while `reference.state` is exclusively borrowed —
-                    // see `Context.subscript[statePath:isSame:accessBox:]._modify`.
+                    // see `Context.beginDirectWrite`.
                     var value = reference.state[keyPath: statePath]
                     yield &value
                     reference.state[keyPath: statePath] = value
@@ -805,7 +805,15 @@ extension _ModelSourceBox {
                 }
                 return
             }
-            yield &context[statePath: statePath, isSame: nil, accessBox: accessBox]
+            // The write's yield happens HERE, on a local this coroutine owns — one
+            // coroutine (and one heap frame) per write instead of yielding into a second
+            // `_modify` on `Context`. See `Context.DirectWriteScope`.
+            let scope = context.beginDirectWrite(accessBox: accessBox)
+            defer { context.closeDirectWrite(scope) }
+            var value: T = context.reference.state[keyPath: statePath]
+            let oldValue = value
+            yield &value
+            context.endDirectWrite(scope, statePath: statePath, value: value, oldValue: oldValue, isSame: false)
         }
         nonmutating set {
             // Whole-value assignment. Distinct from `_modify` so that assigning a property
@@ -821,7 +829,7 @@ extension _ModelSourceBox {
                 }
                 return
             }
-            context[statePath: statePath, isSame: nil, accessBox: accessBox] = newValue
+            context.setValue(newValue, statePath: statePath, isSame: { _, _ in false }, accessBox: accessBox)
         }
     }
 
@@ -851,7 +859,14 @@ extension _ModelSourceBox {
                 }
                 return
             }
-            yield &context[statePath: statePath, isSame: ==, accessBox: accessBox]
+            // Caller-owned yield, see the disfavoured generic overload. `==` is applied
+            // directly: no closure crosses a coroutine boundary, so no heap-boxed thunk.
+            let scope = context.beginDirectWrite(accessBox: accessBox)
+            defer { context.closeDirectWrite(scope) }
+            var value: T = context.reference.state[keyPath: statePath]
+            let oldValue = value
+            yield &value
+            context.endDirectWrite(scope, statePath: statePath, value: value, oldValue: oldValue, isSame: value == oldValue)
         }
         nonmutating set {
             // See disfavoured generic overload.
@@ -865,7 +880,7 @@ extension _ModelSourceBox {
                 }
                 return
             }
-            context[statePath: statePath, isSame: ==, accessBox: accessBox] = newValue
+            context.setValue(newValue, statePath: statePath, isSame: ==, accessBox: accessBox)
         }
     }
 
@@ -895,7 +910,11 @@ extension _ModelSourceBox {
                 }
                 return
             }
-            yield &context[statePath: statePath, isSame: isSame, accessBox: accessBox]
+            // Unlike the scalar overloads this one cannot yield its own local: SILGen
+            // (Swift 6.3) crashes lowering the caller-owned write for a `(repeat each T)`
+            // value in a coroutine. Tuple properties are rare, so they keep yielding
+            // through `Context`'s coroutine form instead.
+            yield &context[yieldingStatePath: statePath, isSame: isSame, accessBox: accessBox]
         }
         nonmutating set {
             // See disfavoured generic overload.
@@ -909,7 +928,7 @@ extension _ModelSourceBox {
                 }
                 return
             }
-            context[statePath: statePath, isSame: isSame, accessBox: accessBox] = newValue
+            context.setValue(newValue, statePath: statePath, isSame: isSame, accessBox: accessBox)
         }
     }
 
