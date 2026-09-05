@@ -401,7 +401,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             //
             // PERF: for non-snapshot references this costs one hierarchy-lock acquisition.
             // The anchored+tracked path is unaffected (it already locks via
-            // `context[statePath:observeCallback:]`). `withHierarchyLockIfLive` has since
+            // `Context.readLocked`). `withHierarchyLockIfLive` has since
             // been cut to roughly the lock pair itself — it caches the lock strongly rather
             // than resolving the weak `_context`, and takes both locks without Foundation's
             // non-inlinable generic `withLock`. Pre-anchor reads are back to their pre-lock
@@ -634,24 +634,41 @@ extension _ModelSourceBox {
 
     // MARK: Read subscripts
 
+    // All four read subscripts are plain getters. Two of them used to be `_read`
+    // coroutines yielding straight out of `Context.subscript(statePath:observeCallback:)`
+    // — itself a `_read` — and the nested yield-once frame did not fit the caller's
+    // coroutine buffer, so every anchored read heap-allocated it (`swift_coroFrameAlloc`).
+    // The Context-level read (`Context.readLocked`) always materialised the projection
+    // into a local before yielding, so returning it by value is the same copy without
+    // the frame. See the `readLocked` doc comment for why that materialisation matters.
+    //
+    // Shape shared by all four: `threadLocals` is resolved ONCE (one `pthread_getspecific`)
+    // and passed down; the `withUntrackedModelReads` branch is tested BEFORE the weak
+    // `reference.context` load and served by `Reference.readUntracked`, which needs
+    // nothing from the Context object; the tracked branch resolves the Context once and
+    // passes it to `willAccessDirect` + `readLocked`. The branch order is equivalent to
+    // the former nested `if`: `readUntracked` returns nil under exactly the condition
+    // `reference.context` did (`_hierarchyLock` is kept in lockstep with `_context`),
+    // and the fallback in both cases is the `dynamicMember` read.
+
     @_disfavoredOverload
     public subscript<T>(read statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
         @inlinable
-        _read {
+        get {
             let tl = threadLocals
             if tl.forceDirectAccess || _isLive {
-                yield self[dynamicMember: statePath]
-            } else if let context = reference.context {
-                if tl.untrackedReads {
-                    // withUntrackedModelReads scope: lock-protected raw read, no observation.
-                    yield context[statePath: statePath, observeCallback: nil]
-                } else {
-                    let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox)
-                    yield context[statePath: statePath, observeCallback: callback]
-                }
-            } else {
-                yield self[dynamicMember: statePath]
+                return self[dynamicMember: statePath]
             }
+            if tl.untrackedReads {
+                // withUntrackedModelReads scope: lock-protected raw read, no observation.
+                if let value = reference.readUntracked(statePath, tl: tl) { return value }
+                return self[dynamicMember: statePath]
+            }
+            if let context = reference.context {
+                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox, tl: tl)
+                return context.readLocked(statePath, callback: callback, tl: tl)
+            }
+            return self[dynamicMember: statePath]
         }
     }
 
@@ -660,46 +677,46 @@ extension _ModelSourceBox {
             let tl = threadLocals
             if tl.forceDirectAccess || _isLive {
                 return self[dynamicMember: statePath]
-            } else if let context = reference.context {
-                if tl.untrackedReads {
-                    // withUntrackedModelReads scope: lock-protected raw read,
-                    // no observation, no child access stamping.
-                    return context[statePath: statePath, observeCallback: nil]
-                }
-                let access = accessBox._reference?.access ?? ModelAccess.current
-                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox)
-                let value: T = context[statePath: statePath, observeCallback: callback]
-                return value.withAccessIfPropagateToChildren(access)
-            } else {
+            }
+            if tl.untrackedReads {
+                // withUntrackedModelReads scope: lock-protected raw read,
+                // no observation, no child access stamping.
+                if let value = reference.readUntracked(statePath, tl: tl) { return value }
                 return self[dynamicMember: statePath]
             }
+            if let context = reference.context {
+                let access = accessBox._reference?.access ?? ModelAccess.current
+                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox, tl: tl)
+                let value: T = context.readLocked(statePath, callback: callback, tl: tl)
+                return value.withAccessIfPropagateToChildren(access)
+            }
+            return self[dynamicMember: statePath]
         }
     }
 
     public subscript<T: ModelContainer>(read statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
-        _read {
+        get {
             let tl = threadLocals
             if tl.forceDirectAccess || _isLive {
-                yield self[dynamicMember: statePath]
-            } else if let context = reference.context {
-                if tl.untrackedReads {
-                    // withUntrackedModelReads scope: lock-protected raw read,
-                    // no observation, no deep access stamping.
-                    yield context[statePath: statePath, observeCallback: nil]
-                } else {
-                    let access = accessBox._reference?.access ?? ModelAccess.current
-                    let deepAccess = access.flatMap { $0.shouldPropagateToChildren ? $0 : nil }
-                    let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox)
-                    let value: T = context[statePath: statePath, observeCallback: callback]
-                    if let deepAccess {
-                        yield value.withDeepAccess(deepAccess)
-                    } else {
-                        yield value
-                    }
-                }
-            } else {
-                yield self[dynamicMember: statePath]
+                return self[dynamicMember: statePath]
             }
+            if tl.untrackedReads {
+                // withUntrackedModelReads scope: lock-protected raw read,
+                // no observation, no deep access stamping.
+                if let value = reference.readUntracked(statePath, tl: tl) { return value }
+                return self[dynamicMember: statePath]
+            }
+            if let context = reference.context {
+                let access = accessBox._reference?.access ?? ModelAccess.current
+                let deepAccess = access.flatMap { $0.shouldPropagateToChildren ? $0 : nil }
+                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox, tl: tl)
+                let value: T = context.readLocked(statePath, callback: callback, tl: tl)
+                if let deepAccess {
+                    return value.withDeepAccess(deepAccess)
+                }
+                return value
+            }
+            return self[dynamicMember: statePath]
         }
     }
 
@@ -714,24 +731,25 @@ extension _ModelSourceBox {
             let tl = threadLocals
             if tl.forceDirectAccess || _isLive {
                 return self[dynamicMember: statePath]
-            } else if let context = reference.context {
-                if tl.untrackedReads {
-                    // withUntrackedModelReads scope: lock-protected raw read,
-                    // no observation, no per-element access stamping.
-                    return context[statePath: statePath, observeCallback: nil]
-                }
+            }
+            if tl.untrackedReads {
+                // withUntrackedModelReads scope: lock-protected raw read,
+                // no observation, no per-element access stamping.
+                if let value = reference.readUntracked(statePath, tl: tl) { return value }
+                return self[dynamicMember: statePath]
+            }
+            if let context = reference.context {
                 let access = accessBox._reference?.access ?? ModelAccess.current
-                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox)
-                let value: C = context[statePath: statePath, observeCallback: callback]
+                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox, tl: tl)
+                let value: C = context.readLocked(statePath, callback: callback, tl: tl)
                 guard let access, access.shouldPropagateToChildren else { return value }
                 var result = value
                 for index in result.indices {
                     result[index] = result[index].withAccessIfPropagateToChildren(access)
                 }
                 return result
-            } else {
-                return self[dynamicMember: statePath]
             }
+            return self[dynamicMember: statePath]
         }
     }
 

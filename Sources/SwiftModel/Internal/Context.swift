@@ -786,44 +786,54 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         return result
     }
 
-    // MARK: - State-path subscripts (direct _State access)
+    // MARK: - Locked state read (direct _State access)
 
-    /// Reads a property directly from Reference._state, bypassing readModel indirection.
-    /// The `observeCallback` is the result of `activeAccess.willAccess(from:at:)`.
-    @usableFromInline
-    subscript<T>(statePath statePath: WritableKeyPath<M._ModelState, T>, observeCallback callback: (() -> Void)?) -> T {
-        @inlinable
-        _read {
-            lock.lock()
-            // Materialize the value into a local before yielding so that the dynamic
-            // exclusivity borrow on `reference.state` ends here rather than persisting
-            // through the yield suspension.  Without this, a subsequent _modify on any
-            // other property of the same model (same reference.state address) would
-            // trigger a simultaneous-access trap even in single-threaded code.
-            let _value: T
-            if unprotectedIsDestructed {
-                threadLocals.transitionOverrideValue = nil
-                if reference._stateCleared {
-                    // clear() now stores genesis into state (or leaves state valid when !_hasGenesis),
-                    // so reference.state is always safe to read here. Report an issue only when
-                    // there is no genesis — that means the model was destructed without ever being
-                    // anchored, which is a bug in the caller (e.g. a background performUpdate).
-                    if !reference._hasGenesis {
-                        reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
-                    }
-                    _value = reference.state[keyPath: statePath]
-                } else {
-                    _value = reference.state[keyPath: statePath]
-                }
-            } else if threadLocals.transitionOverrideValue != nil, let override = threadLocals.transitionOverrideValue as? T {
-                _value = override
-            } else {
-                _value = reference.state[keyPath: statePath]
+    /// Reads `statePath` from `reference.state` under the hierarchy lock and returns it
+    /// **by value**. `callback` is what `willAccessDirect` returned — the
+    /// `activeAccess.willAccess(from:at:)` completion, which consumes the transition
+    /// override — and runs inside the lock scope, after the projection, exactly where the
+    /// former `_read` ran it after its `yield`.
+    ///
+    /// A plain getter rather than a `_read` coroutine, on purpose. The previous
+    /// `subscript(statePath:observeCallback:)._read` was nested inside the
+    /// `_ModelSourceBox` read subscript's own `_read`, and the combined yield-once frame
+    /// did not fit the caller-provided coroutine buffer — every tracked and untracked
+    /// read paid a `swift_coroFrameAlloc` malloc/free pair (~8% of an untracked read in
+    /// the 8-thread contention profile). Returning the value costs at most the value's
+    /// own copy (a retain for a buffer-backed type), which the coroutine paid anyway:
+    /// it materialised the projection into a local before yielding.
+    ///
+    /// That materialisation is still load-bearing. The projection lands in a local before
+    /// anything else happens, so the dynamic exclusivity access on `reference.state`
+    /// begins and ends on that one line: neither `callback`, nor `reportIssue`, nor the
+    /// caller ever runs while it is open. Without it, a `_modify` on another property of
+    /// the same model (same `reference.state` address) from `callback` or from the caller
+    /// would trap on a simultaneous access even in single-threaded code.
+    ///
+    /// `tl` is the caller's already-resolved `threadLocals`: one `pthread_getspecific`
+    /// per read, passed down rather than re-fetched at every flag.
+    @inlinable
+    func readLocked<T>(_ statePath: WritableKeyPath<M._ModelState, T>, callback: (() -> Void)?, tl: ThreadLocals) -> T {
+        lock.lock()
+        let value: T
+        if unprotectedIsDestructed {
+            tl.transitionOverrideValue = nil
+            // clear() stores genesis into state (or leaves state valid when !_hasGenesis),
+            // so reference.state is always safe to read here. Report an issue only when
+            // there is no genesis — that means the model was destructed without ever being
+            // anchored, which is a bug in the caller (e.g. a background performUpdate).
+            if reference._stateCleared, !reference._hasGenesis {
+                reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
             }
-            yield _value
-            callback?()
-            lock.unlock()
+            value = reference.state[keyPath: statePath]
+        } else if let override = tl.transitionOverrideValue, let typed = override as? T {
+            value = typed
+        } else {
+            value = reference.state[keyPath: statePath]
         }
+        callback?()
+        lock.unlock()
+        return value
     }
 
     // MARK: - Synthetic path observation helpers (for storage/preference/parents)
@@ -844,11 +854,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         guard useObservationRegistrar,
               !(tl.isInsideAsyncPerformUpdate && ModelAccess.active != nil) else { return }
         let observer = _StateObserver<M._ModelState>()
-        if useMainThreadObservation, isOnMainThread {
-            mainObservationRegistrarMakingIfNeeded.access(observer, keyPath: kp)
-        } else {
-            backgroundObservationRegistrarMakingIfNeeded.access(observer, keyPath: kp)
-        }
+        currentThreadObservationRegistrar.access(observer, keyPath: kp)
     }
 
     /// Dispatches the gap-race shadow collector (see the `let shadow = …` doc comment in
@@ -925,8 +931,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     ///
     /// Uses `_StateObserver` for registrar calls (no Model instance needed).
     /// Uses `_StateObserver` for registrar calls; delegates to `activeAccess.willAccess/didModify(from:at:)` for TestAccess.
+    ///
+    /// `tl` is the caller's already-resolved `threadLocals` (see `readLocked`).
     @usableFromInline
-    func willAccessDirect<T>(statePath: WritableKeyPath<M._ModelState, T>, accessBox: _ModelAccessBox) -> (() -> Void)? {
+    func willAccessDirect<T>(statePath: WritableKeyPath<M._ModelState, T>, accessBox: _ModelAccessBox, tl: ThreadLocals) -> (() -> Void)? {
         // Skip everything while memoize's dirty-recompute is running `produce()` —
         // its reads must not leak to whatever outer observation is currently active
         // (SwiftUI body's `withObservationTracking`, a `ViewAccess` from
@@ -934,14 +942,14 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // dependency tracking is unaffected because the dirty branch doesn't
         // re-track here — the async `performUpdate` does, via `observe()`, which
         // is not flagged. See `ThreadLocals.isInsideMemoizeProduce`.
-        if threadLocals.isInsideMemoizeProduce { return nil }
+        if tl.isInsideMemoizeProduce { return nil }
 
         let cachedActive = ModelAccess.active
         let access = accessBox._reference?.access ?? ModelAccess.current
         let activeAccess = cachedActive ?? access
 
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar,
-           !(threadLocals.isInsideAsyncPerformUpdate && cachedActive != nil) {
+           !(tl.isInsideAsyncPerformUpdate && cachedActive != nil) {
             let observer = _StateObserver<M._ModelState>()
             // Cached KP avoids a heap allocation on every read (`_swift_getKeyPath`
             // for a subscript KP allocates, ~1.7 μs). `_stateObserverKP` resolves via
@@ -950,11 +958,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // paths — see the doc comment at `_stateObserverKP`.
             let contextID = UInt(bitPattern: ObjectIdentifier(self))
             let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = _stateObserverKP(contextID: contextID, statePath: statePath)
-            if useMainThreadObservation, isOnMainThread {
-                mainObservationRegistrarMakingIfNeeded.access(observer, keyPath: observerKP)
-            } else {
-                backgroundObservationRegistrarMakingIfNeeded.access(observer, keyPath: observerKP)
-            }
+            currentThreadObservationRegistrar.access(observer, keyPath: observerKP)
         }
 
         // Shadow gap-race detector. When non-nil (set by
@@ -966,7 +970,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // see reads even inside memoize observation (that's the whole point).
         // See `ThreadLocals.gapShadowCollector` for the rationale on why
         // this can't piggyback on `activeAccess`.
-        if let shadow = threadLocals.gapShadowCollector {
+        if let shadow = tl.gapShadowCollector {
             let sendableStatePath = unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self)
             _ = shadow.willAccess(from: self, at: sendableStatePath)
         }
@@ -977,7 +981,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // prevents the read from accumulating as a dep on the calling view's
         // `ViewAccess` (the stamped-access fall-through that
         // `usingActiveAccess(nil)` cannot clear). See `ThreadLocals.isInsideMemoizeObserve`.
-        if threadLocals.isInsideMemoizeObserve { return nil }
+        if tl.isInsideMemoizeObserve { return nil }
 
         guard let activeAccess else { return nil }
         let sendableStatePath = unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self)
@@ -1813,11 +1817,23 @@ extension Context {
     /// All copies of a model (pending and live) share the same Reference from creation.
     /// When `Context.init` calls `setContext`, all those copies immediately see the context
     /// via `ref._context` — no forwarding indirection needed.
+    ///
+    /// ## Exclusivity checking
+    /// The stored fields the read path touches are `@exclusivity(unchecked)`. Every access
+    /// to them is a plain get or set under a lock (this Reference's own, the hierarchy
+    /// lock, or both) — never a `_modify`/`inout` access that stays open while other code
+    /// runs — so no two accesses to one of them can ever overlap on a thread, and the
+    /// dynamic `swift_beginAccess`/`swift_endAccess` pair the compiler would otherwise emit
+    /// per access could only ever confirm that. (Cross-thread conflicts are not what the
+    /// dynamic check detects in the first place; those are the locks' job.) `state` itself
+    /// is deliberately NOT unchecked: its `_modify` yields the stored value in place, and
+    /// the borrow lifetime discipline documented at `Context.readLocked` relies on the
+    /// checker.
     @usableFromInline
     final class Reference: @unchecked Sendable {
         let modelID: ModelID
         private let lock = NSRecursiveLock()
-        private weak var _context: Context<M>?
+        @exclusivity(unchecked) private weak var _context: Context<M>?
         /// Strong reference to the live context's hierarchy lock, maintained in exact
         /// lockstep with `_context` (set in `setContext`, cleared in
         /// `clearStateForGeneration` — the only two sites that touch `_context`).
@@ -1833,8 +1849,8 @@ extension Context {
         ///
         /// Non-nil exactly when `_context` is non-nil, so `withHierarchyLockIfLive` locks
         /// under precisely the same condition as before.
-        private var _hierarchyLock: NSRecursiveLock?
-        private var _isDestructed = false
+        @exclusivity(unchecked) private var _hierarchyLock: NSRecursiveLock?
+        @exclusivity(unchecked) private var _isDestructed = false
         /// Monotonically-increasing generation counter. Incremented each time `setContext` runs
         /// (including re-anchoring). `Context` stores its own generation so `deinit` can call
         /// `clearStateForGeneration` without affecting state claimed by a newer Context.
@@ -1869,7 +1885,7 @@ extension Context {
         /// model value can escape to another thread. A Reference that never materialises (an
         /// init that skipped a required property) traps on first whole-state use regardless
         /// of which thread gets there first.
-        private(set) var _hasMaterializedState: Bool
+        @exclusivity(unchecked) private(set) var _hasMaterializedState: Bool
         /// The construction frame, kept until every required property has been assigned.
         /// Properties are read and written through it in the meantime (`_readPending`,
         /// `_pendingBox`, `_writeDirect`). Nil once materialised.
@@ -1903,7 +1919,7 @@ extension Context {
         }
         /// True after `clear()`. Reads from a cleared reference will reportIssue and
         /// return a genesis fallback.
-        @usableFromInline var _stateCleared: Bool = false
+        @exclusivity(unchecked) @usableFromInline var _stateCleared: Bool = false
         /// Genesis state captured at the first `setContext` call (post-`withContextAdded`).
         /// All property values are correct at that point (no self-referencing closures yet).
         /// Used to restore `state` when re-anchoring a static dependency model, and as a
@@ -1915,7 +1931,7 @@ extension Context {
             set { _genesisStorage = newValue }
         }
         /// True once genesis has been captured (set in `setContext` on first anchor).
-        @usableFromInline var _hasGenesis: Bool = false
+        @exclusivity(unchecked) @usableFromInline var _hasGenesis: Bool = false
         /// Incremented by `_ModelSourceBox.subscript[write:access:]._modify` whenever a tracked
         /// property is mutated on a pre-anchor Reference. Used by `Context.init` to detect whether
         /// a stored child's dep closure performed a read-modify-write on a dep model inherited from
@@ -2101,6 +2117,59 @@ extension Context {
             lock.lock()
             defer { lock.unlock() }
             return _context
+        }
+
+        /// The `withUntrackedModelReads` read of `statePath` on a live model, or `nil` when
+        /// no context is live (the caller then falls back to the pre-anchor / snapshot
+        /// `dynamicMember` read, exactly as it did when `context` resolved to nil).
+        ///
+        /// An untracked read needs nothing from the `Context` object itself: only the
+        /// hierarchy lock to project `state` under, and whether the model is destructed
+        /// (which decides the transition-override / cleared-state handling — the same
+        /// branches as `Context.readLocked`). Both live on this Reference, so the read
+        /// never loads the weak `_context`. That removes `swift_weakLoadStrong` plus the
+        /// strong retain/release it hands back — ~15% of an untracked read in the
+        /// 8-thread contention profile — while the locking discipline is unchanged:
+        /// Reference lock to resolve `_hierarchyLock` / `_isDestructed` (both written
+        /// under it — `setContext`, `clearStateForGeneration`, `destruct`), released
+        /// before the hierarchy lock is taken (AnyContext.lock → Reference.lock order is
+        /// never held across), then the projection under the hierarchy lock, like every
+        /// other `state` read.
+        ///
+        /// `_isDestructed` stands in for `Context.unprotectedIsDestructed` here. Both are
+        /// flipped by the same `onRemoval` pass (`modeLifeTime = .destructed` in
+        /// `AnyContext.onRemoval`, then `reference.destruct()` in `Context.onRemoval`), and
+        /// the only thing the flag gates besides the override is the "cleared with no
+        /// genesis" report, which needs `_stateCleared` — set by `clear`, which runs from a
+        /// deferred callback long after both flags are up. `_hierarchyLock` is non-nil
+        /// exactly when `_context` is (see its doc comment), so "live" is the same
+        /// condition the tracked path tests; the one difference is a Context mid-`deinit`
+        /// (weak load fails, lock still cached): the tracked path falls back to the
+        /// `dynamicMember` read, this one projects under the lock — same lock, same value
+        /// (`clear` stores genesis into `state`), same report condition.
+        @usableFromInline
+        func readUntracked<T>(_ statePath: WritableKeyPath<M._ModelState, T>, tl: ThreadLocals) -> T? {
+            lock.lock()
+            let hierarchyLock = _hierarchyLock
+            let isDestructed = _isDestructed
+            lock.unlock()
+            guard let hierarchyLock else { return nil }
+
+            hierarchyLock.lock()
+            let value: T
+            if isDestructed {
+                tl.transitionOverrideValue = nil
+                if _stateCleared, !_hasGenesis {
+                    reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
+                }
+                value = state[keyPath: statePath]
+            } else if let override = tl.transitionOverrideValue, let typed = override as? T {
+                value = typed
+            } else {
+                value = state[keyPath: statePath]
+            }
+            hierarchyLock.unlock()
+            return value
         }
 
         var isDestructed: Bool {
