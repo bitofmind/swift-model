@@ -36,13 +36,11 @@ if loopMode {
 // SwiftModel's main-registrar notification queue — see ContentionBenchmarks.swift.
 if #available(macOS 15.0, *) {
     if let i = CommandLine.arguments.firstIndex(of: "--profile") {
-        setvbuf(stdout, nil, _IONBF, 0)
         let name = CommandLine.arguments[i + 1], n = Int(CommandLine.arguments[i + 2])!
         Thread { profileScenario(name, threads: n); exit(0) }.start()
         dispatchMain()
     }
     if CommandLine.arguments.contains("--contention") {
-        setvbuf(stdout, nil, _IONBF, 0)
         Thread { benchContention(); exit(0) }.start()
         dispatchMain()
     }

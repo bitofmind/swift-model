@@ -122,6 +122,7 @@ func benchContention() {
             cols.append(String(format: "%dT:%8.0f", n, ns))
         }
         print("  \(sc.name.padding(toLength: 46, withPad: " ", startingAt: 0)) \(cols.joined(separator: "  "))")
+        fflush(nil)  // not `stdout`: Swift 6 rejects that global on Linux as non-Sendable
     }
 
     printHeader("C6. Actor comparison — ns per `await actor.count` per task (1/2/4/8 tasks)")
@@ -160,6 +161,7 @@ func profileScenario(_ name: String, threads: Int) {
     buildScenarios()
     guard let sc = scenarios.first(where: { $0.name == name }) else { print("unknown scenario \(name)"); return }
     print("profiling \(name) at \(threads) threads, pid \(ProcessInfo.processInfo.processIdentifier)")
+    fflush(nil)
     let start = DispatchTime.now().uptimeNanoseconds
     var reps = 0
     while DispatchTime.now().uptimeNanoseconds &- start < 8_000_000_000 {
