@@ -224,9 +224,10 @@ struct ModelTestingTraitTests {
         } matching: { issue in
             let text = issue.comments.map(\.rawValue).joined()
             return text.contains("withAnchor() was already called in this test scope")
-                && text.contains("TraitCounter")      // the connected root
-                && text.contains("TraitLoader")       // the rejected one
-                && text.contains("withModelTesting")  // the way out
+                && text.contains("TraitCounter")       // the connected root
+                && text.contains("TraitLoader")        // the rejected one
+                && text.contains("returningAnchor()")  // the way out for a live peer
+                && text.contains("withModelTesting")   // the way out for a later phase
         }
 
         // The scope's own root is unaffected by the rejected registration.

@@ -6,6 +6,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- **The duplicate-`withAnchor()` diagnostic now offers `returningAnchor()` before the nested scope, and names the shape each one fits.** 1.0.16's message listed three ways out in the order child / nested scope / `returningAnchor()`, with the last framed conditionally ("if the test only needs a second live model that the scope should not track"). A downstream author with two peer backends — a lobby and a showcase, anchored together and wired by closures in both directions — read that message, took the nested-scope route, and reported afterwards that they had nested "because that's what I knew, not because I'd compared": the option that actually fit their test was the one they skipped past. Their test asserts through the lobby only and drives the showcase over HTTP, so the showcase never needed tracking — `returningAnchor()` keeps it live and injected without the nested closure that reshapes every test body in the file. The two options now lead with the situation rather than the mechanism: `returningAnchor()` for peers that must run at the same time where the test asserts through one of them, a nested scope for phases that follow one another (snapshot from one root, restore into a fresh one). No behaviour changed — the same three ways out, ordered and described so the reader can tell which is theirs. `Docs/Testing.md` carries the same ordering.
+
+  The same report closed the open question behind these ways out: whether a nested `settle()` drains the *outer* root's in-flight work. It does — measured downstream with two roots whose `onActivate` parks on a shared `TestClock` and spawns a follow-on task on waking, advanced and settled from the inner scope only; the outer root came out fully drained, chain included. Nesting is awkward, not wrong. That, plus `returningAnchor()` covering the live-but-untracked peer, is why multi-root scopes stay unbuilt: the bar remains a test where *both* roots need tracking and exhaustivity at once, and no one has one.
+
 ---
 
 ## [1.0.16] — Existential `@Model` storage + second-`withAnchor()` reporting
