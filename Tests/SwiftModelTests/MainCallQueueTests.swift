@@ -138,6 +138,10 @@ struct MainCallQueueCoalescingTests {
         }
     }
 
+    // WASI has no threads: the parked-drain handshake below needs a dedicated OS thread
+    // and semaphores, so these per-cycle tests are compiled out there. The inline-on-main
+    // and no-op-drain tests further down do not park and run everywhere.
+#if !os(WASI)
     /// Runs `enqueue` while `queue`'s drain is parked on the main thread, so every enqueue
     /// lands in ONE drain cycle (coalescing and bundle position are per-cycle rules).
     ///
@@ -280,6 +284,7 @@ struct MainCallQueueCoalescingTests {
         // c1 precedes the bundle; B joined after c2 but is delivered with A, before c2.
         #expect(log.value == ["c1", "A", "B", "c2", "c3"], "got \(log.value)")
     }
+#endif
 
     /// On the main thread the pair fires inline, so main-thread callers keep the strict
     /// synchronous semantics of the closure form.
