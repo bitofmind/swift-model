@@ -359,8 +359,8 @@ internal func update<T: Sendable>(
         //    Drained when the transaction defer runs (still under the context lock,
         //    before `lock.unlock()`).
         //
-        // 2. Inside a single-write lock-held window (`threadLocals.lockHeldBackgroundCalls
-        //    != nil`): append to that array. Drained on the SAME thread after the
+        // 2. Inside a single-write lock-held window (`threadLocals.isLockHeldBackgroundCallsScopeOpen`):
+        //    append to `threadLocals.lockHeldBackgroundCalls`. Drained on the SAME thread after the
         //    writer's `lock.unlock()` and `runPostLockCallbacks` finish. This matches
         //    what `AccessCollector` already does naturally — it returns the
         //    `backgroundCallQueue(performUpdate)` as a post-callback rather than
@@ -404,8 +404,12 @@ internal func update<T: Sendable>(
             // lock-held deferral — otherwise the postTx-tier enqueue races
             // against the writer's outer post-callback drain.
             let enqueue: @Sendable () -> Void = {
-                if threadLocals.lockHeldBackgroundCalls != nil {
-                    threadLocals.lockHeldBackgroundCalls!.append {
+                let tl = threadLocals
+                if tl.isLockHeldBackgroundCallsScopeOpen {
+                    // The array is materialised lazily: an open scope with nothing deferred
+                    // yet holds `nil` (see `ThreadLocals.isLockHeldBackgroundCallsScopeOpen`).
+                    if tl.lockHeldBackgroundCalls == nil { tl.lockHeldBackgroundCalls = [] }
+                    tl.lockHeldBackgroundCalls!.append {
                         backgroundCallQueue(performUpdate)
                     }
                 } else {

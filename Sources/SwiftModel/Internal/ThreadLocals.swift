@@ -1,8 +1,19 @@
 import Foundation
 
+/// Per-thread scratch state for the framework's write and observation paths.
+///
+/// The properties a property write touches carry `@exclusivity(unchecked)`. A stored
+/// property on a class is otherwise guarded by Swift's *dynamic* exclusivity
+/// enforcement: every read or write calls `swift_beginAccess`/`swift_endAccess`, which
+/// look up the runtime's per-thread access set and insert into it — ~25 ns each, and a
+/// write with no observers touches half a dozen of them. That check can only ever catch
+/// an overlapping access on the *same* thread (it is per-thread bookkeeping, not a race
+/// detector), and this object is thread-confined by construction with no accessor that
+/// yields into user code, so there is no overlap for it to catch. Dropping it changes
+/// nothing observable.
 @usableFromInline
 final class ThreadLocals: @unchecked Sendable {
-    var postTransactions: [(inout [() -> Void]) -> Void]? = nil
+    @exclusivity(unchecked) var postTransactions: [(inout [() -> Void]) -> Void]? = nil
     @usableFromInline var forceDirectAccess = false
     /// Set by the public `withUntrackedModelReads { }` scope. While `true`, the
     /// `_ModelSourceBox` read subscripts skip `willAccessDirect` entirely (no
@@ -31,7 +42,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// Closures registered to run after the current postLockCallbacks pass completes.
     /// Non-nil only while postLockCallbacks are executing. Use this to schedule work
     /// that must run after ALL per-property onModify callbacks in a transaction batch.
-    var postLockFlushes: [() -> Void]? = nil
+    @exclusivity(unchecked) var postLockFlushes: [() -> Void]? = nil
     /// When non-nil, `TestAccess.didModify` and `willAccess` tag their `ValueUpdate`/`Access`
     /// entries with this area instead of the default `.state`. Set by `Context<M>` around
     /// the typed context storage path calls so context changes are reported under `.local`.
@@ -69,7 +80,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// When non-nil, `invokeDidModify` defers `ObservationRegistrar` `willSet`/`didSet`
     /// notifications into this array instead of firing them inline. Drained at `withBatchedUpdates`
     /// scope exit. Non-nil only while a `withBatchedUpdates` scope is active on this thread.
-    var pendingObservationNotifications: [() -> Void]? = nil
+    @exclusivity(unchecked) var pendingObservationNotifications: [() -> Void]? = nil
     /// Set to `true` immediately before `observe()` is called inside `performUpdate` for the
     /// `withObservationTracking` path. Allows memoize's inner access closure to detect that it
     /// is being called from an async `performUpdate` (rather than from `forceObserver` setup or
@@ -88,7 +99,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// `TestAccess.didModify` captures this at write time so multiple writes to the same
     /// path within one transaction can be coalesced into a single `valueUpdates` entry.
     /// Zero means the write occurred outside any transaction.
-    var currentTransactionID: UInt = 0
+    @exclusivity(unchecked) var currentTransactionID: UInt = 0
     /// `true` while a debug-side `customDump` is walking a model value (e.g. inside
     /// `emitDebugTrigger`'s `dumpForDebug`, or the initial-value capture in
     /// `ViewAccess.willAccess`). Read by `ViewAccess.willAccess` to skip BOTH
@@ -133,9 +144,9 @@ final class ThreadLocals: @unchecked Sendable {
     /// is supposed to prevent.
     var isInsideMemoizeObserve = false
 
-    /// When non-nil, `ObservationTracking.onObservedChange` defers its
-    /// `backgroundCallQueue(performUpdate)` enqueue into this array instead
-    /// of enqueuing inline. Used by all write paths (`Context.subscript._modify`,
+    /// While `isLockHeldBackgroundCallsScopeOpen` is set, `ObservationTracking.onObservedChange`
+    /// defers its `backgroundCallQueue(performUpdate)` enqueue into this array
+    /// (materialised on first use) instead of enqueuing inline. Used by all write paths (`Context.subscript._modify`,
     /// `Context.stateTransaction`, `Context.transaction(at:...)` and
     /// `Context.transaction(writeLockHolder:_:)`) to ensure that `performUpdate`
     /// does not start running on the cooperative pool until after the writer's
@@ -174,7 +185,17 @@ final class ThreadLocals: @unchecked Sendable {
     /// lock has been released and `runPostLockCallbacks` has finished. Nested
     /// writes share the outer scope's array — they append but don't drain. Items
     /// are invoked in registration order.
-    var lockHeldBackgroundCalls: [() -> Void]? = nil
+    @exclusivity(unchecked) var lockHeldBackgroundCalls: [() -> Void]? = nil
+
+    /// `true` while a `lockHeldBackgroundCalls` scope is open on this thread (between
+    /// `beginLockHeldBackgroundCallsScope` and the matching `end`). The scope used to be
+    /// represented by `lockHeldBackgroundCalls != nil`, which meant every write stored an
+    /// empty array into the thread-local and cleared it again — a retain/release pair on
+    /// the process-wide empty-array singleton, i.e. one cache line every writing thread
+    /// in the process contends on. The flag is a plain store; the array is materialised
+    /// only when something is actually deferred (`ObservationTracking.onObservedChange`),
+    /// which a write with no observers never does.
+    @exclusivity(unchecked) var isLockHeldBackgroundCallsScopeOpen = false
 
     /// When non-nil, `Context.willAccessDirect` (real `_State` reads) and
     /// `Context.willAccessGapShadow` (synthetic-path reads: memoize sentinels,

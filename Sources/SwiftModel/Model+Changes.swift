@@ -831,9 +831,10 @@ private extension ModelNode {
                             // both listeners must make their `hasPendingUpdate` dedup
                             // decision before any performUpdate can start and clear the
                             // flag. See `ThreadLocals.lockHeldBackgroundCalls`.
-                            let lhbcOwned = beginLockHeldBackgroundCallsScope()
+                            let tl = threadLocals
+                            let lhbcOwned = beginLockHeldBackgroundCallsScope(tl)
                             for callback in postCallbacks { callback() }
-                            endLockHeldBackgroundCallsScope(lhbcOwned)
+                            endLockHeldBackgroundCallsScope(tl, lhbcOwned)
 
 #if DEBUG
                             if let debugPrint, let debugPreviousValue {
@@ -900,9 +901,10 @@ private extension ModelNode {
 
                     // Same tier-2 deferral as the wrappedOnUpdate drain above — see the
                     // comment there and `ThreadLocals.lockHeldBackgroundCalls`.
-                    let lhbcOwned = beginLockHeldBackgroundCallsScope()
+                    let tl = threadLocals
+                    let lhbcOwned = beginLockHeldBackgroundCallsScope(tl)
                     for plc in postLockCallbacks { plc() }
-                    endLockHeldBackgroundCallsScope(lhbcOwned)
+                    endLockHeldBackgroundCallsScope(tl, lhbcOwned)
 
 #if DEBUG
                     // Debug: print trigger and change info after each update.
