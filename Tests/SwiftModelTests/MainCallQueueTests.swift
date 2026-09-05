@@ -256,8 +256,15 @@ struct MainCallQueueCoalescingTests {
 
     /// On the main thread the pair fires inline, so main-thread callers keep the strict
     /// synchronous semantics of the closure form.
+    ///
+    /// Darwin-only: the inline path is gated on `isOnMainThread`, and on Linux the Swift
+    /// concurrency runtime does not bind `@MainActor` to the OS main thread (see the
+    /// note on `singleCallbackDeliveredOnMainThread`), so there the pair is queued instead.
     @Test @MainActor func onMainFiresInline() {
         guard #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) else { return }
+        #if !canImport(Darwin)
+        return
+        #endif
         let queue = MainCallQueue()
         let kp: KeyPath<_StateObserver<Int>, AnyHashable> = \_StateObserver<Int>[contextID: 9, propID: 0]
         let counter = DeliveryCounter(keyPath: kp)
