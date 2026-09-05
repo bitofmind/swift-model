@@ -302,7 +302,51 @@ public struct _EmptyModelState: _ModelStateType, Sendable {}
 /// The `_metadata` and `_preference` subscripts expose writable `WritableKeyPath` forms so
 /// that `TestAccess`'s `apply` closure can write through them. The setter is intentionally
 /// a no-op — context storage lives in `AnyContext.contextStorage`, not in the `_State` struct.
-public protocol _ModelStateType {}
+///
+/// ## Tracked-property index table
+///
+/// Every tracked property — exactly the stored fields of the macro-generated `_State`, in
+/// declaration order — has a stable zero-based index. The `@Model` macro emits
+/// `_trackedPropertyCount` and `_trackedPropertyKeyPaths` on `_State`; the defaults below
+/// serve `_EmptyModelState` and non-macro conformers (`0` / `[]` / `nil`).
+///
+/// This is framework-facing groundwork (the `_` prefix means not API): nothing on the read
+/// or write path consumes it yet. It exists so that per-context observer tables can be keyed
+/// by a small integer instead of a `_State` key-path object — the `\_State.prop` literal
+/// every accessor passes today is one process-wide object that `_swift_getKeyPath` retains
+/// from every core, and the observer-KP cache and `modifyCallbacks` both hash it.
+///
+/// The members are computed, not `static let`s: `PartialKeyPath` is not `Sendable`, and Swift
+/// forbids static stored properties in generic types (a generic `@Model`, or one nested in a
+/// generic type, makes `_State` generic). `_trackedPropertyIndex(of:)` is therefore an
+/// identity-then-structural scan — a registration-time cost, never a per-access one.
+public protocol _ModelStateType {
+    /// Number of tracked properties, i.e. the number of stored fields of `_State`.
+    /// Emitted by the macro as a literal so callers can size tables without building the array.
+    static var _trackedPropertyCount: Int { get }
+
+    /// Index → key path, in declaration order. `_trackedPropertyKeyPaths[i]` is the key path
+    /// of the property with index `i`. Each call builds the array; call it at registration
+    /// time and keep the result, never per access.
+    static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] { get }
+
+    /// Key path → index. `nil` for anything that is not a tracked property (the identity path,
+    /// synthetic subscripts, or any key path into a non-macro conformer).
+    static func _trackedPropertyIndex(of path: PartialKeyPath<Self>) -> Int?
+}
+
+public extension _ModelStateType {
+    static var _trackedPropertyCount: Int { 0 }
+    static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] { [] }
+
+    static func _trackedPropertyIndex(of path: PartialKeyPath<Self>) -> Int? {
+        let paths = _trackedPropertyKeyPaths
+        // Identity first: the macro's own literals are usually the same process-wide object
+        // as the caller's. `==` on key paths is a structural component walk.
+        if let index = paths.firstIndex(where: { $0 === path }) { return index }
+        return paths.firstIndex(where: { $0 == path })
+    }
+}
 
 public extension _ModelStateType {
     // Synthetic read-only paths — keypath construction only, never called.
