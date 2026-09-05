@@ -1024,10 +1024,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                     self.backgroundObservationRegistrar?.willSet(observer, keyPath: observerKP)
                     self.backgroundObservationRegistrar?.didSet(observer, keyPath: observerKP)
                     if useMain, let mainReg = self.mainObservationRegistrar {
-                        self.mainCallQueue {
-                            mainReg.willSet(observer, keyPath: observerKP)
-                            mainReg.didSet(observer, keyPath: observerKP)
-                        }
+                        // Inline when the batch drains on main; coalesced per
+                        // (context, property) when it drains off main — see
+                        // `MainCallQueue.notifyRegistrar`.
+                        self.mainCallQueue.notifyRegistrar(mainReg, contextID: contextID, keyPath: observerKP)
                     }
                 }
                 return callback
@@ -1046,11 +1046,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                             // Synchronous on the mutating (main) thread: matches strict ordering.
                             mainReg.didSet(observer, keyPath: observerKP)
                         } else {
-                            // Off-main: bundle main `willSet/didSet` onto `@MainActor`.
-                            self.mainCallQueue {
-                                mainReg.willSet(observer, keyPath: observerKP)
-                                mainReg.didSet(observer, keyPath: observerKP)
-                            }
+                            // Off-main: bundle main `willSet/didSet` onto `@MainActor`,
+                            // coalesced per (context, property) between drains — one
+                            // pair per property however many writes land while main
+                            // is busy. Safe because Apple's observation is one-shot
+                            // per registration; see `MainCallQueue.notifyRegistrar`.
+                            self.mainCallQueue.notifyRegistrar(mainReg, contextID: contextID, keyPath: observerKP)
                         }
                     }
                 }
