@@ -161,7 +161,10 @@ class AnyContext: @unchecked Sendable {
     /// `Any` because the generic element type isn't visible at this layer.
     nonisolated(unsafe) var collectionElementPathMakersStore: [AnyKeyPath: @Sendable (AnyHashable, Any) -> AnyKeyPath]?
 
-    private var modeLifeTime: ModelLifetime = .anchored
+    /// `@exclusivity(unchecked)`: read on every tracked/untracked read (`unprotectedIsDestructed`)
+    /// and only ever accessed by plain get/set under the hierarchy lock — no `_modify` ever
+    /// holds it open, so the dynamic check has nothing to catch.
+    @exclusivity(unchecked) private var modeLifeTime: ModelLifetime = .anchored
 
     private var eventContinuationsStore: [Int: AsyncStream<EventInfo>.Continuation]?
     private var eventContinuations: [Int: AsyncStream<EventInfo>.Continuation] {
@@ -199,15 +202,28 @@ class AnyContext: @unchecked Sendable {
     /// The `main` registrar is allocated lazily on first main-channel use — contexts with
     /// `useMainThreadObservation == false` (non-Apple, or opt-out on Apple) never touch it,
     /// saving one `ObservationRegistrar` allocation (which itself heap-allocates an internal
-    /// `Extent`) per model tree on those platforms. ALL `_main` reads and writes go through
-    /// the hierarchy lock: the nil → non-nil publication read without it is a data race
-    /// (double-checked locking without atomics) — do not add an unlocked fast path.
+    /// `Extent`) per model tree on those platforms.
+    ///
+    /// `_main` is written by ONE thread only — the main thread, in
+    /// `currentThreadObservationRegistrar`, which is the sole writer and only takes that
+    /// branch under `isOnMainThread` — and the write happens under the hierarchy lock.
+    /// Off-main readers (`mainObservationRegistrar`, on the write paths) take the hierarchy
+    /// lock, which pairs with that locked publication. The main thread itself may read
+    /// `_main` WITHOUT the lock: it is the only writer, so its own reads are ordered by
+    /// program order — there is no second thread for a data race to involve. That is the
+    /// whole soundness argument for the unlocked main-thread fast path (it is what makes
+    /// a tracked main-thread read stop re-taking the hierarchy lock it already took once
+    /// for the projection). The same fast path on any OTHER thread would be double-checked
+    /// locking without atomics — do not add one, and do not add a second writer.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
     final class RegistrarPair: @unchecked Sendable {
         let background: ObservationRegistrar
-        /// Lazily-allocated main-channel registrar. Read and written only under the
-        /// hierarchy lock. `nonisolated(unsafe)`: locking discipline enforced at call sites.
-        nonisolated(unsafe) var _main: ObservationRegistrar?
+        /// Lazily-allocated main-channel registrar. Written on the main thread only, under
+        /// the hierarchy lock; read under that lock off-main, lock-free on main (see the
+        /// class doc comment). `nonisolated(unsafe)`: that discipline is enforced at the
+        /// call sites. `@exclusivity(unchecked)`: every access is a plain get or set, so no
+        /// same-thread overlap is possible for the dynamic check to catch.
+        @exclusivity(unchecked) nonisolated(unsafe) var _main: ObservationRegistrar?
         init() {
             background = ObservationRegistrar()
         }
@@ -840,30 +856,36 @@ class AnyContext: @unchecked Sendable {
         #endif
     }
 
-    /// Returns the main registrar, allocating the `_main` channel lazily on first call.
-    /// Only called when `useObservationRegistrar` is true, so `_registrarBox` is non-nil.
+    /// The registrar a tracked read on the current thread registers its access with:
+    /// the lazily-allocated `main` channel when main-thread observation is on and this
+    /// is the main thread, the `background` channel otherwise. Only called when
+    /// `useObservationRegistrar` is true, so `_registrarBox` is non-nil.
     ///
-    /// Only invoked when `useMainThreadObservation == true` — contexts with the option
-    /// disabled (every context on non-Apple) never reach here, so the main-channel allocation
-    /// is paid only by trees that actually have a SwiftUI/UIKit/AppKit consumer.
-    /// The whole body runs under the hierarchy lock: an unlocked `_main` fast path would be
-    /// double-checked locking without atomics (a data race with the locked publication).
-    /// Main-channel callers are on write/registration paths that typically already hold the
-    /// (recursive) lock, so the re-acquisition is cheap.
+    /// The main/background decision lives HERE rather than at the two call sites
+    /// (`willAccessDirect`, `willAccessSyntheticPath`) because it is what makes the
+    /// `_main` discipline hold by construction: the only code that ever writes `_main` is
+    /// the branch below, and that branch is reachable only under `isOnMainThread`. So the
+    /// main thread is the sole writer, and its unlocked `_main` read is a same-thread read
+    /// of a value only it publishes — no data race exists for it to lose (see
+    /// `RegistrarPair`). Contexts with the option disabled (every context on non-Apple)
+    /// never take the main branch, so the main-channel allocation is still paid only by
+    /// trees with an actual SwiftUI/UIKit/AppKit consumer, and only under the hierarchy
+    /// lock, once. After that the main-thread read is a load and a nil check, where it
+    /// used to re-acquire the (recursive) hierarchy lock on every tracked read.
+    ///
+    /// `unsafeDowncast`: `_registrarBox` is assigned exactly one non-nil thing, a
+    /// `RegistrarBox` (`init`), and it is a `let`. The `as!` this replaces paid a
+    /// `swift_dynamicCastClass` per tracked read to establish the same fact; Debug builds
+    /// still check it.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-    var mainObservationRegistrarMakingIfNeeded: ObservationRegistrar {
-        let pair = (_registrarBox as! RegistrarBox).pair
+    var currentThreadObservationRegistrar: ObservationRegistrar {
+        let pair = unsafeDowncast(_registrarBox!, to: RegistrarBox.self).pair
+        guard useMainThreadObservation, isOnMainThread else { return pair.background }
+        if let main = pair._main { return main }
         return lock {
             if pair._main == nil { pair._main = ObservationRegistrar() }
             return pair._main!
         }
-    }
-
-    /// Returns the background registrar. Only called when `useObservationRegistrar` is true.
-    /// Lock-free and race-free: the box → pair → background chain is immutable.
-    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-    var backgroundObservationRegistrarMakingIfNeeded: ObservationRegistrar {
-        (_registrarBox as! RegistrarBox).pair.background
     }
 
     var lifetime: ModelLifetime {
