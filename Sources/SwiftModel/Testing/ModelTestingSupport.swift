@@ -164,12 +164,16 @@ package final class _PendingModelTestScope: _AnyModelTestScope, @unchecked Senda
             Ways out, in order of preference:
             • Make \(secondName) a child of the anchored \(firstName). One tree per scope is the \
             supported shape, and expect { } then covers both models.
+            • Keep \(secondName) live but untracked: let (model, anchor) = \
+            \(secondName)().returningAnchor(), holding the anchor for as long as the test needs \
+            the model. This is the fit for peers that must run at the same time — wired to each \
+            other, but with the test asserting only through \(firstName). expect { } will not \
+            wake on \(secondName)'s activity; that is the whole trade.
             • Give it a scope of its own: await withModelTesting { \(secondName)().withAnchor() … }. \
-            Scopes nest sequentially — the inner model is torn down when its closure returns, and \
-            expect { } inside it sees only that model.
-            • If the test only needs a second live model that the scope should not track, anchor \
-            it with returningAnchor() and hold the returned anchor. expect { } will not wake on \
-            its activity.
+            Scopes nest sequentially, so this fits phases that follow one another — snapshot from \
+            one root, restore into a fresh one — rather than roots that must be live together. The \
+            inner model is torn down when its closure returns, and expect { } inside it sees only \
+            that model.
             """,
             fileID: secondFileAndLine.fileID,
             filePath: secondFileAndLine.filePath,

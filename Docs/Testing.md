@@ -34,8 +34,8 @@ A test scope tracks exactly one anchored model: `expect { }` wakes on that model
 If the test needs a second model:
 
 - **Make it a child** of the anchored root. One tree per scope is the supported shape, and `expect { }` then covers both models — this is usually the right answer even when the two models look like peers in production.
-- **Give it a scope of its own** with a nested `await withModelTesting { … }`. Scopes nest sequentially: the inner model is torn down when the closure returns, and `expect { }` inside it sees only that model.
-- **Anchor it outside the scope** with `returningAnchor()`, holding the returned anchor yourself, when the test only needs a second live model that the scope should not track. `expect { }` will not wake on its activity.
+- **Keep it live but untracked** with `returningAnchor()`, holding the returned anchor yourself. This is the fit for peers that must run at the same time — two backends wired to each other, say — where the test drives one through the other and asserts only through the anchored root. `expect { }` will not wake on the untracked model's activity; that is the whole trade.
+- **Give it a scope of its own** with a nested `await withModelTesting { … }`. Scopes nest sequentially, so this fits phases that follow one another — snapshot from one root, restore into a fresh one — rather than roots that must be live together. The inner model is torn down when the closure returns, and `expect { }` inside it sees only that model.
 
 ### Asserting state, callbacks, and events
 
