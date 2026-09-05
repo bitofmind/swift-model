@@ -138,6 +138,45 @@ struct MainCallQueueCoalescingTests {
         }
     }
 
+    /// Runs `enqueue` while `queue`'s drain is parked on the main thread, so every enqueue
+    /// lands in ONE drain cycle (coalescing and bundle position are per-cycle rules).
+    ///
+    /// The handshake deliberately avoids the cooperative pool and avoids spinning: the
+    /// enqueuing side is a dedicated OS `Thread`, and both sides block on semaphores. A
+    /// spin-wait inside a detached task holds a pool thread; on CI's 2–3 core runners
+    /// under TSan two such spinners plus a parked main thread starved the task that had
+    /// to open the gate, and the whole parallel run hung for the job's 45-minute limit.
+    /// Every wait here is bounded, so a broken handshake fails the test instead.
+    private static func withParkedDrain(_ queue: MainCallQueue, _ enqueue: @escaping @Sendable () -> Void) async -> Bool {
+        let parked = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let done = LockIsolated(false)
+        let ok = LockIsolated(true)
+        Thread {
+            // Park the drain (runs on main) until every enqueue is in.
+            queue {
+                parked.signal()
+                if release.wait(timeout: .now() + 10) == .timedOut { ok.setValue(false) }
+            }
+            // Only start enqueuing once the drain IS parked — an item that lands before
+            // the drain takes its first batch would be delivered in that earlier cycle.
+            if parked.wait(timeout: .now() + 10) == .timedOut { ok.setValue(false) }
+            enqueue()
+            release.signal()
+            done.setValue(true)
+        }.start()
+        // Poll from the async side (a semaphore wait is unavailable in async contexts);
+        // bounded so a stuck handshake fails instead of hanging.
+        var waited = 0
+        while !done.value {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+            waited += 1
+            if waited > 20_000 { ok.setValue(false); break }
+        }
+        await queue.waitUntilIdle()
+        return ok.value
+    }
+
     /// Coalescing is per drain cycle: pairs that arrive while main is busy collapse
     /// into one delivery. Main is held busy for the whole enqueue phase here so the
     /// burst lands in a single cycle; with main draining concurrently the same burst
@@ -149,22 +188,13 @@ struct MainCallQueueCoalescingTests {
         let kp: KeyPath<_StateObserver<Int>, AnyHashable> = \_StateObserver<Int>[contextID: 1, propID: 1]
         let counter = DeliveryCounter(keyPath: kp)
         nonisolated(unsafe) let kpRef = kp
-        let gate = LockIsolated(false)
-        let parked = LockIsolated(false)
 
-        await Task.detached {
-            // Park the drain (runs on main) until every pair below is queued, and
-            // only start enqueuing once it IS parked — a pair that lands before the
-            // drain takes its first batch would be delivered in that earlier cycle.
-            queue { parked.setValue(true); while !gate.value { usleep(100) } }
-            while !parked.value { usleep(100) }
+        let ok = await Self.withParkedDrain(queue) {
             for _ in 0..<1_000 {
                 queue.notifyRegistrar(counter.registrar, contextID: 1, keyPath: kpRef)
             }
-            gate.setValue(true)
-        }.value
-        await queue.waitUntilIdle()
-
+        }
+        #expect(ok, "park handshake timed out")
         #expect(counter.count.value == 1, "1000 off-main pairs for one key path must coalesce to one delivery, got \(counter.count.value)")
         #expect(queue.pendingCount == 0)
     }
@@ -175,24 +205,19 @@ struct MainCallQueueCoalescingTests {
         let registrar = ObservationRegistrar()
         let kps: [KeyPath<_StateObserver<Int>, AnyHashable>] = (0..<3).map { \_StateObserver<Int>[contextID: 7, propID: UInt($0)] }
         nonisolated(unsafe) let kpsRef = kps
+        let depth = LockIsolated(-1)
 
-        // Block the drain so nothing is taken while we enqueue, then look at the depth.
-        let gate = LockIsolated(false)
-        await Task.detached {
-            queue {
-                // Runs on main; park the drain until the enqueues below are done.
-                while !gate.value { usleep(100) }
-            }
+        // With the drain parked nothing is taken while we enqueue, so the depth read
+        // inside the closure sees everything queued in this cycle.
+        let ok = await Self.withParkedDrain(queue) {
             for i in 0..<3_000 {
                 queue.notifyRegistrar(registrar, contextID: 7, keyPath: kpsRef[i % 3])
             }
-        }.value
-        let depth = queue.pendingCount
-        gate.setValue(true)
-        await queue.waitUntilIdle()
-
+            depth.setValue(queue.pendingCount)
+        }
+        #expect(ok, "park handshake timed out")
         // One parked closure + at most one pair per distinct key path.
-        #expect(depth <= 1 + 3, "queue depth must be bounded by distinct (context, key path) pairs, got \(depth)")
+        #expect(depth.value <= 1 + 3, "queue depth must be bounded by distinct (context, key path) pairs, got \(depth.value)")
     }
 
     @Test func distinctPairsDeliverInFirstInsertionOrder() async {
@@ -240,25 +265,18 @@ struct MainCallQueueCoalescingTests {
         withObservationTracking { regA.access(_StateObserver<Int>(), keyPath: kpA) } onChange: { log.withValue { $0.append("A") } }
         withObservationTracking { regB.access(_StateObserver<Int>(), keyPath: kpB) } onChange: { log.withValue { $0.append("B") } }
         nonisolated(unsafe) let a = kpA, b = kpB
-        let gate = LockIsolated(false)
-        let parked = LockIsolated(false)
 
-        await Task.detached {
-            // The position rule is per drain cycle, so the five enqueues below must land
-            // in ONE cycle: park the drain (runs on main) first and wait until it IS
-            // parked, otherwise a batch taken between two enqueues splits the sequence
-            // (seen once in 20 stress iterations as ["c1", "A", "c2", "B", "c3"]).
-            queue { parked.setValue(true); while !gate.value { usleep(100) } }
-            while !parked.value { usleep(100) }
+        // The position rule is per drain cycle, so the five enqueues must land in ONE
+        // cycle (a batch taken between two of them was seen once in 20 stress
+        // iterations as ["c1", "A", "c2", "B", "c3"]).
+        let ok = await Self.withParkedDrain(queue) {
             queue { log.withValue { $0.append("c1") } }
             queue.notifyRegistrar(regA, contextID: 5, keyPath: a)
             queue { log.withValue { $0.append("c2") } }
             queue.notifyRegistrar(regB, contextID: 5, keyPath: b)
             queue { log.withValue { $0.append("c3") } }
-            gate.setValue(true)
-        }.value
-        await queue.waitUntilIdle()
-
+        }
+        #expect(ok, "park handshake timed out")
         // c1 precedes the bundle; B joined after c2 but is delivered with A, before c2.
         #expect(log.value == ["c1", "A", "B", "c2", "c3"], "got \(log.value)")
     }
