@@ -1,9 +1,23 @@
 import Foundation
 
+/// Per-thread framework state (pthread-specific storage; see `threadLocals` below).
+///
+/// ## Exclusivity checking
+/// The fields the model read path consults on every read are `@exclusivity(unchecked)`.
+/// A `ThreadLocals` instance is confined to the thread that owns it, so the only conflict
+/// Swift's dynamic exclusivity check could ever report on one of them is a same-thread
+/// overlap — an access still open while another begins — and none of these fields is ever
+/// accessed that way: every scope helper (`withValue`, `withForceDirectAccess`,
+/// `withUntrackedModelReads`) does a plain get, a plain set, runs its body, then a plain
+/// set; nothing holds a `_modify`/`inout` access across a call. The `swift_beginAccess` /
+/// `swift_endAccess` pair the compiler emits per class-property access would otherwise be
+/// paid several times per read (two flags in the `_ModelSourceBox` subscript, three plus
+/// the shadow collector in `willAccessDirect`, the override in `readLocked`) only to
+/// confirm the above. Fields off the read path keep the default checking.
 @usableFromInline
 final class ThreadLocals: @unchecked Sendable {
     var postTransactions: [(inout [() -> Void]) -> Void]? = nil
-    @usableFromInline var forceDirectAccess = false
+    @exclusivity(unchecked) @usableFromInline var forceDirectAccess = false
     /// Set by the public `withUntrackedModelReads { }` scope. While `true`, the
     /// `_ModelSourceBox` read subscripts skip `willAccessDirect` entirely (no
     /// ObservationRegistrar access, no `ModelAccess.willAccess` dispatch, no child
@@ -18,7 +32,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// used by `node.memoize` and `Observed`) explicitly clears this flag around its
     /// `access()` evaluations so that a memoize/observer set up inside an untracked
     /// scope still registers its own dependencies.
-    @usableFromInline var untrackedReads = false
+    @exclusivity(unchecked) @usableFromInline var untrackedReads = false
     var didReplaceModelWithDestructedOrFrozenCopy = false
     var includeImplicitIDInMirror = false
     var includeChildrenInMirror = false
@@ -76,13 +90,13 @@ final class ThreadLocals: @unchecked Sendable {
     /// the dirty-path synchronous read), so it can always call `produce()` and re-register
     /// `withObservationTracking` tracking — even when `isDirty=false` due to a concurrent
     /// `onUpdate` clearing it before this `performUpdate`'s `observe()` runs.
-    var isInsideAsyncPerformUpdate = false
-    /// When non-nil, the Context subscript `_read` returns this value instead of the live
+    @exclusivity(unchecked) var isInsideAsyncPerformUpdate = false
+    /// When non-nil, `Context.readLocked` / `Reference.readUntracked` return this value instead of the live
     /// model value. Set by `TestAccess.willAccess` in transitions mode so that predicate
     /// evaluation sees the front-of-queue historical value (or the expectedState baseline)
     /// rather than the current live state.
-    /// Consumed by the `willAccess` returned closure after the Context subscript yields.
-    @usableFromInline var transitionOverrideValue: Any? = nil
+    /// Consumed by the `willAccess` returned closure, which `readLocked` runs right after the projection.
+    @exclusivity(unchecked) @usableFromInline var transitionOverrideValue: Any? = nil
     /// Monotonically incrementing counter set when an outer `node.transaction { }` begins.
     /// Each outer transaction gets a new unique ID; nested transactions see the outer ID.
     /// `TestAccess.didModify` captures this at write time so multiple writes to the same
@@ -115,7 +129,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// `withObservationTracking` path re-tracks via the async `performUpdate`
     /// (which goes through `observe()`, not this flag). The cache-miss /
     /// first-access path also goes through `observe()` and isn't flagged.
-    var isInsideMemoizeProduce = false
+    @exclusivity(unchecked) var isInsideMemoizeProduce = false
 
     /// Sibling of `isInsideMemoizeProduce`, set during the *async* memoize
     /// `observe()` path (registrar / `withObservationTracking` branch). Unlike
@@ -131,7 +145,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// dependencies for whatever the memoize body touches and the trigger log
     /// attributes those reads to the parent — the very leakage the memoize
     /// is supposed to prevent.
-    var isInsideMemoizeObserve = false
+    @exclusivity(unchecked) var isInsideMemoizeObserve = false
 
     /// When non-nil, `ObservationTracking.onObservedChange` defers its
     /// `backgroundCallQueue(performUpdate)` enqueue into this array instead
@@ -191,7 +205,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// `observe()` for why) — overriding it would inadvertently suppress
     /// Apple's `registrar.access(...)` via the
     /// `!(isInsideAsyncPerformUpdate && cachedActive != nil)` guard.
-    var gapShadowCollector: ModelAccess? = nil
+    @exclusivity(unchecked) var gapShadowCollector: ModelAccess? = nil
 
     var pendingStack = _PendingStackBox()
 

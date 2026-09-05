@@ -6,7 +6,7 @@ import Foundation
 /// `_ModelSourceBox.subscript(dynamicMember:)`.
 ///
 /// `ReadPathBenchmarks` does NOT cover these: every case it measures is an
-/// anchored+tracked read going through `context[statePath:observeCallback:]`.
+/// anchored+tracked read going through `Context.readLocked`.
 /// The `dynamicMember` getter is reached instead when `forceDirectAccess ||
 /// _isLive`, or when `reference.context == nil` (pre-anchor / snapshot copies) —
 /// and `forceDirectAccess` is what wraps the per-element `.id` reads in
