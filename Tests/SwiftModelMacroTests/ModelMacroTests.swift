@@ -87,6 +87,12 @@ struct ModelMacroTests {
 
                 public nonisolated struct _State: _ModelStateType {
                     var count = 0
+                    public static var _trackedPropertyCount: Int {
+                        1
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.count]
+                    }
                 }
 
                 public typealias _ModelState = _State
@@ -198,6 +204,12 @@ struct ModelMacroTests {
 
                 public nonisolated struct _State: _ModelStateType {
                     var handler: @Sendable () -> Void = {
+                    }
+                    public static var _trackedPropertyCount: Int {
+                        1
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.handler]
                     }
                 }
 
@@ -313,6 +325,12 @@ struct ModelMacroTests {
 
                 public nonisolated struct _State: _ModelStateType {
                     var activateCount: Int
+                    public static var _trackedPropertyCount: Int {
+                        1
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.activateCount]
+                    }
                 }
 
                 public typealias _ModelState = _State
@@ -426,6 +444,12 @@ struct ModelMacroTests {
 
                 public nonisolated struct _State: _ModelStateType {
                     var count = 0
+                    public static var _trackedPropertyCount: Int {
+                        1
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.count]
+                    }
                 }
 
                 public typealias _ModelState = _State
@@ -551,6 +575,12 @@ struct ModelMacroTests {
 
                 public nonisolated struct _State: _ModelStateType {
                     var count = 0
+                    public static var _trackedPropertyCount: Int {
+                        1
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.count]
+                    }
                 }
 
                 public typealias _ModelState = _State
@@ -653,6 +683,12 @@ struct ModelMacroTests {
 
                 public nonisolated struct _State: _ModelStateType {
                     var count = 0
+                    public static var _trackedPropertyCount: Int {
+                        1
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.count]
+                    }
                 }
 
                 public typealias _ModelState = _State
@@ -755,6 +791,12 @@ struct ModelMacroTests {
 
                 public nonisolated struct _State: _ModelStateType {
                     var animating = false
+                    public static var _trackedPropertyCount: Int {
+                        1
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.animating]
+                    }
                 }
 
                 public typealias _ModelState = _State
@@ -896,6 +938,12 @@ struct ModelMacroTests {
                     var count = 0
                     var label: String
                     var flag = false
+                    public static var _trackedPropertyCount: Int {
+                        3
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.count, \Self.label, \Self.flag]
+                    }
                 }
 
                 public typealias _ModelState = _State
@@ -1007,6 +1055,12 @@ struct ModelMacroTests {
 
                 public nonisolated struct _State: _ModelStateType {
                     var count = 0
+                    public static var _trackedPropertyCount: Int {
+                        1
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.count]
+                    }
                 }
 
                 public typealias _ModelState = _State
@@ -1110,6 +1164,12 @@ struct ModelMacroTests {
 
                 public nonisolated struct _State: _ModelStateType {
                     var counter = ChildModel()
+                    public static var _trackedPropertyCount: Int {
+                        1
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.counter]
+                    }
                 }
 
                 public typealias _ModelState = _State
@@ -1373,6 +1433,12 @@ struct ModelMacroTests {
 
                 public nonisolated struct _State: _ModelStateType {
                     var count = 0
+                    public static var _trackedPropertyCount: Int {
+                        1
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.count]
+                    }
                 }
 
                 public typealias _ModelState = _State
