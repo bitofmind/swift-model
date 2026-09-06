@@ -59,7 +59,16 @@ final class _StateSnapshotBox<State> {
 /// it replaced.) A real implementation must supply the pre-macOS-15 fallback.
 final class _StateSnapshotPublisher<State>: @unchecked Sendable {
     private let _published = Atomic<Unmanaged<_StateSnapshotBox<State>>?>(nil)
+    /// Padding so `_readers` sits on a cache line of its own (M1: 128 bytes). Without it a
+    /// publisher is a 64-byte allocation and the publishers of consecutively created child
+    /// models — a collection's elements — pair up on one line, so readers of DIFFERENT
+    /// children bounce that line between cores exactly as if they shared a counter. That
+    /// showed as the "children of ONE tree" rows failing to go flat (untracked 8T: 2231 →
+    /// 5299 ns). A real implementation would hold the counter in the Reference itself,
+    /// padded, or use per-thread hazard slots and have no shared counter at all.
+    private let _pad0: (Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int) = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     private let _readers = Atomic<Int>(0)
+    private let _pad1: (Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int, Int) = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     private let _retiredLock = NSLock()
     private var _retired: [Unmanaged<_StateSnapshotBox<State>>] = []
     private let _retiredCount = Atomic<Int>(0)
