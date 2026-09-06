@@ -891,9 +891,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // lock-held + postLockCallbacks phases finish. See the helper definitions
         // (`beginLockHeldBackgroundCallsScope` / `endLockHeldBackgroundCallsScope`)
         // and `ThreadLocals.lockHeldBackgroundCalls` for rationale.
-        let lhbcOwned = beginLockHeldBackgroundCallsScope(threadLocals)
-        defer { endLockHeldBackgroundCallsScope(threadLocals, lhbcOwned) }
-        lock.lock()
+        let tl = threadLocals
+        let lhbcOwned = beginLockHeldBackgroundCallsScope(tl)
+        defer { endLockHeldBackgroundCallsScope(tl, lhbcOwned) }
+        writeLock(tl)
         let result: T
         do {
             // Use _modelSeed directly (.live source) instead of model (.reference source).
@@ -905,7 +906,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             result = try modify(&localModel[keyPath: path])
 
             if let isSame, isSame(localModel[keyPath: path], oldValue) {
-                lock.unlock()
+                writeUnlock(tl)
                 return result
             }
 
@@ -920,12 +921,42 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 #else
             let postLockCallbacks = index >= 0 ? buildPostLockCallbacks(forProperty: index, tl: threadLocals) : nil
 #endif
-            lock.unlock()
+            writeUnlock(tl)
 
             activeAccessCallback?()
             runPostLockCallbacks(postLockCallbacks)
         }
         return result
+    }
+
+    // MARK: - SPIKE: write scopes (snapshot publish at the outermost unlock)
+
+    /// Takes the hierarchy lock for a write and opens a write scope on this thread. Every
+    /// path that mutates `reference.state` under the lock (`beginDirectWrite`,
+    /// `stateTransaction`, both `transaction`s) goes through this pair rather than
+    /// `lock.lock()` / `lock.unlock()`, so that `threadLocals.writeDepth` tells reads on
+    /// this thread to use the working copy and `writeUnlock` knows when it is outermost.
+    @inline(__always)
+    func writeLock(_ tl: ThreadLocals) {
+        lock.lock()
+        tl.writeDepth &+= 1
+    }
+
+    /// Closes the write scope and releases the hierarchy lock. When this is the OUTERMOST
+    /// scope on the thread, every Reference mutated inside it publishes its snapshot first —
+    /// still under the lock, so the copy cannot tear against another writer. (Spike gap:
+    /// the depth is per THREAD, not per tree; a write scope that dirtied a Reference of
+    /// another tree — reachable only through cross-hierarchy child adoption under the lock —
+    /// would publish it under this tree's lock, not its own.)
+    @inline(__always)
+    func writeUnlock(_ tl: ThreadLocals) {
+        if tl.writeDepth == 1, !tl.dirtyReferences.isEmpty {
+            let dirty = tl.dirtyReferences
+            tl.dirtyReferences.removeAll(keepingCapacity: true)
+            for ref in dirty { ref._flushPublish() }
+        }
+        tl.writeDepth &-= 1
+        lock.unlock()
     }
 
     // MARK: - Tracked property read (direct _State access)
@@ -1025,15 +1056,19 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             }
         }
 
-        // SPIKE: the live, non-overridden read projects the published snapshot WITHOUT the
-        // hierarchy lock (the registrar access above still precedes it — the invariant in
-        // the doc comment is intact). `unprotectedIsDestructed` is read here without the
-        // lock (spike shortcut: a plain enum store; the destructed path below still locks).
+        // SPIKE: the live, non-overridden read OUTSIDE a write scope projects the published
+        // snapshot WITHOUT the hierarchy lock (the registrar access above still precedes it —
+        // the invariant in the doc comment is intact). Inside a write scope on this thread
+        // (`tl.writeDepth > 0`: a direct write's yield, a `stateTransaction`, a
+        // `node.transaction`) the read takes the locked path below and sees the working copy
+        // — read-your-own-writes, since snapshots publish only at the outermost unlock.
+        // `unprotectedIsDestructed` is read here without the lock (spike shortcut: a plain
+        // enum store; the destructed path below still locks).
         // `callback` (the TestAccess / collector completion) used to run inside the lock;
         // it now runs after the projection outside it — it re-reads through `_modelSeed`,
         // which locks on its own, so under a concurrent writer its logged value can be
         // newer than the one returned. Test-mode bookkeeping only.
-        if !unprotectedIsDestructed, tl.transitionOverrideValue == nil {
+        if tl.writeDepth == 0, !unprotectedIsDestructed, tl.transitionOverrideValue == nil {
             let value: T = reference.readSnapshot(get) {
                 lock.lock()
                 defer { lock.unlock() }
@@ -1357,7 +1392,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // `performUpdate`'s clear).
         let tl = threadLocals
         let lhbcOwned = beginLockHeldBackgroundCallsScope(tl)
-        lock.lock()
+        writeLock(tl)
         let mode: DirectWriteMode
         if unprotectedIsDestructed {
             if reference._stateCleared {
@@ -1393,14 +1428,14 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         switch scope.mode {
         case .dropped:
             // Already isolated from `reference.state`: nothing is written back.
-            lock.unlock()
+            writeUnlock(scope.tl)
         case .destructedSilent:
             set(&reference.state, value)
-            lock.unlock()
+            writeUnlock(scope.tl)
         case .live:
             set(&reference.state, value)
             if isSame {
-                lock.unlock()
+                writeUnlock(scope.tl)
                 return
             }
             finishWrite(index: index, activeAccess: scope.writeLockHolder, tl: scope.tl, path: path())
@@ -1478,7 +1513,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 #else
         let postLockCallbacks = buildPostLockCallbacks(forProperty: index, tl: tl)
 #endif
-        lock.unlock()
+        writeUnlock(tl)
 
         activeAccessCallback?()
         runPostLockCallbacks(postLockCallbacks)
@@ -1506,7 +1541,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let tl = threadLocals
         let lhbcOwned = beginLockHeldBackgroundCallsScope(tl)
         defer { endLockHeldBackgroundCallsScope(tl, lhbcOwned) }
-        lock.lock()
+        writeLock(tl)
         let result: T
         if unprotectedIsDestructed {
             if reference._stateCleared, !reference._hasGenesis {
@@ -1514,7 +1549,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             }
             var value = get(reference.state)
             result = try modify(&value)
-            lock.unlock()
+            writeUnlock(tl)
         } else {
             let oldValue = get(reference.state)
             var value = oldValue
@@ -1522,7 +1557,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             set(&reference.state, value)
 
             if isSame(value, oldValue) {
-                lock.unlock()
+                writeUnlock(tl)
                 return result
             }
 
@@ -1743,7 +1778,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         writeLockHolder?.acquireWriteLock()
         defer { writeLockHolder?.releaseWriteLock() }
 
-        return try lock {
+        // SPIKE: a write scope (not `lock { }`), so nested writes only mark their References
+        // dirty and the snapshots publish together just before this outermost unlock.
+        writeLock(tl)
+        defer { writeUnlock(tl) }
+        do {
             if threadLocals.postTransactions != nil {
                 return try callback()
             }
@@ -2189,7 +2228,7 @@ extension Context {
     /// the borrow lifetime discipline documented at `Context.trackedRead` relies on the
     /// checker.
     @usableFromInline
-    final class Reference: @unchecked Sendable {
+    final class Reference: _SnapshotPublishing, @unchecked Sendable {
         let modelID: ModelID
         private let lock = NSRecursiveLock()
         /// SPIKE: the snapshot publisher. Stored typed (see the note on its class for why the
@@ -2198,21 +2237,39 @@ extension Context {
 
         /// SPIKE publish point: called after EVERY mutation of `state` (the setter and the
         /// `_modify` accessor below). While no context is live nothing is published and this
-        /// is one relaxed load; once `setContext` has published, every write copies the
-        /// working copy into a fresh box. Writes to a live model always hold the hierarchy
-        /// lock, so publishes for one Reference are serialised by it.
+        /// is one relaxed load. Once `setContext` has published:
         ///
-        /// Read-your-own-writes falls out of this placement: no user code runs between a
-        /// store into the working copy and its publish (the `_modify` yields a LOCAL and
-        /// writes back afterwards — see `Context.beginDirectWrite`), so a read on the writing
-        /// thread at any point where user code can run sees the same value in the snapshot
-        /// as in the working copy. The price is that a `node.transaction { a = 1; b = 2 }`
-        /// is no longer atomic for a CONCURRENT reader: it can observe `a == 1, b == old`.
-        /// Publishing at the end of the outermost transaction instead would restore that
-        /// and needs a thread-local "open write" marker so the writer reads its working copy.
+        ///  • inside a write scope (`threadLocals.writeDepth > 0` — every direct write,
+        ///    `stateTransaction`, and `node.transaction`, all of which hold the hierarchy
+        ///    lock), the Reference is only MARKED dirty; `Context.writeUnlock` publishes every
+        ///    dirty Reference just before the OUTERMOST unlock. One copy per Reference per
+        ///    transaction, and a concurrent reader sees the transaction atomically (never
+        ///    `a == new, b == old`). Read-your-own-writes: reads on the writing thread take
+        ///    the locked working-copy path while `writeDepth > 0` (see `Context.trackedRead`).
+        ///  • outside any write scope (`Reference.clear`, `prepareForReanchoring`, the
+        ///    `isApplyingSnapshot` frozen-copy writes) it publishes at once.
+        ///
+        /// `_dirty` is written under the hierarchy lock (every write scope holds it) — the
+        /// flush runs on the same thread before that lock is released.
         @inline(__always)
         private func _publishIfLive() {
-            if _pub.isPublished {
+            guard _pub.isPublished else { return }
+            let tl = threadLocals
+            if tl.writeDepth > 0 {
+                if !_dirty {
+                    _dirty = true
+                    tl.dirtyReferences.append(self)
+                }
+            } else {
+                _pub.publish(_stateStorage.pointee)
+            }
+        }
+        @exclusivity(unchecked) private var _dirty = false
+
+        /// `_SnapshotPublishing`: the end-of-transaction publish, from `Context.writeUnlock`.
+        func _flushPublish() {
+            _dirty = false
+            if _pub.isPublished, _hasMaterializedState {
                 _pub.publish(_stateStorage.pointee)
             }
         }
@@ -2578,7 +2635,7 @@ extension Context {
             // SPIKE: a live, non-destructed, non-overridden read projects the published
             // snapshot without the hierarchy lock. Destructed (last-seen) reads keep the
             // locked path; so does a Reference with no snapshot (pre-macOS-15).
-            if !isDestructed, tl.transitionOverrideValue == nil {
+            if tl.writeDepth == 0, !isDestructed, tl.transitionOverrideValue == nil {
                 return readSnapshot(get) {
                     hierarchyLock.lock()
                     defer { hierarchyLock.unlock() }

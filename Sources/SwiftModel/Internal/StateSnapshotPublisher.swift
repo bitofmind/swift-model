@@ -36,6 +36,13 @@ import Synchronization
 // large collection, stays alive until the NEXT publish after the last reader drops it
 // (one write later in the common case; unboundedly for a reader parked mid-projection).
 
+/// A `Reference` as seen by the thread-local dirty list: publish the working copy now.
+/// Called just before the outermost `Context.writeUnlock` on the writing thread, with the
+/// hierarchy lock still held.
+protocol _SnapshotPublishing: AnyObject {
+    func _flushPublish()
+}
+
 /// Immutable heap box for one published `_State` value. `let` so a projection can borrow
 /// the struct in place rather than copy it out first.
 final class _StateSnapshotBox<State> {

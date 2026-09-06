@@ -220,6 +220,15 @@ final class ThreadLocals: @unchecked Sendable {
     /// `!(isInsideAsyncPerformUpdate && cachedActive != nil)` guard.
     @exclusivity(unchecked) var gapShadowCollector: ModelAccess? = nil
 
+    /// SPIKE (snapshot reads): depth of hierarchy-lock write scopes open on this thread
+    /// (`Context.writeLock` / `writeUnlock`). While > 0 the thread is inside a write or a
+    /// `node.transaction` and reads take the locked working-copy path (read-your-own-writes);
+    /// snapshots are published for every Reference in `dirtyReferences` just before the
+    /// OUTERMOST `writeUnlock`, so a concurrent reader sees a transaction atomically.
+    @exclusivity(unchecked) var writeDepth: Int = 0
+    /// References mutated inside the current write scope, in first-mutation order.
+    @exclusivity(unchecked) var dirtyReferences: [_SnapshotPublishing] = []
+
     var pendingStack = _PendingStackBox()
 
     fileprivate init() {}
