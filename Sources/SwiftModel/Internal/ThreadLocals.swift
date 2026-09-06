@@ -162,8 +162,9 @@ final class ThreadLocals: @unchecked Sendable {
     /// has two listeners that both schedule `performUpdate` on the same writer:
     ///
     ///   1. Apple's `withObservationTracking.onChange` (one-shot) — fires
-    ///      synchronously inside `invokeDidModifyDirect` (registrar.willSet
-    ///      callback dispatch) while the writer holds the context lock.
+    ///      synchronously inside `Context.finishWrite` (registrar.willSet
+    ///      callback dispatch) on the writer's thread, after the context lock is
+    ///      released but while this scope is still open.
     ///   2. The shadow `AccessCollector` (gap-race detector, persistent
     ///      per-(context, path) subscription) — registered as a `context.onModify`
     ///      modifyCallback; fires as a *post-callback* via `runPostLockCallbacks`

@@ -74,8 +74,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// — and it must not take the hierarchy lock twice, nor call the registrar inside it.
     /// The Reference's own lock is a leaf lock the read already takes to load `_context`;
     /// `Reference.liveContextAndObserverToken(_:)` resolves both in that one window. The
-    /// write side (`invokeDidModifyDirect`, hierarchy lock held) takes `reference.lock`
-    /// for its fetch — the established AnyContext.lock → Reference.lock order. Per tree,
+    /// write side (`finishWrite`) takes `reference.lock` for its fetch — after releasing
+    /// the hierarchy lock on the direct path (the read side's order), inside it on the
+    /// batched path (the established AnyContext.lock → Reference.lock order). Per tree,
     /// so no cross-tree contention: the old global cache's stripe lock was the same shape
     /// shared by every tree in the process.
     ///
@@ -1137,124 +1138,6 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     // MARK: - Direct access helpers (for _ModelSourceBox subscripts)
 
-    /// Invokes post-modify observation notifications without constructing a ModelContext.
-    /// Returns the active-access callback for the caller to execute after releasing the lock.
-    ///
-    /// Uses `_StateObserver` for registrar calls (no Model instance needed); delegates to
-    /// `activeAccess.didModify(from:at:)` for TestAccess / AccessCollector.
-    ///
-    /// Must be called with `lock` held (both callers are inside `finishWrite`): the main
-    /// registrar is read through `unprotectedMainObservationRegistrar` on that basis.
-    ///
-    /// - Parameter activeAccess: the caller's resolved `ModelAccess.active ??
-    ///   accessBox._reference?.access ?? ModelAccess.current` — the same chain the write lock
-    ///   was taken on, passed down rather than re-reading both task-locals here.
-    /// - Parameter tl: the caller's `threadLocals` handle.
-    /// - Parameter path: the property's key path, evaluated only for `activeAccess.didModify`
-    ///   (a `TestAccess` / collector) — the observer-less write never forms it.
-    @discardableResult
-    func invokeDidModifyDirect<T>(index: Int, activeAccess: ModelAccess?, tl: ThreadLocals, path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> (() -> Void)? {
-        // The access callback is the only consumer of the key path, and of its `& Sendable`
-        // view. Forming the literal is a `_swift_getKeyPath` (retaining a process-wide
-        // object); forming the view (`unsafeBitCast` to a protocol composition) costs an
-        // existential metadata lookup, and holding it in an `Optional` a second lookup plus
-        // an opaque copy — so both happen only when there is an access to hand it to.
-        @inline(__always) func accessCallback() -> (() -> Void)? {
-            guard let activeAccess else { return nil }
-            return activeAccess.didModify(from: self, at: unsafeBitCast(path(), to: (WritableKeyPath<M._ModelState, T> & Sendable).self))
-        }
-
-        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar {
-            let observer = _StateObserver<M._ModelState>()
-            // The per-context identity token for this property (see `_observerTokens`),
-            // fetched under the Reference's leaf lock — hierarchy lock → Reference lock is
-            // the established order.
-            nonisolated(unsafe) let observerKP = unsafeDowncast(
-                reference.observerToken(of: self, index),
-                to: KeyPath<_StateObserver<M._ModelState>, AnyHashable>.self
-            )
-            // Coalescing key for `MainCallQueue.notifyRegistrar` (off-main / batched
-            // branches only): the token is per (context, property) already, but the
-            // queue keys on (contextID, token identity) so it never has to hash a key path.
-            let contextID = UInt(bitPattern: ObjectIdentifier(self))
-            let useMain = useMainThreadObservation
-            // Resolved once per write — the box → pair → background chain is immutable and
-            // non-nil whenever `useObservationRegistrar` holds, so one borrowed read serves
-            // willSet and didSet alike (no `Optional` of the resilient registrar to copy).
-            let backgroundReg = backgroundObservationRegistrarMakingIfNeeded
-
-            // Ordering rule for the main registrar:
-            //   - When already on the main thread, the strict `willSet → mutation → didSet`
-            //     order is preserved (matches the pre-dual-registrar behaviour and what
-            //     `withObservationTracking`'s `onChange` semantically expects).
-            //   - When off the main thread we have to bridge via `mainCallQueue`, which
-            //     `@MainActor`-enqueues async. The main registrar's `willSet/didSet` therefore
-            //     fire as a bundle *after* the mutation. Strict willSet-before-mutation isn't
-            //     reachable here without blocking the mutating thread.
-            // The background registrar always uses strict ordering (synchronous on the mutating
-            // thread).
-            let mainOnMain = useMain && isOnMainThread
-
-            if tl.pendingObservationNotifications != nil {
-                // Batched: the mutation has already happened by the time we drain the pending
-                // list, so strict willSet-before-mutation is unreachable for either registrar.
-                // Fire both as post-mutation bundles. Main goes through `mainCallQueue` which
-                // runs inline if we drain on main, otherwise enqueues onto `@MainActor`.
-                let callback = accessCallback()
-                tl.pendingObservationNotifications!.append {
-                    backgroundReg.willSet(observer, keyPath: observerKP)
-                    backgroundReg.didSet(observer, keyPath: observerKP)
-                    if useMain, let mainReg = self.mainObservationRegistrar {
-                        // Inline when the batch drains on main; coalesced per
-                        // (context, property) when it drains off main — see
-                        // `MainCallQueue.notifyRegistrar`.
-                        self.mainCallQueue.notifyRegistrar(mainReg, contextID: contextID, keyPath: observerKP)
-                    }
-                }
-                return callback
-            } else {
-                // Non-batched: emit willSet eagerly so background — and main when already on
-                // main — see the strict pre-mutation notification. didSet fires after the
-                // access callback has been captured and (on main) the queue drained — the
-                // sequence a `defer` used to produce, written out inline so the
-                // `_StateObserver<M._ModelState>: Observable` witness table and the registrar
-                // metadata are resolved once per write rather than once here and again in
-                // the defer's separate function.
-                backgroundReg.willSet(observer, keyPath: observerKP)
-                if mainOnMain {
-                    unprotectedMainObservationRegistrar?.willSet(observer, keyPath: observerKP)
-                }
-                let callback = accessCallback()
-                if mainOnMain {
-                    // `drainIfOnMain` is a no-op off the main thread; skipping the call there
-                    // saves its own `Thread.isMainThread` query.
-                    mainCallQueue.drainIfOnMain()
-                }
-                backgroundReg.didSet(observer, keyPath: observerKP)
-                if useMain, let mainReg = unprotectedMainObservationRegistrar {
-                    if mainOnMain {
-                        // Synchronous on the mutating (main) thread: matches strict ordering.
-                        mainReg.didSet(observer, keyPath: observerKP)
-                    } else {
-                        // Off-main: bundle main `willSet/didSet` onto `@MainActor`,
-                        // coalesced per (context, property) between drains — one
-                        // pair per property however many writes land while main
-                        // is busy. Safe because Apple's observation is one-shot
-                        // per registration; see `MainCallQueue.notifyRegistrar`.
-                        mainCallQueue.notifyRegistrar(mainReg, contextID: contextID, keyPath: observerKP)
-                    }
-                }
-                return callback
-            }
-        } else {
-            let callback = accessCallback()
-            if useMainThreadObservation, tl.pendingObservationNotifications == nil {
-                mainCallQueue.drainIfOnMain()
-            }
-            return callback
-        }
-    }
-
     /// How a direct `_State` write completes. Decided under `lock` before the caller's
     /// mutation runs (`beginDirectWrite`) and acted on after it (`endDirectWrite`).
     enum DirectWriteMode {
@@ -1440,9 +1323,41 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     /// Shared tail of every direct `_State` write (`endDirectWrite` — behind both the
     /// caller-yielded `_modify` and `setValue` — and `stateTransaction`): bumps the
-    /// modification count, fires the registrar and
-    /// access notifications, builds the post-lock callbacks, releases `lock`, then runs
-    /// the callbacks. Entered with `lock` held; returns with it released.
+    /// modification count, captures the access notification, builds the post-lock
+    /// callbacks, releases `lock`, fires the registrar, then runs the callbacks. Entered
+    /// with `lock` held; returns with it released.
+    ///
+    /// **The registrar fires after `lock` is released.** Apple's `ObservationRegistrar`
+    /// `willSet`/`didSet` are the bulk of a write's critical section — each takes the
+    /// registrar's own `os_unfair_lock` and walks its `Set<AnyKeyPath>` bookkeeping, and
+    /// `willSet` dispatches every one-shot `onChange` synchronously — and none of it needs
+    /// the hierarchy lock: the tree's registrar pair is an immutable `let` chain, the
+    /// observer token is guarded by `reference.lock` (see `_observerTokens`), and whether
+    /// the main registrar exists is a `Bool` read while the lock is still held (the
+    /// registrar itself is write-once, so it is read lock-free afterwards — see
+    /// `mainObservationRegistrarOnceCreated`). Writers to different children of one tree
+    /// therefore serialise only on the projection, the write-back, `didModify` and the
+    /// callback capture. What an observer sees is unchanged:
+    ///   - The value is already written back (`endDirectWrite` / `stateTransaction` store
+    ///     before calling here), exactly as before — the registrar always fired after the
+    ///     store, under the lock. A one-shot registration made before the store is notified;
+    ///     one made after it has already read the new value. No update can be lost: every
+    ///     read that registers after `willSet` projects after the store. The one new
+    ///     interleaving is a reader on another thread that projects the new value in the
+    ///     window between `unlock` and `willSet` and then receives a notification for a
+    ///     change it has already read — a spurious wake, benign under one-shot semantics.
+    ///   - Same-value writes still notify nobody: the `isSame` verdict is taken under the
+    ///     lock by the callers, and this function is not entered for them.
+    ///   - On the main thread the strict `willSet → drain → didSet` sequence for both
+    ///     registrars is preserved verbatim; main is sequential, so releasing the lock first
+    ///     is invisible to it. Off main, the main registrar is still bundled through
+    ///     `MainCallQueue.notifyRegistrar` after the store.
+    ///   - The relative order registrar → access callback → post-lock callbacks is the same
+    ///     as before, and the `lockHeldBackgroundCalls` scope is still open (it is closed by
+    ///     `closeDirectWrite` / the callers' `defer`s), so `ObservationTracking`'s
+    ///     `onObservedChange` defers its `performUpdate` enqueue exactly as it did.
+    ///   - The batched (`_withBatchedUpdates`) path is untouched: it appends the bundle
+    ///     under the lock and drains later.
     ///
     /// `activeAccess` is the caller's resolved `ModelAccess.active ?? accessBox._reference?.access
     /// ?? ModelAccess.current` chain — the same value it took the write lock on — and `tl` its
@@ -1452,15 +1367,133 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// collector's `didModify`, and — in Debug builds — for the property description that
     /// `observeModifications(debug:)` prints; the observer-less Release write never
     /// evaluates it.
+    ///
+    /// `_StateObserver` stands in for the model instance on the registrar calls (no Model
+    /// value needed); `activeAccess.didModify(from:at:)` serves `TestAccess` / collectors.
     private func finishWrite<T>(index: Int, activeAccess: ModelAccess?, tl: ThreadLocals, path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) {
         didModify()
-        let activeAccessCallback = invokeDidModifyDirect(index: index, activeAccess: activeAccess, tl: tl, path: path())
+
+        // The access callback is the only consumer of the key path, and of its `& Sendable`
+        // view. Forming the literal is a `_swift_getKeyPath` (retaining a process-wide
+        // object); forming the view (`unsafeBitCast` to a protocol composition) costs an
+        // existential metadata lookup, and holding it in an `Optional` a second lookup plus
+        // an opaque copy — so both happen only when there is an access to hand it to.
+        // Captured under the lock: `TestAccess.didModify` reads `modificationCount` for its
+        // write-ordering sequence number.
+        let activeAccessCallback: (() -> Void)?
+        if let activeAccess {
+            activeAccessCallback = activeAccess.didModify(from: self, at: unsafeBitCast(path(), to: (WritableKeyPath<M._ModelState, T> & Sendable).self))
+        } else {
+            activeAccessCallback = nil
+        }
 #if DEBUG
         let postLockCallbacks = buildPostLockCallbacksWithPropDesc(forProperty: index, path: path(), tl: tl)
 #else
         let postLockCallbacks = buildPostLockCallbacks(forProperty: index, tl: tl)
 #endif
-        lock.unlock()
+
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar {
+            let observer = _StateObserver<M._ModelState>()
+            // Coalescing key for `MainCallQueue.notifyRegistrar` (off-main / batched
+            // branches only): the token is per (context, property) already, but the
+            // queue keys on (contextID, token identity) so it never has to hash a key path.
+            let contextID = UInt(bitPattern: ObjectIdentifier(self))
+            let useMain = useMainThreadObservation
+            // Resolved once per write — the box → pair → background chain is immutable and
+            // non-nil whenever `useObservationRegistrar` holds, so one borrowed read serves
+            // willSet and didSet alike (no `Optional` of the resilient registrar to copy).
+            let backgroundReg = backgroundObservationRegistrarMakingIfNeeded
+
+            if tl.pendingObservationNotifications != nil {
+                // Batched: the mutation has already happened by the time we drain the pending
+                // list, so strict willSet-before-mutation is unreachable for either registrar.
+                // Fire both as post-mutation bundles. Main goes through `mainCallQueue` which
+                // runs inline if we drain on main, otherwise enqueues onto `@MainActor`.
+                // The token is fetched under the lock here — hierarchy lock → Reference lock
+                // is the established order.
+                nonisolated(unsafe) let observerKP = unsafeDowncast(
+                    reference.observerToken(of: self, index),
+                    to: KeyPath<_StateObserver<M._ModelState>, AnyHashable>.self
+                )
+                tl.pendingObservationNotifications!.append {
+                    backgroundReg.willSet(observer, keyPath: observerKP)
+                    backgroundReg.didSet(observer, keyPath: observerKP)
+                    if useMain, let mainReg = self.mainObservationRegistrar {
+                        // Inline when the batch drains on main; coalesced per
+                        // (context, property) when it drains off main — see
+                        // `MainCallQueue.notifyRegistrar`.
+                        self.mainCallQueue.notifyRegistrar(mainReg, contextID: contextID, keyPath: observerKP)
+                    }
+                }
+                lock.unlock()
+            } else {
+                // Ordering rule for the main registrar:
+                //   - When already on the main thread, the strict `willSet → didSet` pair
+                //     fires synchronously on the mutating thread (matches the
+                //     pre-dual-registrar behaviour and what `withObservationTracking`'s
+                //     `onChange` semantically expects).
+                //   - When off the main thread we have to bridge via `mainCallQueue`, which
+                //     `@MainActor`-enqueues async. The main registrar's `willSet/didSet`
+                //     therefore fire as a bundle *after* the mutation. Strict
+                //     willSet-before-mutation isn't reachable here without blocking the
+                //     mutating thread.
+                // The background registrar always fires synchronously on the mutating thread.
+                let mainOnMain = useMain && isOnMainThread
+                // `_main` is lock-published: decide whether it exists while `lock` is still
+                // held, as a `Bool` — carrying the registrar itself past the unlock would
+                // copy the resilient value (see `unprotectedHasMainObservationRegistrar`).
+                let hasMain = useMain && unprotectedHasMainObservationRegistrar
+                lock.unlock()
+
+                // The per-context identity token for this property (see `_observerTokens`),
+                // fetched under the Reference's leaf lock alone — the same lock, taken the
+                // same way, as a tracked read's `liveContextAndObserverToken`.
+                nonisolated(unsafe) let observerKP = unsafeDowncast(
+                    reference.observerToken(of: self, index),
+                    to: KeyPath<_StateObserver<M._ModelState>, AnyHashable>.self
+                )
+                // willSet eagerly so background — and main when already on main — see the
+                // notification synchronously; didSet after the (main-only) drain — the
+                // sequence a `defer` used to produce, written out inline so the
+                // `_StateObserver<M._ModelState>: Observable` witness table and the registrar
+                // metadata are resolved once per write rather than once here and again in
+                // the defer's separate function.
+                backgroundReg.willSet(observer, keyPath: observerKP)
+                if hasMain {
+                    // Observed non-nil under the lock above, so this unlocked read is of a
+                    // write-once value — see `mainObservationRegistrarOnceCreated`.
+                    let mainReg = mainObservationRegistrarOnceCreated
+                    if mainOnMain {
+                        // Synchronous on the mutating (main) thread: strict ordering, with
+                        // the main queue drained between the pair as before.
+                        mainReg.willSet(observer, keyPath: observerKP)
+                        mainCallQueue.drainIfOnMain()
+                        backgroundReg.didSet(observer, keyPath: observerKP)
+                        mainReg.didSet(observer, keyPath: observerKP)
+                    } else {
+                        backgroundReg.didSet(observer, keyPath: observerKP)
+                        // Off-main: bundle main `willSet/didSet` onto `@MainActor`,
+                        // coalesced per (context, property) between drains — one
+                        // pair per property however many writes land while main
+                        // is busy. Safe because Apple's observation is one-shot
+                        // per registration; see `MainCallQueue.notifyRegistrar`.
+                        mainCallQueue.notifyRegistrar(mainReg, contextID: contextID, keyPath: observerKP)
+                    }
+                } else {
+                    if mainOnMain {
+                        // `drainIfOnMain` is a no-op off the main thread; skipping the call
+                        // there saves its own `Thread.isMainThread` query.
+                        mainCallQueue.drainIfOnMain()
+                    }
+                    backgroundReg.didSet(observer, keyPath: observerKP)
+                }
+            }
+        } else {
+            lock.unlock()
+            if useMainThreadObservation, tl.pendingObservationNotifications == nil {
+                mainCallQueue.drainIfOnMain()
+            }
+        }
 
         activeAccessCallback?()
         runPostLockCallbacks(postLockCallbacks)
