@@ -93,7 +93,8 @@ constant for any O(N) traversal in client apps. Key facts:
   tokens (`_observerTokens`, guarded by the `Reference` lock, created on first use; a
   tracked read fetches its token in the same `Reference`-lock window that loads the
   context and **registers with the registrar BEFORE the locked value read** — see the
-  invariant at `Context.trackedRead` and `ObservationRegistrationGapTests`), the
+  invariant at `Context.trackedRead`; it bounds the inherent `withObservationTracking`
+  install-after-body window, it cannot close it, so there is no unit test for it), the
   `onModify` callbacks on tracked properties (`propertyModifyCallbacks`) and the
   `observeModifications` exclusions — and maps key path ↔ index once at registration
   (`trackedIndex(of:)` / `trackedPath(_:)`, a per-context cache of the computed static).

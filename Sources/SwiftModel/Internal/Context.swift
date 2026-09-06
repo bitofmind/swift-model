@@ -944,19 +944,23 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// Order of operations, and why:
     ///
     ///  1. **`ObservationRegistrar.access` first, before the value is read.** INVARIANT —
-    ///     do not move it after the projection to shorten anything. `withObservationTracking`
-    ///     is one-shot: a writer on another thread whose `willSet`/`didSet` lands between an
-    ///     unregistered read and a later `access` fires nothing (nobody is registered yet),
-    ///     and the caller keeps a stale value with no invalidation until some unrelated
-    ///     write. Apple's `@Observable` accessors register before returning for the same
-    ///     reason. `ObservationRegistrationGapTests` races one reader against one writer a
-    ///     few thousand times and caught a first cut that registered after the unlock at
-    ///     ~1 % of the read-before-write iterations. The token arrives resolved (`token`,
-    ///     fetched by `Reference.liveContextAndObserverToken` under the Reference's leaf
-    ///     lock in the same window that loaded this context), so registering here costs no
-    ///     lock: the registrar must not be called inside the hierarchy lock (it doubled the
-    ///     2- and 4-thread cost of the shared-tree contention rows) and the read must not
-    ///     take that lock twice.
+    ///     do not move it after the projection to shorten anything. Apple's
+    ///     `withObservationTracking` records accesses during its body and installs the
+    ///     observers only after the body returns, so a write that lands between a read
+    ///     and the end of the body is missed by Apple's API whatever we do (SwiftModel's
+    ///     own observation paths close that window with the gap shadow; plain
+    ///     `withObservationTracking` cannot). What this order controls is the *width* of
+    ///     that window: a first cut that registered after the unlock measured ~0.9 % of
+    ///     read-before-write rounds stale with no `onChange` in a one-reader/one-writer
+    ///     race, against ~0.03 % — Apple's floor, unchanged from before this change — with
+    ///     the registration first. Apple's `@Observable` accessors register before returning
+    ///     for the same reason. That race is not a unit test (it fails at the floor's rate);
+    ///     this comment is the guard. The token arrives resolved (`token`, fetched by
+    ///     `Reference.liveContextAndObserverToken` under the Reference's leaf lock in the
+    ///     same window that loaded this context), so registering here costs no lock: the
+    ///     registrar must not be called inside the hierarchy lock (it doubled the 2- and
+    ///     4-thread cost of the shared-tree contention rows) and the read must not take
+    ///     that lock twice.
     ///  2. Still outside the lock: memoize-produce short-circuit, the gap shadow's
     ///     `willAccess`, then `activeAccess.willAccess` (whose returned completion runs
     ///     inside the lock after the projection — it consumes the transition override).
