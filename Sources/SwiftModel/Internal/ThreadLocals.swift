@@ -8,8 +8,8 @@ import Foundation
 /// *dynamic* exclusivity enforcement: every read or write calls
 /// `swift_beginAccess`/`swift_endAccess`, which look up the runtime's per-thread access set
 /// and insert into it — ~25 ns each, paid several times per read (two flags in the
-/// `_ModelSourceBox` subscript, three plus the shadow collector in `willAccessDirect`, the
-/// override in `readLocked`) and half a dozen times per observer-less write. That check can
+/// `_ModelSourceBox` subscript, three plus the shadow collector in `trackedRead`, the
+/// override in `trackedRead`) and half a dozen times per observer-less write. That check can
 /// only ever catch an overlapping access on the *same* thread (it is per-thread bookkeeping,
 /// not a race detector). A `ThreadLocals` instance is confined to the thread that owns it,
 /// and none of these fields is ever accessed that way: every scope helper (`withValue`,
@@ -22,7 +22,7 @@ final class ThreadLocals: @unchecked Sendable {
     @exclusivity(unchecked) var postTransactions: [(inout [() -> Void]) -> Void]? = nil
     @exclusivity(unchecked) @usableFromInline var forceDirectAccess = false
     /// Set by the public `withUntrackedModelReads { }` scope. While `true`, the
-    /// `_ModelSourceBox` read subscripts skip `willAccessDirect` entirely (no
+    /// `_ModelSourceBox` read subscripts skip `trackedRead` entirely (no
     /// ObservationRegistrar access, no `ModelAccess.willAccess` dispatch, no child
     /// access stamping) and `willAccessSyntheticPath` / `ModelContext.willAccess`
     /// return early — so reads register no observation dependencies anywhere.
@@ -94,11 +94,11 @@ final class ThreadLocals: @unchecked Sendable {
     /// `withObservationTracking` tracking — even when `isDirty=false` due to a concurrent
     /// `onUpdate` clearing it before this `performUpdate`'s `observe()` runs.
     @exclusivity(unchecked) var isInsideAsyncPerformUpdate = false
-    /// When non-nil, `Context.readLocked` / `Reference.readUntracked` return this value instead of the live
+    /// When non-nil, `Context.trackedRead` / `Reference.readUntracked` return this value instead of the live
     /// model value. Set by `TestAccess.willAccess` in transitions mode so that predicate
     /// evaluation sees the front-of-queue historical value (or the expectedState baseline)
     /// rather than the current live state.
-    /// Consumed by the `willAccess` returned closure, which `readLocked` runs right after the projection.
+    /// Consumed by the `willAccess` returned closure, which `trackedRead` runs right after the projection.
     @exclusivity(unchecked) @usableFromInline var transitionOverrideValue: Any? = nil
     /// Monotonically incrementing counter set when an outer `node.transaction { }` begins.
     /// Each outer transaction gets a new unique ID; nested transactions see the outer ID.
@@ -119,7 +119,7 @@ final class ThreadLocals: @unchecked Sendable {
 
     /// `true` while memoize's **dirty-recompute** path is calling `produce()`
     /// directly (not through `update()`'s `observe()` wrap). Read by
-    /// `Context.willAccessDirect` and `Context.willAccessSyntheticPath` to skip
+    /// `Context.trackedRead` and `Context.willAccessSyntheticPath` to skip
     /// BOTH the swift-model `ModelAccess.willAccess` dispatch and Apple's
     /// `registrar.access(...)` — so reads inside the synchronous dirty recompute
     /// don't leak to whatever outer observation is active (a SwiftUI body's
@@ -143,7 +143,7 @@ final class ThreadLocals: @unchecked Sendable {
     ///
     /// Without this, every read inside the memoize body still fires through the
     /// model value's stamped access (the `accessBox._reference?.access` branch
-    /// of `Context.willAccessDirect`, which `usingActiveAccess(nil)` does NOT
+    /// of `Context.trackedRead`, which `usingActiveAccess(nil)` does NOT
     /// clear). On a debug-tracked view the parent's `ViewAccess` then registers
     /// dependencies for whatever the memoize body touches and the trigger log
     /// attributes those reads to the parent — the very leakage the memoize
@@ -203,7 +203,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// which a write with no observers never does.
     @exclusivity(unchecked) var isLockHeldBackgroundCallsScopeOpen = false
 
-    /// When non-nil, `Context.willAccessDirect` (real `_State` reads) and
+    /// When non-nil, `Context.trackedRead` (real `_State` reads) and
     /// `Context.willAccessGapShadow` (synthetic-path reads: memoize sentinels,
     /// environment/local storage, preferences, the parents relationship) ALSO
     /// dispatch `willAccess` to this collector (in addition to the existing

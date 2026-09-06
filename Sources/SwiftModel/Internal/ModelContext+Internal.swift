@@ -162,7 +162,7 @@ extension Model {
 
 extension ModelContext {
     /// Fires `activeAccess.willAccess` for the given path (AccessCollector / ViewAccess / TestAccess).
-    /// ObservationRegistrar calls for _State paths are handled by `willAccessDirect` (in Context),
+    /// ObservationRegistrar calls for _State paths are handled by `trackedRead` (in Context),
     /// and for synthetic paths (storage/preference/parents) by `willAccessSyntheticPath` (in Context).
     func willAccess<T>(at path: KeyPath<M._ModelState, T>&Sendable) -> (() -> Void)? {
         // Suppress reads happening inside a memoize's async `observe()` body. The

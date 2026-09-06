@@ -476,7 +476,8 @@ final class BackingPathCollector<M: Model>: ModelAccess, @unchecked Sendable {
         super.init(useWeakReference: false)
     }
 
-    override func willAccess<N: Model, T>(from context: Context<N>, at path: KeyPath<N._ModelState, T> & Sendable) -> (() -> Void)? {
+    override func willAccess<N: Model, T>(from context: Context<N>, at path: @autoclosure () -> (KeyPath<N._ModelState, T> & Sendable)) -> (() -> Void)? {
+        let path = path()
         if let typedPath = path as? PartialKeyPath<M._ModelState> {
             paths.insert(typedPath)
         }

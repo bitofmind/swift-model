@@ -227,7 +227,7 @@ public extension ModelNode {
     /// - **withObservationTracking path** (iOS 17+ default): the cache-miss
     ///   branch wraps `produce` in nested `withObservationTracking` +
     ///   `usingActiveAccess(nil)`; the dirty-recompute branch uses the same
-    ///   `isInsideMemoizeProduce` flag, which our `Context.willAccessDirect`
+    ///   `isInsideMemoizeProduce` flag, which our `Context.trackedRead`
     ///   and `Context.willAccessSyntheticPath` dispatchers check before
     ///   firing either swift-model's `ModelAccess.willAccess` or Apple's
     ///   `registrar.access(...)`.
@@ -419,7 +419,7 @@ private final class RegistrarDetector: ModelAccess, @unchecked Sendable {
         super.init(useWeakReference: false)
     }
 
-    override func willAccess<M: Model, T>(from context: Context<M>, at path: KeyPath<M._ModelState, T> & Sendable) -> (() -> Void)? {
+    override func willAccess<M: Model, T>(from context: Context<M>, at path: @autoclosure () -> (KeyPath<M._ModelState, T> & Sendable)) -> (() -> Void)? {
         if !context.hasObservationRegistrar {
             allHaveRegistrar = false
         }
@@ -525,7 +525,7 @@ private extension ModelNode {
                 // and does NOT re-track. To prevent the inner reads from leaking to
                 // whatever outer observation is currently active (a SwiftUI body's
                 // `withObservationTracking`, a `ViewAccess` from `$model.debug`, etc.)
-                // we set `isInsideMemoizeProduce`, which `Context.willAccessDirect` /
+                // we set `isInsideMemoizeProduce`, which `Context.trackedRead` /
                 // `willAccessSyntheticPath` read to skip BOTH the swift-model
                 // `ModelAccess` dispatch and Apple's `registrar.access(...)` for the
                 // duration of `produce()`.

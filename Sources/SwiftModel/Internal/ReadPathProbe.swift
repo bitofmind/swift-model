@@ -2,10 +2,10 @@ import Foundation
 
 // Measures the read path from *inside* the SwiftModel module, where whole-module
 // optimization can specialize and inline the entire chain (macro accessor →
-// _ModelSourceBox subscript → willAccessDirect → Context subscript). This is the
+// _ModelSourceBox subscript → trackedRead → Context subscript). This is the
 // ceiling for the @inlinable read-chain surface: the delta between this probe and
 // the executable's section 2b numbers is the cost still crossing the module
-// boundary (today: the outlined willAccessDirect call). Consumed only by the
+// boundary (today: the outlined trackedRead call). Consumed only by the
 // SwiftModelBenchmarks executable (section 2e).
 //
 // WASI has no libdispatch (`DispatchTime`), and the probe is only consumed by

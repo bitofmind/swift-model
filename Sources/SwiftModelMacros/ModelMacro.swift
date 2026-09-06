@@ -277,9 +277,10 @@ extension ModelMacro: MemberMacro {
             // Computed rather than `static let`: `PartialKeyPath` is not `Sendable`, and Swift
             // forbids static stored properties in generic types (`_State` is generic whenever
             // the model — or a type enclosing it — is). `_trackedPropertyIndex(of:)` comes from
-            // the `_ModelStateType` default, which scans this array. Nothing on the read/write
-            // path consumes the table yet; the accessor's `@_ModelTracked(index, count:)` argument
-            // is the same declaration-order index and is where a literal could be passed later.
+            // the `_ModelStateType` default, which scans this array. The accessors pass the same
+            // declaration-order index (`@_ModelTracked(index, count:)`) as a literal to the
+            // `_ModelSourceBox` read/write subscripts, and `Context` builds this array once per
+            // context to map between the two (`trackedPath(_:)` / `trackedIndex(of:)`).
             let trackedKeyPaths = trackedMutableVars.compactMap { member -> String? in
                 guard let identifier = member.identifier,
                       let binding = member.bindings.first,

@@ -369,7 +369,8 @@ struct MemoizeDirtyObservationTests {
                 super.init(useWeakReference: false)
             }
             
-            override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
+            override func willAccess<M: Model, Value>(from context: Context<M>, at path: @autoclosure () -> (KeyPath<M._ModelState, Value> & Sendable)) -> (() -> Void)? {
+                let path = path()
                 // Register onModify callback (this is what ViewAccess does for SwiftUI)
                 cancellable = context.onModify(for: path) { [weak self] finished, _ in
                     guard let self else { return {} }

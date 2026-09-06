@@ -40,7 +40,7 @@ public final class ModelTester<M: Model> {
             // but after _updateContext they're always read from _stateHolder.state via the
             // .reference-source subscript, so staleness doesn't matter.
             // Using .reference source (not context.model's .live source) ensures reading
-            // tracked properties triggers willAccessDirect → TestAccess.willAccess, which is
+            // tracked properties triggers trackedRead → TestAccess.willAccess, which is
             // required for exhaustivity tracking (consuming recorded valueUpdates).
             var m = access.lock { access.lastState }
             m._updateContext(ModelContextUpdate(ModelContext(context: access.context)))

@@ -253,7 +253,7 @@ public extension Binding {
 /// ## `debug:` attribution coverage — synchronous vs. captured-closure reads
 ///
 /// `ModelScope.body` wraps `content` in `usingActiveAccess(access)`. The
-/// access dispatch in `Context.willAccessDirect` resolves to
+/// access dispatch in `Context.trackedRead` resolves to
 /// `ModelAccess.active ?? stampedAccess` — so the thread-local active
 /// access **takes precedence** over the model's stamped access. On both
 /// the iOS 16 (`AccessCollector`) path and the iOS 17+ (`ObservationRegistrar`)
@@ -619,7 +619,8 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
     }
 #endif
 
-    override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
+    override func willAccess<M: Model, Value>(from context: Context<M>, at path: @autoclosure () -> (KeyPath<M._ModelState, Value> & Sendable)) -> (() -> Void)? {
+        let path = path()
         guard !ModelAccess.isInModelTaskContext else {
             return nil
         }
