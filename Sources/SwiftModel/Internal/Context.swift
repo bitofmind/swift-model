@@ -1025,6 +1025,24 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             }
         }
 
+        // SPIKE: the live, non-overridden read projects the published snapshot WITHOUT the
+        // hierarchy lock (the registrar access above still precedes it — the invariant in
+        // the doc comment is intact). `unprotectedIsDestructed` is read here without the
+        // lock (spike shortcut: a plain enum store; the destructed path below still locks).
+        // `callback` (the TestAccess / collector completion) used to run inside the lock;
+        // it now runs after the projection outside it — it re-reads through `_modelSeed`,
+        // which locks on its own, so under a concurrent writer its logged value can be
+        // newer than the one returned. Test-mode bookkeeping only.
+        if !unprotectedIsDestructed, tl.transitionOverrideValue == nil {
+            let value: T = reference.readSnapshot(get) {
+                lock.lock()
+                defer { lock.unlock() }
+                return get(reference.state)
+            }
+            callback?()
+            return value
+        }
+
         lock.lock()
         let value: T
         if unprotectedIsDestructed {
@@ -2174,6 +2192,40 @@ extension Context {
     final class Reference: @unchecked Sendable {
         let modelID: ModelID
         private let lock = NSRecursiveLock()
+        /// SPIKE: the snapshot publisher. Stored typed (see the note on its class for why the
+        /// package floor had to move to macOS 15 for that).
+        private let _pub = _StateSnapshotPublisher<M._ModelState>()
+
+        /// SPIKE publish point: called after EVERY mutation of `state` (the setter and the
+        /// `_modify` accessor below). While no context is live nothing is published and this
+        /// is one relaxed load; once `setContext` has published, every write copies the
+        /// working copy into a fresh box. Writes to a live model always hold the hierarchy
+        /// lock, so publishes for one Reference are serialised by it.
+        ///
+        /// Read-your-own-writes falls out of this placement: no user code runs between a
+        /// store into the working copy and its publish (the `_modify` yields a LOCAL and
+        /// writes back afterwards — see `Context.beginDirectWrite`), so a read on the writing
+        /// thread at any point where user code can run sees the same value in the snapshot
+        /// as in the working copy. The price is that a `node.transaction { a = 1; b = 2 }`
+        /// is no longer atomic for a CONCURRENT reader: it can observe `a == 1, b == old`.
+        /// Publishing at the end of the outermost transaction instead would restore that
+        /// and needs a thread-local "open write" marker so the writer reads its working copy.
+        @inline(__always)
+        private func _publishIfLive() {
+            if _pub.isPublished {
+                _pub.publish(_stateStorage.pointee)
+            }
+        }
+
+        /// SPIKE read side: `get` projected out of the published snapshot; `unpublished` (the
+        /// caller's locked path) when no snapshot is published, which cannot happen for a
+        /// caller holding the live Context (publish/unpublish move in lockstep with
+        /// `_context`, and `clearStateForGeneration` runs only from `Context.deinit`).
+        @usableFromInline
+        @inline(__always)
+        func readSnapshot<T>(_ get: (M._ModelState) -> T, unpublished: () -> T) -> T {
+            _pub.read(get, unpublished: unpublished)
+        }
         @exclusivity(unchecked) private weak var _context: Context<M>?
         /// Strong reference to the live context's hierarchy lock, maintained in exact
         /// lockstep with `_context` (set in `setContext`, cleared in
@@ -2252,10 +2304,12 @@ extension Context {
                 } else {
                     _adoptState(newValue)
                 }
+                _publishIfLive()
             }
             _modify {
                 if !_hasMaterializedState { _materializeState() }
                 yield &_stateStorage.pointee
+                _publishIfLive()
             }
         }
         /// True after `clear()`. Reads from a cleared reference will reportIssue and
@@ -2521,6 +2575,17 @@ extension Context {
             lock.unlock()
             guard let hierarchyLock else { return nil }
 
+            // SPIKE: a live, non-destructed, non-overridden read projects the published
+            // snapshot without the hierarchy lock. Destructed (last-seen) reads keep the
+            // locked path; so does a Reference with no snapshot (pre-macOS-15).
+            if !isDestructed, tl.transitionOverrideValue == nil {
+                return readSnapshot(get) {
+                    hierarchyLock.lock()
+                    defer { hierarchyLock.unlock() }
+                    return get(state)
+                }
+            }
+
             hierarchyLock.lock()
             let value: T
             if isDestructed {
@@ -2713,6 +2778,8 @@ extension Context {
                 }
                 _context = context
                 _hierarchyLock = context.lock
+                // SPIKE: first publish — from here on every `state` mutation republishes.
+                _pub.publish(state)
                 return _generation
             }
         }
@@ -2727,6 +2794,8 @@ extension Context {
                     _liveContextCount = 0
                     _context = nil  // Eliminate race: _context must be nil whenever _liveContextCount == 0
                     _hierarchyLock = nil // Kept in lockstep with `_context` — see its doc comment.
+                    // SPIKE: no live context → no snapshot; reads fall back to the locked path.
+                    _pub.unpublish()
                 }
             }
         }

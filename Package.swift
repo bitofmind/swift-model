@@ -110,7 +110,10 @@ let isWasiBuild = ProcessInfo.processInfo.environment["SWIFTPM_TARGET_WASI"] == 
 
 let package = Package(
     name: "swift-model",
-    platforms: [.macOS(.v11), .iOS(.v14), .tvOS(.v14), .watchOS(.v6), .macCatalyst(.v13)],
+    // SPIKE (not for merge): raised from macOS 11 / iOS 14 / tvOS 14 / watchOS 6 so
+    // `Reference` can store a `Synchronization.Atomic`-backed snapshot publisher typed and
+    // un-gated. A real implementation keeps the old floor and needs a fallback (see report).
+    platforms: [.macOS(.v15), .iOS(.v18), .tvOS(.v18), .watchOS(.v11), .macCatalyst(.v18)],
     products: [
         .library(
             name: "SwiftModel",
