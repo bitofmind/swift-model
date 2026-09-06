@@ -1169,6 +1169,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 reference.observerToken(of: self, index),
                 to: KeyPath<_StateObserver<M._ModelState>, AnyHashable>.self
             )
+            // Coalescing key for `MainCallQueue.notifyRegistrar` (off-main / batched
+            // branches only): the token is per (context, property) already, but the
+            // queue keys on (contextID, token identity) so it never has to hash a key path.
+            let contextID = UInt(bitPattern: ObjectIdentifier(self))
             let useMain = useMainThreadObservation
             // Resolved once per write — the box → pair → background chain is immutable and
             // non-nil whenever `useObservationRegistrar` holds, so one borrowed read serves
