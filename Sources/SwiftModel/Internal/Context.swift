@@ -2627,21 +2627,35 @@ extension Context {
         @usableFromInline
         func readUntracked<T>(tl: ThreadLocals, get: (M._ModelState) -> T) -> T? {
             lock.lock()
-            let hierarchyLock = _hierarchyLock
+            let isLive = _hierarchyLock != nil
             let isDestructed = _isDestructed
             lock.unlock()
-            guard let hierarchyLock else { return nil }
+            guard isLive else { return nil }
 
             // SPIKE: a live, non-destructed, non-overridden read projects the published
             // snapshot without the hierarchy lock. Destructed (last-seen) reads keep the
             // locked path; so does a Reference with no snapshot (pre-macOS-15).
+            //
+            // The snapshot path must not LOAD `_hierarchyLock` into a local: that is a
+            // strong reference to the tree-shared lock object, and the retain/release pair
+            // the load costs is an RMW on one refcount line shared by every child of the
+            // tree — which serialised the "children of ONE tree" rows after the lock itself
+            // was gone (c2 "retain/release ONE shared object": 5 → 2545 ns/op at 8T).
             if tl.writeDepth == 0, !isDestructed, tl.transitionOverrideValue == nil {
                 return readSnapshot(get) {
+                    lock.lock()
+                    let hierarchyLock = _hierarchyLock
+                    lock.unlock()
+                    guard let hierarchyLock else { return get(state) }
                     hierarchyLock.lock()
                     defer { hierarchyLock.unlock() }
                     return get(state)
                 }
             }
+            lock.lock()
+            let hierarchyLock = _hierarchyLock
+            lock.unlock()
+            guard let hierarchyLock else { return nil }
 
             hierarchyLock.lock()
             let value: T
