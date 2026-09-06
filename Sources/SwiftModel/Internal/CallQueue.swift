@@ -61,7 +61,7 @@ private struct CallQueueState {
 /// **Ordering decision.** A pair that joined the bundle *after* some general
 /// closure was enqueued is delivered *before* that closure — earlier than strict
 /// FIFO would. That is safe because the pair is only ever enqueued after its
-/// mutation has been written back (see `Context.invokeDidModifyDirect`): by the
+/// mutation has been written back (see `Context.finishWrite`): by the
 /// time anything on this queue runs, every state change the bundle describes is
 /// already visible, so no closure can observe a stale value by running after the
 /// pair instead of before it. Delivering the bundle any later (e.g. at the
@@ -422,11 +422,12 @@ struct MainCallQueue: @unchecked Sendable {
     /// the first pair fired (e.g. an `onChange` that synchronously re-observes).
     /// Such a registration reads the model when it is made, and because every
     /// coalesced write was applied *before* its pair was enqueued (the pair is
-    /// built after the write-back, under the context lock), that read already
+    /// built after the write-back — under the context lock on the batched path,
+    /// just after its release otherwise), that read already
     /// sees the state of every write in the bundle. A further notification would
     /// report no change it has not already observed. The same argument is what
     /// makes the off-main "bundle after the mutation" ordering in
-    /// `invokeDidModifyDirect` sound in the first place.
+    /// `Context.finishWrite` sound in the first place.
     ///
     /// Keyed by key-path *identity*: the observer key paths are cached per
     /// (context, property) (`_stateObserverKP`), so the same object arrives on

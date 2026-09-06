@@ -180,7 +180,7 @@ extension ModelContext {
     }
 
     /// Fires `activeAccess.didModify` and drains the main call queue.
-    /// ObservationRegistrar calls for _State paths are handled by `invokeDidModifyDirect` (in Context),
+    /// ObservationRegistrar calls for _State paths are handled by `finishWrite` (in Context),
     /// and for synthetic paths (storage/preference/parents) by `invokeDidModifySyntheticPath` (in Context).
     ///
     /// Returns the active-access callback (from TestAccess/AccessCollector) without executing it.

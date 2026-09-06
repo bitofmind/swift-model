@@ -182,7 +182,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     // used for dependency storage so we re-use the existing struct.
     //
     // Each didModify call captures `context.modificationCount` (already post-incremented
-    // before invokeDidModifyDirect is called) as `mySeqNum`. The post-lock closure then
+    // before `Context.finishWrite` captures the callback) as `mySeqNum`. The post-lock closure then
     // checks — under the TestAccess lock — whether a later modification (higher seqNum) has
     // already written for this (context, path) pair. If so, the earlier closure's write is
     // discarded, preventing a stale value from permanently corrupting `lastState`.
@@ -792,7 +792,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
         // Capture a monotonically-increasing sequence number for this modification.
         // AnyContext.didModify() (which increments _modificationCount) is called immediately
-        // before invokeDidModifyDirect, so modificationCount already reflects this write.
+        // before `Context.finishWrite` captures this callback, so modificationCount already reflects this write.
         // The post-lock closure uses mySeqNum — under the TestAccess lock — to reject stale
         // writes: if a LATER modification (higher seqNum) has already written lastState for
         // this (context, path) pair, this earlier closure's write is silently discarded.

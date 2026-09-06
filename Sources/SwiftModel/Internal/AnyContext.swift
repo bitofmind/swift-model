@@ -190,7 +190,7 @@ class AnyContext: @unchecked Sendable {
     /// - Non-Apple (Linux/Android/WASM): always disabled. There is no `Observable`-consuming UI
     ///   framework outside Apple, and on Android `@MainActor` work never executes (Android's
     ///   `Looper` doesn't drain libdispatch's main queue), so any `mainObservationRegistrar`
-    ///   notification queued by `invokeDidModifyDirect`'s background path would be silently
+    ///   notification queued by `Context.finishWrite`'s off-main path would be silently
     ///   dropped — breaking `Observed { ... }` and similar consumers.
     let useMainThreadObservation: Bool
 
@@ -225,6 +225,14 @@ class AnyContext: @unchecked Sendable {
         /// call sites. `@exclusivity(unchecked)`: every access is a plain get or set, so no
         /// same-thread overlap is possible for the dynamic check to catch.
         @exclusivity(unchecked) nonisolated(unsafe) var _main: ObservationRegistrar?
+        /// `_main != nil`, kept as a plain `Bool` beside it and published by the same
+        /// locked write. `Optional<ObservationRegistrar>` is a resilient enum, so even
+        /// `!= nil` on it is an unspecialised generic call that copies and destroys the
+        /// value through its witness table (~25 % of an observer-less write when it sat
+        /// on the write path); a `Bool` load is what the write path needs. Same
+        /// discipline as `_main`: written once, on the main thread, under the hierarchy
+        /// lock, after `_main` itself.
+        @exclusivity(unchecked) nonisolated(unsafe) var hasMain = false
         init() {
             background = ObservationRegistrar()
         }
@@ -839,18 +847,32 @@ class AnyContext: @unchecked Sendable {
         lock { (_registrarBox as? RegistrarBox)?.pair._main }
     }
 
-    /// `mainObservationRegistrar` for callers that already hold `lock`.
-    ///
-    /// `_main` is published under the hierarchy lock, so a reader holding that lock sees
-    /// it consistently without re-entering it; the `NSRecursiveLock` round-trip in
-    /// `mainObservationRegistrar` (two `objc_msgSend`s and a mutex acquire/release) is
-    /// pure overhead there. Used by `Context.invokeDidModifyDirect`, whose two callers
-    /// both sit between `lock.lock()` and `lock.unlock()`. This is NOT an unlocked
-    /// fast path — see `RegistrarPair._main` — it relies on the caller's lock.
+    /// Whether the main-channel registrar has been created. Must be called with `lock`
+    /// held: `_main` (and `hasMain` beside it) is published under the hierarchy lock, so a
+    /// reader holding that lock sees it consistently without re-entering it — the
+    /// `NSRecursiveLock` round-trip in `mainObservationRegistrar` (two `objc_msgSend`s and
+    /// a mutex acquire/release) is pure overhead there. A `Bool` rather than the registrar
+    /// itself so `Context.finishWrite` can carry the verdict past `lock.unlock()` without
+    /// copying the resilient `ObservationRegistrar` (an opaque value-witness copy plus a
+    /// destroy per write, ~5 % of an observer-less write). This is NOT an unlocked fast
+    /// path — see `RegistrarPair._main` — it relies on the caller's lock.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-    var unprotectedMainObservationRegistrar: ObservationRegistrar? {
-        guard let box = _registrarBox else { return nil }
-        return unsafeDowncast(box, to: RegistrarBox.self).pair._main
+    var unprotectedHasMainObservationRegistrar: Bool {
+        guard let box = _registrarBox else { return false }
+        return unsafeDowncast(box, to: RegistrarBox.self).pair.hasMain
+    }
+
+    /// The main-channel registrar, for a caller that has already observed
+    /// `unprotectedHasMainObservationRegistrar == true` under `lock` (or is on the main
+    /// thread, the sole writer). `_main` is written exactly once — nil → registrar, under
+    /// `lock`, on the main thread — and never again, so a thread that has seen it non-nil
+    /// under the lock is reading an immutable value from then on: the lock acquisition
+    /// ordered the publication before this read, and there is no later write for a race
+    /// to involve. Deliberately lock-free and NOT a general accessor — it traps on the
+    /// `nil` it is documented never to see; see `RegistrarPair._main`.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    var mainObservationRegistrarOnceCreated: ObservationRegistrar {
+        unsafeDowncast(_registrarBox.unsafelyUnwrapped, to: RegistrarBox.self).pair._main.unsafelyUnwrapped
     }
 
     /// Returns the background registrar if observation is enabled, or nil otherwise.
@@ -912,7 +934,10 @@ class AnyContext: @unchecked Sendable {
         guard useMainThreadObservation, isOnMainThread else { return pair.background }
         if let main = pair._main { return main }
         return lock {
-            if pair._main == nil { pair._main = ObservationRegistrar() }
+            if pair._main == nil {
+                pair._main = ObservationRegistrar()
+                pair.hasMain = true
+            }
             return pair._main!
         }
     }

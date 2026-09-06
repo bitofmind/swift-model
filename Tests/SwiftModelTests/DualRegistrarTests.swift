@@ -144,6 +144,47 @@ struct DualRegistrarTests {
         #expect(mainObserverFired.value && backgroundObserverFired.value, "Both registrars should fire synchronously")
     }
 
+    /// The registrar fires after the hierarchy lock is released (`Context.finishWrite`),
+    /// but the same-value short-circuit is still decided under it: a storm of same-value
+    /// writes from several threads must not reach a one-shot observer, and the first real
+    /// change must fire it exactly once. Background observer + background writers, so
+    /// every notification is synchronous on the writing thread and the counts are exact.
+    @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
+    @Test func testConcurrentSameValueWritesAreSilentAndRealChangeFiresOnce() async throws {
+        let model = TestModel().withAnchor()
+        model.value = 7
+
+        let fireCount = LockIsolated(0)
+        await Task.detached {
+            withObservationTracking {
+                _ = model.value
+            } onChange: {
+                fireCount.withValue { $0 += 1 }
+            }
+        }.value
+
+        // Same-value writes from four threads at once — the `isSame` verdict is taken under
+        // the lock and `finishWrite` is never entered, so nothing fires.
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<4 {
+                group.addTask {
+                    for _ in 0..<1_000 { model.value = 7 }
+                }
+            }
+        }
+        #expect(fireCount.value == 0, "same-value writes must not notify")
+        #expect(model.value == 7)
+
+        // One real change from another thread fires the one-shot exactly once.
+        await Task.detached { model.value = 8 }.value
+        #expect(fireCount.value == 1, "a real change fires the one-shot observer once")
+
+        // Further changes after the registration has fired do not add to the count.
+        await Task.detached { model.value = 9 }.value
+        #expect(fireCount.value == 1)
+        #expect(model.value == 9)
+    }
+
     /// Test that memoize works correctly with background observers
     @available(iOS 17, macOS 14, tvOS 17, watchOS 10, *)
     @Test func testMemoizeWithBackgroundObserver() async throws {
@@ -545,7 +586,7 @@ struct DualRegistrarTests {
 /// A generic @Model whose key path objects for `value` are constructed by `_swift_getKeyPath`
 /// at runtime for each specialization. For generic models, Swift does not always intern key
 /// path objects across the getter and setter call sites, so `ObjectIdentifier(statePath)`
-/// gives different values in `willAccessDirect` (getter) vs `invokeDidModifyDirect` (setter).
+/// gives different values in `willAccessDirect` (getter) vs `finishWrite` (setter).
 /// Using `hashValue` (structural equality) for `propID` guarantees they match.
 @Model private struct GenericValueModel<T: Sendable & Equatable> {
     var value: T

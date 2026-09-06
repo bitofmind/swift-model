@@ -223,6 +223,11 @@ func benchPropertyAccessWithObserver() {
     measure("property write (onChange observer)", iterations: 100_000) {
         watcher.trigger &+= 1
     }
+    // The `onChange` reaction runs on the cooperative pool and contends with this loop for
+    // the tree's hierarchy lock, so the ns/op above is only meaningful next to how many of
+    // the 100 k writes the observer actually reacted to (the rest coalesced while it waited).
+    Thread.sleep(forTimeInterval: 0.2)
+    print("  reactions delivered: \(watcher.reactionCount) of 100000 writes")
 
     withExtendedLifetime(watcherAnchor) {}
 }
