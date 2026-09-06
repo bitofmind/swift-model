@@ -29,7 +29,18 @@ import ConcurrencyExtras
 ///
 /// Guarded by `#if canImport(Dispatch)` — the primitives this validates are
 /// Dispatch-backed on Apple/Linux. WASM has neither.
-@Suite("Reactive wait infrastructure — safety-net validation")
+// `.serialized` so these tests never run concurrently *with each other*. Five of
+// them keep a queue busy with a `Thread.sleep(forTimeInterval: 3.0)` item, which
+// blocks a cooperative-pool thread for the whole 3 s (queue items run on the
+// queue's drain Task). On CI's 2–3 core Linux runner the pool is that narrow, so
+// two of those items in flight at once leave no thread for a cancelled waiter to
+// resume on until a sleep ends: `backgroundCallQueue_waitUntilIdle_cancellable`
+// and `…waitForCurrentItems_cancellable`, started 11 lines apart in the same
+// parallel run (PR #66, run 34019077207), both measured a cancel→resume of 6.12 s
+// — two back-to-back sleeps — against their 6 s (2 s × scale 3) hang-detector
+// bound. The bound is a hang detector, not a budget to raise; the lever is the
+// self-inflicted pool starvation, same as `ClockTests`.
+@Suite("Reactive wait infrastructure — safety-net validation", .serialized)
 struct ReactiveWaitInfrastructureTests {
 
     // MARK: - Helpers
