@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.17] — Hot-path performance: index-keyed accessors, lock-free registrar lookups, 10× faster collection reconcile
+
 ### Added
 
 - **Contention / scaling probe in `SwiftModelBenchmarks`** (`--contention`, `--profile "<row>" <threads>`). Reports ns per op *per thread* at 1/2/4/8 threads for reads and writes on distinct trees, on distinct children of one tree, and on one shared model, next to raw lock primitives, shared-object refcount traffic and an actor baseline. It is the measurement behind the read/write-path performance work that follows: on an M1 Max, independent trees on 8 threads read 10× slower per thread than on one (process-global key-path retain/release, the observer-KP stripe lock, a coroutine-frame malloc and a weak load per read), and writes to different children of one tree serialise on the hierarchy lock at ~7× per write on 4 threads. Runs off the main thread so the MainActor can drain the main-registrar queue as it would in an app.
