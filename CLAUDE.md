@@ -90,8 +90,11 @@ constant for any O(N) traversal in client apps. Key facts:
   subscripts; the key path itself is an `@autoclosure` that only key-path-keyed
   consumers evaluate (`TestAccess`, undo, the gap shadow, the pre-anchor construction
   frame). `Context` keys its per-context tables by that index — the registrar identity
-  tokens (`observerToken(_:)`, lock-protected, created on first use), the `onModify`
-  callbacks on tracked properties (`propertyModifyCallbacks`) and the
+  tokens (`_observerTokens`, guarded by the `Reference` lock, created on first use; a
+  tracked read fetches its token in the same `Reference`-lock window that loads the
+  context and **registers with the registrar BEFORE the locked value read** — see the
+  invariant at `Context.trackedRead` and `ObservationRegistrationGapTests`), the
+  `onModify` callbacks on tracked properties (`propertyModifyCallbacks`) and the
   `observeModifications` exclusions — and maps key path ↔ index once at registration
   (`trackedIndex(of:)` / `trackedPath(_:)`, a per-context cache of the computed static).
   Synthetic paths (environment, preferences, memoize sentinels, parents) stay

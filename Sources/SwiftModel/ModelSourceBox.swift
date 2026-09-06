@@ -579,10 +579,12 @@ extension _ModelSourceBox {
     // Shape shared by all four: `threadLocals` is resolved ONCE (one `pthread_getspecific`)
     // and passed down; the `withUntrackedModelReads` branch is tested BEFORE the weak
     // `reference.context` load and served by `Reference.readUntracked`, which needs
-    // nothing from the Context object; the tracked branch resolves the Context once and
-    // hands it the index and projection. `readUntracked` returns nil under exactly the
-    // condition `reference.context` is nil (`_hierarchyLock` is kept in lockstep with
-    // `_context`), and the fallback in both cases is `_directRead`.
+    // nothing from the Context object; the tracked branch resolves the Context AND the
+    // property's registrar token in one Reference-lock window
+    // (`liveContextAndObserverToken`) and hands both to `trackedRead`, which registers the
+    // access before it reads (see its doc comment). `readUntracked` returns nil under
+    // exactly the condition `liveContextAndObserverToken` does (`_hierarchyLock` is kept in
+    // lockstep with `_context`), and the fallback in both cases is `_directRead`.
 
     @_disfavoredOverload
     public subscript<T>(read index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> T, path path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
@@ -597,8 +599,8 @@ extension _ModelSourceBox {
                 if let value = reference.readUntracked(tl: tl, get: get) { return value }
                 return _directRead(get, path: path)
             }
-            if let context = reference.context {
-                return context.trackedRead(index, accessBox: accessBox, tl: tl, get: get, path: path())
+            if let live = reference.liveContextAndObserverToken(index) {
+                return live.0.trackedRead(index, token: live.1, accessBox: accessBox, tl: tl, get: get, path: path())
             }
             return _directRead(get, path: path)
         }
@@ -616,9 +618,9 @@ extension _ModelSourceBox {
                 if let value = reference.readUntracked(tl: tl, get: get) { return value }
                 return _directRead(get, path: path)
             }
-            if let context = reference.context {
+            if let live = reference.liveContextAndObserverToken(index) {
                 let access = accessBox._reference?.access ?? ModelAccess.current
-                let value: T = context.trackedRead(index, accessBox: accessBox, tl: tl, get: get, path: path())
+                let value: T = live.0.trackedRead(index, token: live.1, accessBox: accessBox, tl: tl, get: get, path: path())
                 return value.withAccessIfPropagateToChildren(access)
             }
             return _directRead(get, path: path)
@@ -637,10 +639,10 @@ extension _ModelSourceBox {
                 if let value = reference.readUntracked(tl: tl, get: get) { return value }
                 return _directRead(get, path: path)
             }
-            if let context = reference.context {
+            if let live = reference.liveContextAndObserverToken(index) {
                 let access = accessBox._reference?.access ?? ModelAccess.current
                 let deepAccess = access.flatMap { $0.shouldPropagateToChildren ? $0 : nil }
-                let value: T = context.trackedRead(index, accessBox: accessBox, tl: tl, get: get, path: path())
+                let value: T = live.0.trackedRead(index, token: live.1, accessBox: accessBox, tl: tl, get: get, path: path())
                 if let deepAccess {
                     return value.withDeepAccess(deepAccess)
                 }
@@ -668,9 +670,9 @@ extension _ModelSourceBox {
                 if let value = reference.readUntracked(tl: tl, get: get) { return value }
                 return _directRead(get, path: path)
             }
-            if let context = reference.context {
+            if let live = reference.liveContextAndObserverToken(index) {
                 let access = accessBox._reference?.access ?? ModelAccess.current
-                let value: C = context.trackedRead(index, accessBox: accessBox, tl: tl, get: get, path: path())
+                let value: C = live.0.trackedRead(index, token: live.1, accessBox: accessBox, tl: tl, get: get, path: path())
                 guard let access, access.shouldPropagateToChildren else { return value }
                 var result = value
                 for index in result.indices {

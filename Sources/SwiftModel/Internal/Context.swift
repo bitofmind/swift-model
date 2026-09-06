@@ -63,10 +63,21 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     /// Per-context registrar identity tokens, one slot per tracked property
-    /// (`M._ModelState._trackedPropertyCount`), created on first use under `lock`. The
-    /// table itself is allocated on the first token, not in `init`: a context that is
-    /// never observed (children walked by a scan, short-lived hierarchies) pays nothing,
-    /// and the eager allocation showed as +1–2 % on the activation benchmarks.
+    /// (`M._ModelState._trackedPropertyCount`), created on first use. The table itself is
+    /// allocated on the first token, not in `init`: a context that is never observed
+    /// (children walked by a scan, short-lived hierarchies) pays nothing, and the eager
+    /// allocation showed as +1–2 % on the activation benchmarks.
+    ///
+    /// **Guarded by `reference.lock`, not by the hierarchy `lock`.** A tracked read must
+    /// register its access with the registrar BEFORE it projects the value under the
+    /// hierarchy lock (see `trackedRead`), so it needs the token before that lock is taken
+    /// — and it must not take the hierarchy lock twice, nor call the registrar inside it.
+    /// The Reference's own lock is a leaf lock the read already takes to load `_context`;
+    /// `Reference.liveContextAndObserverToken(_:)` resolves both in that one window. The
+    /// write side (`invokeDidModifyDirect`, hierarchy lock held) takes `reference.lock`
+    /// for its fetch — the established AnyContext.lock → Reference.lock order. Per tree,
+    /// so no cross-tree contention: the old global cache's stripe lock was the same shape
+    /// shared by every tree in the process.
     ///
     /// The `ObservationRegistrar` identifies what was accessed or changed by a key-path
     /// object, and with one registrar pair shared by the whole tree that object has to be
@@ -81,7 +92,8 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     ///
     /// Stored as `AnyObject?` to keep the `@available` off the stored property; every
     /// non-nil element is a `KeyPath<_StateObserver<M._ModelState>, AnyHashable>` (see
-    /// `observerToken(_:)`). `@exclusivity(unchecked)`: lock-protected, and never held open.
+    /// `_observerTokenUnderReferenceLock(_:)`). `@exclusivity(unchecked)`: lock-protected,
+    /// and never held open.
     @exclusivity(unchecked) private var _observerTokens: [AnyObject?] = []
 
     /// `M._ModelState._trackedPropertyKeyPaths`, built on first use under `lock` and kept:
@@ -118,17 +130,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     }
 
     /// The registrar identity token for the tracked property at `index`, created on first
-    /// use. Must be called with `lock` held (see `_observerTokens`).
-    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-    func observerToken(_ index: Int) -> KeyPath<_StateObserver<M._ModelState>, AnyHashable> {
-        // Every non-nil slot is written by `observerTokenObject` and nowhere else.
-        unsafeDowncast(observerTokenObject(index), to: KeyPath<_StateObserver<M._ModelState>, AnyHashable>.self)
-    }
-
-    /// `observerToken(_:)` as the stored `AnyObject`, for a caller whose locked region has no
-    /// availability scope (`trackedRead`). Only reached when `useObservationRegistrar`, which
-    /// is only ever true on OS versions that have the registrar. Must be called with `lock` held.
-    func observerTokenObject(_ index: Int) -> AnyObject {
+    /// use, as the stored `AnyObject` (a `KeyPath<_StateObserver<M._ModelState>, AnyHashable>`;
+    /// callers `unsafeDowncast` inside their own availability scope). Only reached when
+    /// `useObservationRegistrar`, which is only ever true on OS versions that have the
+    /// registrar. **Must be called with `reference.lock` held** — see `_observerTokens`;
+    /// `Reference.liveContextAndObserverToken(_:)` / `Reference.observerToken(of:_:)` are
+    /// the two callers and take it.
+    func _observerTokenUnderReferenceLock(_ index: Int) -> AnyObject {
         if _observerTokens.isEmpty {
             _observerTokens = Array(repeating: nil, count: M._ModelState._trackedPropertyCount)
         } else if let token = _observerTokens[index] {
@@ -935,23 +943,28 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     ///
     /// Order of operations, and why:
     ///
-    ///  1. Outside the lock: memoize-produce short-circuit, the gap shadow's `willAccess`,
-    ///     then `activeAccess.willAccess` (whose returned completion runs inside the lock
-    ///     after the projection — it consumes the transition override). These may take
-    ///     other locks (`TestAccess.lock`, a collector's), so they stay in front of ours:
-    ///     the lock order `TestAccess.lock → context.lock` the write side matches.
-    ///  2. Under the lock: the projection, the per-context registrar token
-    ///     (`observerToken(_:)` is lock-protected, and the read is already inside the locked
-    ///     scope, so resolving it costs no extra acquisition), then `callback`, then unlock.
-    ///     The critical section is exactly what it was — projection plus callback — plus one
-    ///     array load: the shared-tree rows of the contention probe (children of ONE tree,
-    ///     ONE shared model) serialise on this lock, and a first cut that called the
-    ///     registrar inside it doubled their 2- and 4-thread cost.
-    ///  3. After unlock: `ObservationRegistrar.access` with the token. It used to run before
-    ///     the lock and before `activeAccess.willAccess`; moving it after both is invisible
-    ///     to every observer — `access` appends to the current `withObservationTracking`
-    ///     scope's thread-local access list and takes no lock, calls no user code and fires
-    ///     nothing, and the list is a set consulted only when the scope ends.
+    ///  1. **`ObservationRegistrar.access` first, before the value is read.** INVARIANT —
+    ///     do not move it after the projection to shorten anything. `withObservationTracking`
+    ///     is one-shot: a writer on another thread whose `willSet`/`didSet` lands between an
+    ///     unregistered read and a later `access` fires nothing (nobody is registered yet),
+    ///     and the caller keeps a stale value with no invalidation until some unrelated
+    ///     write. Apple's `@Observable` accessors register before returning for the same
+    ///     reason. `ObservationRegistrationGapTests` races one reader against one writer a
+    ///     few thousand times and caught a first cut that registered after the unlock at
+    ///     ~1 % of the read-before-write iterations. The token arrives resolved (`token`,
+    ///     fetched by `Reference.liveContextAndObserverToken` under the Reference's leaf
+    ///     lock in the same window that loaded this context), so registering here costs no
+    ///     lock: the registrar must not be called inside the hierarchy lock (it doubled the
+    ///     2- and 4-thread cost of the shared-tree contention rows) and the read must not
+    ///     take that lock twice.
+    ///  2. Still outside the lock: memoize-produce short-circuit, the gap shadow's
+    ///     `willAccess`, then `activeAccess.willAccess` (whose returned completion runs
+    ///     inside the lock after the projection — it consumes the transition override).
+    ///     These may take other locks (`TestAccess.lock`, a collector's), so they stay in
+    ///     front of ours: the lock order `TestAccess.lock → context.lock` the write side
+    ///     matches.
+    ///  3. Under the lock: the projection, then `callback`, then unlock — the critical
+    ///     section is exactly what it was.
     ///
     /// A plain getter rather than a `_read` coroutine, on purpose: the projection lands in
     /// a local before anything else happens, so the dynamic exclusivity access on
@@ -962,9 +975,8 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// `tl` is the caller's already-resolved `threadLocals`: one `pthread_getspecific`
     /// per read, passed down rather than re-fetched at every flag.
     @usableFromInline
-    func trackedRead<T>(_ index: Int, accessBox: _ModelAccessBox, tl: ThreadLocals, get: (M._ModelState) -> T, path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
+    func trackedRead<T>(_ index: Int, token: AnyObject?, accessBox: _ModelAccessBox, tl: ThreadLocals, get: (M._ModelState) -> T, path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
         var callback: (() -> Void)? = nil
-        var registerAccess = false
         // Skip every observer while memoize's dirty-recompute is running `produce()` —
         // its reads must not leak to whatever outer observation is currently active
         // (SwiftUI body's `withObservationTracking`, a `ViewAccess` from `$model.debug`,
@@ -977,7 +989,15 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             let access = accessBox._reference?.access ?? ModelAccess.current
             let activeAccess = cachedActive ?? access
 
-            registerAccess = useObservationRegistrar && !(tl.isInsideAsyncPerformUpdate && cachedActive != nil)
+            // 1. Register the access — BEFORE the read (see the invariant above). `token` is
+            // nil exactly when `useObservationRegistrar` is false.
+            if let token, !(tl.isInsideAsyncPerformUpdate && cachedActive != nil),
+               #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+                currentThreadObservationRegistrar.access(
+                    _StateObserver<M._ModelState>(),
+                    keyPath: unsafeDowncast(token, to: KeyPath<_StateObserver<M._ModelState>, AnyHashable>.self)
+                )
+            }
 
             // Shadow gap-race detector. When non-nil (set by `ObservationTracking.observe()`),
             // dispatch willAccess here too so it can register a synchronous per-(context,
@@ -1018,17 +1038,8 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         } else {
             value = get(reference.state)
         }
-        // `AnyObject?` rather than the key-path type so the stored-token fetch needs no
-        // availability scope inside the locked region; see `_observerTokens`.
-        let token: AnyObject? = registerAccess ? observerTokenObject(index) : nil
         callback?()
         lock.unlock()
-        if let token, #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            currentThreadObservationRegistrar.access(
-                _StateObserver<M._ModelState>(),
-                keyPath: unsafeDowncast(token, to: KeyPath<_StateObserver<M._ModelState>, AnyHashable>.self)
-            )
-        }
         return value
     }
 
@@ -1151,9 +1162,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar {
             let observer = _StateObserver<M._ModelState>()
-            // The per-context identity token for this property (see `_observerTokens`);
-            // `lock` is held here, as `observerToken` requires.
-            nonisolated(unsafe) let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = observerToken(index)
+            // The per-context identity token for this property (see `_observerTokens`),
+            // fetched under the Reference's leaf lock — hierarchy lock → Reference lock is
+            // the established order.
+            nonisolated(unsafe) let observerKP = unsafeDowncast(
+                reference.observerToken(of: self, index),
+                to: KeyPath<_StateObserver<M._ModelState>, AnyHashable>.self
+            )
             let useMain = useMainThreadObservation
             // Resolved once per write — the box → pair → background chain is immutable and
             // non-nil whenever `useObservationRegistrar` holds, so one borrowed read serves
@@ -2435,6 +2450,31 @@ extension Context {
             lock.lock()
             defer { lock.unlock() }
             return _context
+        }
+
+        /// The live context together with its registrar identity token for the tracked
+        /// property at `index` (nil token when the tree has no registrar), or nil when no
+        /// context is live — the tracked read's replacement for `context`. Both are
+        /// resolved in the ONE `lock` window the read already pays to load `_context`, so
+        /// the token costs no extra acquisition, and it is in hand before the hierarchy
+        /// lock is taken: `Context.trackedRead` must register the access before it reads
+        /// the value (see its doc comment). This lock guards `Context._observerTokens`.
+        @usableFromInline
+        func liveContextAndObserverToken(_ index: Int) -> (Context<M>, AnyObject?)? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let context = _context else { return nil }
+            let token: AnyObject? = context.useObservationRegistrar ? context._observerTokenUnderReferenceLock(index) : nil
+            return (context, token)
+        }
+
+        /// The registrar identity token of `context` (which must be a context of this
+        /// Reference) for the property at `index`, for the write side. Takes `lock`; the
+        /// caller holds the hierarchy lock, which is the established order.
+        func observerToken(of context: Context<M>, _ index: Int) -> AnyObject {
+            lock.lock()
+            defer { lock.unlock() }
+            return context._observerTokenUnderReferenceLock(index)
         }
 
         /// The `withUntrackedModelReads` read of `statePath` on a live model, or `nil` when
