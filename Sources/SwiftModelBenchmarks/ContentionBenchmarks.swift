@@ -78,6 +78,22 @@ func buildScenarios() {
     let children = (0..<8).map { list.items[id: $0]! }
     add("c3 tracked read children of ONE tree") { i in let m = children[i]; var s = 0; for _ in 0..<200_000 { s &+= m.value }; blackhole &+= s }
     add("c3 untracked read children of ONE tree") { i in let m = children[i]; var s = 0; withUntrackedModelReads { for _ in 0..<200_000 { s &+= m.value } }; blackhole &+= s }
+    // Diagnostic (snapshot-reads spike): the same children-of-ONE-tree rows, but the child
+    // models are created with filler allocations between them so that their per-Reference
+    // objects (the leaf `NSRecursiveLock`, the state storage) do not land two-per-cache-line
+    // in malloc's size-class bins. If these rows scale and the rows above do not, the
+    // residual serialisation above is false sharing between ADJACENT children, not a lock.
+    var spacedItems: [BenchItem] = []
+    for i in 0..<8 {
+        spacedItems.append(BenchItem(id: i))
+        for _ in 0..<64 { keepAlive.append(NSRecursiveLock()); keepAlive.append(Box()) }
+        keepAlive.append([UInt8](repeating: 0, count: 4096))
+    }
+    let (slist, sla) = BenchList(items: IdentifiedArray(uniqueElements: spacedItems)).returningAnchor()
+    keepAlive.append(sla)
+    let schildren = (0..<8).map { slist.items[id: $0]! }
+    add("c3 tracked read children of ONE tree, spaced") { i in let m = schildren[i]; var s = 0; for _ in 0..<200_000 { s &+= m.value }; blackhole &+= s }
+    add("c3 untracked read children of ONE tree, spaced") { i in let m = schildren[i]; var s = 0; withUntrackedModelReads { for _ in 0..<200_000 { s &+= m.value } }; blackhole &+= s }
     let one = dm[0]
     add("c3 tracked read ONE shared model") { _ in var s = 0; for _ in 0..<200_000 { s &+= one.count }; blackhole &+= s }
     add("c3 untracked read ONE shared model") { _ in var s = 0; withUntrackedModelReads { for _ in 0..<200_000 { s &+= one.count } }; blackhole &+= s }
