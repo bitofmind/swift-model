@@ -129,15 +129,17 @@ class AnyContext: @unchecked Sendable {
     /// the root's explicit overrides with their own `testValue` dep defaults.
     var isDepContext: Bool = false
     /// The `ModelRef` key under which this context is registered in its parent's `children` dict.
-    /// Set by `childContext` when the context is first inserted. Used by `findOrTrackChild` as an
-    /// O(1) fast path: instead of constructing the element key path to do a dict lookup, we look
-    /// up the child's already-stored ModelRef directly via the child's live context pointer.
+    /// Set by `childContext` when the context is first inserted. Used by the hashed fallback of
+    /// `Context.childFastPathLocked` (and by `removeChild`): instead of constructing the element
+    /// key path to do a dict lookup, we look up the child's already-stored ModelRef directly via
+    /// the child's live context pointer.
     ///
-    /// **Thread safety**: both the write (in `childContext`) and the read (in `findOrTrackChild`)
-    /// are guarded by the hierarchy lock AND require that the accessing context shares the same
-    /// lock as this context (`child.lock === self.lock`). Cross-hierarchy accesses are rejected by
-    /// the `existing.lock === self.lock` guard in `findOrTrackChild` and by the matching guard in
-    /// `childContext`, so no concurrent cross-lock read/write of this field can occur.
+    /// **Thread safety**: both the write (in `childContext`) and the read (in
+    /// `childFastPathLocked`) are guarded by the hierarchy lock AND require that the accessing
+    /// context shares the same lock as this context (`child.lock === self.lock`). Cross-hierarchy
+    /// accesses are rejected by the `existing.lock === lock` guard in `childFastPathLocked` and by
+    /// the matching guard in `childContext`, so no concurrent cross-lock read/write of this field
+    /// can occur.
     /// `nonisolated(unsafe)`: locking discipline is enforced at the call sites.
     nonisolated(unsafe) var myModelRef: ModelRef?
 
@@ -508,15 +510,27 @@ class AnyContext: @unchecked Sendable {
         /// are computed without retaining, so they are safe. The theoretical hash-collision risk is
         /// negligible: cursor IDs are strings or typed IDs, making cross-position collisions
         /// virtually impossible in practice.
-        var elementPath: AnyKeyPath
-        var id: AnyHashable
+        let elementPath: AnyKeyPath
+        let id: AnyHashable
+        /// `elementPath.hashValue`, computed once at construction. A key-path hash walks the
+        /// path's component buffer (~100 ns for a two-segment path), and a `ModelRef` is hashed
+        /// and compared on every registry lookup of every element a collection reconcile
+        /// visits — so the walk is paid once per registration instead of several times per
+        /// element per write.
+        private let elementPathHash: Int
+
+        init(elementPath: AnyKeyPath, id: AnyHashable) {
+            self.elementPath = elementPath
+            self.id = id
+            self.elementPathHash = elementPath.hashValue
+        }
 
         static func == (lhs: ModelRef, rhs: ModelRef) -> Bool {
-            lhs.id == rhs.id && lhs.elementPath.hashValue == rhs.elementPath.hashValue
+            lhs.elementPathHash == rhs.elementPathHash && lhs.id == rhs.id
         }
         func hash(into hasher: inout Hasher) {
             hasher.combine(id)
-            hasher.combine(elementPath.hashValue)
+            hasher.combine(elementPathHash)
         }
     }
 
@@ -968,14 +982,57 @@ class AnyContext: @unchecked Sendable {
         modeLifeTime == .destructed
     }
 
+    /// `lifetime` without taking the lock — for callers that already hold this context's
+    /// hierarchy lock (the collection-reconcile fast path checks every existing element's
+    /// child context under the parent's lock, which is the child's lock too).
+    var unprotectedLifetime: ModelLifetime {
+        modeLifeTime
+    }
+
+    /// Identity of the `Reference` this context is backed by (`Context.reference`), stored
+    /// here so the collection-reconcile fast path can match a bucket entry against an
+    /// element's `Reference` without a cast or a Context retain — see
+    /// `Context.childFastPathLocked`. Set once in `Context.init`.
+    var referenceIdentity = ObjectIdentifier(AnyContext.self)
+
+    /// Records this context's position in its parent's `children` bucket — the reconcile
+    /// registration record, kept on the `Reference`; see `Context.Reference._registeredPosition`.
+    /// Overridden by `Context`.
+    func setRegisteredPosition(_ position: Int) { }
+
     func removeChild(_ context: AnyContext, at path: AnyKeyPath, callbacks: inout [() -> Void]) {
-        guard let contexts = children[path], let (modelRef, _) = contexts.first(where: { $0.value === context }) else {
+        guard let bucketIndex = children.index(forKey: path) else {
+            return assertionFailure()
+        }
+        // The child's own registration key resolves it directly; the linear identity scan is
+        // only needed for a child registered here from a different hierarchy (`myModelRef` is
+        // never written across locks — see `childContext`). Each `children.values[bucketIndex]`
+        // read is a transient copy, released before the in-place removal below so that
+        // mutation does not copy the bucket.
+        let entryIndex: Int?
+        if let own = context.myModelRef, let index = children.values[bucketIndex].index(forKey: own), children.values[bucketIndex].values[index] === context {
+            entryIndex = index
+        } else {
+            entryIndex = children.values[bucketIndex].values.firstIndex(where: { $0 === context })
+        }
+        guard let entryIndex else {
             return assertionFailure()
         }
 
-        children[path]?[modelRef] = nil
-        if children[path]?.isEmpty == true {
-            children[path] = nil
+        children.values[bucketIndex].remove(at: entryIndex)
+        if children.values[bucketIndex].isEmpty {
+            children.remove(at: bucketIndex)
+        } else {
+            // The entries after the removed one shifted down: refresh their registration
+            // positions so the next reconcile's fast path still matches them. Same-lock
+            // children only, as for `myModelRef`.
+            let bucket = children.values[bucketIndex]
+            for index in entryIndex..<bucket.count {
+                let child = bucket.values[index]
+                if child.lock === lock {
+                    child.setRegisteredPosition(index)
+                }
+            }
         }
 
         context.removeParent(self, callbacks: &callbacks)

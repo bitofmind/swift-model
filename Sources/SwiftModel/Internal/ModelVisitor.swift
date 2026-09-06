@@ -226,9 +226,9 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
     let containerPath: WritableKeyPath<M, Container>
     let elementPath: WritableKeyPath<Container, Value>
     /// When `true`, the hierarchy lock is known to be already held by the caller (e.g., inside
-    /// `stateTransaction`). The fast path calls `findOrTrackChildLocked` instead of
-    /// `findOrTrackChild`, eliminating O(N) redundant recursive lock re-entries during container
-    /// traversal in `updateContext`.
+    /// `stateTransaction`). The fast path then calls `childFastPathLocked` directly instead of
+    /// taking the lock per element (`childFastPath`), eliminating O(N) redundant recursive lock
+    /// re-entries during container traversal in `updateContext`.
     let hierarchyLockHeld: Bool
 
     init(value: Value, context: Context<M>, containerPath: WritableKeyPath<M, Container>, elementPath: WritableKeyPath<Container, Value>, hierarchyLockHeld: Bool = false) {
@@ -244,43 +244,29 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
 
         let isSelf = path == \Value.self && containerPath == \M.self && elementPath == \Container.self
 
-        // For child models: bail if destructed/frozen (they were removed, don't re-anchor them).
-        // For the top-level model being anchored (isSelf): allow even if destructed — this is the
-        // re-anchoring case (e.g. undo restoring a deleted item, or static testValue across tests).
-        if !isSelf && childModel.lifetime.isDestructedOrFrozenCopy {
-            threadLocals.didReplaceModelWithDestructedOrFrozenCopy = true
-            return
-        }
-
-        // Skip children that are still lazily pending (have a creator but no context yet).
-        // This prevents the second withContextAdded traversal in returningAnchor (and updateContext
-        // re-traversals) from prematurely triggering childContext() → materializeLazyContext(),
-        // which would fire onActivate() before the parent's onActivate() runs.
-        if !isSelf, let childRef = childModel.modelContext.reference, childRef.hasLazyContextCreator {
-            return
-        }
-
-        // Fast path: for non-self children, look up by ID only (no key-path construction).
-        // Inserts the element into `modelRefs` (required for the set-subtraction diff in
-        // `updateContext`) and returns the already-registered child context when found.
-        // If the context is current, all remaining work is skipped — this is the common case for
-        // existing elements during `append`/`remove` mutations on large arrays.
-        //
-        // When `hierarchyLockHeld` is true (called from within `stateTransaction`), we use
-        // `findOrTrackChildLocked` to skip the redundant per-element lock re-entry, eliminating
-        // O(N) recursive NSRecursiveLock acquisitions for the existing-elements fast path.
+        // For child models, one combined check (`childFastPathLocked`):
+        //  • destructed/frozen: bail — they were removed, don't re-anchor them. (For the
+        //    top-level model being anchored, `isSelf`, this is allowed even if destructed —
+        //    the re-anchoring case, e.g. undo restoring a deleted item or a static testValue
+        //    across tests — so `isSelf` skips the whole check.)
+        //  • lazily pending (a creator but no context yet): skip. This prevents the second
+        //    withContextAdded traversal in returningAnchor (and updateContext re-traversals)
+        //    from prematurely triggering childContext() → materializeLazyContext(), which
+        //    would fire onActivate() before the parent's onActivate() runs.
+        //  • registered here with a current context: done — no key-path construction. The
+        //    common case for existing elements during `append`/`remove` on large arrays. A
+        //    child in .live (internal direct-access) mode is NOT skipped — same as
+        //    visitCollection: the context check passes but writes bypass context routing.
+        //  • otherwise fall through to the registration path below.
         if !isSelf {
-            let existing: Context<T>? = hierarchyLockHeld
-                ? context.findOrTrackChildLocked(containerPath: containerPath, childModel: childModel)
-                : context.findOrTrackChild(containerPath: containerPath, childModel: childModel)
-            if let existing {
-                // Do NOT skip when the child is in .live (internal direct-access) mode — same as
-                // visitCollection: the context check passes but writes bypass context routing.
-                if existing === childModel.context, !childModel.modelContext._source._isLive {
-                    return
-                }
-                // Context is registered but the element's modelContext points elsewhere (re-anchoring).
-                // Fall through to the slow path; modelRefs was already updated by findOrTrackChild(Locked).
+            switch context.childFastPath(childModel, at: containerPath, hierarchyLockHeld: hierarchyLockHeld, liveIsStale: true) {
+            case .upToDate, .lazyPending:
+                return
+            case .destructedOrFrozen:
+                threadLocals.didReplaceModelWithDestructedOrFrozenCopy = true
+                return
+            case .needsRegistration:
+                break
             }
         }
 
@@ -335,24 +321,17 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
     /// container can skip all cursor construction (3 heap allocations) for this element.
     ///
     /// Called from `ModelContainer.visit` before `path(id:get:set:)` cursor construction.
-    /// When `hierarchyLockHeld` is `true` (the common path from `updateContext`), uses the
-    /// lock-free `findOrTrackChildLocked`; otherwise acquires the lock via `findOrTrackChild`.
+    /// Destructed/frozen copies and lazily-pending elements are NOT skipped — the slow path
+    /// `visit<T: Model>(path:)` records the diagnostic for the former and the latter must go
+    /// through `childContext` so that onActivate() fires and they participate in the hierarchy.
+    /// A .live (internal direct-access) element is not skipped either: it bypasses context
+    /// routing even when its context reference is correct and needs to be re-anchored so that
+    /// user writes route through the context (observation, locking, undo).
     mutating func shouldSkipElement<T: Model>(element: T, id: AnyHashable) -> Bool {
-        // Guard: destructed/frozen copies are handled in the slow path visit<T:Model>(path:).
-        guard !element.lifetime.isDestructedOrFrozenCopy else { return false }
-        // Lazily-pending elements (have a creator but no context yet) must go through childContext
-        // so that onActivate() fires and they participate in the hierarchy.
-        if let childRef = element.modelContext.reference, childRef.hasLazyContextCreator { return false }
-
-        let existing: Context<T>? = hierarchyLockHeld
-            ? context.findOrTrackChildLocked(containerPath: containerPath, childModel: element)
-            : context.findOrTrackChild(containerPath: containerPath, childModel: element)
-        guard let existing else { return false }
-        // Only skip when the element's modelContext still points to the registered context
-        // AND the element is not in .live (internal direct-access) mode. A .live element bypasses
-        // context routing even when its context reference is correct; it needs to be re-anchored
-        // so that user writes route through the context (observation, locking, undo).
-        return existing === element.modelContext.context && !element.modelContext._source._isLive
+        if case .upToDate = context.childFastPath(element, at: containerPath, hierarchyLockHeld: hierarchyLockHeld, liveIsStale: true) {
+            return true
+        }
+        return false
     }
 
     /// Cursor-free traversal for `MutableCollection` properties.
@@ -422,39 +401,46 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
             }
         }
 
-        for index in value[keyPath: path].indices {
-            let element = value[keyPath: path][index]
+        // Work on a local copy of the collection and write it back only if an element changed:
+        // reading `value[keyPath: path]` is a copy of the collection per access, and writing
+        // through the key path per element is a `_modify` per element.
+        var collection = value[keyPath: path]
+        var didChange = false
+        var index = collection.startIndex
+        let end = collection.endIndex
+        while index != end {
+            let element = collection[index]
 
-            guard !element.lifetime.isDestructedOrFrozenCopy else {
-                threadLocals.didReplaceModelWithDestructedOrFrozenCopy = true
-                continue
-            }
-            if let childRef = element.modelContext.reference, childRef.hasLazyContextCreator {
-                continue
-            }
-
-            // O(1) fast path: element already registered and context is current.
-            let existing: Context<C.Element>? = hierarchyLockHeld
-                ? context.findOrTrackChildLockedForCollection(containerPath: collectionPath, childModel: element)
-                : context.findOrTrackChildForCollection(containerPath: collectionPath, childModel: element)
-            // Do NOT skip when the element is in .live (internal direct-access) mode: it needs its
+            // O(1) fast path: element already registered and context is current. An element in
+            // .live (internal direct-access) mode is NOT skipped (`liveIsStale`): it needs its
             // modelContext transitioned to .regular so that user writes route through the context.
             // This case arises when MakeInitialTransformer transitions pre-anchor elements to .live
             // before Context.init sets the child context — the context check then passes, but the
             // element is still bypassing context routing.
-            if let existing, existing === element.modelContext.context, !element.modelContext._source._isLive { continue }
-
-            // Lazy context: during initial anchor setup, register lazily when option is set.
-            if context.options.contains(.lazyChildContexts) && context.reference.context == nil && element.modelContext.reference?.context == nil {
-                context.registerLazyChildForCollection(containerPath: collectionPath, childModel: element)
-                continue
+            switch context.childFastPath(element, at: collectionPath, hierarchyLockHeld: hierarchyLockHeld, liveIsStale: true) {
+            case .upToDate, .lazyPending:
+                break
+            case .destructedOrFrozen:
+                threadLocals.didReplaceModelWithDestructedOrFrozenCopy = true
+            case .needsRegistration:
+                // Lazy context: during initial anchor setup, register lazily when option is set.
+                if context.options.contains(.lazyChildContexts) && context.reference.context == nil && element.modelContext.reference?.context == nil {
+                    context.registerLazyChildForCollection(containerPath: collectionPath, childModel: element)
+                } else {
+                    let childContext = context.childContextForCollection(containerPath: collectionPath, childModel: element)
+                    if childContext !== element.modelContext.context || element.modelContext._source._isLive {
+                        var registered = element
+                        registered.withContextAdded(context: childContext, containerPath: \.self, elementPath: \.self, includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
+                        registered.modelContext = ModelContext(context: childContext)
+                        collection[index] = registered
+                        didChange = true
+                    }
+                }
             }
-
-            let childContext = context.childContextForCollection(containerPath: collectionPath, childModel: element)
-            if childContext !== element.modelContext.context || element.modelContext._source._isLive {
-                value[keyPath: path][index].withContextAdded(context: childContext, containerPath: \.self, elementPath: \.self, includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
-                value[keyPath: path][index].modelContext = ModelContext(context: childContext)
-            }
+            collection.formIndex(after: &index)
+        }
+        if didChange {
+            value[keyPath: path] = collection
         }
     }
 
@@ -474,8 +460,13 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
             .appending(path: elementPath)
             .appending(path: path)
 
-        for index in value[keyPath: path].indices {
-            let element = value[keyPath: path][index]
+        // Local copy, written back only if an element changed — see `visitCollection`.
+        var collection = value[keyPath: path]
+        var didChange = false
+        var index = collection.startIndex
+        let end = collection.endIndex
+        while index != end {
+            let element = collection[index]
             let id = threadLocals.withForceDirectAccess { element.id }
 
             var elementVisitor = AnchorVisitorForContainerElement(
@@ -487,7 +478,14 @@ struct AnchorVisitor<M: Model, Container: ModelContainer, Value: ModelContainer>
                 hierarchyLockHeld: hierarchyLockHeld
             )
             element.visit(with: &elementVisitor, includeSelf: false)
-            value[keyPath: path][index] = elementVisitor.value
+            if elementVisitor.didChange {
+                collection[index] = elementVisitor.value
+                didChange = true
+            }
+            collection.formIndex(after: &index)
+        }
+        if didChange {
+            value[keyPath: path] = collection
         }
     }
 }
@@ -515,6 +513,11 @@ struct AnchorVisitorForContainerElement<M: Model, C: MutableCollection, T: Model
     /// A copy of the element at traversal time, used as the cursor's fallback `get` value.
     let capturedElement: T
     let hierarchyLockHeld: Bool
+    /// Whether the traversal mutated `value` — the caller writes the element back only then.
+    private(set) var didChange = false
+    /// Whether the traversal took a registration path — the element then needs activating
+    /// after a structural change (see `updateContextForContainerCollection`).
+    private(set) var didRegister = false
     /// Lazily-constructed cursor path (`C → T`). Built at most once per element traversal,
     /// only if `visit<U: ModelContainer>` is called.
     private var _cursorPath: WritableKeyPath<C, T>?
@@ -532,21 +535,19 @@ struct AnchorVisitorForContainerElement<M: Model, C: MutableCollection, T: Model
     mutating func visit<Child: Model>(path: WritableKeyPath<T, Child>) {
         let childModel = value[keyPath: path]
 
-        if childModel.lifetime.isDestructedOrFrozenCopy {
+        // Fast path: element already registered and context is current — no cursor needed.
+        switch context.childFastPath(childModel, at: collectionPath, hierarchyLockHeld: hierarchyLockHeld, liveIsStale: false) {
+        case .upToDate, .lazyPending:
+            return
+        case .destructedOrFrozen:
             threadLocals.didReplaceModelWithDestructedOrFrozenCopy = true
             return
+        case .needsRegistration:
+            break
         }
-        if let childRef = childModel.modelContext.reference, childRef.hasLazyContextCreator { return }
-
-        // Fast path: element already registered and context is current — no cursor needed.
-        let existing: Context<Child>? = hierarchyLockHeld
-            ? context.findOrTrackChildLockedForContainerCollectionModel(
-                collectionPath: collectionPath, childModel: childModel)
-            : context.findOrTrackChildForContainerCollectionModel(
-                collectionPath: collectionPath, childModel: childModel)
-        if let existing, existing === childModel.modelContext.context { return }
 
         // Slow path: create or update child context. No cursor path required — uses \C.self sentinel.
+        didRegister = true
         let childCtx = context.childContextForContainerCollectionModel(
             collectionPath: collectionPath,
             childModel: childModel
@@ -556,6 +557,7 @@ struct AnchorVisitorForContainerElement<M: Model, C: MutableCollection, T: Model
                 context: childCtx, containerPath: \.self, elementPath: \.self,
                 includeSelf: false, hierarchyLockHeld: hierarchyLockHeld)
             value[keyPath: path].modelContext = ModelContext(context: childCtx)
+            didChange = true
         }
     }
 
@@ -566,6 +568,8 @@ struct AnchorVisitorForContainerElement<M: Model, C: MutableCollection, T: Model
         // diff in updateContextForContainerCollection will not clean them up when the element
         // is removed. This limitation only affects nested-ModelContainer-in-ModelContainer cases;
         // the common path (Model children inside a @ModelContainer enum) is handled above.
+        didChange = true
+        didRegister = true
         let cp = cursorPath()
         let composedPath = cp.appending(path: path)
         let fullPath = collectionPath.appending(path: composedPath)

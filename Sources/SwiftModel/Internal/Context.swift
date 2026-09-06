@@ -187,6 +187,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         reference = localModel.modelContext._source._anyReference
         _modelSeed = localModel  // Phase-1 placeholder; updated in phase 2 after withContextAdded.
         super.init(lock: lock, parent: parent, isDepContext: isDepContext)
+        referenceIdentity = ObjectIdentifier(reference)
 
         var dependencyModels: [AnyHashableSendable: ModelDependencies.DepModelEntry] = [:]
         let modelSetupDeps = modelSetup?.dependencies ?? []
@@ -324,6 +325,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // _stateHolder strongly. The generation guard prevents niling state that
         // a newer Context already claimed (re-anchored static dependency models).
         reference.clearStateForGeneration(referenceGeneration)
+    }
+
+    override func setRegisteredPosition(_ position: Int) {
+        reference.setRegisteredPosition(position)
     }
 
     override func onActivate() -> Bool {
@@ -845,7 +850,200 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         model.withContextAdded(context: self, containerPath: \M.self, elementPath: path, includeSelf: true)
     }
 
-    private var modelRefs: Set<ModelRef> = []
+    // MARK: - Reconcile bookkeeping
+    //
+    // Every `updateContext*` entry point (one per container-property write) runs a traversal
+    // that visits each element of the new value, registers the ones without a current context
+    // and, at the end, tears down the registered children the traversal did not see. All of
+    // this happens under the hierarchy lock, so the per-traversal state lives on the context.
+
+    /// The child contexts this traversal has seen — every registered context the fast path
+    /// confirmed as current, plus every context `childContext*` returned — keyed by the
+    /// identity of the context's `Reference` (`AnyContext.referenceIdentity`), which the fast
+    /// path has in hand without loading the context. The removal diff only asks "was this
+    /// registered child visited?", and hashing an `ObjectIdentifier` is a few ns where a
+    /// `ModelRef` costs an `AnyHashable` hash plus a key-path hash. Cleared by each
+    /// `updateContext*` entry point; nested traversals (a container element's own collection
+    /// property) share it, since the enclosing diff is what consumes it.
+    ///
+    /// `@exclusivity(unchecked)` on this and the three bucket-cache fields below: all four are
+    /// only touched under the hierarchy lock, by plain get/set or a `Set.insert` that calls
+    /// nothing back — no `_modify` is ever held open across a call — so the dynamic
+    /// begin/end-access pair (a TLS lookup each) the compiler would otherwise emit on every
+    /// element has nothing to catch. Same argument as `modeLifeTime`.
+    @exclusivity(unchecked) private var seenChildren: Set<ObjectIdentifier> = []
+
+    /// Position of the traversal's `children` bucket, resolved once per traversal instead of
+    /// hashing the container key path (`children[containerPath]`) once per element. Keyed by
+    /// the *identity* of the key-path object the traversal was started with — the object the
+    /// visitor hands down for every element. `reconcileBucketKey` is the stored key object at
+    /// that position, so a bucket that has moved is detected and re-resolved (only
+    /// `removeChild` and teardown remove buckets, neither runs mid-traversal; a bucket created
+    /// mid-traversal by the first registration is appended and shifts nothing).
+    @exclusivity(unchecked) private var reconcileBucketPath: AnyKeyPath?
+    @exclusivity(unchecked) private var reconcileBucketIndex: Int = -1
+    @exclusivity(unchecked) private var reconcileBucketKey: AnyKeyPath?
+
+    /// Runs `body` with the bucket for `path` cached. Save/restore so a traversal nested in
+    /// another (a container element's collection property) leaves the outer cache intact.
+    /// Lock held.
+    private func withReconcileBucket<R>(for path: AnyKeyPath, _ body: () -> R) -> R {
+        let saved = (reconcileBucketPath, reconcileBucketIndex, reconcileBucketKey)
+        reconcileBucketPath = path
+        resolveReconcileBucket(for: path)
+        defer { (reconcileBucketPath, reconcileBucketIndex, reconcileBucketKey) = saved }
+        return body()
+    }
+
+    private func resolveReconcileBucket(for path: AnyKeyPath) {
+        if let index = children.index(forKey: path) {
+            reconcileBucketIndex = index
+            reconcileBucketKey = children.keys[index]
+        } else {
+            reconcileBucketIndex = -1
+            reconcileBucketKey = nil
+        }
+    }
+
+    /// Index of the `children` bucket for `containerPath`, through the traversal cache when
+    /// `containerPath` is the traversal's key-path object. Lock held.
+    private func bucketIndexLocked(for containerPath: AnyKeyPath) -> Int? {
+        guard containerPath === reconcileBucketPath else {
+            return children.index(forKey: containerPath)
+        }
+        if reconcileBucketIndex < 0 || reconcileBucketIndex >= children.count || children.keys[reconcileBucketIndex] !== reconcileBucketKey {
+            // The bucket was created by a registration earlier in this traversal, or moved.
+            resolveReconcileBucket(for: containerPath)
+            guard reconcileBucketIndex >= 0 else { return nil }
+        }
+        return reconcileBucketIndex
+    }
+
+    /// Whether the entry at `position` of the `containerPath` bucket is the context of the
+    /// `Reference` with identity `referenceIdentity` — the registration check of the fast
+    /// path. A positional identity match is exact: a context is only ever in a bucket while
+    /// registered there, and its `Reference` has one live context. Lock held.
+    private func isRegisteredLocked(referenceIdentity: ObjectIdentifier, position: Int, at containerPath: AnyKeyPath) -> Bool {
+        guard let bucketIndex = bucketIndexLocked(for: containerPath) else { return false }
+        return children.values[bucketIndex].values.withUnsafeBufferPointer { entries in
+            position < entries.count && entries[position].referenceIdentity == referenceIdentity
+        }
+    }
+
+    /// Position of `existing`, registered as `modelRef` under `containerPath` here, or nil
+    /// when it is not — the hashed lookup the fast path falls back to when the element's
+    /// registration record does not match (never registered here, registered in another
+    /// parent since, or the record predates a removal that shifted it). Lock held.
+    private func registeredPositionLocked(of existing: AnyContext, as modelRef: ModelRef, at containerPath: AnyKeyPath) -> Int? {
+        guard let bucketIndex = bucketIndexLocked(for: containerPath) else { return nil }
+        let bucket = children.values[bucketIndex]
+        guard let position = bucket.index(forKey: modelRef), bucket.values[position] === existing else { return nil }
+        return position
+    }
+
+    /// The registered children under `path` this traversal did not see — the removed ones.
+    /// Lock held.
+    private func unseenChildren(at path: AnyKeyPath) -> [AnyContext] {
+        guard let bucket = children[path] else { return [] }
+        var removed: [AnyContext] = []
+        for child in bucket.values where !seenChildren.contains(child.referenceIdentity) {
+            removed.append(child)
+        }
+        return removed
+    }
+
+    /// Records a child just appended to the `containerPath` bucket as seen, and stores its
+    /// registration position on its `Reference` when it shares this tree's lock (as for
+    /// `myModelRef` — never written across locks). Lock held.
+    private func didRegisterLocked(_ child: AnyContext, at containerPath: AnyKeyPath) {
+        seenChildren.insert(child.referenceIdentity)
+        if child.lock === lock, let bucketIndex = bucketIndexLocked(for: containerPath) {
+            child.setRegisteredPosition(children.values[bucketIndex].count - 1)
+        }
+    }
+
+    /// Outcome of `childFastPathLocked` for one element.
+    enum ChildFastPath<Child: Model> {
+        /// Registered here under the container path with a current context — nothing to do.
+        case upToDate
+        /// A destructed or frozen copy; the caller records the diagnostic and skips it.
+        case destructedOrFrozen
+        /// Lazily registered with no context yet — skipped, see `registerLazyChild`.
+        case lazyPending
+        /// Needs `childContext*`. `existing` is the element's current context, if any.
+        case needsRegistration(existing: Context<Child>?)
+    }
+
+    /// The per-element check every reconcile traversal starts with. Classifies the element
+    /// from ONE locked read of its `Reference` (`reconcileSnapshot`) — no weak load of the
+    /// context, no context retain, no hashing — then confirms it is registered under
+    /// `containerPath` here by checking the bucket entry at the position its registration
+    /// record names (`Reference._registeredPosition`) for identity. Everything that does not
+    /// pass that check — a new element, one registered elsewhere, one whose record is stale,
+    /// a destructed / frozen / lazily-pending / live-source element — takes the exact former
+    /// classification below: `lifetime`, `hasLazyContextCreator`, `context` and a hashed
+    /// registry lookup, which also refreshes the record. The former sequence cost four lock
+    /// acquisitions, three weak loads and two `ModelRef` hashes per element, every element.
+    ///
+    /// `liveIsStale`: whether an element whose source is `.live` (internal direct access) must
+    /// take the registration path even though its context is current. The anchoring traversals
+    /// need that (`MakeInitialTransformer` can leave elements live); the collection write paths
+    /// never receive live elements and, as before, do not check.
+    ///
+    /// **Lock held** — reads `existing.myModelRef` / `unprotectedLifetime`, which is only safe
+    /// under the hierarchy lock the child shares (`existing.lock === lock`).
+    func childFastPathLocked<Child: Model>(_ child: Child, at containerPath: AnyKeyPath, liveIsStale: Bool) -> ChildFastPath<Child> {
+        let source = child.modelContext._source
+        let reference = source.reference
+        let snapshot = reference.reconcileSnapshot()
+        let referenceIdentity = ObjectIdentifier(reference)
+
+        if !source._isLive, !snapshot.isDestructed, snapshot.snapshotLifetime == nil, !snapshot.hasLazyContextCreator,
+           snapshot.hierarchyLock === lock, snapshot.registeredPosition >= 0,
+           isRegisteredLocked(referenceIdentity: referenceIdentity, position: snapshot.registeredPosition, at: containerPath) {
+            // Registered here, and a registered context is by construction live and not
+            // destructed (`removeChild` precedes `removeParent`; a parent's own teardown
+            // empties `children` first).
+            seenChildren.insert(referenceIdentity)
+            return .upToDate
+        }
+
+        let liveContext = reference.context
+        if !source._isLive {
+            // `Model.lifetime` for a non-live source, with the hierarchy-lock re-entry that
+            // `AnyContext.lifetime` would make elided for a child of this tree.
+            let lifetime: ModelLifetime
+            if let snapshotLifetime = snapshot.snapshotLifetime {
+                lifetime = snapshotLifetime
+            } else if let existing = liveContext {
+                lifetime = existing.lock === lock ? existing.unprotectedLifetime : existing.lifetime
+            } else {
+                lifetime = snapshot.isDestructed ? .destructed : .initial
+            }
+            if lifetime.isDestructedOrFrozenCopy { return .destructedOrFrozen }
+            if snapshot.hasLazyContextCreator { return .lazyPending }
+        }
+        // `modelContext.context`: materialisation can only apply to a live source here — a
+        // pending creator on a non-live element returned `.lazyPending` above.
+        let existing = liveContext ?? (source._isLive ? reference.materializeLazyContext() : nil)
+        if let existing, existing.lock === lock, let modelRef = existing.myModelRef,
+           let position = registeredPositionLocked(of: existing, as: modelRef, at: containerPath) {
+            reference.setRegisteredPosition(position)
+            seenChildren.insert(referenceIdentity)
+            if !(liveIsStale && source._isLive) {
+                return .upToDate
+            }
+        }
+        return .needsRegistration(existing: existing)
+    }
+
+    /// `childFastPathLocked`, taking the hierarchy lock unless the caller already holds it.
+    func childFastPath<Child: Model>(_ child: Child, at containerPath: AnyKeyPath, hierarchyLockHeld: Bool, liveIsStale: Bool) -> ChildFastPath<Child> {
+        if hierarchyLockHeld {
+            return childFastPathLocked(child, at: containerPath, liveIsStale: liveIsStale)
+        }
+        return lock { childFastPathLocked(child, at: containerPath, liveIsStale: liveIsStale) }
+    }
 
     /// Updates contexts for the elements of a `ModelContainer` property.
     ///
@@ -860,16 +1058,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         guard !isDestructed else { return [] }
 
         // Called from stateTransaction.modify — lock already held. No lock { } wrapper needed.
-        let prevChildren = (children[path] ?? [:])
-        let prevRefs = Set(prevChildren.keys)
-
-        modelRefs.removeAll(keepingCapacity: true)
-        // hierarchyLockHeld: true lets AnchorVisitor skip N redundant recursive lock re-entries
-        // for existing elements, using the inlined findOrTrackChildLocked fast path instead.
-        container.withContextAdded(context: self, containerPath: path, elementPath: \.self, includeSelf: false, hierarchyLockHeld: true)
-
-        let oldRefs = prevRefs.subtracting(modelRefs)
-        return oldRefs.map { prevChildren[$0]! }
+        seenChildren.removeAll(keepingCapacity: true)
+        return withReconcileBucket(for: path) {
+            container.withContextAdded(context: self, containerPath: path, elementPath: \.self, includeSelf: false, hierarchyLockHeld: true)
+            return unseenChildren(at: path)
+        }
     }
 
     /// Model-keypath transaction for undo restore of Model/ModelContainer-typed properties.
@@ -1782,11 +1975,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// Defers context creation for a child: stores a factory on its Reference and skips
     /// the `Context.init` + lock work until the child is first accessed.
     ///
-    /// NOTE: We intentionally do NOT insert into `modelRefs` here. `modelRefs` is cleared
-    /// and re-populated on every `updateContext` call, so an upfront insert would be
-    /// discarded immediately. Removal detection only concerns children that have a live
-    /// context (tracked in `children` dict); lazy children with no context have nothing
-    /// to tear down and are simply not re-registered if they disappear from the array.
+    /// NOTE: We intentionally do NOT mark anything as seen here. Removal detection only
+    /// concerns children that have a live context (tracked in `children` dict); lazy children
+    /// with no context have nothing to tear down and are simply not re-registered if they
+    /// disappear from the array.
     func registerLazyChild<C: ModelContainer, Child: Model>(containerPath: WritableKeyPath<M, C>, elementPath: WritableKeyPath<C, Child>, childModel: Child) {
         // Weak self to avoid a retain cycle: the factory closure is stored on the child's
         // Reference which may outlive this parent context.
@@ -1806,9 +1998,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
         return lock {
             let modelRef = ModelRef(elementPath: elementPath, id: childModel.id)
-            modelRefs.insert(modelRef)
 
             if let child = children[containerPath]?[modelRef] as? Context<Child> {
+                seenChildren.insert(child.referenceIdentity)
                 return child
             }
 
@@ -1820,10 +2012,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 // Only update myModelRef for same-hierarchy children (child.lock === self.lock).
                 // Cross-hierarchy children (e.g. re-anchoring into a different test's hierarchy)
                 // must not have their myModelRef overwritten under a foreign lock, as that would
-                // race with findOrTrackChild reading myModelRef under the child's own lock.
+                // race with childFastPathLocked reading myModelRef under the child's own lock.
                 if child.lock === self.lock {
                     child.myModelRef = modelRef
                 }
+                didRegisterLocked(child, at: containerPath)
                 return child
             } else {
                 // Ensure that DependencyValues._current reflects this context's own captured
@@ -1840,67 +2033,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 }
                 children[containerPath, default: [:]][modelRef] = child
                 child.myModelRef = modelRef
+                didRegisterLocked(child, at: containerPath)
                 return child
             }
         }
-    }
-
-    /// Fast-path check used by `AnchorVisitor` during container traversal.
-    ///
-    /// If the child model already has a live context that is registered under `containerPath`
-    /// in this parent, inserts the child's `ModelRef` into `modelRefs` (required for the
-    /// set-subtraction diff in `updateContext`) and returns the registered context.
-    ///
-    /// Returning non-nil with `existing === childModel.context` means the element is fully
-    /// up-to-date — the caller can skip all remaining work, including key-path construction.
-    /// Returning nil (or non-nil but context mismatch) falls through to the full `childContext`
-    /// slow path, which constructs the element key path and registers a new context.
-    ///
-    /// - Complexity: O(1) — uses the child context's stored `myModelRef` key, avoiding any
-    ///   key-path composition (`elementPath.appending(path:)`) for already-registered elements.
-    func findOrTrackChild<C: ModelContainer, Child: Model>(
-        containerPath: WritableKeyPath<M, C>,
-        childModel: Child
-    ) -> Context<Child>? {
-        lock {
-            // Look up the child's live context. If it has a stored modelRef, check whether
-            // it's actually registered under this parent at the given containerPath.
-            guard let existing = childModel.modelContext.context,
-                  // Only use the fast path when the child shares our lock (same hierarchy).
-                  // If locks differ (e.g. re-anchoring, cross-test shared dependency),
-                  // reading `existing.myModelRef` without `existing`'s lock is a data race.
-                  existing.lock === self.lock,
-                  let modelRef = existing.myModelRef,
-                  children[containerPath]?[modelRef] === existing
-            else { return nil }
-            // Found: track in modelRefs so this element is not mistakenly treated as removed.
-            modelRefs.insert(modelRef)
-            return existing
-        }
-    }
-
-    /// Like `findOrTrackChild` but assumes the hierarchy lock is already held by the caller.
-    ///
-    /// Use this instead of `findOrTrackChild` when the hierarchy lock is known to be held
-    /// (e.g., from within `stateTransaction`). This eliminates the redundant re-entrant
-    /// `lock { }` acquisition, saving ~N × 2 × NSRecursiveLock.lock/unlock calls during
-    /// container traversal in `updateContext`.
-    ///
-    /// **Thread safety**: all accessed state (`myModelRef`, `children`, `modelRefs`) is
-    /// protected by the hierarchy lock. This method assumes the caller holds the lock; calling
-    /// it without the lock held is a data race.
-    func findOrTrackChildLocked<C: ModelContainer, Child: Model>(
-        containerPath: WritableKeyPath<M, C>,
-        childModel: Child
-    ) -> Context<Child>? {
-        // No lock { } — hierarchy lock already held by caller.
-        guard let existing = childModel.modelContext.context,
-              existing.lock === self.lock,
-              let modelRef = existing.myModelRef,
-              children[containerPath]?[modelRef] === existing
-        else { return nil }
-        modelRefs.insert(modelRef)
-        return existing
     }
 
     // MARK: - MutableCollection variants (no ModelContainer constraint)
@@ -1932,9 +2068,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         defer { runPostLockCallbacks(postLockCallbacks) }
         return lock {
             let modelRef = ModelRef(elementPath: elementPath, id: childModel.id)
-            modelRefs.insert(modelRef)
 
             if let child = children[containerPath]?[modelRef] as? Context<Child> {
+                seenChildren.insert(child.referenceIdentity)
                 return child
             }
 
@@ -1946,6 +2082,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 if child.lock === self.lock {
                     child.myModelRef = modelRef
                 }
+                didRegisterLocked(child, at: containerPath)
                 return child
             } else {
                 let child = withOwnDependencies {
@@ -1953,40 +2090,10 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 }
                 children[containerPath, default: [:]][modelRef] = child
                 child.myModelRef = modelRef
+                didRegisterLocked(child, at: containerPath)
                 return child
             }
         }
-    }
-
-    /// Fast-path check for `MutableCollection` elements. Mirrors `findOrTrackChild` but
-    /// without the `C: ModelContainer` constraint.
-    func findOrTrackChildForCollection<C: MutableCollection, Child: Model>(
-        containerPath: WritableKeyPath<M, C>,
-        childModel: Child
-    ) -> Context<Child>? where C.Element == Child {
-        lock {
-            guard let existing = childModel.modelContext.context,
-                  existing.lock === self.lock,
-                  let modelRef = existing.myModelRef,
-                  children[containerPath]?[modelRef] === existing
-            else { return nil }
-            modelRefs.insert(modelRef)
-            return existing
-        }
-    }
-
-    /// Like `findOrTrackChildForCollection` but assumes the hierarchy lock is already held.
-    func findOrTrackChildLockedForCollection<C: MutableCollection, Child: Model>(
-        containerPath: WritableKeyPath<M, C>,
-        childModel: Child
-    ) -> Context<Child>? where C.Element == Child {
-        guard let existing = childModel.modelContext.context,
-              existing.lock === self.lock,
-              let modelRef = existing.myModelRef,
-              children[containerPath]?[modelRef] === existing
-        else { return nil }
-        modelRefs.insert(modelRef)
-        return existing
     }
 
     /// Defers context creation for a `MutableCollection` child element.
@@ -2001,47 +2108,74 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
     }
 
-    /// Updates contexts for elements of a `MutableCollection` property that does not
-    /// conform to `ModelContainer`. Mirrors `updateContext(for:at:)` using cursor-free
-    /// index-based traversal.
+    /// Reconciles the child contexts of a `MutableCollection` property that does not conform
+    /// to `ModelContainer` against `collection`, the value being written. Mirrors
+    /// `updateContext(for:at:)` using cursor-free index-based traversal.
+    ///
+    /// Elements whose context is current take the fast path (`childFastPathLocked`) and are
+    /// otherwise untouched; the rest are registered (`childContextForCollection`) and appended
+    /// to `changed`. Those are the only elements whose subtree can hold a not-yet-activated
+    /// context — every path that creates a context activates it before the write returns (the
+    /// single-child write, this one, `materializeLazyContext`, the anchor), and
+    /// `Context.onActivate` recurses through registered children — so the caller activates
+    /// exactly them rather than walking every element's value tree (see `_performCollectionSet`).
+    ///
+    /// Returns the registered children the new value no longer contains, and whether the id
+    /// sequence is unchanged relative to `old` — the same positional `.id` comparison
+    /// `collectionIsSame` makes, folded into this pass so a write walks the collection once
+    /// instead of three times and never boxes an element as `Any`.
     ///
     /// **Must be called with the hierarchy lock held** — same contract as `updateContext`.
     func updateContextForCollection<C: MutableCollection>(
         for collection: inout C,
-        at path: WritableKeyPath<M, C>
-    ) -> [AnyContext] where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
-        guard !isDestructed else { return [] }
-
-        let prevChildren = (children[path] ?? [:])
-        let prevRefs = Set(prevChildren.keys)
-
-        modelRefs.removeAll(keepingCapacity: true)
-
-        for index in collection.indices {
-            let element = collection[index]
-
-            guard !element.lifetime.isDestructedOrFrozenCopy else {
-                threadLocals.didReplaceModelWithDestructedOrFrozenCopy = true
-                continue
+        old: C,
+        at path: WritableKeyPath<M, C>,
+        changed: inout [C.Element]
+    ) -> (removed: [AnyContext], sameStructure: Bool) where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
+        var sameStructure = old.count == collection.count
+        var oldIterator = old.makeIterator()
+        guard !isDestructed else {
+            if sameStructure {
+                sameStructure = zip(collection, old).allSatisfy { $0.id == $1.id }
             }
-            if let childRef = element.modelContext.reference, childRef.hasLazyContextCreator { continue }
-
-            // O(1) fast path: element already registered and context is current.
-            let existing = findOrTrackChildLockedForCollection(containerPath: path, childModel: element)
-            if let existing, existing === element.modelContext.context { continue }
-
-            // Slow path: create or update child context.
-            let childCtx = childContextForCollection(containerPath: path, childModel: element)
-            if childCtx !== element.modelContext.context {
-                var elem = collection[index]
-                elem.withContextAdded(context: childCtx, containerPath: \.self, elementPath: \.self, includeSelf: false, hierarchyLockHeld: true)
-                elem.modelContext = ModelContext(context: childCtx)
-                collection[index] = elem
-            }
+            return ([], sameStructure)
         }
 
-        let oldRefs = prevRefs.subtracting(modelRefs)
-        return oldRefs.map { prevChildren[$0]! }
+        seenChildren.removeAll(keepingCapacity: true)
+        return withReconcileBucket(for: path) {
+            var index = collection.startIndex
+            let end = collection.endIndex
+            while index != end {
+                let element = collection[index]
+                if sameStructure {
+                    if let previous = oldIterator.next(), previous.id == element.id {} else {
+                        sameStructure = false
+                    }
+                }
+
+                switch childFastPathLocked(element, at: path, liveIsStale: false) {
+                case .upToDate, .lazyPending:
+                    break
+                case .destructedOrFrozen:
+                    threadLocals.didReplaceModelWithDestructedOrFrozenCopy = true
+                case .needsRegistration:
+                    // Create or update the child context. A fresh instance reusing a registered
+                    // `.id` continues that child: it is re-pointed at the existing context.
+                    let childContext = childContextForCollection(containerPath: path, childModel: element)
+                    if childContext !== element.modelContext.context {
+                        var registered = element
+                        registered.withContextAdded(context: childContext, containerPath: \.self, elementPath: \.self, includeSelf: false, hierarchyLockHeld: true)
+                        registered.modelContext = ModelContext(context: childContext)
+                        collection[index] = registered
+                        changed.append(registered)
+                    } else {
+                        changed.append(element)
+                    }
+                }
+                collection.formIndex(after: &index)
+            }
+            return (unseenChildren(at: path), sameStructure)
+        }
     }
 
     // MARK: - ContainerCollection variants (MutableCollection<ModelContainer & Identifiable>)
@@ -2070,9 +2204,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         defer { runPostLockCallbacks(postLockCallbacks) }
         return lock {
             let modelRef = ModelRef(elementPath: \C.self, id: childModel.id)
-            modelRefs.insert(modelRef)
 
             if let child = children[collectionPath]?[modelRef] as? Context<Child> {
+                seenChildren.insert(child.referenceIdentity)
                 return child
             }
 
@@ -2084,6 +2218,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 if child.lock === self.lock {
                     child.myModelRef = modelRef
                 }
+                didRegisterLocked(child, at: collectionPath)
                 return child
             } else {
                 let child = withOwnDependencies {
@@ -2091,78 +2226,67 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 }
                 children[collectionPath, default: [:]][modelRef] = child
                 child.myModelRef = modelRef
+                didRegisterLocked(child, at: collectionPath)
                 return child
             }
         }
     }
 
-    /// Fast-path check for `Model` children inside a `ModelContainer` element of a
-    /// `MutableCollection`. Mirrors `findOrTrackChildForCollection` but uses the stored
-    /// `myModelRef` (composedPath-based key) to look up under `children[collectionPath]`.
-    func findOrTrackChildForContainerCollectionModel<C: MutableCollection, Child: Model>(
-        collectionPath: WritableKeyPath<M, C>,
-        childModel: Child
-    ) -> Context<Child>? where C.Element: ModelContainer & Identifiable & Sendable {
-        lock {
-            guard let existing = childModel.modelContext.context,
-                  existing.lock === self.lock,
-                  let modelRef = existing.myModelRef,
-                  children[collectionPath]?[modelRef] === existing
-            else { return nil }
-            modelRefs.insert(modelRef)
-            return existing
-        }
-    }
-
-    /// Like `findOrTrackChildForContainerCollectionModel` but assumes the hierarchy lock is held.
-    func findOrTrackChildLockedForContainerCollectionModel<C: MutableCollection, Child: Model>(
-        collectionPath: WritableKeyPath<M, C>,
-        childModel: Child
-    ) -> Context<Child>? where C.Element: ModelContainer & Identifiable & Sendable {
-        guard let existing = childModel.modelContext.context,
-              existing.lock === self.lock,
-              let modelRef = existing.myModelRef,
-              children[collectionPath]?[modelRef] === existing
-        else { return nil }
-        modelRefs.insert(modelRef)
-        return existing
-    }
-
-    /// Updates contexts for `ModelContainer` elements of a `MutableCollection` property that
-    /// does not conform to `ModelContainer`. Mirrors `updateContextForCollection` but uses
-    /// `AnchorVisitorForContainerElement` to traverse each element's model children.
+    /// Reconciles the `Model` children of the `ModelContainer` elements of a `MutableCollection`
+    /// property that does not conform to `ModelContainer`. Mirrors `updateContextForCollection`
+    /// (same `old` / `changed` / return contract) but traverses each element's model children
+    /// with `AnchorVisitorForContainerElement`; an element is written back only when the
+    /// traversal changed it, and appended to `changed` only when it registered something.
     ///
     /// **Must be called with the hierarchy lock held** — same contract as `updateContext`.
     func updateContextForContainerCollection<C: MutableCollection>(
         for collection: inout C,
-        at path: WritableKeyPath<M, C>
-    ) -> [AnyContext]
+        old: C,
+        at path: WritableKeyPath<M, C>,
+        changed: inout [C.Element]
+    ) -> (removed: [AnyContext], sameStructure: Bool)
         where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
-        guard !isDestructed else { return [] }
-
-        let prevChildren = (children[path] ?? [:])
-        let prevRefs = Set(prevChildren.keys)
-
-        modelRefs.removeAll(keepingCapacity: true)
-
-        for index in collection.indices {
-            let element = collection[index]
-            let id = threadLocals.withForceDirectAccess { element.id }
-
-            var elementVisitor = AnchorVisitorForContainerElement(
-                value: element,
-                context: self,
-                collectionPath: path,
-                elementID: id,
-                capturedElement: element,
-                hierarchyLockHeld: true
-            )
-            element.visit(with: &elementVisitor, includeSelf: false)
-            collection[index] = elementVisitor.value
+        var sameStructure = old.count == collection.count
+        var oldIterator = old.makeIterator()
+        guard !isDestructed else {
+            if sameStructure {
+                sameStructure = zip(collection, old).allSatisfy { $0.id == $1.id }
+            }
+            return ([], sameStructure)
         }
 
-        let oldRefs = prevRefs.subtracting(modelRefs)
-        return oldRefs.map { prevChildren[$0]! }
+        seenChildren.removeAll(keepingCapacity: true)
+        return withReconcileBucket(for: path) {
+            var index = collection.startIndex
+            let end = collection.endIndex
+            while index != end {
+                let element = collection[index]
+                if sameStructure {
+                    if let previous = oldIterator.next(), previous.id == element.id {} else {
+                        sameStructure = false
+                    }
+                }
+                let id = threadLocals.withForceDirectAccess { element.id }
+
+                var elementVisitor = AnchorVisitorForContainerElement(
+                    value: element,
+                    context: self,
+                    collectionPath: path,
+                    elementID: id,
+                    capturedElement: element,
+                    hierarchyLockHeld: true
+                )
+                element.visit(with: &elementVisitor, includeSelf: false)
+                if elementVisitor.didChange {
+                    collection[index] = elementVisitor.value
+                }
+                if elementVisitor.didRegister {
+                    changed.append(elementVisitor.value)
+                }
+                collection.formIndex(after: &index)
+            }
+            return (unseenChildren(at: path), sameStructure)
+        }
     }
 }
 
@@ -2320,6 +2444,48 @@ extension Context {
         /// True when a lazy context factory is pending (not yet materialized).
         var hasLazyContextCreator: Bool {
             lock { _lazyContextCreator != nil }
+        }
+
+        /// This model's position in the `children` bucket of the parent that last registered
+        /// it — the reconcile registration record. `Context.childFastPathLocked` checks the
+        /// entry at this position for identity instead of hashing a `ModelRef`, and without
+        /// loading the (weak) context at all; a stale or foreign value only costs the hashed
+        /// fallback, which refreshes it. Written under this lock by the registering parent
+        /// (`setRegisteredPosition`; same-hierarchy parents only, like `myModelRef`) and by
+        /// `removeChild` when entries after a removed one shift; read by `reconcileSnapshot`.
+        private var _registeredPosition = -1
+
+        func setRegisteredPosition(_ position: Int) {
+            lock.lock()
+            _registeredPosition = position
+            lock.unlock()
+        }
+
+        /// What `Context.childFastPathLocked` reads to classify a collection element.
+        struct ReconcileSnapshot {
+            let isDestructed: Bool
+            let hasLazyContextCreator: Bool
+            let snapshotLifetime: ModelLifetime?
+            /// The live context's hierarchy lock — non-nil exactly when a context is live.
+            let hierarchyLock: NSRecursiveLock?
+            let registeredPosition: Int
+        }
+
+        /// One locked read of everything `Context.childFastPathLocked` needs to classify a
+        /// collection element — the pieces `lifetime`, `hasLazyContextCreator` and `context`
+        /// each take this lock for separately, two of them loading the weak `_context`.
+        /// Deliberately does NOT load `_context`: a positional identity match against the
+        /// parent's bucket (`_registeredPosition`) proves registration without it.
+        func reconcileSnapshot() -> ReconcileSnapshot {
+            lock.lock()
+            defer { lock.unlock() }
+            return ReconcileSnapshot(
+                isDestructed: _isDestructed,
+                hasLazyContextCreator: _lazyContextCreator != nil,
+                snapshotLifetime: _snapshotLifetime,
+                hierarchyLock: _hierarchyLock,
+                registeredPosition: _registeredPosition
+            )
         }
 
         /// Registers a factory that creates this Reference's context on demand.
