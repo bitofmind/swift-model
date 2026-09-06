@@ -19,6 +19,15 @@ import SwiftSyntaxMacros
 /// the `[write:]` subscript setter) for user-written inits where the setter fires instead of
 /// the init accessor.
 ///
+/// The accessors identify the property to `_ModelSourceBox` by its tracked **index** (the
+/// same declaration-order index `@_ModelTracked(index, count:)` carries — the `_State` field
+/// order, so `_State._trackedPropertyKeyPaths[index]` is this property's key path), and hand it
+/// the projection and write-back as closures (`{ $0.count }` / `{ $0.count = $1 }`): the anchored
+/// hot path never forms the `\_State.count` key path. It is still passed, last, as an
+/// `@autoclosure` for the consumers that are keyed by key path (the construction frame in a
+/// user-written init, a `TestAccess`, undo, the gap shadow) — evaluated only when one of them
+/// asks. The init accessors are key-path based as before: they run once per construction.
+///
 /// Note on the macro-expansion snapshots: once a `set` accessor is present, swift-macro-testing
 /// renders the property as computed and drops its `= default` initializer from the expansion
 /// text (`var count = 0 {` becomes `var count {`). That is a rendering choice of the test
@@ -46,14 +55,19 @@ import SwiftSyntaxMacros
 /// this gate (and `isFunctionType`) once 6.3 support is dropped or the fix is confirmed.
 private func makeGetSet(
     identifier: String,
+    index: Int,
     didSet: CodeBlockItemListSyntax?,
     willSet: CodeBlockItemListSyntax?,
     isFunctionType: Bool
 ) -> [AccessorDeclSyntax] {
+    // The argument lists shared by every read / write call of this property.
+    let readArgs = "read: \(index), access: _$modelAccess, get: { $0.\(identifier) }, path: \\_State.\(identifier)"
+    let writeArgs = "write: \(index), access: _$modelAccess, get: { $0.\(identifier) }, set: { $0.\(identifier) = $1 }, path: \\_State.\(identifier)"
+
     let readCoroutine: AccessorDeclSyntax =
     """
     _read {
-        yield _$modelSource[read: \\_State.\(raw: identifier), access: _$modelAccess]
+        yield _$modelSource[\(raw: readArgs)]
     }
     """
 
@@ -67,7 +81,7 @@ private func makeGetSet(
         readAccessor =
         """
         get {
-            _$modelSource[read: \\_State.\(raw: identifier), access: _$modelAccess]
+            _$modelSource[\(raw: readArgs)]
         }
         """
     } else {
@@ -81,10 +95,10 @@ private func makeGetSet(
         """
         nonmutating set {
             guard !_$modelSource._storePendingIfNeeded(\\.\(raw: identifier), newValue) else { return }
-            let oldValue = _$modelSource[read: \\_State.\(raw: identifier), access: _$modelAccess]
+            let oldValue = _$modelSource[\(raw: readArgs)]
             _ = oldValue
             \(willSet?.trimmed ?? "")
-            _$modelSource[write: \\_State.\(raw: identifier), access: _$modelAccess] = newValue
+            _$modelSource[\(raw: writeArgs)] = newValue
             \(didSet?.trimmed ?? "")
         }
         """
@@ -92,13 +106,13 @@ private func makeGetSet(
         writeAccessor =
         """
         nonmutating set {
-            _$modelSource[write: \\_State.\(raw: identifier), access: _$modelAccess] = newValue
+            _$modelSource[\(raw: writeArgs)] = newValue
         }
         """
         let modifyAccessor: AccessorDeclSyntax =
         """
         nonmutating _modify {
-            yield &_$modelSource[write: \\_State.\(raw: identifier), access: _$modelAccess]
+            yield &_$modelSource[\(raw: writeArgs)]
         }
         """
         return [readAccessor, writeAccessor, modifyAccessor]
@@ -222,7 +236,7 @@ public struct ModelTrackedMacro: AccessorMacro, PeerMacro {
             """
         }
 
-        return [initAccessor] + makeGetSet(identifier: identifier, didSet: didSet, willSet: willSet, isFunctionType: property.hasFunctionType)
+        return [initAccessor] + makeGetSet(identifier: identifier, index: index, didSet: didSet, willSet: willSet, isFunctionType: property.hasFunctionType)
     }
 
     public static func expansion<C: MacroExpansionContext, D: DeclSyntaxProtocol>(

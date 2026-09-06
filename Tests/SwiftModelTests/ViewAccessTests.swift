@@ -27,8 +27,9 @@ private final class MockViewAccess: ModelAccess, @unchecked Sendable {
 
     override func willAccess<M: Model, Value>(
         from context: Context<M>,
-        at path: KeyPath<M._ModelState, Value> & Sendable
+        at path: @autoclosure () -> (KeyPath<M._ModelState, Value> & Sendable)
     ) -> (() -> Void)? {
+        let path = path()
         guard !ModelAccess.isInModelTaskContext else { return nil }
 
         let cancellation = context.onModify(for: path) { [weak self] finished, _ in

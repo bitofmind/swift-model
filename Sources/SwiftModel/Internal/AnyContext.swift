@@ -321,9 +321,10 @@ class AnyContext: @unchecked Sendable {
     /// same-thread overlap to catch. Nothing observable changes.
     @exclusivity(unchecked) private var _modificationCount = 0
 
-    /// Paths excluded from `observeModifications()` notifications. Nil means no exclusions.
-    /// Set by `ModelNode.excludeFromModifications`. Only checked for `.properties` kind changes.
-    var modificationExcludedPaths: Set<AnyKeyPath>?
+    /// Tracked-property indices excluded from `observeModifications()` notifications
+    /// (`Context.trackedIndex(of:)` of each backing path). Nil means no exclusions.
+    /// Set by `ModelNode.excludeFromModifications`. Only consulted for `.properties` changes.
+    var modificationExcludedIndices: Set<Int>?
 
     struct MemoizeCacheEntry: @unchecked Sendable {
         var value: Any & Sendable
@@ -890,7 +891,7 @@ class AnyContext: @unchecked Sendable {
     /// `useObservationRegistrar` is true, so `_registrarBox` is non-nil.
     ///
     /// The main/background decision lives HERE rather than at the two call sites
-    /// (`willAccessDirect`, `willAccessSyntheticPath`) because it is what makes the
+    /// (`trackedRead`, `willAccessSyntheticPath`) because it is what makes the
     /// `_main` discipline hold by construction: the only code that ever writes `_main` is
     /// the branch below, and that branch is reachable only under `isOnMainThread`. So the
     /// main thread is the sole writer, and its unlocked `_main` read is a same-thread read

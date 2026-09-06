@@ -36,12 +36,14 @@ public extension ModelNode {
             repeat collect(each paths)
         }
 
-        let newPaths = Set(collector.paths.map { $0 as AnyKeyPath })
         context.lock {
-            if context.modificationExcludedPaths == nil {
-                context.modificationExcludedPaths = newPaths
+            // Map each backing path to its property index ONCE, here; the write path checks
+            // the exclusion by index and never hashes a key path.
+            let newIndices = Set(collector.paths.compactMap { context.trackedIndex(of: $0) })
+            if context.modificationExcludedIndices == nil {
+                context.modificationExcludedIndices = newIndices
             } else {
-                context.modificationExcludedPaths!.formUnion(newPaths)
+                context.modificationExcludedIndices!.formUnion(newIndices)
             }
         }
     }

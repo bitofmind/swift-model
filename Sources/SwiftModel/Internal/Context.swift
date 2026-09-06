@@ -8,24 +8,27 @@ import Observation
 @usableFromInline
 final class Context<M: Model>: AnyContext, @unchecked Sendable {
     private let activations: [(M) -> Void]
-    /// Backing store for `modifyCallbacks`. `nil` while no `onModify` callback is
-    /// registered on this context — the common case for a property write — so the write
-    /// path consults `hasModifyCallbacks` first and only hashes a key path against this
-    /// dictionary when there is something to find. Only touched under `lock`;
+    typealias ModifyCallback = (_ finished: Bool, _ force: Bool) -> (() -> Void)?
+    /// Backing store for `modifyCallbacks` — the `onModify` callbacks registered on
+    /// **synthetic** paths (environment / preference storage, memoize sentinels, the
+    /// parents relationship). `nil` while none is registered. Only touched under `lock`;
     /// `@exclusivity(unchecked)` per the note at `AnyContext._modificationCount`.
-    @exclusivity(unchecked) private var modifyCallbacksStore: [PartialKeyPath<M._ModelState>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]]?
+    ///
+    /// Callbacks on **tracked properties** live in `propertyModifyCallbacksStore`, keyed
+    /// by the property's index, so a property write never hashes a key path to find them.
+    @exclusivity(unchecked) private var modifyCallbacksStore: [PartialKeyPath<M._ModelState>: [Int: ModifyCallback]]?
     /// `modifyCallbacksStore != nil`, maintained by the `_modify` accessor below (the only
-    /// mutation route). Read on every property write: a plain `Bool` load, so the check
-    /// needs neither the dictionary's generic metadata nor a `PartialKeyPath` hash.
+    /// mutation route). Read on every synthetic-path write: a plain `Bool` load, so the
+    /// check needs neither the dictionary's generic metadata nor a `PartialKeyPath` hash.
     @exclusivity(unchecked) private var hasModifyCallbacks = false
-    var modifyCallbacks: [PartialKeyPath<M._ModelState>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] {
+    var modifyCallbacks: [PartialKeyPath<M._ModelState>: [Int: ModifyCallback]] {
         _read { yield modifyCallbacksStore ?? [:] }
         _modify {
             if modifyCallbacksStore != nil {
                 yield &modifyCallbacksStore!
                 if modifyCallbacksStore!.isEmpty { modifyCallbacksStore = nil }
             } else {
-                var temp: [PartialKeyPath<M._ModelState>: [Int: (_ finished: Bool, _ force: Bool) -> (() -> Void)?]] = [:]
+                var temp: [PartialKeyPath<M._ModelState>: [Int: ModifyCallback]] = [:]
                 yield &temp
                 if !temp.isEmpty { modifyCallbacksStore = temp }
             }
@@ -34,6 +37,118 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // caller's access is abandoned mid-yield (nothing after the yield runs then).
             hasModifyCallbacks = modifyCallbacksStore != nil
         }
+    }
+    /// `onModify` callbacks registered on tracked properties, keyed by the property's
+    /// index (`_ModelStateType._trackedPropertyIndex(of:)`, resolved once at registration
+    /// by `trackedIndex(of:)`). `nil` while none is registered — the common case for a
+    /// property write, which consults `hasPropertyModifyCallbacks` first and hashes an
+    /// `Int` only when there is something to find. Only touched under `lock`.
+    @exclusivity(unchecked) private var propertyModifyCallbacksStore: [Int: [Int: ModifyCallback]]?
+    /// `propertyModifyCallbacksStore != nil`, maintained by `propertyModifyCallbacks`'s
+    /// `_modify` exactly as `hasModifyCallbacks` is by `modifyCallbacks`'s.
+    @exclusivity(unchecked) private var hasPropertyModifyCallbacks = false
+    var propertyModifyCallbacks: [Int: [Int: ModifyCallback]] {
+        _read { yield propertyModifyCallbacksStore ?? [:] }
+        _modify {
+            if propertyModifyCallbacksStore != nil {
+                yield &propertyModifyCallbacksStore!
+                if propertyModifyCallbacksStore!.isEmpty { propertyModifyCallbacksStore = nil }
+            } else {
+                var temp: [Int: [Int: ModifyCallback]] = [:]
+                yield &temp
+                if !temp.isEmpty { propertyModifyCallbacksStore = temp }
+            }
+            hasPropertyModifyCallbacks = propertyModifyCallbacksStore != nil
+        }
+    }
+
+    /// Per-context registrar identity tokens, one slot per tracked property
+    /// (`M._ModelState._trackedPropertyCount`), created on first use. The table itself is
+    /// allocated on the first token, not in `init`: a context that is never observed
+    /// (children walked by a scan, short-lived hierarchies) pays nothing, and the eager
+    /// allocation showed as +1–2 % on the activation benchmarks.
+    ///
+    /// **Guarded by `reference.lock`, not by the hierarchy `lock`.** A tracked read must
+    /// register its access with the registrar BEFORE it projects the value under the
+    /// hierarchy lock (see `trackedRead`), so it needs the token before that lock is taken
+    /// — and it must not take the hierarchy lock twice, nor call the registrar inside it.
+    /// The Reference's own lock is a leaf lock the read already takes to load `_context`;
+    /// `Reference.liveContextAndObserverToken(_:)` resolves both in that one window. The
+    /// write side (`invokeDidModifyDirect`, hierarchy lock held) takes `reference.lock`
+    /// for its fetch — the established AnyContext.lock → Reference.lock order. Per tree,
+    /// so no cross-tree contention: the old global cache's stripe lock was the same shape
+    /// shared by every tree in the process.
+    ///
+    /// The `ObservationRegistrar` identifies what was accessed or changed by a key-path
+    /// object, and with one registrar pair shared by the whole tree that object has to be
+    /// unique per (context, property): `\_StateObserver<_State>[contextID:propID:]`, with
+    /// this context's address and the property's index as the subscript arguments. Building
+    /// that key path allocates (`_swift_getKeyPath` with arguments), so it is built once
+    /// per slot and kept here. This table replaces a process-wide cache keyed by
+    /// `(context, state key-path object)`: every tracked read and write in the process used
+    /// to take one of its 16 stripe locks and retain/release its entry — two cache lines
+    /// eight cores fight over — where a per-context slot is touched under the lock the
+    /// access already holds and its refcount traffic stays on this context's line.
+    ///
+    /// Stored as `AnyObject?` to keep the `@available` off the stored property; every
+    /// non-nil element is a `KeyPath<_StateObserver<M._ModelState>, AnyHashable>` (see
+    /// `_observerTokenUnderReferenceLock(_:)`). `@exclusivity(unchecked)`: lock-protected,
+    /// and never held open.
+    @exclusivity(unchecked) private var _observerTokens: [AnyObject?] = []
+
+    /// `M._ModelState._trackedPropertyKeyPaths`, built on first use under `lock` and kept:
+    /// index → key path for the paths that need a key-path object (a `TestAccess` or debug
+    /// collector's `willAccess`/`didModify`, undo, exhaustivity messages) when the caller
+    /// only has an index, and the reverse lookup for registrations that arrive with a key
+    /// path (`onModify(for:)`, `excludeFromModifications`, `touch`). The static is computed
+    /// — it rebuilds its array on every call — so it is called once per context, never per
+    /// access.
+    private var _trackedPathsStore: [PartialKeyPath<M._ModelState>]?
+    /// Must be called with `lock` held.
+    private var trackedPaths: [PartialKeyPath<M._ModelState>] {
+        if let paths = _trackedPathsStore { return paths }
+        let paths = M._ModelState._trackedPropertyKeyPaths
+        _trackedPathsStore = paths
+        return paths
+    }
+
+    /// The key path of the tracked property at `index`. Must be called with `lock` held.
+    func trackedPath(_ index: Int) -> PartialKeyPath<M._ModelState> {
+        trackedPaths[index]
+    }
+
+    /// The index of the tracked property `path` names, or `nil` for anything that is not a
+    /// tracked property (synthetic subscripts, the identity path). Identity first — the
+    /// macro's literal is usually the very same process-wide object as the caller's — then
+    /// structural `==`, so an appended or generic-type key path (which the runtime does not
+    /// intern) still resolves. A registration-time cost; never on the read/write path.
+    /// Must be called with `lock` held.
+    func trackedIndex(of path: AnyKeyPath) -> Int? {
+        let paths = trackedPaths
+        if let index = paths.firstIndex(where: { $0 === path }) { return index }
+        return paths.firstIndex(where: { $0 == path })
+    }
+
+    /// The registrar identity token for the tracked property at `index`, created on first
+    /// use, as the stored `AnyObject` (a `KeyPath<_StateObserver<M._ModelState>, AnyHashable>`;
+    /// callers `unsafeDowncast` inside their own availability scope). Only reached when
+    /// `useObservationRegistrar`, which is only ever true on OS versions that have the
+    /// registrar. **Must be called with `reference.lock` held** — see `_observerTokens`;
+    /// `Reference.liveContextAndObserverToken(_:)` / `Reference.observerToken(of:_:)` are
+    /// the two callers and take it.
+    func _observerTokenUnderReferenceLock(_ index: Int) -> AnyObject {
+        if _observerTokens.isEmpty {
+            _observerTokens = Array(repeating: nil, count: M._ModelState._trackedPropertyCount)
+        } else if let token = _observerTokens[index] {
+            return token
+        }
+        guard #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) else {
+            preconditionFailure("SwiftModel: observer token requested without an ObservationRegistrar — this is a bug in SwiftModel.")
+        }
+        let token: KeyPath<_StateObserver<M._ModelState>, AnyHashable> =
+            \_StateObserver<M._ModelState>[contextID: UInt(bitPattern: ObjectIdentifier(self)), propID: UInt(index)]
+        _observerTokens[index] = token
+        return token
     }
     @usableFromInline let reference: Reference
     /// The generation of `reference` at the time this context called `setContext`.
@@ -45,7 +160,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     // Seed model with correct `let` property values (e.g. LockIsolated counters).
     // Set to localModel after withContextAdded so that var properties are backed by
     // _stateHolder (live source). context.model switches this to .reference source
-    // so that reading tracked properties triggers willAccessDirect → observation.
+    // so that reading tracked properties triggers trackedRead → observation.
     // Only written once during init; thereafter read-only (under lock for thread safety).
     var _modelSeed: M
 
@@ -244,8 +359,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // concurrently — without this, the two threads race on modifyCallbacksStore.
         // NSRecursiveLock makes this safe for the same-hierarchy case (re-entrant).
         let modifies = lock {
-            let m = modifyCallbacks.values.flatMap({ $0.values })
+            let m = modifyCallbacks.values.flatMap({ $0.values }) + propertyModifyCallbacks.values.flatMap({ $0.values })
             modifyCallbacks.removeAll()
+            propertyModifyCallbacks.removeAll()
             return m
         }
 
@@ -660,6 +776,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     func onModify<T>(for path: KeyPath<M._ModelState, T>&Sendable, _ callback: @Sendable @escaping (_ finished: Bool, _ force: Bool) -> (() -> Void)?) -> @Sendable () -> Void {
         let key = generateKey()
+        // A tracked property registers by index (resolved ONCE, here); a synthetic path
+        // (storage, preference, memoize sentinel, parents) by key path. `-1` marks the latter.
+        let index: Int = lock { trackedIndex(of: path) ?? -1 }
         let registered = lock { () -> Bool in
             // Destructed check in the SAME lock scope as the insert: teardown
             // flips the lifetime and drains `modifyCallbacks` under this lock,
@@ -668,7 +787,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // captures until the context deallocates. (`unprotected` is fine —
             // we hold the lock.)
             guard !unprotectedIsDestructed else { return false }
-            modifyCallbacks[path, default: [:]][key] = callback
+            if index >= 0 {
+                propertyModifyCallbacks[index, default: [:]][key] = callback
+            } else {
+                modifyCallbacks[path, default: [:]][key] = callback
+            }
             return true
         }
         guard registered else {
@@ -678,7 +801,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         return { [weak self] in
             guard let self else { return }
             self.lock {
-                _ = self.modifyCallbacks[path]?.removeValue(forKey: key)
+                if index >= 0 {
+                    _ = self.propertyModifyCallbacks[index]?.removeValue(forKey: key)
+                } else {
+                    _ = self.modifyCallbacks[path]?.removeValue(forKey: key)
+                }
             }
         }
     }
@@ -690,7 +817,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     var model: M {
         // Start from _modelSeed (has correct `let` values, e.g. LockIsolated counters),
         // then switch to .reference source so that reading tracked properties triggers
-        // willAccessDirect → observation registration (required for Observed/mapHierarchy).
+        // trackedRead → observation registration (required for Observed/mapHierarchy).
         // No lock needed: _modelSeed is written once during init (before the object is
         // reachable from other threads) and never modified afterward.
         var m = _modelSeed
@@ -771,7 +898,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         do {
             // Use _modelSeed directly (.live source) instead of model (.reference source).
             // .live source routes reads/writes directly to the state storage without going
-            // through willAccessDirect/invokeDidModify — avoiding double-processing since
+            // through trackedRead/invokeDidModify — avoiding double-processing since
             // this function manually issues all post-write notifications below.
             var localModel = _modelSeed
             let oldValue = localModel[keyPath: path]
@@ -786,10 +913,12 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
             let activeAccessCallback = modelContext.invokeDidModify(at: statePath)
 
+            // `statePath` always names a tracked property here (undo tracks backing paths).
+            let index = trackedIndex(of: statePath) ?? -1
 #if DEBUG
-            let postLockCallbacks = buildPostLockCallbacksWithPropDesc(for: statePath, tl: threadLocals)
+            let postLockCallbacks = index >= 0 ? buildPostLockCallbacksWithPropDesc(forProperty: index, path: statePath, tl: threadLocals) : nil
 #else
-            let postLockCallbacks = buildPostLockCallbacks(for: statePath)
+            let postLockCallbacks = index >= 0 ? buildPostLockCallbacks(forProperty: index, tl: threadLocals) : nil
 #endif
             lock.unlock()
 
@@ -799,34 +928,103 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         return result
     }
 
-    // MARK: - Locked state read (direct _State access)
+    // MARK: - Tracked property read (direct _State access)
 
-    /// Reads `statePath` from `reference.state` under the hierarchy lock and returns it
-    /// **by value**. `callback` is what `willAccessDirect` returned — the
-    /// `activeAccess.willAccess(from:at:)` completion, which consumes the transition
-    /// override — and runs inside the lock scope, after the projection, exactly where the
-    /// former `_read` ran it after its `yield`.
+    /// The tracked read of the property at `index` on this live context: registers the
+    /// access with every observer that wants it, projects the value out of
+    /// `reference.state` under the hierarchy lock and returns it **by value**.
     ///
-    /// A plain getter rather than a `_read` coroutine, on purpose. The previous
-    /// `subscript(statePath:observeCallback:)._read` was nested inside the
-    /// `_ModelSourceBox` read subscript's own `_read`, and the combined yield-once frame
-    /// did not fit the caller-provided coroutine buffer — every tracked and untracked
-    /// read paid a `swift_coroFrameAlloc` malloc/free pair (~8% of an untracked read in
-    /// the 8-thread contention profile). Returning the value costs at most the value's
-    /// own copy (a retain for a buffer-backed type), which the coroutine paid anyway:
-    /// it materialised the projection into a local before yielding.
+    /// `get` is the macro-generated projection (`{ $0.count }`) and `path` the property's
+    /// key path, taken as an autoclosure: the production path with no `TestAccess`, debug
+    /// collector or gap shadow never evaluates it, so the `\_State.prop` literal —
+    /// one process-wide object that `_swift_getKeyPath` retains from every core — stays
+    /// out of the read entirely. It is formed only for `activeAccess.willAccess` and the
+    /// shadow, which key their bookkeeping by key path.
     ///
-    /// That materialisation is still load-bearing. The projection lands in a local before
-    /// anything else happens, so the dynamic exclusivity access on `reference.state`
-    /// begins and ends on that one line: neither `callback`, nor `reportIssue`, nor the
-    /// caller ever runs while it is open. Without it, a `_modify` on another property of
-    /// the same model (same `reference.state` address) from `callback` or from the caller
-    /// would trap on a simultaneous access even in single-threaded code.
+    /// Order of operations, and why:
+    ///
+    ///  1. **`ObservationRegistrar.access` first, before the value is read.** INVARIANT —
+    ///     do not move it after the projection to shorten anything. Apple's
+    ///     `withObservationTracking` records accesses during its body and installs the
+    ///     observers only after the body returns, so a write that lands between a read
+    ///     and the end of the body is missed by Apple's API whatever we do (SwiftModel's
+    ///     own observation paths close that window with the gap shadow; plain
+    ///     `withObservationTracking` cannot). What this order controls is the *width* of
+    ///     that window: a first cut that registered after the unlock measured ~0.9 % of
+    ///     read-before-write rounds stale with no `onChange` in a one-reader/one-writer
+    ///     race, against ~0.03 % — Apple's floor, unchanged from before this change — with
+    ///     the registration first. Apple's `@Observable` accessors register before returning
+    ///     for the same reason. That race is not a unit test (it fails at the floor's rate);
+    ///     this comment is the guard. The token arrives resolved (`token`, fetched by
+    ///     `Reference.liveContextAndObserverToken` under the Reference's leaf lock in the
+    ///     same window that loaded this context), so registering here costs no lock: the
+    ///     registrar must not be called inside the hierarchy lock (it doubled the 2- and
+    ///     4-thread cost of the shared-tree contention rows) and the read must not take
+    ///     that lock twice.
+    ///  2. Still outside the lock: memoize-produce short-circuit, the gap shadow's
+    ///     `willAccess`, then `activeAccess.willAccess` (whose returned completion runs
+    ///     inside the lock after the projection — it consumes the transition override).
+    ///     These may take other locks (`TestAccess.lock`, a collector's), so they stay in
+    ///     front of ours: the lock order `TestAccess.lock → context.lock` the write side
+    ///     matches.
+    ///  3. Under the lock: the projection, then `callback`, then unlock — the critical
+    ///     section is exactly what it was.
+    ///
+    /// A plain getter rather than a `_read` coroutine, on purpose: the projection lands in
+    /// a local before anything else happens, so the dynamic exclusivity access on
+    /// `reference.state` begins and ends on that one line — neither `callback` nor
+    /// `reportIssue` nor the caller ever runs while it is open. (The nested-coroutine form
+    /// this replaced also heap-allocated its frame on every read.)
     ///
     /// `tl` is the caller's already-resolved `threadLocals`: one `pthread_getspecific`
     /// per read, passed down rather than re-fetched at every flag.
-    @inlinable
-    func readLocked<T>(_ statePath: WritableKeyPath<M._ModelState, T>, callback: (() -> Void)?, tl: ThreadLocals) -> T {
+    @usableFromInline
+    func trackedRead<T>(_ index: Int, token: AnyObject?, accessBox: _ModelAccessBox, tl: ThreadLocals, get: (M._ModelState) -> T, path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
+        var callback: (() -> Void)? = nil
+        // Skip every observer while memoize's dirty-recompute is running `produce()` —
+        // its reads must not leak to whatever outer observation is currently active
+        // (SwiftUI body's `withObservationTracking`, a `ViewAccess` from `$model.debug`,
+        // a debug collector, a `TestAccess`). Memoize's own dependency tracking is
+        // unaffected because the dirty branch doesn't re-track here — the async
+        // `performUpdate` does, via `observe()`, which is not flagged.
+        // See `ThreadLocals.isInsideMemoizeProduce`.
+        if !tl.isInsideMemoizeProduce {
+            let cachedActive = ModelAccess.active
+            let access = accessBox._reference?.access ?? ModelAccess.current
+            let activeAccess = cachedActive ?? access
+
+            // 1. Register the access — BEFORE the read (see the invariant above). `token` is
+            // nil exactly when `useObservationRegistrar` is false.
+            if let token, !(tl.isInsideAsyncPerformUpdate && cachedActive != nil),
+               #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+                currentThreadObservationRegistrar.access(
+                    _StateObserver<M._ModelState>(),
+                    keyPath: unsafeDowncast(token, to: KeyPath<_StateObserver<M._ModelState>, AnyHashable>.self)
+                )
+            }
+
+            // Shadow gap-race detector. When non-nil (set by `ObservationTracking.observe()`),
+            // dispatch willAccess here too so it can register a synchronous per-(context,
+            // path) `context.onModify` subscription for each read — closing Apple's
+            // `withObservationTracking` registration-gap race. Runs BEFORE the
+            // `isInsideMemoizeObserve` short-circuit because the shadow needs to see reads
+            // even inside memoize observation (that's the whole point). See
+            // `ThreadLocals.gapShadowCollector` for why this can't piggyback on `activeAccess`.
+            if let shadow = tl.gapShadowCollector {
+                _ = shadow.willAccess(from: self, at: unsafeBitCast(path(), to: (WritableKeyPath<M._ModelState, T> & Sendable).self))
+            }
+
+            // Skip the swift-model side `activeAccess.willAccess` dispatch during a memoize's
+            // async `observe()` body. The registrar access below keeps memoize's own
+            // `withObservationTracking` tracking intact; this check prevents the read from
+            // accumulating as a dep on the calling view's `ViewAccess` (the stamped-access
+            // fall-through that `usingActiveAccess(nil)` cannot clear).
+            // See `ThreadLocals.isInsideMemoizeObserve`.
+            if !tl.isInsideMemoizeObserve, let activeAccess {
+                callback = activeAccess.willAccess(from: self, at: unsafeBitCast(path(), to: (WritableKeyPath<M._ModelState, T> & Sendable).self))
+            }
+        }
+
         lock.lock()
         let value: T
         if unprotectedIsDestructed {
@@ -838,11 +1036,11 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             if reference._stateCleared, !reference._hasGenesis {
                 reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
             }
-            value = reference.state[keyPath: statePath]
+            value = get(reference.state)
         } else if let override = tl.transitionOverrideValue, let typed = override as? T {
             value = typed
         } else {
-            value = reference.state[keyPath: statePath]
+            value = get(reference.state)
         }
         callback?()
         lock.unlock()
@@ -890,7 +1088,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// never fire), and the untyped sentinel/parents paths for memoize/parents. Taken as an
     /// autoclosure so the key-path allocation is only paid when a shadow is installed.
     ///
-    /// Gates mirror `willAccessDirect`'s shadow dispatch plus the registrar gate in
+    /// Gates mirror `trackedRead`'s shadow dispatch plus the registrar gate in
     /// `willAccessSyntheticPath`: skipped inside memoize's synchronous dirty-recompute
     /// (`isInsideMemoizeProduce`) and inside `withUntrackedModelReads` scopes
     /// (`untrackedReads`), so the shadow's persistent subscriptions never cover reads
@@ -939,68 +1137,6 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     // MARK: - Direct access helpers (for _ModelSourceBox subscripts)
 
-    /// Computes the willAccess observation callback without constructing a ModelContext.
-    /// Called from `_ModelSourceBox` read subscripts.
-    ///
-    /// Uses `_StateObserver` for registrar calls (no Model instance needed).
-    /// Uses `_StateObserver` for registrar calls; delegates to `activeAccess.willAccess/didModify(from:at:)` for TestAccess.
-    ///
-    /// `tl` is the caller's already-resolved `threadLocals` (see `readLocked`).
-    @usableFromInline
-    func willAccessDirect<T>(statePath: WritableKeyPath<M._ModelState, T>, accessBox: _ModelAccessBox, tl: ThreadLocals) -> (() -> Void)? {
-        // Skip everything while memoize's dirty-recompute is running `produce()` —
-        // its reads must not leak to whatever outer observation is currently active
-        // (SwiftUI body's `withObservationTracking`, a `ViewAccess` from
-        // `$model.debug`, a debug collector, a `TestAccess`). Memoize's own
-        // dependency tracking is unaffected because the dirty branch doesn't
-        // re-track here — the async `performUpdate` does, via `observe()`, which
-        // is not flagged. See `ThreadLocals.isInsideMemoizeProduce`.
-        if tl.isInsideMemoizeProduce { return nil }
-
-        let cachedActive = ModelAccess.active
-        let access = accessBox._reference?.access ?? ModelAccess.current
-        let activeAccess = cachedActive ?? access
-
-        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar,
-           !(tl.isInsideAsyncPerformUpdate && cachedActive != nil) {
-            let observer = _StateObserver<M._ModelState>()
-            // Cached KP avoids a heap allocation on every read (`_swift_getKeyPath`
-            // for a subscript KP allocates, ~1.7 μs). `_stateObserverKP` resolves via
-            // an identity-keyed fast path (no structural KeyPath.hashValue on warm
-            // reads) with a hashValue-keyed structural fallback for appended key
-            // paths — see the doc comment at `_stateObserverKP`.
-            let contextID = UInt(bitPattern: ObjectIdentifier(self))
-            let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = _stateObserverKP(contextID: contextID, statePath: statePath)
-            currentThreadObservationRegistrar.access(observer, keyPath: observerKP)
-        }
-
-        // Shadow gap-race detector. When non-nil (set by
-        // `ObservationTracking.observe()`), dispatch willAccess here too so
-        // it can register a synchronous per-(context, path) `context.onModify`
-        // subscription for each read — closing Apple's `withObservationTracking`
-        // registration-gap race. Runs BEFORE the
-        // `isInsideMemoizeObserve` short-circuit because the shadow needs to
-        // see reads even inside memoize observation (that's the whole point).
-        // See `ThreadLocals.gapShadowCollector` for the rationale on why
-        // this can't piggyback on `activeAccess`.
-        if let shadow = tl.gapShadowCollector {
-            let sendableStatePath = unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self)
-            _ = shadow.willAccess(from: self, at: sendableStatePath)
-        }
-
-        // Skip the swift-model side `activeAccess.willAccess` dispatch during a
-        // memoize's async `observe()` body. The registrar.access above keeps
-        // memoize's own `withObservationTracking` tracking intact; this check
-        // prevents the read from accumulating as a dep on the calling view's
-        // `ViewAccess` (the stamped-access fall-through that
-        // `usingActiveAccess(nil)` cannot clear). See `ThreadLocals.isInsideMemoizeObserve`.
-        if tl.isInsideMemoizeObserve { return nil }
-
-        guard let activeAccess else { return nil }
-        let sendableStatePath = unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self)
-        return activeAccess.willAccess(from: self, at: sendableStatePath)
-    }
-
     /// Invokes post-modify observation notifications without constructing a ModelContext.
     /// Returns the active-access callback for the caller to execute after releasing the lock.
     ///
@@ -1014,22 +1150,33 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     ///   accessBox._reference?.access ?? ModelAccess.current` — the same chain the write lock
     ///   was taken on, passed down rather than re-reading both task-locals here.
     /// - Parameter tl: the caller's `threadLocals` handle.
+    /// - Parameter path: the property's key path, evaluated only for `activeAccess.didModify`
+    ///   (a `TestAccess` / collector) — the observer-less write never forms it.
     @discardableResult
-    func invokeDidModifyDirect<T>(statePath: WritableKeyPath<M._ModelState, T>, activeAccess: ModelAccess?, tl: ThreadLocals) -> (() -> Void)? {
-        // The access callback is the only consumer of the `& Sendable` view of `statePath`.
-        // Forming that view (`unsafeBitCast` to a protocol composition) costs an existential
-        // metadata lookup, and holding it in an `Optional` a second lookup plus an opaque
-        // copy — so it is built only when there is an access to hand it to.
+    func invokeDidModifyDirect<T>(index: Int, activeAccess: ModelAccess?, tl: ThreadLocals, path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> (() -> Void)? {
+        // The access callback is the only consumer of the key path, and of its `& Sendable`
+        // view. Forming the literal is a `_swift_getKeyPath` (retaining a process-wide
+        // object); forming the view (`unsafeBitCast` to a protocol composition) costs an
+        // existential metadata lookup, and holding it in an `Optional` a second lookup plus
+        // an opaque copy — so both happen only when there is an access to hand it to.
         @inline(__always) func accessCallback() -> (() -> Void)? {
             guard let activeAccess else { return nil }
-            return activeAccess.didModify(from: self, at: unsafeBitCast(statePath, to: (WritableKeyPath<M._ModelState, T> & Sendable).self))
+            return activeAccess.didModify(from: self, at: unsafeBitCast(path(), to: (WritableKeyPath<M._ModelState, T> & Sendable).self))
         }
 
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useObservationRegistrar {
             let observer = _StateObserver<M._ModelState>()
-            // Use cached KP to avoid per-write _swift_getKeyPath allocation (same rationale as willAccessDirect).
+            // The per-context identity token for this property (see `_observerTokens`),
+            // fetched under the Reference's leaf lock — hierarchy lock → Reference lock is
+            // the established order.
+            nonisolated(unsafe) let observerKP = unsafeDowncast(
+                reference.observerToken(of: self, index),
+                to: KeyPath<_StateObserver<M._ModelState>, AnyHashable>.self
+            )
+            // Coalescing key for `MainCallQueue.notifyRegistrar` (off-main / batched
+            // branches only): the token is per (context, property) already, but the
+            // queue keys on (contextID, token identity) so it never has to hash a key path.
             let contextID = UInt(bitPattern: ObjectIdentifier(self))
-            nonisolated(unsafe) let observerKP: KeyPath<_StateObserver<M._ModelState>, AnyHashable> = _stateObserverKP(contextID: contextID, statePath: statePath)
             let useMain = useMainThreadObservation
             // Resolved once per write — the box → pair → background chain is immutable and
             // non-nil whenever `useObservationRegistrar` holds, so one borrowed read serves
@@ -1218,23 +1365,27 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// `oldValue` is pinned until this returns for the same reason the old `_modify` held it
     /// past the yield with `_fixLifetime`: its deinit must not run while `reference.state`
     /// is briefly held for the store.
+    ///
+    /// `index` is the property's index, `set` the macro-generated write-back
+    /// (`{ $0.count = $1 }`) and `path` its key path as an autoclosure — evaluated only
+    /// for a `TestAccess` / collector, or for the Debug-only property description.
     @inline(__always)
-    func endDirectWrite<T>(_ scope: DirectWriteScope, statePath: WritableKeyPath<M._ModelState, T>, value: T, oldValue: T, isSame: Bool) {
+    func endDirectWrite<T>(_ scope: DirectWriteScope, index: Int, value: T, oldValue: T, isSame: Bool, set: (inout M._ModelState, T) -> Void, path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) {
         defer { _fixLifetime(oldValue) }
         switch scope.mode {
         case .dropped:
             // Already isolated from `reference.state`: nothing is written back.
             lock.unlock()
         case .destructedSilent:
-            reference.state[keyPath: statePath] = value
+            set(&reference.state, value)
             lock.unlock()
         case .live:
-            reference.state[keyPath: statePath] = value
+            set(&reference.state, value)
             if isSame {
                 lock.unlock()
                 return
             }
-            finishWrite(statePath: statePath, activeAccess: scope.writeLockHolder, tl: scope.tl)
+            finishWrite(index: index, activeAccess: scope.writeLockHolder, tl: scope.tl, path: path())
         }
     }
 
@@ -1255,22 +1406,22 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// never needs a yield, so it is a plain function: no coroutine, no frame allocation.
     /// `isSame` is non-escaping (a plain `(T, T) -> Bool`, never optional), so the
     /// `Equatable` overload's `==` costs no heap allocation here either.
-    func setValue<T>(_ newValue: T, statePath: WritableKeyPath<M._ModelState, T>, isSame: (T, T) -> Bool, accessBox: _ModelAccessBox) {
+    func setValue<T>(_ newValue: T, index: Int, isSame: (T, T) -> Bool, accessBox: _ModelAccessBox, get: (M._ModelState) -> T, set: (inout M._ModelState, T) -> Void, path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) {
         let scope = beginDirectWrite(accessBox: accessBox)
         defer { closeDirectWrite(scope) }
-        let oldValue: T = reference.state[keyPath: statePath]
-        endDirectWrite(scope, statePath: statePath, value: newValue, oldValue: oldValue, isSame: isSame(newValue, oldValue))
+        let oldValue: T = get(reference.state)
+        endDirectWrite(scope, index: index, value: newValue, oldValue: oldValue, isSame: isSame(newValue, oldValue), set: set, path: path())
     }
 
-    /// Coroutine form of the direct write, for a caller that cannot yield its own local.
-    ///
-    /// Used only by the parameter-pack (tuple property) overload of `_ModelSourceBox`'s
-    /// write subscript: SILGen (Swift 6.3) crashes lowering the caller-owned form for a
-    /// `(repeat each T)` value, so tuple properties keep yielding through here, where `T`
-    /// is an ordinary generic parameter. This path still pays the second coroutine frame
-    /// and the heap-boxed `isSame` closure that the scalar overloads no longer do; tuple
-    /// properties are rare enough for that to be fine.
-    subscript<T>(yieldingStatePath statePath: WritableKeyPath<M._ModelState, T>, isSame isSame: (T, T) -> Bool, accessBox accessBox: _ModelAccessBox) -> T {
+    /// Key-path forms of the direct write, for the parameter-pack (tuple property) overload
+    /// of `_ModelSourceBox`'s write subscript: SILGen (Swift 6.3) crashes lowering the
+    /// caller-owned yield, and any apply with a `(repeat each T)` argument (the closure
+    /// projection / write-back the scalar overloads use), so tuple properties come here with
+    /// their key path and index, where `T` is an ordinary generic parameter and the
+    /// projection closures are formed locally. The coroutine form still pays the second
+    /// coroutine frame and the heap-boxed `isSame` closure that the scalar overloads no
+    /// longer do; tuple properties are rare enough for that to be fine.
+    subscript<T>(yieldingStatePath statePath: WritableKeyPath<M._ModelState, T>, index index: Int, isSame isSame: (T, T) -> Bool, accessBox accessBox: _ModelAccessBox) -> T {
         _read { fatalError() }
         _modify {
             let scope = beginDirectWrite(accessBox: accessBox)
@@ -1278,8 +1429,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             var value: T = reference.state[keyPath: statePath]
             let oldValue = value
             yield &value
-            endDirectWrite(scope, statePath: statePath, value: value, oldValue: oldValue, isSame: isSame(value, oldValue))
+            endDirectWrite(scope, index: index, value: value, oldValue: oldValue, isSame: isSame(value, oldValue), set: { $0[keyPath: statePath] = $1 }, path: statePath)
         }
+    }
+
+    /// See the subscript above.
+    func setValue<T>(_ newValue: T, statePath: WritableKeyPath<M._ModelState, T>, index: Int, isSame: (T, T) -> Bool, accessBox: _ModelAccessBox) {
+        setValue(newValue, index: index, isSame: isSame, accessBox: accessBox, get: { $0[keyPath: statePath] }, set: { $0[keyPath: statePath] = $1 }, path: statePath)
     }
 
     /// Shared tail of every direct `_State` write (`endDirectWrite` — behind both the
@@ -1291,13 +1447,18 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// `activeAccess` is the caller's resolved `ModelAccess.active ?? accessBox._reference?.access
     /// ?? ModelAccess.current` chain — the same value it took the write lock on — and `tl` its
     /// `threadLocals` handle, so the two task-locals and the TLS slot are each read once per write.
-    private func finishWrite<T>(statePath: WritableKeyPath<M._ModelState, T>, activeAccess: ModelAccess?, tl: ThreadLocals) {
+    ///
+    /// `path` is the property's key path as an autoclosure: formed for a `TestAccess` /
+    /// collector's `didModify`, and — in Debug builds — for the property description that
+    /// `observeModifications(debug:)` prints; the observer-less Release write never
+    /// evaluates it.
+    private func finishWrite<T>(index: Int, activeAccess: ModelAccess?, tl: ThreadLocals, path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) {
         didModify()
-        let activeAccessCallback = invokeDidModifyDirect(statePath: statePath, activeAccess: activeAccess, tl: tl)
+        let activeAccessCallback = invokeDidModifyDirect(index: index, activeAccess: activeAccess, tl: tl, path: path())
 #if DEBUG
-        let postLockCallbacks = buildPostLockCallbacksWithPropDesc(for: statePath, tl: tl)
+        let postLockCallbacks = buildPostLockCallbacksWithPropDesc(forProperty: index, path: path(), tl: tl)
 #else
-        let postLockCallbacks = buildPostLockCallbacks(for: statePath, tl: tl)
+        let postLockCallbacks = buildPostLockCallbacks(forProperty: index, tl: tl)
 #endif
         lock.unlock()
 
@@ -1305,8 +1466,14 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         runPostLockCallbacks(postLockCallbacks)
     }
 
-    /// Transaction-based modification using state paths and access box.
-    func stateTransaction<Value, T>(at statePath: WritableKeyPath<M._ModelState, Value>, isSame: (Value, Value) -> Bool, accessBox: _ModelAccessBox, modify: (inout Value) throws -> T) rethrows -> T {
+    /// Transaction-based modification of a tracked property: `modify` runs on a local copy
+    /// under the lock, the result is written back, and observers are notified through
+    /// `finishWrite` unless `isSame`. Used by the `@Model` / `ModelContainer` / collection
+    /// write paths (child-context management happens inside `modify`) and by undo restore.
+    ///
+    /// `index` is the property's index, `get`/`set` its projection and write-back; `path`
+    /// (autoclosure) is formed only where a key path is needed — see `finishWrite`.
+    func stateTransaction<Value, T>(index: Int, isSame: (Value, Value) -> Bool, accessBox: _ModelAccessBox, get: (M._ModelState) -> Value, set: (inout M._ModelState, Value) -> Void, path: @autoclosure () -> WritableKeyPath<M._ModelState, Value>, modify: (inout Value) throws -> T) rethrows -> T {
         // See the matching comment in `beginDirectWrite`.
         // Take the access's write lock BEFORE the context lock so we match the reader's
         // lock order (TestAccess.lock → context.lock) and writers don't race the
@@ -1324,31 +1491,36 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         lock.lock()
         let result: T
         if unprotectedIsDestructed {
-            var value: Value
-            if reference._stateCleared {
-                if !reference._hasGenesis {
-                    reportIssue("Modifying a fully destructed model with no last-seen snapshot.")
-                }
-                value = reference.state[keyPath: statePath]
-            } else {
-                value = reference.state[keyPath: statePath]
+            if reference._stateCleared, !reference._hasGenesis {
+                reportIssue("Modifying a fully destructed model with no last-seen snapshot.")
             }
+            var value = get(reference.state)
             result = try modify(&value)
             lock.unlock()
         } else {
-            let oldValue = reference.state[keyPath: statePath]
+            let oldValue = get(reference.state)
             var value = oldValue
             result = try modify(&value)
-            reference.state[keyPath: statePath] = value
+            set(&reference.state, value)
 
             if isSame(value, oldValue) {
                 lock.unlock()
                 return result
             }
 
-            finishWrite(statePath: statePath, activeAccess: writeLockHolder, tl: tl)
+            finishWrite(index: index, activeAccess: writeLockHolder, tl: tl, path: path())
         }
         return result
+    }
+
+    /// Key-path form of `stateTransaction(index:…)` for callers that hold only a key path
+    /// (undo restore of a scalar property). Resolves the index once through the per-context
+    /// table; `statePath` must name a tracked property.
+    func stateTransaction<Value, T>(at statePath: WritableKeyPath<M._ModelState, Value>, isSame: (Value, Value) -> Bool, accessBox: _ModelAccessBox, modify: (inout Value) throws -> T) rethrows -> T {
+        guard let index = lock({ trackedIndex(of: statePath) }) else {
+            preconditionFailure("SwiftModel: stateTransaction(at:) on a key path that is not a tracked property — this is a bug in SwiftModel.")
+        }
+        return try stateTransaction(index: index, isSame: isSame, accessBox: accessBox, get: { $0[keyPath: statePath] }, set: { $0[keyPath: statePath] = $1 }, path: statePath, modify: modify)
     }
 
 #if DEBUG
@@ -1358,7 +1530,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// Resolves the property name eagerly inside the lock via Mirror + property name cache.
     /// Safe: _modelSeed uses .live source (no observation side-effects during Mirror traversal),
     /// and the propertyName cache lock ordering (context lock → cache lock) is consistent here.
-    private func buildPostLockCallbacksWithPropDesc<T>(for statePath: WritableKeyPath<M._ModelState, T>, tl: ThreadLocals) -> [() -> Void]? {
+    private func buildPostLockCallbacksWithPropDesc<T>(forProperty index: Int, path statePath: WritableKeyPath<M._ModelState, T>, tl: ThreadLocals) -> [() -> Void]? {
         let name: String? = usingActiveAccess(nil) {
             propertyName(from: _modelSeed, path: M._modelStateKeyPath.appending(path: statePath))
         }
@@ -1368,23 +1540,49 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         } else {
             desc = nil
         }
-        return buildPostLockCallbacks(for: statePath, propertyDescription: desc, tl: tl)
+        return buildPostLockCallbacks(forProperty: index, propertyDescription: desc, tl: tl)
     }
 #endif
 
-    /// Builds the post-lock callbacks array for a property modification.
+    /// Builds the post-lock callbacks array for a tracked-property modification — the
+    /// index-keyed twin of `buildPostLockCallbacks(for:kind:…)` below, which serves the
+    /// synthetic paths. Returns nil when there is nothing to do, avoiding the array
+    /// allocation entirely. Must be called while the context lock is held.
+    private func buildPostLockCallbacks(forProperty index: Int, propertyDescription: (@Sendable () -> String?)? = nil, tl: ThreadLocals) -> [() -> Void]? {
+        // Fast path: nothing to build when no observer of any kind is registered and we're
+        // not inside a batched transaction. Two plain loads, then an `Int` hash only once
+        // this context is known to hold `onModify` callbacks on some property.
+        if anyModificationActiveCount == 0 && tl.postTransactions == nil {
+            guard hasPropertyModifyCallbacks, propertyModifyCallbacksStore?[index] != nil else {
+                return nil
+            }
+        }
+        var postLockCallbacks: [() -> Void] = []
+        onPostTransaction(callbacks: &postLockCallbacks) { postCallbacks in
+            if let callbacks = self.propertyModifyCallbacks[index] {
+                for callback in callbacks.values {
+                    if let postCallback = callback(false, false) {
+                        postCallbacks.append(postCallback)
+                    }
+                }
+            }
+            // Respect per-property exclusions registered via excludeFromModifications().
+            if self.modificationExcludedIndices?.contains(index) != true {
+                self.didModify(callbacks: &postCallbacks, kind: .properties, depth: 0, origin: self, propertyDescription: propertyDescription)
+            }
+        }
+        return postLockCallbacks
+    }
+
+    /// Builds the post-lock callbacks array for a synthetic-path modification (context /
+    /// preference storage). Tracked properties use `buildPostLockCallbacks(forProperty:…)`.
     /// Returns nil when there is nothing to do, avoiding the array allocation entirely.
     /// Must be called while the context lock is held.
-    private func buildPostLockCallbacks(for path: PartialKeyPath<M._ModelState>, kind: ModificationKind = .properties, propertyDescription: (@Sendable () -> String?)? = nil, tl: ThreadLocals = threadLocals) -> [() -> Void]? {
+    private func buildPostLockCallbacks(for path: PartialKeyPath<M._ModelState>, kind: ModificationKind, propertyDescription: (@Sendable () -> String?)? = nil, tl: ThreadLocals = threadLocals) -> [() -> Void]? {
         // Fast path: nothing to build when no observer of any kind is registered and we're
         // not inside a batched transaction. Checked in cost order — two plain loads first,
         // and the key-path hash (`modifyCallbacksStore[path]`) only once this context is
-        // known to hold `onModify` callbacks. The previous `modifyCallbacks[path] != nil`
-        // paid, on every observer-less write, for the `_read` accessor's `?? [:]` (a
-        // `Dictionary.init(dictionaryLiteral:)` in unspecialised generic code, which
-        // instantiates the `(key:value:)` tuple metadata through the runtime's locked
-        // cache), a copy of the dictionary, the `Hashable` witness for
-        // `PartialKeyPath<M._ModelState>`, and the structural hash of the key path itself.
+        // known to hold `onModify` callbacks on a synthetic path.
         if anyModificationActiveCount == 0 && tl.postTransactions == nil {
             guard hasModifyCallbacks, modifyCallbacksStore?[path] != nil else {
                 return nil
@@ -1399,12 +1597,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                     }
                 }
             }
-            // For .properties changes, respect per-property exclusions registered via
-            // excludeFromModifications(). Other kinds (environment, preferences, etc.) are
-            // always forwarded — they use synthetic paths not registered as exclusions.
-            if kind != .properties || self.modificationExcludedPaths?.contains(path) != true {
-                self.didModify(callbacks: &postCallbacks, kind: kind, depth: 0, origin: self, propertyDescription: propertyDescription)
-            }
+            // Synthetic kinds (environment, preferences, …) are always forwarded — only
+            // tracked properties can be excluded via excludeFromModifications().
+            self.didModify(callbacks: &postCallbacks, kind: kind, depth: 0, origin: self, propertyDescription: propertyDescription)
         }
         return postLockCallbacks
     }
@@ -1428,7 +1623,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // triggers willAccess with the @_ModelTracked backing storage path(s).
         // This avoids any frozen-copy issues that arise when writing through a computed setter.
         let collector = PathCollector<M>()
-        // model has .reference source, so reading via keyPath triggers willAccessDirect → PathCollector.willAccess.
+        // model has .reference source, so reading via keyPath triggers trackedRead → PathCollector.willAccess.
         let touchTarget = model
         usingActiveAccess(collector) {
             _ = touchTarget[keyPath: path]
@@ -1444,17 +1639,18 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         for invoker in collector.invokers {
             invoker(modelContext)
         }
-        // Fire AccessCollector onModify callbacks keyed on the backing paths.
+        // Fire AccessCollector onModify callbacks keyed on the backing properties.
         let postLockCallbacks: [() -> Void]? = lock {
             var callbacks: [() -> Void] = []
             for backingPath in backingPaths {
+                guard let index = trackedIndex(of: backingPath) else { continue }
                 onPostTransaction(callbacks: &callbacks) { postCallbacks in
-                    if let cbs = self.modifyCallbacks[backingPath] {
+                    if let cbs = self.propertyModifyCallbacks[index] {
                         for callback in cbs.values {
                             if let c = callback(false, true) { postCallbacks.append(c) }
                         }
                     }
-                    if self.modificationExcludedPaths?.contains(backingPath) != true {
+                    if self.modificationExcludedIndices?.contains(index) != true {
                         self.didModify(callbacks: &postCallbacks, kind: .properties, depth: 0, origin: self)
                     }
                 }
@@ -1972,7 +2168,7 @@ extension Context {
     /// per access could only ever confirm that. (Cross-thread conflicts are not what the
     /// dynamic check detects in the first place; those are the locks' job.) `state` itself
     /// is deliberately NOT unchecked: its `_modify` yields the stored value in place, and
-    /// the borrow lifetime discipline documented at `Context.readLocked` relies on the
+    /// the borrow lifetime discipline documented at `Context.trackedRead` relies on the
     /// checker.
     @usableFromInline
     final class Reference: @unchecked Sendable {
@@ -2264,6 +2460,31 @@ extension Context {
             return _context
         }
 
+        /// The live context together with its registrar identity token for the tracked
+        /// property at `index` (nil token when the tree has no registrar), or nil when no
+        /// context is live — the tracked read's replacement for `context`. Both are
+        /// resolved in the ONE `lock` window the read already pays to load `_context`, so
+        /// the token costs no extra acquisition, and it is in hand before the hierarchy
+        /// lock is taken: `Context.trackedRead` must register the access before it reads
+        /// the value (see its doc comment). This lock guards `Context._observerTokens`.
+        @usableFromInline
+        func liveContextAndObserverToken(_ index: Int) -> (Context<M>, AnyObject?)? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard let context = _context else { return nil }
+            let token: AnyObject? = context.useObservationRegistrar ? context._observerTokenUnderReferenceLock(index) : nil
+            return (context, token)
+        }
+
+        /// The registrar identity token of `context` (which must be a context of this
+        /// Reference) for the property at `index`, for the write side. Takes `lock`; the
+        /// caller holds the hierarchy lock, which is the established order.
+        func observerToken(of context: Context<M>, _ index: Int) -> AnyObject {
+            lock.lock()
+            defer { lock.unlock() }
+            return context._observerTokenUnderReferenceLock(index)
+        }
+
         /// The `withUntrackedModelReads` read of `statePath` on a live model, or `nil` when
         /// no context is live (the caller then falls back to the pre-anchor / snapshot
         /// `dynamicMember` read, exactly as it did when `context` resolved to nil).
@@ -2271,7 +2492,7 @@ extension Context {
         /// An untracked read needs nothing from the `Context` object itself: only the
         /// hierarchy lock to project `state` under, and whether the model is destructed
         /// (which decides the transition-override / cleared-state handling — the same
-        /// branches as `Context.readLocked`). Both live on this Reference, so the read
+        /// branches as `Context.trackedRead`). Both live on this Reference, so the read
         /// never loads the weak `_context`. That removes `swift_weakLoadStrong` plus the
         /// strong retain/release it hands back — ~15% of an untracked read in the
         /// 8-thread contention profile — while the locking discipline is unchanged:
@@ -2293,7 +2514,7 @@ extension Context {
         /// `dynamicMember` read, this one projects under the lock — same lock, same value
         /// (`clear` stores genesis into `state`), same report condition.
         @usableFromInline
-        func readUntracked<T>(_ statePath: WritableKeyPath<M._ModelState, T>, tl: ThreadLocals) -> T? {
+        func readUntracked<T>(tl: ThreadLocals, get: (M._ModelState) -> T) -> T? {
             lock.lock()
             let hierarchyLock = _hierarchyLock
             let isDestructed = _isDestructed
@@ -2307,11 +2528,11 @@ extension Context {
                 if _stateCleared, !_hasGenesis {
                     reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
                 }
-                value = state[keyPath: statePath]
+                value = get(state)
             } else if let override = tl.transitionOverrideValue, let typed = override as? T {
                 value = typed
             } else {
-                value = state[keyPath: statePath]
+                value = get(state)
             }
             hierarchyLock.unlock()
             return value
@@ -2542,7 +2763,8 @@ private final class PathCollector<M: Model>: ModelAccess, @unchecked Sendable {
 
     init() { super.init(useWeakReference: false) }
 
-    override func willAccess<N: Model, T>(from context: Context<N>, at path: KeyPath<N._ModelState, T> & Sendable) -> (() -> Void)? {
+    override func willAccess<N: Model, T>(from context: Context<N>, at path: @autoclosure () -> (KeyPath<N._ModelState, T> & Sendable)) -> (() -> Void)? {
+        let path = path()
         // We only care about accesses on M._ModelState itself.
         guard let typedPath = path as? KeyPath<M._ModelState, T> else { return nil }
         paths.append(typedPath)

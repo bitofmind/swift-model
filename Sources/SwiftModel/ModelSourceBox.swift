@@ -126,10 +126,11 @@ final class TypedPendingValue<V>: PendingValue, @unchecked Sendable {
 /// `(registrar, keyPath)` pair is unique, preserving fine-grained observation semantics.
 @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
 struct _StateObserver<State>: Observable, Sendable {
-    /// Per-instance + per-property subscript for direct state paths.
-    /// Arguments are raw pointer values (`ObjectIdentifier.rawValue`) so that UInt arguments
-    /// hash as trivial single integers — much cheaper than a compound `(ModelID, WritableKeyPath)`
-    /// key where the WritableKeyPath itself is a nested subscript argument.
+    /// Per-instance + per-property subscript for direct state paths: the context's address
+    /// (`ObjectIdentifier` bit pattern) and the property's tracked index. Plain `UInt`
+    /// arguments hash as trivial integers — much cheaper than a compound
+    /// `(ModelID, WritableKeyPath)` key where the key path itself is a nested argument.
+    /// Built once per (context, property) by `Context.observerToken(_:)`.
     /// Never called — used only for keypath construction.
     subscript(contextID _: UInt, propID _: UInt) -> AnyHashable { fatalError() }
 
@@ -141,147 +142,6 @@ struct _StateObserver<State>: Observable, Sendable {
     subscript(preferenceKey _: AnyHashableSendable, modelID _: ModelID) -> AnyHashableSendable { fatalError() }
     subscript(_parentsObservationKey _: _ParentsObservationKey, modelID _: ModelID) -> [ModelID] { fatalError() }
     subscript(memoizeKey _: AnyHashableSendable, modelID _: ModelID) -> AnyHashableSendable { fatalError() }
-}
-
-// MARK: - _stateObserverKPCache
-
-/// Process-wide cache: `(contextID, propID)` → `_StateObserver`-subscript KP for registrar calls.
-///
-/// `\_StateObserver<M._ModelState>[contextID: contextID, propID: propID]` allocates a new heap
-/// `KeyPath` object on every call via `_swift_getKeyPath` (~1.7 μs). Since both IDs are stable
-/// for the lifetime of the context, caching by the compound `(contextID, propID)` pair eliminates
-/// the per-call allocation. One write per (property, model-instance) pair per process lifetime;
-/// all subsequent accesses are cache hits.
-///
-/// Cache size: O(instances × properties). For typical apps (dozens to hundreds of live instances,
-/// a handful of properties each) this is bounded and small. Entries are never evicted — the per-
-/// entry overhead is negligible.
-///
-/// `LockIsolated` cannot be used here because its `withValue` closure is `@Sendable`, which
-/// requires the return type to be provably `Sendable`. `KeyPath<_StateObserver<State>, AnyHashable>`
-/// cannot be proven `Sendable` under Swift 6 strict concurrency.
-/// `@unchecked Sendable` is safe: the lock ensures mutual exclusion for all cache mutations.
-@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-private struct _StateObserverKPKey: Hashable, Sendable {
-    let contextID: UInt  // UInt(bitPattern: ObjectIdentifier(context))
-    let propID: UInt     // UInt(bitPattern: ObjectIdentifier(statePath as AnyKeyPath))
-}
-
-@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-private final class _StateObserverKPCacheStorage: @unchecked Sendable {
-    private let lock = NSLock()
-    private var cache = [_StateObserverKPKey: AnyObject]()
-
-    func getOrInsert<State>(
-        _ key: _StateObserverKPKey,
-        make: () -> KeyPath<_StateObserver<State>, AnyHashable>
-    ) -> KeyPath<_StateObserver<State>, AnyHashable> {
-        lock {
-            if let cached = cache[key] as? KeyPath<_StateObserver<State>, AnyHashable> { return cached }
-            let kp = make()
-            cache[key] = kp
-            return kp
-        }
-    }
-}
-
-@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-private let _stateObserverKPCacheStorage = _StateObserverKPCacheStorage()
-
-@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-func _cachedStateObserverKP<State>(
-    contextID: UInt,
-    propID: UInt,
-    make: () -> KeyPath<_StateObserver<State>, AnyHashable>
-) -> KeyPath<_StateObserver<State>, AnyHashable> {
-    _stateObserverKPCacheStorage.getOrInsert(_StateObserverKPKey(contextID: contextID, propID: propID), make: make)
-}
-
-// MARK: - Identity-keyed observer-KP fast path
-
-/// First-level cache in front of `_cachedStateObserverKP`, keyed by the *identity*
-/// of the state key-path object instead of its structural `hashValue`.
-///
-/// The macro-generated accessors pass key-path LITERALS, which the Swift runtime
-/// interns per call site (argument-free key-path patterns are instantiated once and
-/// cached in the pattern), so on the hot path the same `WritableKeyPath` object
-/// arrives on every read/write of a property. Keying by object identity replaces the
-/// per-access `KeyPath.hashValue` — a structural hash over the whole key-path buffer
-/// — with hashing two pointer-sized integers.
-///
-/// Misses fall back to the structural cache (`_cachedStateObserverKP`), which
-/// canonicalizes by `hashValue` so that dynamically-constructed (appended) key paths
-/// — never the same object across sites — still resolve to the same observer KP as
-/// their literal twins.
-///
-/// **ABA safety**: each entry retains the key-path object it is keyed by, so a key
-/// path's address can never be reused while its entry is alive — and since the key
-/// path object determines `State`, a hit can be `unsafeDowncast` without a dynamic
-/// cast. Context addresses (`contextID`) are *not* retained: a recycled context
-/// address paired with the same key-path object deterministically produces a
-/// structurally-equal observer KP (same `contextID` bits, same structural `propID`),
-/// so a stale entry is indistinguishable from a fresh computation. (The structural
-/// cache has accepted the same context-address recycling since its introduction.)
-///
-/// **Bounding**: a stripe that reaches `_identityStripeCapacity` is cleared
-/// (releasing its retained key paths) and rebuilt on demand. Literal key paths
-/// re-add cheaply; pathological producers of unique key-path objects (e.g. generic
-/// `@Model` types, where the runtime cannot intern the literal pattern) degrade to
-/// the structural fallback plus periodic stripe churn instead of unbounded growth.
-///
-/// **Striping**: 16 lock stripes selected by key bits keep this process-global cache
-/// from serializing every tracked read/write in the process on a single lock.
-private struct _StateObserverKPIdentityKey: Hashable {
-    let contextID: UInt
-    let keyPathID: UInt
-}
-
-private final class _StateObserverKPIdentityStripe: @unchecked Sendable {
-    let lock = NSLock()
-    var entries: [_StateObserverKPIdentityKey: (keyPath: AnyObject, observerKP: AnyObject)] = [:]
-}
-
-private let _identityStripeCount = 16
-private let _identityStripeCapacity = 1024
-private let _identityStripes: [_StateObserverKPIdentityStripe] = (0..<_identityStripeCount).map { _ in
-    _StateObserverKPIdentityStripe()
-}
-
-@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
-func _stateObserverKP<State>(
-    contextID: UInt,
-    statePath: PartialKeyPath<State>
-) -> KeyPath<_StateObserver<State>, AnyHashable> {
-    let keyPathID = UInt(bitPattern: ObjectIdentifier(statePath))
-    let key = _StateObserverKPIdentityKey(contextID: contextID, keyPathID: keyPathID)
-    // Heap objects are ≥16-byte aligned; shift past the alignment zeros before
-    // picking stripe bits so distinct contexts/key paths spread across stripes.
-    let stripe = _identityStripes[Int(truncatingIfNeeded: (contextID ^ keyPathID) >> 4) & (_identityStripeCount - 1)]
-
-    stripe.lock.lock()
-    if let entry = stripe.entries[key] {
-        let observerKP = entry.observerKP
-        stripe.lock.unlock()
-        // Safe without a dynamic cast: the entry retains its key-path object, and the
-        // key-path object determines `State` — see the ABA-safety note above.
-        return unsafeDowncast(observerKP, to: KeyPath<_StateObserver<State>, AnyHashable>.self)
-    }
-    stripe.lock.unlock()
-
-    // Miss: resolve through the structural cache so appended/synthetic key paths
-    // canonicalize to the same observer KP as their literal twins.
-    let propID = UInt(bitPattern: statePath.hashValue)
-    let observerKP: KeyPath<_StateObserver<State>, AnyHashable> = _cachedStateObserverKP(contextID: contextID, propID: propID) {
-        \_StateObserver<State>[contextID: contextID, propID: propID]
-    }
-
-    stripe.lock.lock()
-    if stripe.entries.count >= _identityStripeCapacity {
-        stripe.entries.removeAll(keepingCapacity: true)
-    }
-    stripe.entries[key] = (statePath, observerKP)
-    stripe.lock.unlock()
-    return observerKP
 }
 
 // MARK: - _ModelStateType
@@ -310,16 +170,22 @@ public struct _EmptyModelState: _ModelStateType, Sendable {}
 /// `_trackedPropertyCount` and `_trackedPropertyKeyPaths` on `_State`; the defaults below
 /// serve `_EmptyModelState` and non-macro conformers (`0` / `[]` / `nil`).
 ///
-/// This is framework-facing groundwork (the `_` prefix means not API): nothing on the read
-/// or write path consumes it yet. It exists so that per-context observer tables can be keyed
-/// by a small integer instead of a `_State` key-path object — the `\_State.prop` literal
-/// every accessor passes today is one process-wide object that `_swift_getKeyPath` retains
-/// from every core, and the observer-KP cache and `modifyCallbacks` both hash it.
+/// This is framework-facing (the `_` prefix means not API). The macro-generated accessors
+/// pass this index — as an `Int` literal — to the `_ModelSourceBox` read/write subscripts,
+/// and `Context` keys its per-context tables by it: the `ObservationRegistrar` identity
+/// tokens (`observerToken(_:)`), the `onModify` callbacks on tracked properties and the
+/// `observeModifications` exclusions. The `\_State.prop` literal is still passed, but as an
+/// autoclosure that only the key-path-keyed consumers (a `TestAccess` or debug collector,
+/// undo, the gap shadow) ever evaluate: `_swift_getKeyPath` retains one process-wide
+/// object per literal from every core, which is what made eight threads reading eight
+/// unrelated models scale so badly.
 ///
 /// The members are computed, not `static let`s: `PartialKeyPath` is not `Sendable`, and Swift
 /// forbids static stored properties in generic types (a generic `@Model`, or one nested in a
-/// generic type, makes `_State` generic). `_trackedPropertyIndex(of:)` is therefore an
-/// identity-then-structural scan — a registration-time cost, never a per-access one.
+/// generic type, makes `_State` generic). `Context` therefore builds `_trackedPropertyKeyPaths`
+/// once per context and keeps it (`trackedPath(_:)` / `trackedIndex(of:)`); the
+/// `_trackedPropertyIndex(of:)` default below is the same identity-then-structural scan for
+/// callers without a context — a registration-time cost, never a per-access one.
 public protocol _ModelStateType {
     /// Number of tracked properties, i.e. the number of stored fields of `_State`.
     /// Emitted by the macro as a literal so callers can size tables without building the array.
@@ -464,25 +330,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             // against a Context's own reference and a snapshot has no context, so no concurrent
             // clearer can exist. `_snapshotLifetime` is an immutable `let`, so this check needs
             // no lock and skips the lock resolution entirely.
-            if reference.isSnapshot {
-                return reference.state[keyPath: path]
-            }
-            // Inside a user-written init body whose required properties aren't all assigned
-            // yet there is no `_State` value at all — read the property from the
-            // construction frame (traps naming the property if it isn't assigned either).
-            if !reference._hasMaterializedState {
-                return reference._readPending(path)
-            }
-            let (readFromClearedModel, value) = reference.withHierarchyLockIfLive { () -> (Bool, T) in
-                if reference._stateCleared {
-                    return (!reference._hasGenesis, reference._hasGenesis ? reference._genesisState[keyPath: path] : reference.state[keyPath: path])
-                }
-                return (false, reference.state[keyPath: path])
-            }
-            if readFromClearedModel {
-                reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
-            }
-            return value
+            _directRead({ $0[keyPath: path] }, path: { path })
         }
         set {
             if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
@@ -494,6 +342,35 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             }
             // Anchored writes go through ModelContext subscript; lastSeen snapshots are immutable.
         }
+    }
+
+    /// The read of one property for every source that is NOT a live anchored model:
+    /// snapshots, the pre-anchor Reference, `.live` internal copies and `forceDirectAccess`
+    /// traversals — the body of the `dynamicMember` getter (see its comment for the locking
+    /// rationale), with the projection supplied as `get` so that the materialised-state
+    /// branches need no key path. `path` is formed only for the construction-frame read
+    /// inside a user-written init (`_readPending`), which is keyed by key path.
+    @usableFromInline
+    func _directRead<T>(_ get: (M._ModelState) -> T, path: () -> WritableKeyPath<M._ModelState, T>) -> T {
+        if reference.isSnapshot {
+            return get(reference.state)
+        }
+        // Inside a user-written init body whose required properties aren't all assigned
+        // yet there is no `_State` value at all — read the property from the
+        // construction frame (traps naming the property if it isn't assigned either).
+        if !reference._hasMaterializedState {
+            return reference._readPending(path())
+        }
+        let (readFromClearedModel, value) = reference.withHierarchyLockIfLive { () -> (Bool, T) in
+            if reference._stateCleared {
+                return (!reference._hasGenesis, reference._hasGenesis ? get(reference._genesisState) : get(reference.state))
+            }
+            return (false, get(reference.state))
+        }
+        if readFromClearedModel {
+            reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
+        }
+        return value
     }
 
     /// Exposes the full `_State` value for direct read/write.
@@ -644,6 +521,22 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
 
 // MARK: - Direct property access subscripts
 
+// The macro-generated accessors of every tracked property call the subscripts below with
+// the property's tracked INDEX (an `Int` literal), its projection `get: { $0.prop }`, its
+// write-back `set: { $0.prop = $1 }` and — as an autoclosure — its key path:
+//
+//     _read { yield _$modelSource[read: 3, access: _$modelAccess, get: { $0.count }, path: \_State.count] }
+//     nonmutating set { _$modelSource[write: 3, access: _$modelAccess, get: { $0.count }, set: { $0.count = $1 }, path: \_State.count] = newValue }
+//     nonmutating _modify { yield &_$modelSource[write: 3, access: _$modelAccess, get: { $0.count }, set: { $0.count = $1 }, path: \_State.count] }
+//
+// The closures are non-escaping and capture nothing (a function pointer and a null
+// context), so the anchored hot path projects the value with one indirect call and never
+// touches a key path: no `_swift_getKeyPath` — which retains one process-wide object per
+// literal from whichever core is reading — no `swift_getAtKeyPath`, and no key-path hash.
+// `Context` keys its per-context observer tokens and `onModify` callbacks by the index.
+// The key path is evaluated only where something is keyed by it: the pre-anchor
+// construction frame, a `TestAccess` / debug collector, undo, the gap shadow.
+
 extension _ModelSourceBox {
 
     /// Resolves the modify context for writes.
@@ -678,89 +571,84 @@ extension _ModelSourceBox {
 
     // MARK: Read subscripts
 
-    // All four read subscripts are plain getters. Two of them used to be `_read`
-    // coroutines yielding straight out of `Context.subscript(statePath:observeCallback:)`
-    // — itself a `_read` — and the nested yield-once frame did not fit the caller's
-    // coroutine buffer, so every anchored read heap-allocated it (`swift_coroFrameAlloc`).
-    // The Context-level read (`Context.readLocked`) always materialised the projection
-    // into a local before yielding, so returning it by value is the same copy without
-    // the frame. See the `readLocked` doc comment for why that materialisation matters.
+    // All four read subscripts are plain getters (a `_read` coroutine nested inside
+    // `Context`'s own used to heap-allocate its frame on every read; the Context-level
+    // read always materialised the projection into a local before yielding, so returning
+    // it by value is the same copy without the frame — see `Context.trackedRead`).
     //
     // Shape shared by all four: `threadLocals` is resolved ONCE (one `pthread_getspecific`)
     // and passed down; the `withUntrackedModelReads` branch is tested BEFORE the weak
     // `reference.context` load and served by `Reference.readUntracked`, which needs
-    // nothing from the Context object; the tracked branch resolves the Context once and
-    // passes it to `willAccessDirect` + `readLocked`. The branch order is equivalent to
-    // the former nested `if`: `readUntracked` returns nil under exactly the condition
-    // `reference.context` did (`_hierarchyLock` is kept in lockstep with `_context`),
-    // and the fallback in both cases is the `dynamicMember` read.
+    // nothing from the Context object; the tracked branch resolves the Context AND the
+    // property's registrar token in one Reference-lock window
+    // (`liveContextAndObserverToken`) and hands both to `trackedRead`, which registers the
+    // access before it reads (see its doc comment). `readUntracked` returns nil under
+    // exactly the condition `liveContextAndObserverToken` does (`_hierarchyLock` is kept in
+    // lockstep with `_context`), and the fallback in both cases is `_directRead`.
 
     @_disfavoredOverload
-    public subscript<T>(read statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
+    public subscript<T>(read index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> T, path path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
         @inlinable
         get {
             let tl = threadLocals
             if tl.forceDirectAccess || _isLive {
-                return self[dynamicMember: statePath]
+                return _directRead(get, path: path)
             }
             if tl.untrackedReads {
                 // withUntrackedModelReads scope: lock-protected raw read, no observation.
-                if let value = reference.readUntracked(statePath, tl: tl) { return value }
-                return self[dynamicMember: statePath]
+                if let value = reference.readUntracked(tl: tl, get: get) { return value }
+                return _directRead(get, path: path)
             }
-            if let context = reference.context {
-                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox, tl: tl)
-                return context.readLocked(statePath, callback: callback, tl: tl)
+            if let live = reference.liveContextAndObserverToken(index) {
+                return live.0.trackedRead(index, token: live.1, accessBox: accessBox, tl: tl, get: get, path: path())
             }
-            return self[dynamicMember: statePath]
+            return _directRead(get, path: path)
         }
     }
 
-    public subscript<T: Model>(read statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
+    public subscript<T: Model>(read index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> T, path path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
         get {
             let tl = threadLocals
             if tl.forceDirectAccess || _isLive {
-                return self[dynamicMember: statePath]
+                return _directRead(get, path: path)
             }
             if tl.untrackedReads {
                 // withUntrackedModelReads scope: lock-protected raw read,
                 // no observation, no child access stamping.
-                if let value = reference.readUntracked(statePath, tl: tl) { return value }
-                return self[dynamicMember: statePath]
+                if let value = reference.readUntracked(tl: tl, get: get) { return value }
+                return _directRead(get, path: path)
             }
-            if let context = reference.context {
+            if let live = reference.liveContextAndObserverToken(index) {
                 let access = accessBox._reference?.access ?? ModelAccess.current
-                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox, tl: tl)
-                let value: T = context.readLocked(statePath, callback: callback, tl: tl)
+                let value: T = live.0.trackedRead(index, token: live.1, accessBox: accessBox, tl: tl, get: get, path: path())
                 return value.withAccessIfPropagateToChildren(access)
             }
-            return self[dynamicMember: statePath]
+            return _directRead(get, path: path)
         }
     }
 
-    public subscript<T: ModelContainer>(read statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
+    public subscript<T: ModelContainer>(read index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> T, path path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
         get {
             let tl = threadLocals
             if tl.forceDirectAccess || _isLive {
-                return self[dynamicMember: statePath]
+                return _directRead(get, path: path)
             }
             if tl.untrackedReads {
                 // withUntrackedModelReads scope: lock-protected raw read,
                 // no observation, no deep access stamping.
-                if let value = reference.readUntracked(statePath, tl: tl) { return value }
-                return self[dynamicMember: statePath]
+                if let value = reference.readUntracked(tl: tl, get: get) { return value }
+                return _directRead(get, path: path)
             }
-            if let context = reference.context {
+            if let live = reference.liveContextAndObserverToken(index) {
                 let access = accessBox._reference?.access ?? ModelAccess.current
                 let deepAccess = access.flatMap { $0.shouldPropagateToChildren ? $0 : nil }
-                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox, tl: tl)
-                let value: T = context.readLocked(statePath, callback: callback, tl: tl)
+                let value: T = live.0.trackedRead(index, token: live.1, accessBox: accessBox, tl: tl, get: get, path: path())
                 if let deepAccess {
                     return value.withDeepAccess(deepAccess)
                 }
                 return value
             }
-            return self[dynamicMember: statePath]
+            return _directRead(get, path: path)
         }
     }
 
@@ -769,23 +657,22 @@ extension _ModelSourceBox {
     /// Disfavored so that when the collection also conforms to `ModelContainer`, the
     /// `subscript<T: ModelContainer>(read:)` overload wins and applies full recursive `withDeepAccess`.
     @_disfavoredOverload
-    public subscript<C: MutableCollection>(read statePath: WritableKeyPath<M._ModelState, C>, access accessBox: _ModelAccessBox) -> C
+    public subscript<C: MutableCollection>(read index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> C, path path: @autoclosure () -> WritableKeyPath<M._ModelState, C>) -> C
         where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
         get {
             let tl = threadLocals
             if tl.forceDirectAccess || _isLive {
-                return self[dynamicMember: statePath]
+                return _directRead(get, path: path)
             }
             if tl.untrackedReads {
                 // withUntrackedModelReads scope: lock-protected raw read,
                 // no observation, no per-element access stamping.
-                if let value = reference.readUntracked(statePath, tl: tl) { return value }
-                return self[dynamicMember: statePath]
+                if let value = reference.readUntracked(tl: tl, get: get) { return value }
+                return _directRead(get, path: path)
             }
-            if let context = reference.context {
+            if let live = reference.liveContextAndObserverToken(index) {
                 let access = accessBox._reference?.access ?? ModelAccess.current
-                let callback = context.willAccessDirect(statePath: statePath, accessBox: accessBox, tl: tl)
-                let value: C = context.readLocked(statePath, callback: callback, tl: tl)
+                let value: C = live.0.trackedRead(index, token: live.1, accessBox: accessBox, tl: tl, get: get, path: path())
                 guard let access, access.shouldPropagateToChildren else { return value }
                 var result = value
                 for index in result.indices {
@@ -793,32 +680,32 @@ extension _ModelSourceBox {
                 }
                 return result
             }
-            return self[dynamicMember: statePath]
+            return _directRead(get, path: path)
         }
     }
 
     // MARK: Locked state projection
 
-    /// Projects `statePath` out of `context.reference.state` while holding the
+    /// Projects a property out of `context.reference.state` while holding the
     /// hierarchy lock, and returns the resulting value.
     ///
     /// **Every `@Model`-child write path needs this.** Each one runs its
     /// `stateTransaction` (read, mutate, write back — all under the hierarchy lock)
     /// and then, once the lock has been *released*, re-reads the stored child to
-    /// activate it. A raw `context.reference.state[keyPath: statePath]` read at that
-    /// point races a concurrent writer's locked write-back on the same key path, and
-    /// that is a **memory-safety** bug rather than a staleness one: the key-path
+    /// activate it. A raw `context.reference.state` read at that
+    /// point races a concurrent writer's locked write-back on the same property, and
+    /// that is a **memory-safety** bug rather than a staleness one: the
     /// projection loads the slot and only *then* retains what it loaded, so a writer
     /// that drops the old child's last reference in between hands this retain an
     /// already-freed object. The observed failure is a `SIGSEGV` inside `swift_retain`
-    /// under `initializeWithCopy` ← `swift_getAtKeyPath` ← the re-activation closure.
+    /// under `initializeWithCopy` ← the projection ← the re-activation closure.
     /// Multi-word stored values (an `IdentifiedArray`, say) can additionally be read
     /// half-updated.
     ///
     /// Neither sanitizer sees this: both the load and the retain happen inside
-    /// uninstrumented `libswiftCore` (`swift_getAtKeyPath`, the value witness), so
+    /// uninstrumented `libswiftCore` (the value witness), so
     /// TSan and ASan are structurally blind to it. Don't take a clean sanitizer run as
-    /// evidence that an unlocked `reference.state[keyPath:]` read is safe.
+    /// evidence that an unlocked `reference.state` read is safe.
     ///
     /// Hold the lock for the projection **only**. `activate()` / `onActivate()` must
     /// run outside it, as they always have. The returned value may therefore be stale
@@ -826,14 +713,16 @@ extension _ModelSourceBox {
     /// transaction, and harmless: `onActivate()` refuses to resurrect a
     /// concurrently-destructed context, so a stale child is a no-op.
     @inline(__always)
-    private func _snapshotUnderLock<T>(_ context: Context<M>, _ statePath: WritableKeyPath<M._ModelState, T>) -> T {
-        context.lock { context.reference.state[keyPath: statePath] }
+    private func _snapshotUnderLock<T>(_ context: Context<M>, _ get: (M._ModelState) -> T) -> T {
+        context.lock.lock()
+        defer { context.lock.unlock() }
+        return get(context.reference.state)
     }
 
     // MARK: Modify subscripts
 
     @_disfavoredOverload
-    public subscript<T>(write statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
+    public subscript<T>(write index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> T, set set: (inout M._ModelState, T) -> Void, path path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
         _read { fatalError("Use read subscript for reads") }
         nonmutating _modify {
             guard let context = _modifyContext(accessBox: accessBox) else {
@@ -842,27 +731,29 @@ extension _ModelSourceBox {
                     // Local-copy + write-back keeps the user's mutation expression
                     // from running while `reference.state` is exclusively borrowed —
                     // see `Context.beginDirectWrite`.
-                    var value = reference.state[keyPath: statePath]
+                    var value = get(reference.state)
                     yield &value
-                    reference.state[keyPath: statePath] = value
+                    set(&reference.state, value)
                     reference._stateVersion &+= 1
                 } else if reference.context == nil && !reference.isSnapshot {
                     // Pre-anchor in-place mutation. Inside a user-written init body the
                     // `_State` value may not exist yet (a required property is still
                     // unassigned); the frame then holds this property's box, and we yield
                     // straight into it. Either way, yield directly rather than
-                    // local-copy + write-back. Trade-off: a compound pre-anchor write whose
-                    // RHS reads `self` could trip Swift's exclusivity check, but RMW during
-                    // init is rare. Track pre-anchor mutations so `Context.init` can detect
-                    // dep model pollution.
+                    // local-copy + write-back (which would COW-copy a buffer-backed value
+                    // on every pre-anchor `append`). Both forms need the key path — the
+                    // one place the pre-anchor path evaluates it. Trade-off: a compound
+                    // pre-anchor write whose RHS reads `self` could trip Swift's
+                    // exclusivity check, but RMW during init is rare. Track pre-anchor
+                    // mutations so `Context.init` can detect dep model pollution.
                     if reference._hasMaterializedState {
-                        yield &reference.state[keyPath: statePath]
+                        yield &reference.state[keyPath: path()]
                     } else {
-                        yield &reference._pendingBox(statePath).value
+                        yield &reference._pendingBox(path()).value
                     }
                     reference._stateVersion &+= 1
                 } else {
-                    var value = self[dynamicMember: statePath]
+                    var value = _directRead(get, path: path)
                     yield &value
                 }
                 return
@@ -872,10 +763,10 @@ extension _ModelSourceBox {
             // `_modify` on `Context`. See `Context.DirectWriteScope`.
             let scope = context.beginDirectWrite(accessBox: accessBox)
             defer { context.closeDirectWrite(scope) }
-            var value: T = context.reference.state[keyPath: statePath]
+            var value: T = get(context.reference.state)
             let oldValue = value
             yield &value
-            context.endDirectWrite(scope, statePath: statePath, value: value, oldValue: oldValue, isSame: false)
+            context.endDirectWrite(scope, index: index, value: value, oldValue: oldValue, isSame: false, set: set, path: path())
         }
         nonmutating set {
             // Whole-value assignment. Distinct from `_modify` so that assigning a property
@@ -883,40 +774,40 @@ extension _ModelSourceBox {
             // first — there is nothing to read until it has been assigned.
             guard let context = _modifyContext(accessBox: accessBox) else {
                 if _isLive {
-                    reference.state[keyPath: statePath] = newValue
+                    set(&reference.state, newValue)
                     reference._stateVersion &+= 1
                 } else if reference.context == nil && !reference.isSnapshot {
-                    reference._writeDirect(statePath, newValue)
+                    reference._writeDirect(path(), newValue)
                     reference._stateVersion &+= 1
                 }
                 return
             }
-            context.setValue(newValue, statePath: statePath, isSame: { _, _ in false }, accessBox: accessBox)
+            context.setValue(newValue, index: index, isSame: { _, _ in false }, accessBox: accessBox, get: get, set: set, path: path())
         }
     }
 
     @_disfavoredOverload
-    public subscript<T: Equatable>(write statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
+    public subscript<T: Equatable>(write index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> T, set set: (inout M._ModelState, T) -> Void, path path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
         _read { fatalError("Use read subscript for reads") }
         nonmutating _modify {
             guard let context = _modifyContext(accessBox: accessBox) else {
                 if _isLive {
                     // See disfavoured generic overload for rationale.
-                    var value = reference.state[keyPath: statePath]
+                    var value = get(reference.state)
                     yield &value
-                    reference.state[keyPath: statePath] = value
+                    set(&reference.state, value)
                     reference._stateVersion &+= 1
                 } else if reference.context == nil && !reference.isSnapshot {
                     // Pre-anchor: direct-yield, into the construction frame while the
                     // `_State` value doesn't exist yet. See disfavoured generic overload.
                     if reference._hasMaterializedState {
-                        yield &reference.state[keyPath: statePath]
+                        yield &reference.state[keyPath: path()]
                     } else {
-                        yield &reference._pendingBox(statePath).value
+                        yield &reference._pendingBox(path()).value
                     }
                     reference._stateVersion &+= 1
                 } else {
-                    var value = self[dynamicMember: statePath]
+                    var value = _directRead(get, path: path)
                     yield &value
                 }
                 return
@@ -925,31 +816,42 @@ extension _ModelSourceBox {
             // directly: no closure crosses a coroutine boundary, so no heap-boxed thunk.
             let scope = context.beginDirectWrite(accessBox: accessBox)
             defer { context.closeDirectWrite(scope) }
-            var value: T = context.reference.state[keyPath: statePath]
+            var value: T = get(context.reference.state)
             let oldValue = value
             yield &value
-            context.endDirectWrite(scope, statePath: statePath, value: value, oldValue: oldValue, isSame: value == oldValue)
+            context.endDirectWrite(scope, index: index, value: value, oldValue: oldValue, isSame: value == oldValue, set: set, path: path())
         }
         nonmutating set {
             // See disfavoured generic overload.
             guard let context = _modifyContext(accessBox: accessBox) else {
                 if _isLive {
-                    reference.state[keyPath: statePath] = newValue
+                    set(&reference.state, newValue)
                     reference._stateVersion &+= 1
                 } else if reference.context == nil && !reference.isSnapshot {
-                    reference._writeDirect(statePath, newValue)
+                    reference._writeDirect(path(), newValue)
                     reference._stateVersion &+= 1
                 }
                 return
             }
-            context.setValue(newValue, statePath: statePath, isSame: ==, accessBox: accessBox)
+            context.setValue(newValue, index: index, isSame: ==, accessBox: accessBox, get: get, set: set, path: path())
         }
     }
 
+    /// Tuple (parameter-pack) properties. Same signature as the scalar overloads so the
+    /// macro emits one accessor shape, but this one never CALLS `get` / `set`, nor passes
+    /// them on: SILGen (Swift 6.3) crashes lowering an apply whose argument is a
+    /// `(repeat each T)` value — the caller-owned yield that #64 hit, and now also the
+    /// closure projection and write-back (`emitDynamicPackLoop` under `CallSite::emit`).
+    /// So the tuple path keeps its key-path form end to end: the key path is evaluated up
+    /// front and the write goes through `Context`'s coroutine / `setValue(_:statePath:…)`,
+    /// which take the index alongside it so the observer token and `onModify` lookups are
+    /// still index-keyed. Tuple properties are rare enough for the `_swift_getKeyPath`
+    /// and the second coroutine frame to be fine.
     @_disfavoredOverload
-    public subscript<each T: Equatable>(write statePath: WritableKeyPath<M._ModelState, (repeat each T)>, access accessBox: _ModelAccessBox) -> (repeat each T) {
+    public subscript<each T: Equatable>(write index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> (repeat each T), set set: (inout M._ModelState, (repeat each T)) -> Void, path path: @autoclosure () -> WritableKeyPath<M._ModelState, (repeat each T)>) -> (repeat each T) {
         get { fatalError("Use read subscript for reads") }
         nonmutating _modify {
+            let statePath = path()
             guard let context = _modifyContext(accessBox: accessBox) else {
                 if _isLive {
                     // See disfavoured generic overload for rationale.
@@ -972,14 +874,11 @@ extension _ModelSourceBox {
                 }
                 return
             }
-            // Unlike the scalar overloads this one cannot yield its own local: SILGen
-            // (Swift 6.3) crashes lowering the caller-owned write for a `(repeat each T)`
-            // value in a coroutine. Tuple properties are rare, so they keep yielding
-            // through `Context`'s coroutine form instead.
-            yield &context[yieldingStatePath: statePath, isSame: isSame, accessBox: accessBox]
+            yield &context[yieldingStatePath: statePath, index: index, isSame: isSame, accessBox: accessBox]
         }
         nonmutating set {
             // See disfavoured generic overload.
+            let statePath = path()
             guard let context = _modifyContext(accessBox: accessBox) else {
                 if _isLive {
                     reference.state[keyPath: statePath] = newValue
@@ -990,12 +889,12 @@ extension _ModelSourceBox {
                 }
                 return
             }
-            context.setValue(newValue, statePath: statePath, isSame: isSame, accessBox: accessBox)
+            context.setValue(newValue, statePath: statePath, index: index, isSame: isSame, accessBox: accessBox)
         }
     }
 
-    public subscript<T: Model>(write statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
-        get { self[read: statePath, access: accessBox] }
+    public subscript<T: Model>(write index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> T, set set: (inout M._ModelState, T) -> Void, path path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
+        get { self[read: index, access: accessBox, get: get, path: path()] }
         nonmutating _modify {
             guard _modifyContext(accessBox: accessBox) != nil else {
                 // Pre-anchor or live: yield directly into storage, bypassing the getter.
@@ -1008,13 +907,13 @@ extension _ModelSourceBox {
                 // therefore still trip Swift's exclusivity check, which is rare in practice.
                 if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
                     if reference._hasMaterializedState {
-                        yield &reference.state[keyPath: statePath]
+                        yield &reference.state[keyPath: path()]
                     } else {
-                        yield &reference._pendingBox(statePath).value
+                        yield &reference._pendingBox(path()).value
                     }
                     reference._stateVersion &+= 1
                 } else {
-                    var value = self[read: statePath, access: accessBox]
+                    var value = self[read: index, access: accessBox, get: get, path: path()]
                     yield &value
                 }
                 return
@@ -1023,22 +922,22 @@ extension _ModelSourceBox {
             // child context management (old context removal, new context anchoring). This
             // path already uses the local-copy + write-back pattern, so it is safe against
             // simultaneous-access traps from RHS expressions that read other model state.
-            var value = self[read: statePath, access: accessBox]
+            var value = self[read: index, access: accessBox, get: get, path: path()]
             yield &value
-            self[write: statePath, access: accessBox] = value
+            self[write: index, access: accessBox, get: get, set: set, path: path()] = value
         }
         nonmutating set {
             // Pre-anchor or live: store directly without anchoring semantics.
             // _modifyContext returns nil for this case and would silently drop the write.
             if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
-                reference._writeDirect(statePath, newValue)
+                reference._writeDirect(path(), newValue)
                 return
             }
             guard let context = _modifyContext(accessBox: accessBox) else { return }
 
             // Project the stored child under the hierarchy lock — a raw read here
             // is a memory-safety bug, not just a staleness one. See `_snapshotUnderLock`.
-            let existingChildContext = _snapshotUnderLock(context, statePath).context
+            let existingChildContext = _snapshotUnderLock(context, get).context
             guard existingChildContext !== newValue.context else {
                 return
             }
@@ -1048,6 +947,7 @@ extension _ModelSourceBox {
                 return
             }
 
+            let statePath = path()
             let modelPath = M._modelStateKeyPath.appending(path: statePath)
             var callbacks: [() -> Void] = []
             // Identity is the Identifiable `.id` (the stable-identity contract shared with the
@@ -1057,9 +957,9 @@ extension _ModelSourceBox {
             // state is ignored (to change a child, mutate it). Only a DIFFERENT `.id` is a genuine
             // replacement. For a default-`id` @Model `.id == modelID`, so this is unchanged there;
             // it only affects models with an explicit, reusable `id`.
-            context.stateTransaction(at: statePath, isSame: {
+            context.stateTransaction(index: index, isSame: {
                 $0.id == $1.id
-            }, accessBox: accessBox, modify: { child in
+            }, accessBox: accessBox, get: get, set: set, path: statePath, modify: { child in
                 var newChild = newValue
                 // Tear down the old child only on a real replacement (different `.id`). For a
                 // same-`.id` assignment, leaving the existing context registered lets
@@ -1077,7 +977,7 @@ extension _ModelSourceBox {
 
             // Snapshot before re-activating: this runs AFTER `stateTransaction`
             // released the lock. `onActivate()` stays outside it. See `_snapshotUnderLock`.
-            let childContext = _snapshotUnderLock(context, statePath).context
+            let childContext = _snapshotUnderLock(context, get).context
             let access = accessBox._reference?.access ?? ModelAccess.current
             if let access, access.shouldPropagateToChildren {
                 usingAccess(access) {
@@ -1094,10 +994,10 @@ extension _ModelSourceBox {
     /// both `MutableCollection` (with `Model` elements) and `ModelContainer` apply — ensuring the
     /// write path uses `updateContextForCollection` (consistent with the `visitCollection` read path
     /// that uses `\C.self`-keyed child registration).
-    public subscript<C: MutableCollection & ModelContainer>(write statePath: WritableKeyPath<M._ModelState, C>, access accessBox: _ModelAccessBox) -> C
+    public subscript<C: MutableCollection & ModelContainer>(write index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> C, set set: (inout M._ModelState, C) -> Void, path path: @autoclosure () -> WritableKeyPath<M._ModelState, C>) -> C
         where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
-        get { self[read: statePath, access: accessBox] }
-        nonmutating set { _performCollectionSet(statePath: statePath, accessBox: accessBox, newValue: newValue) }
+        get { self[read: index, access: accessBox, get: get, path: path()] }
+        nonmutating set { _performCollectionSet(index: index, accessBox: accessBox, newValue: newValue, get: get, set: set, path: path()) }
     }
 
     /// Handles `MutableCollection` properties whose element type is `Model & Identifiable`
@@ -1106,20 +1006,23 @@ extension _ModelSourceBox {
     /// Identifiable` overload below when both match (e.g. `IdentifiedArray<@Model>`).
     /// When the collection is also `ModelContainer`, the more-constrained
     /// `MutableCollection & ModelContainer` overload above wins via specificity.
-    public subscript<C: MutableCollection>(write statePath: WritableKeyPath<M._ModelState, C>, access accessBox: _ModelAccessBox) -> C
+    public subscript<C: MutableCollection>(write index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> C, set set: (inout M._ModelState, C) -> Void, path path: @autoclosure () -> WritableKeyPath<M._ModelState, C>) -> C
         where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
-        get { self[read: statePath, access: accessBox] }
-        nonmutating set { _performCollectionSet(statePath: statePath, accessBox: accessBox, newValue: newValue) }
+        get { self[read: index, access: accessBox, get: get, path: path()] }
+        nonmutating set { _performCollectionSet(index: index, accessBox: accessBox, newValue: newValue, get: get, set: set, path: path()) }
     }
 
     /// Shared implementation for both `MutableCollection` write subscripts.
     private func _performCollectionSet<C: MutableCollection>(
-        statePath: WritableKeyPath<M._ModelState, C>,
+        index: Int,
         accessBox: _ModelAccessBox,
-        newValue: C
+        newValue: C,
+        get: (M._ModelState) -> C,
+        set: (inout M._ModelState, C) -> Void,
+        path: @autoclosure () -> WritableKeyPath<M._ModelState, C>
     ) where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
         if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
-            reference._writeDirect(statePath, newValue)
+            reference._writeDirect(path(), newValue)
             return
         }
         guard let context = _modifyContext(accessBox: accessBox) else { return }
@@ -1128,12 +1031,13 @@ extension _ModelSourceBox {
         _warnOnDuplicateModelIDs(newValue)
 #endif
 
+        let statePath = path()
         let modelPath = M._modelStateKeyPath.appending(path: statePath)
         var postLockCallbacks: [() -> Void] = []
         var structuralChange = false
-        context.stateTransaction(at: statePath, isSame: {
+        context.stateTransaction(index: index, isSame: {
             collectionIsSame($0, $1)
-        }, accessBox: accessBox, modify: { collection in
+        }, accessBox: accessBox, get: get, set: set, path: statePath, modify: { collection in
             var newCollection = newValue
             let prevDidReplace = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
             threadLocals.didReplaceModelWithDestructedOrFrozenCopy = false
@@ -1163,7 +1067,7 @@ extension _ModelSourceBox {
         if structuralChange {
             // Snapshot the elements before activating them: this loop runs AFTER
             // `stateTransaction` returned, outside the lock. See `_snapshotUnderLock`.
-            let elements = _snapshotUnderLock(context, statePath)
+            let elements = _snapshotUnderLock(context, get)
             let access = accessBox._reference?.access ?? ModelAccess.current
             if let access, access.shouldPropagateToChildren {
                 usingAccess(access) {
@@ -1184,19 +1088,22 @@ extension _ModelSourceBox {
     /// `@ModelContainer` enum). Disfavored so that when a type is also `ModelContainer` the
     /// more-constrained overload wins.
     @_disfavoredOverload
-    public subscript<C: MutableCollection>(write statePath: WritableKeyPath<M._ModelState, C>, access accessBox: _ModelAccessBox) -> C
+    public subscript<C: MutableCollection>(write index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> C, set set: (inout M._ModelState, C) -> Void, path path: @autoclosure () -> WritableKeyPath<M._ModelState, C>) -> C
         where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
-        get { self[read: statePath, access: accessBox] }
-        nonmutating set { _performContainerCollectionSet(statePath: statePath, accessBox: accessBox, newValue: newValue) }
+        get { self[read: index, access: accessBox, get: get, path: path()] }
+        nonmutating set { _performContainerCollectionSet(index: index, accessBox: accessBox, newValue: newValue, get: get, set: set, path: path()) }
     }
 
     private func _performContainerCollectionSet<C: MutableCollection>(
-        statePath: WritableKeyPath<M._ModelState, C>,
+        index: Int,
         accessBox: _ModelAccessBox,
-        newValue: C
+        newValue: C,
+        get: (M._ModelState) -> C,
+        set: (inout M._ModelState, C) -> Void,
+        path: @autoclosure () -> WritableKeyPath<M._ModelState, C>
     ) where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
         if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
-            reference._writeDirect(statePath, newValue)
+            reference._writeDirect(path(), newValue)
             return
         }
         let context: Context<M>
@@ -1206,7 +1113,7 @@ extension _ModelSourceBox {
                 // before setContext is called (e.g. pre-populated collection elements whose
                 // modelContext is updated by visitContainerCollection). Write directly, mirroring
                 // the Equatable subscript behaviour for this initialisation case.
-                reference.state[keyPath: statePath] = newValue
+                set(&reference.state, newValue)
                 return
             }
             context = ctx
@@ -1215,13 +1122,14 @@ extension _ModelSourceBox {
             context = ctx
         }
 
+        let statePath = path()
         let modelPath = M._modelStateKeyPath.appending(path: statePath)
         var postLockCallbacks: [() -> Void] = []
         var structuralChange = false
-        context.stateTransaction(at: statePath, isSame: { lhs, rhs in
+        context.stateTransaction(index: index, isSame: { lhs, rhs in
             guard lhs.count == rhs.count else { return false }
             return zip(lhs, rhs).allSatisfy { $0.id == $1.id }
-        }, accessBox: accessBox, modify: { collection in
+        }, accessBox: accessBox, get: get, set: set, path: statePath, modify: { collection in
             var newCollection = newValue
             let prevDidReplace = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
             threadLocals.didReplaceModelWithDestructedOrFrozenCopy = false
@@ -1255,7 +1163,7 @@ extension _ModelSourceBox {
         if structuralChange {
             // Snapshot before activating — same rationale as the
             // `_performCollectionSet` loop above. See `_snapshotUnderLock`.
-            let elements = _snapshotUnderLock(context, statePath)
+            let elements = _snapshotUnderLock(context, get)
             let access = accessBox._reference?.access ?? ModelAccess.current
             if let access, access.shouldPropagateToChildren {
                 usingAccess(access) {
@@ -1271,13 +1179,13 @@ extension _ModelSourceBox {
         }
     }
 
-    public subscript<T: ModelContainer>(write statePath: WritableKeyPath<M._ModelState, T>, access accessBox: _ModelAccessBox) -> T {
-        get { self[read: statePath, access: accessBox] }
+    public subscript<T: ModelContainer>(write index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> T, set set: (inout M._ModelState, T) -> Void, path path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
+        get { self[read: index, access: accessBox, get: get, path: path()] }
         nonmutating set {
             // Pre-anchor: store directly without anchoring semantics.
             // _modifyContext returns nil for this case and would silently drop the write.
             if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
-                reference._writeDirect(statePath, newValue)
+                reference._writeDirect(path(), newValue)
                 return
             }
             // For live (_isLive == true, e.g. _modelSeed in context.transaction(at:)), route
@@ -1291,12 +1199,13 @@ extension _ModelSourceBox {
                 context = ctx
             }
 
+            let statePath = path()
             let modelPath = M._modelStateKeyPath.appending(path: statePath)
             var postLockCallbacks: [() -> Void] = []
             var structuralChange = false
-            context.stateTransaction(at: statePath, isSame: {
+            context.stateTransaction(index: index, isSame: {
                 containerIsSame($0, $1)
-            }, accessBox: accessBox, modify: { container in
+            }, accessBox: accessBox, get: get, set: set, path: statePath, modify: { container in
                 // NOTE: there is intentionally NO "same IDs ⇒ store newValue and return" fast path
                 // here. `containerIsSame` compares by Identifiable `.id`, which a fresh instance
                 // sharing an existing domain `id` also satisfies — storing such a pre-anchor value
@@ -1332,7 +1241,7 @@ extension _ModelSourceBox {
             if structuralChange {
                 // Snapshot before activating — this read runs after
                 // `stateTransaction` released the lock. See `_snapshotUnderLock`.
-                let container = _snapshotUnderLock(context, statePath)
+                let container = _snapshotUnderLock(context, get)
                 let access = accessBox._reference?.access ?? ModelAccess.current
                 if let access, access.shouldPropagateToChildren {
                     usingAccess(access) {

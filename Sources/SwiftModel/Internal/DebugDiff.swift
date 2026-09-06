@@ -377,7 +377,8 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
 
     override var shouldPropagateToChildren: Bool { !isShallow }
 
-    override func willAccess<M: Model, T>(from context: Context<M>, at path: KeyPath<M._ModelState, T> & Sendable) -> (() -> Void)? {
+    override func willAccess<M: Model, T>(from context: Context<M>, at path: @autoclosure () -> (KeyPath<M._ModelState, T> & Sendable)) -> (() -> Void)? {
+        let path = path()
         // In shallow mode, only track properties on the root model — skip child models.
         // `usingActiveAccess` installs this collector globally so `willAccess` fires for
         // every model; we filter here rather than relying on `shouldPropagateToChildren`.

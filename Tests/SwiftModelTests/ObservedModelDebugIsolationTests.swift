@@ -134,8 +134,9 @@ private final class RecordingDebugAccess: ModelAccess, @unchecked Sendable {
 
     override func willAccess<M: Model, Value>(
         from context: Context<M>,
-        at path: KeyPath<M._ModelState, Value> & Sendable
+        at path: @autoclosure () -> (KeyPath<M._ModelState, Value> & Sendable)
     ) -> (() -> Void)? {
+        let path = path()
         if path is WritableKeyPath<M._ModelState, Value> {
             recordedWritablePaths.withValue { $0.append("\(M.self).<\(Value.self)>") }
         }

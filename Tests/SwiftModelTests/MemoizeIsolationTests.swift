@@ -178,8 +178,9 @@ private final class RecordingAccess: ModelAccess, @unchecked Sendable {
 
     override func willAccess<M: Model, Value>(
         from context: Context<M>,
-        at path: KeyPath<M._ModelState, Value> & Sendable
+        at path: @autoclosure () -> (KeyPath<M._ModelState, Value> & Sendable)
     ) -> (() -> Void)? {
+        let path = path()
         // Only count real writable state paths — synthetic key paths
         // (`[memoizeKey:]`, `[environmentKey:]`, etc.) have `fatalError()`
         // getters and don't represent "the user read this property of the

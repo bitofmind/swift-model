@@ -69,8 +69,19 @@ class ModelAccessReference: @unchecked Sendable {
 /// The models inside `_stateHolder.state` never carry access; it is applied only to
 /// the VALUE returned to the caller (transient, not persisted in stored state).
 class ModelAccess: ModelAccessReference, @unchecked Sendable {
-    func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? { nil }
-    func didModify<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? { nil }
+    /// Called before a tracked property is read / after it is written on a live context.
+    ///
+    /// `path` is an autoclosure: the tracked read/write path hands the key path over
+    /// lazily, and only an override that keys its bookkeeping by key path (`TestAccess`,
+    /// `ViewAccess`, the collectors) evaluates it. This class's own no-op implementations
+    /// — which is what a bare anchor-holder access (`returningAnchor()` / `withAnchor()`
+    /// with no observer) has — never form it. That matters: the `\_State.prop` literal
+    /// is one process-wide object that `_swift_getKeyPath` retains on every evaluation,
+    /// and it was the last shared cache line on the 8-thread read path once the observer
+    /// tables were keyed by index. Overrides that need the key path more than once should
+    /// bind it first (`let path = path()`).
+    func willAccess<M: Model, Value>(from context: Context<M>, at path: @autoclosure () -> (KeyPath<M._ModelState, Value> & Sendable)) -> (() -> Void)? { nil }
+    func didModify<M: Model, Value>(from context: Context<M>, at path: @autoclosure () -> (KeyPath<M._ModelState, Value> & Sendable)) -> (() -> Void)? { nil }
 
     func didSend<M: Model, Event>(event: Event, from context: Context<M>) {}
 

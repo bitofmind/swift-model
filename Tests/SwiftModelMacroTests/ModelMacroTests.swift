@@ -71,13 +71,23 @@ struct ModelMacroTests {
                         _$modelSource = ._popFromThreadLocal(Self._makeState)
                     }
                     _read {
-                        yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                        yield _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, path: \_State.count]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
+                        _$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.count, access: _$modelAccess]
+                        yield &_$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count]
                     }
                 }
 
@@ -188,13 +198,23 @@ struct ModelMacroTests {
                         _$modelSource = ._popFromThreadLocal(Self._makeState)
                     }
                     get {
-                        _$modelSource[read: \_State.handler, access: _$modelAccess]
+                        _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.handler
+                        }, path: \_State.handler]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.handler, access: _$modelAccess] = newValue
+                        _$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.handler
+                        }, set: {
+                            $0.handler = $1
+                        }, path: \_State.handler] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.handler, access: _$modelAccess]
+                        yield &_$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.handler
+                        }, set: {
+                            $0.handler = $1
+                        }, path: \_State.handler]
                     }
                 }
 
@@ -305,13 +325,23 @@ struct ModelMacroTests {
                         _$modelSource = ._popFromThreadLocal(Self._makeState)
                     }
                     _read {
-                        yield _$modelSource[read: \_State.activateCount, access: _$modelAccess]
+                        yield _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.activateCount
+                        }, path: \_State.activateCount]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.activateCount, access: _$modelAccess] = newValue
+                        _$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.activateCount
+                        }, set: {
+                            $0.activateCount = $1
+                        }, path: \_State.activateCount] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.activateCount, access: _$modelAccess]
+                        yield &_$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.activateCount
+                        }, set: {
+                            $0.activateCount = $1
+                        }, path: \_State.activateCount]
                     }
                 }
 
@@ -420,13 +450,23 @@ struct ModelMacroTests {
                         _$modelSource = ._popFromThreadLocal(Self._makeState)
                     }
                     _read {
-                        yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                        yield _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, path: \_State.count]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
+                        _$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.count, access: _$modelAccess]
+                        yield &_$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count]
                     }
                 }
 
@@ -550,17 +590,25 @@ struct ModelMacroTests {
                     }
 
                     _read {
-                        yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                        yield _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, path: \_State.count]
                     }
 
                     nonmutating set {
                         guard !_$modelSource._storePendingIfNeeded(\.count, newValue) else {
                             return
                         }
-                        let oldValue = _$modelSource[read: \_State.count, access: _$modelAccess]
+                        let oldValue = _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, path: \_State.count]
                         _ = oldValue
                         print("willSet")
-                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
+                        _$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count] = newValue
                         print("didSet")
                     }
                 }
@@ -667,13 +715,23 @@ struct ModelMacroTests {
                         _$modelSource = ._popFromThreadLocal(Self._makeState)
                     }
                     _read {
-                        yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                        yield _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, path: \_State.count]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
+                        _$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.count, access: _$modelAccess]
+                        yield &_$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count]
                     }
                 }
 
@@ -775,13 +833,23 @@ struct ModelMacroTests {
                         _$modelSource = ._popFromThreadLocal(Self._makeState)
                     }
                     _read {
-                        yield _$modelSource[read: \_State.animating, access: _$modelAccess]
+                        yield _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.animating
+                        }, path: \_State.animating]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.animating, access: _$modelAccess] = newValue
+                        _$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.animating
+                        }, set: {
+                            $0.animating = $1
+                        }, path: \_State.animating] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.animating, access: _$modelAccess]
+                        yield &_$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.animating
+                        }, set: {
+                            $0.animating = $1
+                        }, path: \_State.animating]
                     }
                 }
 
@@ -885,13 +953,23 @@ struct ModelMacroTests {
                         _ModelSourceBox<Self>._threadLocalStoreFirst(\.count, newValue)
                     }
                     _read {
-                        yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                        yield _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, path: \_State.count]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
+                        _$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.count, access: _$modelAccess]
+                        yield &_$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count]
                     }
                 }
                 var label: String {
@@ -901,13 +979,23 @@ struct ModelMacroTests {
                         _ModelSourceBox<Self>._threadLocalStoreOrLatest(\.label, newValue)
                     }
                     _read {
-                        yield _$modelSource[read: \_State.label, access: _$modelAccess]
+                        yield _$modelSource[read: 1, access: _$modelAccess, get: {
+                            $0.label
+                        }, path: \_State.label]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.label, access: _$modelAccess] = newValue
+                        _$modelSource[write: 1, access: _$modelAccess, get: {
+                            $0.label
+                        }, set: {
+                            $0.label = $1
+                        }, path: \_State.label] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.label, access: _$modelAccess]
+                        yield &_$modelSource[write: 1, access: _$modelAccess, get: {
+                            $0.label
+                        }, set: {
+                            $0.label = $1
+                        }, path: \_State.label]
                     }
                 }
 
@@ -918,13 +1006,23 @@ struct ModelMacroTests {
                         _$modelSource = _ModelSourceBox<Self>._threadLocalStoreAndPop(\.flag, newValue, Self._makeState)
                     }
                     _read {
-                        yield _$modelSource[read: \_State.flag, access: _$modelAccess]
+                        yield _$modelSource[read: 2, access: _$modelAccess, get: {
+                            $0.flag
+                        }, path: \_State.flag]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.flag, access: _$modelAccess] = newValue
+                        _$modelSource[write: 2, access: _$modelAccess, get: {
+                            $0.flag
+                        }, set: {
+                            $0.flag = $1
+                        }, path: \_State.flag] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.flag, access: _$modelAccess]
+                        yield &_$modelSource[write: 2, access: _$modelAccess, get: {
+                            $0.flag
+                        }, set: {
+                            $0.flag = $1
+                        }, path: \_State.flag]
                     }
                 }
 
@@ -1038,13 +1136,23 @@ struct ModelMacroTests {
                         _$modelSource = ._popFromThreadLocal(Self._makeState)
                     }
                     _read {
-                        yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                        yield _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, path: \_State.count]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
+                        _$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.count, access: _$modelAccess]
+                        yield &_$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count]
                     }
                 }
 
@@ -1148,13 +1256,23 @@ struct ModelMacroTests {
                         _$modelSource = ._popFromThreadLocal(Self._makeState)
                     }
                     _read {
-                        yield _$modelSource[read: \_State.counter, access: _$modelAccess]
+                        yield _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.counter
+                        }, path: \_State.counter]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.counter, access: _$modelAccess] = newValue
+                        _$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.counter
+                        }, set: {
+                            $0.counter = $1
+                        }, path: \_State.counter] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.counter, access: _$modelAccess]
+                        yield &_$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.counter
+                        }, set: {
+                            $0.counter = $1
+                        }, path: \_State.counter]
                     }
                 }
 
@@ -1416,13 +1534,23 @@ struct ModelMacroTests {
                         _$modelSource = ._popFromThreadLocal(Self._makeState)
                     }
                     _read {
-                        yield _$modelSource[read: \_State.count, access: _$modelAccess]
+                        yield _$modelSource[read: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, path: \_State.count]
                     }
                     nonmutating set {
-                        _$modelSource[write: \_State.count, access: _$modelAccess] = newValue
+                        _$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count] = newValue
                     }
                     nonmutating _modify {
-                        yield &_$modelSource[write: \_State.count, access: _$modelAccess]
+                        yield &_$modelSource[write: 0, access: _$modelAccess, get: {
+                            $0.count
+                        }, set: {
+                            $0.count = $1
+                        }, path: \_State.count]
                     }
                 }
                 var description: String { "MyModel(\(count))" }

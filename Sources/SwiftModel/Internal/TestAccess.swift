@@ -549,7 +549,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         await _driveToStableFixpointErasedImpl()
     }
 
-    override func willAccess<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
+    override func willAccess<M: Model, Value>(from context: Context<M>, at path: @autoclosure () -> (KeyPath<M._ModelState, Value> & Sendable)) -> (() -> Void)? {
+        let path = path()
         guard let path = path as? WritableKeyPath<M._ModelState, Value> else {
             // Read-only synthetic paths (a memoized property's `[memoizeKey:]`
             // subscript) carry no Access bookkeeping, but a parked `expect`
@@ -630,7 +631,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     }
                 }
                 // Use _modelSeed directly (.live source) to read the current value and property name.
-                // .live source reads from _stateHolder without triggering willAccessDirect, so
+                // .live source reads from _stateHolder without triggering trackedRead, so
                 // there is no infinite recursion risk. Storage paths have fatalError() getters;
                 // use thread-local pre-computed values set by willAccessStorage/willAccessPreferenceValue.
                 let capturedValue: Value
@@ -727,7 +728,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 value = typed
             } else {
                 // Use _modelSeed directly (.live source): reads from _stateHolder without
-                // triggering willAccessDirect, so there is no infinite recursion risk.
+                // triggering trackedRead, so there is no infinite recursion risk.
                 value = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
             }
             let resolvedPropertyName = resolvedStorageName ?? mStatePath.flatMap { propertyName(from: context._modelSeed, path: $0) }
@@ -768,7 +769,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     //   – onAnyModification's withModificationActiveCount holds parent.lock and then iterates
     //     children, acquiring child.lock (parent → child order).
     // Running the closure after lock.unlock() in Context._modify/transaction breaks the cycle.
-    override func didModify<M: Model, Value>(from context: Context<M>, at path: KeyPath<M._ModelState, Value>&Sendable) -> (() -> Void)? {
+    override func didModify<M: Model, Value>(from context: Context<M>, at path: @autoclosure () -> (KeyPath<M._ModelState, Value> & Sendable)) -> (() -> Void)? {
+        let path = path()
         guard let path = path as? WritableKeyPath<M._ModelState, Value> else { return nil }
 
         // Capture thread-locals here (at call time, while still inside the model lock scope).

@@ -312,7 +312,7 @@ internal func update<T: Sendable>(
         // to the same context's untracked properties) are correctly ignored.
         //
         // Coverage spans BOTH read families: real `_State` reads dispatch the
-        // shadow in `Context.willAccessDirect`, and synthetic-path reads
+        // shadow in `Context.trackedRead`, and synthetic-path reads
         // (memoize sentinels, environment/local storage, preferences, the
         // parents relationship) dispatch it via `Context.willAccessGapShadow`
         // — those would otherwise register only in Apple's one-shot tracking
@@ -326,7 +326,7 @@ internal func update<T: Sendable>(
         // observe(): setting shadow as the active access would inadvertently
         // suppress Apple's `registrar.access(...)` via the
         // `!(isInsideAsyncPerformUpdate && cachedActive != nil)` guard in
-        // `Context.willAccessDirect`, breaking ALL observation.
+        // `Context.trackedRead`, breaking ALL observation.
         //
         // Each `observe()` call wraps its WOT in `shadow.reset { ... }` so the
         // collector diffs the newly-accessed (context, path) set against the
@@ -427,7 +427,7 @@ internal func update<T: Sendable>(
             // Two-pronged isolation for the memoize body against outer observers:
             //
             //   1. `usingActiveAccess(nil)` clears swift-model's `ModelAccess.$active`
-            //      task-local. That alone is **not enough** — `Context.willAccessDirect`
+            //      task-local. That alone is **not enough** — `Context.trackedRead`
             //      falls through to the model value's stamped access
             //      (`accessBox._reference?.access`), which is set by `@ObservedModel.update`
             //      at the calling view boundary. The stamped access path still fires
@@ -452,7 +452,7 @@ internal func update<T: Sendable>(
             // Shadow gap-race detector: see the long doc-comment above the
             // `let shadow = …` declaration at the top of this branch. The
             // shadow is dispatched via `threadLocals.gapShadowCollector`
-            // inside `Context.willAccessDirect`, registering a synchronous
+            // inside `Context.trackedRead`, registering a synchronous
             // per-(context, path) `context.onModify` subscription for every
             // accessed property. Subscriptions persist across `observe()`
             // calls via `shadow.reset { … }` semantics so writes in the
@@ -738,7 +738,8 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
 
     override var shouldPropagateToChildren: Bool { false }
 
-    override func willAccess<M: Model, T>(from context: Context<M>, at path: KeyPath<M._ModelState, T>&Sendable) -> (() -> Void)? {
+    override func willAccess<M: Model, T>(from context: Context<M>, at path: @autoclosure () -> (KeyPath<M._ModelState, T> & Sendable)) -> (() -> Void)? {
+        let path = path()
         let key = Key(id: context.anyModelID, path: path)
 
         let needsRegistration = active.withValue { state in
@@ -797,7 +798,8 @@ private final class ForceObserver: ModelAccess, @unchecked Sendable {
 
     override var shouldPropagateToChildren: Bool { false }
 
-    override func willAccess<M: Model, T>(from context: Context<M>, at path: KeyPath<M._ModelState, T> & Sendable) -> (() -> Void)? {
+    override func willAccess<M: Model, T>(from context: Context<M>, at path: @autoclosure () -> (KeyPath<M._ModelState, T> & Sendable)) -> (() -> Void)? {
+        let path = path()
         let cancellation = context.onModify(for: path) { [weak self] finished, force in
             if finished { return {} }
             guard force, let self else { return nil }
