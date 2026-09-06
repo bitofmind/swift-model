@@ -322,7 +322,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             // Do NOT try to recover the remaining lock pair by hoisting to the traversal
             // via `hierarchyLockHeld`: an element met mid-walk can still be anchored in a
             // DIFFERENT hierarchy, guarded by a different lock (hence the
-            // `existing.lock === self.lock` guards in `findOrTrackChild` / `childContext`).
+            // `existing.lock === lock` guards in `childFastPathLocked` / `childContext`).
             // This call locks that element's own hierarchy; a `hierarchyLockHeld` skip
             // would hold an unrelated lock and reopen the use-after-free.
             //
@@ -1035,13 +1035,16 @@ extension _ModelSourceBox {
         let modelPath = M._modelStateKeyPath.appending(path: statePath)
         var postLockCallbacks: [() -> Void] = []
         var structuralChange = false
-        context.stateTransaction(index: index, isSame: {
-            collectionIsSame($0, $1)
-        }, accessBox: accessBox, get: get, set: set, path: statePath, modify: { collection in
+        var changedElements: [C.Element] = []
+        // `isSame` is the id-sequence comparison the reconcile pass already made — the same
+        // positional `.id` check `collectionIsSame` performs — so the write walks the collection
+        // once, inside the reconcile, rather than re-walking it (and boxing every element as
+        // `Any`) twice more.
+        context.stateTransaction(index: index, isSame: { _, _ in !structuralChange }, accessBox: accessBox, get: get, set: set, path: statePath, modify: { collection in
             var newCollection = newValue
             let prevDidReplace = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
             threadLocals.didReplaceModelWithDestructedOrFrozenCopy = false
-            let oldContexts = context.updateContextForCollection(for: &newCollection, at: modelPath)
+            let reconciled = context.updateContextForCollection(for: &newCollection, old: collection, at: modelPath, changed: &changedElements)
             let didReplaceModelWithDestructedOrFrozenCopy = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
             threadLocals.didReplaceModelWithDestructedOrFrozenCopy = prevDidReplace
 
@@ -1050,12 +1053,10 @@ extension _ModelSourceBox {
                 return
             }
 
-            if !collectionIsSame(newCollection, collection) {
-                structuralChange = true
-            }
+            structuralChange = !reconciled.sameStructure
             collection = newCollection
 
-            for oldContext in oldContexts {
+            for oldContext in reconciled.removed {
                 context.removeChild(oldContext, at: modelPath, callbacks: &postLockCallbacks)
             }
         })
@@ -1064,21 +1065,30 @@ extension _ModelSourceBox {
             callback()
         }
 
-        if structuralChange {
-            // Snapshot the elements before activating them: this loop runs AFTER
-            // `stateTransaction` returned, outside the lock. See `_snapshotUnderLock`.
-            let elements = _snapshotUnderLock(context, get)
-            let access = accessBox._reference?.access ?? ModelAccess.current
-            if let access, access.shouldPropagateToChildren {
-                usingAccess(access) {
-                    for element in elements {
-                        element.activate()
-                    }
-                }
-            } else {
+        if structuralChange, !changedElements.isEmpty {
+            // Activate the elements the reconcile registered — the only ones whose subtree
+            // can hold a not-yet-activated context (see `updateContextForCollection`). The
+            // rest were activated by the write that added them; `Context.onActivate` on an
+            // active context is a no-op, so walking them was pure O(N) cost. Runs AFTER
+            // `stateTransaction` returned, outside the lock, as before; `onActivate` never
+            // resurrects a context a concurrent writer has destructed since.
+            _activateChanged(changedElements, accessBox: accessBox)
+        }
+    }
+
+    /// Activates the elements a collection reconcile registered, under the propagating
+    /// access if any. Shared by the two collection write paths.
+    private func _activateChanged<Element: ModelContainer>(_ elements: [Element], accessBox: _ModelAccessBox) {
+        let access = accessBox._reference?.access ?? ModelAccess.current
+        if let access, access.shouldPropagateToChildren {
+            usingAccess(access) {
                 for element in elements {
                     element.activate()
                 }
+            }
+        } else {
+            for element in elements {
+                element.activate()
             }
         }
     }
@@ -1126,14 +1136,14 @@ extension _ModelSourceBox {
         let modelPath = M._modelStateKeyPath.appending(path: statePath)
         var postLockCallbacks: [() -> Void] = []
         var structuralChange = false
-        context.stateTransaction(index: index, isSame: { lhs, rhs in
-            guard lhs.count == rhs.count else { return false }
-            return zip(lhs, rhs).allSatisfy { $0.id == $1.id }
-        }, accessBox: accessBox, get: get, set: set, path: statePath, modify: { collection in
+        var changedElements: [C.Element] = []
+        // `isSame` is the id-sequence comparison the reconcile pass made — see the
+        // `_performCollectionSet` note above.
+        context.stateTransaction(index: index, isSame: { _, _ in !structuralChange }, accessBox: accessBox, get: get, set: set, path: statePath, modify: { collection in
             var newCollection = newValue
             let prevDidReplace = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
             threadLocals.didReplaceModelWithDestructedOrFrozenCopy = false
-            let oldContexts = context.updateContextForContainerCollection(for: &newCollection, at: modelPath)
+            let reconciled = context.updateContextForContainerCollection(for: &newCollection, old: collection, at: modelPath, changed: &changedElements)
             let didReplaceModelWithDestructedOrFrozenCopy = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
             threadLocals.didReplaceModelWithDestructedOrFrozenCopy = prevDidReplace
 
@@ -1142,16 +1152,10 @@ extension _ModelSourceBox {
                 return
             }
 
-            let sameStructure: Bool = {
-                guard newCollection.count == collection.count else { return false }
-                return zip(newCollection, collection).allSatisfy { $0.id == $1.id }
-            }()
-            if !sameStructure {
-                structuralChange = true
-            }
+            structuralChange = !reconciled.sameStructure
             collection = newCollection
 
-            for oldContext in oldContexts {
+            for oldContext in reconciled.removed {
                 context.removeChild(oldContext, at: modelPath, callbacks: &postLockCallbacks)
             }
         })
@@ -1160,22 +1164,10 @@ extension _ModelSourceBox {
             callback()
         }
 
-        if structuralChange {
-            // Snapshot before activating — same rationale as the
-            // `_performCollectionSet` loop above. See `_snapshotUnderLock`.
-            let elements = _snapshotUnderLock(context, get)
-            let access = accessBox._reference?.access ?? ModelAccess.current
-            if let access, access.shouldPropagateToChildren {
-                usingAccess(access) {
-                    for element in elements {
-                        element.activate()
-                    }
-                }
-            } else {
-                for element in elements {
-                    element.activate()
-                }
-            }
+        if structuralChange, !changedElements.isEmpty {
+            // Only the elements the reconcile registered — same rationale as the
+            // `_performCollectionSet` activation above.
+            _activateChanged(changedElements, accessBox: accessBox)
         }
     }
 
@@ -1211,7 +1203,7 @@ extension _ModelSourceBox {
                 // sharing an existing domain `id` also satisfies — storing such a pre-anchor value
                 // raw would leave the new child UNANCHORED (no context/observation/tasks). Always
                 // run `updateContext`: for a genuine no-op write-back its per-element
-                // `findOrTrackChild` fast path reuses the existing context cheaply (no onActivate
+                // `childFastPathLocked` fast path reuses the existing context cheaply (no onActivate
                 // churn); for a same-`.id` replacement it reuses the live child's context so the
                 // stored value stays anchored (continuity — matching the collection write path).
                 var newContainer = newValue
