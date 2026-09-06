@@ -65,12 +65,19 @@ if #available(macOS 15.0, *) {
     if CommandLine.arguments.contains("--burst") {
         runOffMain { benchBurst() }
     }
+    // The stall probe is the one mode that must run ON the main thread (it measures
+    // main-thread read latency); it pumps the run loop itself.
+    if CommandLine.arguments.contains("--stall") {
+        benchStall()
+        exit(0)
+    }
 }
 
 func runAll() {
     benchActivation()
     benchPropertyAccess()
     benchReadPath()
+    benchWriteCostVsStateSize()
     benchModelScan()
     benchParallelReads()
     benchInModuleProbe()

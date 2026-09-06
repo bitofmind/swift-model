@@ -194,6 +194,99 @@ func profileScenario(_ name: String, threads: Int) {
     print("done \(reps) reps")
 }
 
+/// Main-thread stall probe (snapshot-reads spike). The MAIN thread performs tracked reads
+/// of one root scalar in a tight loop for `seconds`, timing every read, while a background
+/// thread runs `node.transaction` bodies on the SAME tree that each hold the hierarchy lock
+/// for a few ms (a 3 ms spin, or an append+remove reconcile on a 500-item collection).
+/// Reports the reader's p50 / p99 / p99.9 / max latency and how many reads exceeded 1 ms.
+/// With the lock-taking read path the max tracks the transaction duration; with snapshot
+/// reads it should track the no-writer noise floor.
+///
+/// Runs ON the main thread deliberately (the models get a main registrar, as any
+/// SwiftUI-rendered model has); the run loop is pumped between 256-read batches so the
+/// main-registrar notification queue that off-main writes feed keeps draining. The pump is
+/// outside the timed region.
+///
+///   swift run -c release SwiftModelBenchmarks --stall
+@available(macOS 15.0, *)
+func benchStall(seconds: Double = 2.0) {
+    printHeader("Main-thread stall: tracked reads on MAIN during background ~ms transactions on the same tree")
+    var items: IdentifiedArrayOf<BenchItem> = []
+    for i in 0..<500 { items.append(BenchItem(id: i)) }
+    let (list, anchor) = BenchList(items: items).returningAnchor()
+    keepAlive.append(anchor)
+    let child0 = list.items[id: 0]!
+    blackhole &+= list.selectedID ?? 0  // main-thread read → main registrar, like a rendered view
+    blackhole &+= child0.value
+
+    @inline(__always) @Sendable func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    @Sendable func spin(_ ns: UInt64) { let t = now(); while now() &- t < ns {} }
+
+    let variants: [(name: String, read: @Sendable () -> Int, writer: (@Sendable () -> Void)?)] = [
+        ("no writer (noise floor), read root scalar", { list.selectedID ?? 0 }, nil),
+        ("writer: transaction spinning 3 ms, read root scalar", { list.selectedID ?? 0 }, {
+            list.node.transaction { list.selectedID = 1; spin(3_000_000) }
+        }),
+        ("writer: transaction spinning 3 ms, read child value", { child0.value }, {
+            list.node.transaction { list.selectedID = 1; spin(3_000_000) }
+        }),
+        ("writer: append+remove on 500 items, read root scalar", { list.selectedID ?? 0 }, {
+            list.node.transaction { list.items.append(BenchItem(id: 100_000)); list.items.remove(id: 100_000) }
+        }),
+        ("writer: append+remove on 500 items, read child value", { child0.value }, {
+            list.node.transaction { list.items.append(BenchItem(id: 100_000)); list.items.remove(id: 100_000) }
+        }),
+    ]
+
+    print("  " + "variant".padding(toLength: 54, withPad: " ", startingAt: 0) + "      reads     p50      p99    p99.9      max   >1ms   writer txns (mean ms)")
+    for v in variants {
+        let stop = Atomic<Bool>(false)
+        let done = DispatchSemaphore(value: 0)
+        let txnStats = Mutex<(count: Int, ns: UInt64)>((0, 0))
+        if let writer = v.writer {
+            let t = Thread {
+                while !stop.load(ordering: .relaxed) {
+                    let t0 = now()
+                    writer()
+                    let dt = now() &- t0
+                    txnStats.withLock { $0.count += 1; $0.ns &+= dt }
+                    Thread.sleep(forTimeInterval: 0.001)
+                }
+                done.signal()
+            }
+            t.qualityOfService = .userInitiated
+            t.start()
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        var lat: [UInt64] = []
+        lat.reserveCapacity(8_000_000)
+        let end = now() &+ UInt64(seconds * 1e9)
+        let read = v.read
+        while now() < end {
+            for _ in 0..<256 {
+                let t0 = now()
+                blackhole &+= read()
+                lat.append(now() &- t0)
+            }
+            RunLoop.main.run(mode: .default, before: Date())
+        }
+        stop.store(true, ordering: .relaxed)
+        if v.writer != nil { done.wait() }
+        lat.sort()
+        let n = lat.count
+        func pct(_ p: Double) -> Double { Double(lat[min(n - 1, Int(Double(n) * p))]) }
+        let over1ms = lat.reversed().prefix { $0 > 1_000_000 }.count
+        let ts = txnStats.withLock { $0 }
+        let txnCol = ts.count > 0 ? String(format: "%5d (%.2f)", ts.count, Double(ts.ns) / Double(ts.count) / 1e6) : "    -"
+        print(String(format: "  %@ %10d %7.0f %8.0f %8.0f %8.0f %6d   %@",
+                     v.name.padding(toLength: 54, withPad: " ", startingAt: 0) as NSString,
+                     n, pct(0.5), pct(0.99), pct(0.999), Double(lat[n - 1]), over1ms, txnCol as NSString))
+        fflush(nil)
+    }
+    print("  (latencies in ns; max/p99.9 are the numbers that matter — a lock-taking read's max tracks the transaction length)")
+}
+
 /// Off-main write burst against ONE model that has a main registrar, in Release:
 /// the write-phase cost per write and how long main takes to drain afterwards,
 /// with main draining concurrently and with main blocked for the whole write

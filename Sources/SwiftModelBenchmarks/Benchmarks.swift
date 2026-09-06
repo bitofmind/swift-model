@@ -210,6 +210,38 @@ func benchParallelReads() {
     withExtendedLifetime(anchors) {}
 }
 
+// MARK: - 2f. Write cost vs state size (snapshot-reads spike)
+
+/// One scalar write on models whose `_State` has 2 / 10 / 30 Int fields, 30 String fields,
+/// or a 500-element child collection. With snapshot-published reads every write copies the
+/// whole `_State` into a new box: this is the copy-per-write cost as a function of state
+/// shape (field count and refcount traffic), independent of collection *size* (COW).
+func benchWriteCostVsStateSize() {
+    printHeader("2f. Single scalar write vs _State size (copy-per-write cost)")
+
+    let (s2, a2) = BenchScalars2().returningAnchor()
+    measure("write 1 scalar of 2 Int fields", iterations: 500_000) { s2.a &+= 1 }
+    withExtendedLifetime(a2) {}
+
+    let (s10, a10) = BenchScalars10().returningAnchor()
+    measure("write 1 scalar of 10 Int fields", iterations: 500_000) { s10.a &+= 1 }
+    withExtendedLifetime(a10) {}
+
+    let (s30, a30) = BenchScalars30().returningAnchor()
+    measure("write 1 scalar of 30 Int fields", iterations: 500_000) { s30.a &+= 1 }
+    withExtendedLifetime(a30) {}
+
+    let (str30, astr30) = BenchStrings30().returningAnchor()
+    measure("write 1 scalar of 1 Int + 30 String fields", iterations: 500_000) { str30.a &+= 1 }
+    withExtendedLifetime(astr30) {}
+
+    var items: IdentifiedArrayOf<BenchItem> = []
+    for i in 0..<500 { items.append(BenchItem(id: i)) }
+    let (wide, awide) = BenchWide500(items: items).returningAnchor()
+    measure("write 1 scalar next to 500-item collection", iterations: 500_000) { wide.a &+= 1 }
+    withExtendedLifetime(awide) {}
+}
+
 // MARK: - 3. Property access with observer
 
 /// Read / write with an active onChange observer registered via BenchWatcher.onActivate().
