@@ -1,7 +1,11 @@
 import Foundation
 import Dependencies
+import Observation
 #if canImport(Dispatch)
 import Dispatch
+#endif
+#if canImport(Synchronization)
+import Synchronization
 #endif
 
 // - `BackgroundCallQueue` / `backgroundCall`: delivers Observed pipeline updates on a
@@ -10,12 +14,119 @@ import Dispatch
 
 // MARK: - Shared State
 
+/// Coalesced main-registrar notifications — the pending set behind
+/// `MainCallQueue.notifyRegistrar`. Main queue only; always empty on
+/// `BackgroundCallQueue`.
+///
+/// One entry per distinct (context, observer key path) written since the last
+/// drain, in first-insertion order. `keys` is the dedup index, `fires` the
+/// ordered `willSet`+`didSet` closures, and `deliverAt` the index in
+/// `CallQueueState.calls` at which the whole bundle is delivered — the position
+/// the *first* pair of this cycle was enqueued at (see `runBatch`).
+private struct RegistrarBundle: Sendable {
+    struct Key: Hashable, Sendable {
+        let contextID: UInt
+        let keyPathID: ObjectIdentifier
+    }
+    var keys: Set<Key> = []
+    var fires: [@Sendable () -> Void] = []
+    var deliverAt: Int? = nil
+    var isEmpty: Bool { fires.isEmpty }
+}
+
 /// Internal queue state shared by both call-queue types.
 private struct CallQueueState {
     var task: Task<(), Never>
     var calls: [@Sendable () -> Void]
     /// One-shot callbacks fired when the task goes idle (after all calls drain and yield).
     var onIdleCallbacks: [@Sendable () -> Void] = []
+    /// Coalesced main-registrar pairs (main queue only).
+    var registrarBundle = RegistrarBundle()
+
+    var hasWork: Bool { !calls.isEmpty || !registrarBundle.isEmpty }
+
+    /// Removes and returns everything queued, leaving the state alive but empty.
+    mutating func takeAll() -> (calls: [@Sendable () -> Void], bundle: RegistrarBundle) {
+        let out = (calls, registrarBundle)
+        calls.removeAll()
+        registrarBundle = RegistrarBundle()
+        return out
+    }
+}
+
+/// Runs one drained batch of the main queue: general closures in FIFO order, with
+/// the coalesced registrar bundle delivered at the position the first pair of the
+/// cycle was enqueued at.
+///
+/// **Ordering decision.** A pair that joined the bundle *after* some general
+/// closure was enqueued is delivered *before* that closure — earlier than strict
+/// FIFO would. That is safe because the pair is only ever enqueued after its
+/// mutation has been written back (see `Context.invokeDidModifyDirect`): by the
+/// time anything on this queue runs, every state change the bundle describes is
+/// already visible, so no closure can observe a stale value by running after the
+/// pair instead of before it. Delivering the bundle any later (e.g. at the
+/// *last* pair's position) would instead delay the first pair's notification
+/// behind unrelated work. The reverse direction is unchanged: a general closure
+/// enqueued before the first pair still runs before the bundle, and
+/// `waitForCurrentItems` (a general closure) still resumes only after every
+/// pair that preceded it.
+private func runBatch(_ calls: [@Sendable () -> Void], bundle: RegistrarBundle) {
+    guard let at = bundle.deliverAt else {
+        for call in calls { call() }
+        return
+    }
+    for call in calls[..<at] { call() }
+    for fire in bundle.fires { fire() }
+    for call in calls[at...] { call() }
+}
+
+// MARK: - Pending-work flag
+
+/// Lock-free "is anything queued?" hint for `MainCallQueue.drainIfOnMain()`.
+///
+/// Every main-thread write calls `drainIfOnMain()` to flush notifications that
+/// background writers may have bridged over since the last flush. Almost always
+/// there are none, and taking the `LockIsolated` lock just to find an empty
+/// queue was ~10 % of a single-threaded write. The flag lets that common case
+/// return after one atomic load.
+///
+/// It is a *hint*, so it needs no ordering relative to the queue contents: it is
+/// set inside the same critical section that appends, and cleared inside the
+/// one that takes the batch, so it can only ever be stale in the direction of
+/// "false while an enqueue is in flight" — and that enqueue spawns / feeds the
+/// `@MainActor` drain task, which is the delivery guarantee. `drainIfOnMain()`
+/// is purely an opportunistic early flush.
+///
+/// `Synchronization.Atomic` needs a macOS 15 / iOS 18 runtime; on older Apple
+/// OSes we fall back to a locked flag (no worse than before this existed).
+private protocol PendingWorkFlag: AnyObject, Sendable {
+    func load() -> Bool
+    func store(_ value: Bool)
+}
+
+#if canImport(Synchronization)
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
+private final class AtomicPendingWorkFlag: PendingWorkFlag {
+    private let flag = Atomic<Bool>(false)
+    func load() -> Bool { flag.load(ordering: .acquiring) }
+    func store(_ value: Bool) { flag.store(value, ordering: .releasing) }
+}
+#endif
+
+private final class LockedPendingWorkFlag: PendingWorkFlag, @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    func load() -> Bool { lock { flag } }
+    func store(_ value: Bool) { lock { flag = value } }
+}
+
+private func makePendingWorkFlag() -> any PendingWorkFlag {
+    #if canImport(Synchronization)
+    if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) {
+        return AtomicPendingWorkFlag()
+    }
+    #endif
+    return LockedPendingWorkFlag()
 }
 
 // MARK: - Drain loops
@@ -23,23 +134,27 @@ private struct CallQueueState {
 /// Drain loop for `MainCallQueue`. Runs on `@MainActor` until the queue is empty,
 /// then cancels the task and fires idle callbacks.
 @MainActor
-private func mainCallQueueDrainLoop(state: LockIsolated<CallQueueState?>, progress: LockIsolated<UInt64>) async {
+private func mainCallQueueDrainLoop(
+    state: LockIsolated<CallQueueState?>,
+    progress: LockIsolated<UInt64>,
+    pending: any PendingWorkFlag
+) async {
     while !Task.isCancelled {
-        let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
-            guard $0 != nil else { return ([], []) }
-            if $0!.calls.isEmpty {
+        let (batch, bundle, onIdle): ([@Sendable () -> Void], RegistrarBundle, [@Sendable () -> Void]) = state.withValue {
+            guard $0 != nil else { return ([], RegistrarBundle(), []) }
+            if !$0!.hasWork {
                 $0!.task.cancel()
                 let idle = $0!.onIdleCallbacks
                 $0 = nil
-                return ([], idle)
+                return ([], RegistrarBundle(), idle)
             }
-            let batch = $0!.calls
-            $0!.calls.removeAll()
-            return (batch, [])
+            pending.store(false)
+            let (batch, bundle) = $0!.takeAll()
+            return (batch, bundle, [])
         }
         for f in onIdle { f() }
-        guard !batch.isEmpty else { break }
-        for call in batch { call() }
+        guard !batch.isEmpty || !bundle.isEmpty else { break }
+        runBatch(batch, bundle: bundle)
         progress.setValue(monotonicNanoseconds())
         await Task.yield()
     }
@@ -251,9 +366,18 @@ struct MainCallQueue: @unchecked Sendable {
     /// not stalled). Stamped once per drained batch, so the production cost
     /// is one locked store per drain cycle, not per item.
     private let progress = LockIsolated<UInt64>(0)
+    /// See `PendingWorkFlag`. Set under `state`'s lock whenever something is
+    /// appended; cleared under it whenever a batch is taken.
+    private let pending = makePendingWorkFlag()
 
     /// Monotonic-ns of the last drained batch; `0` if nothing was ever drained.
     var lastProgressNs: UInt64 { progress.value }
+
+    /// Number of queued items (general closures + coalesced registrar pairs)
+    /// awaiting delivery. Diagnostics / benchmarks only.
+    var pendingCount: Int {
+        state.withValue { ($0?.calls.count ?? 0) + ($0?.registrarBundle.fires.count ?? 0) }
+    }
 
     // MARK: Enqueue
 
@@ -269,13 +393,83 @@ struct MainCallQueue: @unchecked Sendable {
         }
         state.withValue {
             if $0 == nil {
-                $0 = CallQueueState(task: Task(priority: .userInitiated) { @MainActor in
-                    await mainCallQueueDrainLoop(state: self.state, progress: self.progress)
-                }, calls: [callback])
+                $0 = makeState(calls: [callback])
             } else {
                 $0!.calls.append(callback)
             }
+            pending.store(true)
         }
+    }
+
+    /// Delivers a main-registrar `willSet`/`didSet` pair for one (context, property).
+    ///
+    /// On the main thread the pair fires inline, exactly like the closure form.
+    /// Off the main thread it is **coalesced**: at most one pair per
+    /// (`contextID`, `keyPath` identity) is queued between drains, and repeats
+    /// are dropped at enqueue time — no closure allocation, no array growth. The
+    /// queue is therefore bounded by the number of distinct (context, property)
+    /// pairs written between drains, not by the number of writes, even when the
+    /// main thread is busy. (Before this, a burst of 100 k off-main writes to one
+    /// property with the main thread blocked queued 100 k closures and spent
+    /// ~184 µs per write copying the growing array.)
+    ///
+    /// **Why collapsing repeats is semantically safe.** Apple's observation is
+    /// one-shot per registration: `withObservationTracking`'s `onChange` fires on
+    /// the first `willSet` of any tracked key path and the registration is then
+    /// gone, so N pairs for the same key path can only ever fire a given
+    /// registration once — the second through N-th are no-ops for it. The only
+    /// registrations the dropped pairs could have reached are ones made *after*
+    /// the first pair fired (e.g. an `onChange` that synchronously re-observes).
+    /// Such a registration reads the model when it is made, and because every
+    /// coalesced write was applied *before* its pair was enqueued (the pair is
+    /// built after the write-back, under the context lock), that read already
+    /// sees the state of every write in the bundle. A further notification would
+    /// report no change it has not already observed. The same argument is what
+    /// makes the off-main "bundle after the mutation" ordering in
+    /// `invokeDidModifyDirect` sound in the first place.
+    ///
+    /// Keyed by key-path *identity*: the observer key paths are cached per
+    /// (context, property) (`_stateObserverKP`), so the same object arrives on
+    /// every write of a property, and each queued pair retains its key path, so
+    /// the identity cannot be recycled while the entry is pending. A caller that
+    /// passes a fresh key-path object per write simply does not coalesce — still
+    /// correct, just bounded by writes like the closure form.
+    @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+    func notifyRegistrar<State>(
+        _ registrar: ObservationRegistrar,
+        contextID: UInt,
+        keyPath: KeyPath<_StateObserver<State>, AnyHashable>
+    ) {
+        guard !isOnMainThread else {
+            let observer = _StateObserver<State>()
+            registrar.willSet(observer, keyPath: keyPath)
+            registrar.didSet(observer, keyPath: keyPath)
+            return
+        }
+        let key = RegistrarBundle.Key(contextID: contextID, keyPathID: ObjectIdentifier(keyPath))
+        nonisolated(unsafe) let keyPath = keyPath
+        state.withValue {
+            if $0 == nil {
+                $0 = makeState(calls: [])
+            }
+            guard $0!.registrarBundle.keys.insert(key).inserted else { return }
+            if $0!.registrarBundle.deliverAt == nil {
+                $0!.registrarBundle.deliverAt = $0!.calls.count
+            }
+            $0!.registrarBundle.fires.append {
+                let observer = _StateObserver<State>()
+                registrar.willSet(observer, keyPath: keyPath)
+                registrar.didSet(observer, keyPath: keyPath)
+            }
+            pending.store(true)
+        }
+    }
+
+    /// Fresh state with its `@MainActor` drain task. Call under `state`'s lock.
+    private func makeState(calls: [@Sendable () -> Void]) -> CallQueueState {
+        CallQueueState(task: Task(priority: .userInitiated) { @MainActor in
+            await mainCallQueueDrainLoop(state: self.state, progress: self.progress, pending: self.pending)
+        }, calls: calls)
     }
 
     // MARK: Drain (main-thread synchronous flush)
@@ -285,22 +479,25 @@ struct MainCallQueue: @unchecked Sendable {
     /// This flushes any notifications that were enqueued from a background thread and are
     /// waiting for the main actor. Must only be called from the main thread.
     func drain() {
-        let calls: [@Sendable () -> Void] = state.withValue {
-            guard $0 != nil else { return [] }
-            let calls = $0!.calls
-            $0!.calls.removeAll()
-            return calls
+        let (calls, bundle): ([@Sendable () -> Void], RegistrarBundle) = state.withValue {
+            guard $0 != nil else { return ([], RegistrarBundle()) }
+            pending.store(false)
+            return $0!.takeAll()
         }
-        guard !calls.isEmpty else { return }
+        guard !calls.isEmpty || !bundle.isEmpty else { return }
         MainActor.assumeIsolated {
-            for call in calls { call() }
+            runBatch(calls, bundle: bundle)
         }
         progress.setValue(monotonicNanoseconds())
     }
 
     /// Drains pending callbacks if currently on the main thread; no-op otherwise.
+    ///
+    /// Checks the lock-free `pending` hint first: with nothing queued (the common
+    /// case on every main-thread write) this returns without touching the lock
+    /// or asking for the current thread.
     func drainIfOnMain() {
-        guard isOnMainThread else { return }
+        guard pending.load(), isOnMainThread else { return }
         drain()
     }
 
@@ -317,7 +514,11 @@ struct MainCallQueue: @unchecked Sendable {
 
     /// Suspends until all items currently in the queue have been processed, or the deadline passes.
     func waitForCurrentItems(deadline: UInt64 = .max) async {
-        await callQueueWaitForCurrentItems(state, deadline: deadline)
+        let pending = self.pending
+        await callQueueWait(state: state, deadline: deadline) { s, callback in
+            s.calls.append(callback)
+            pending.store(true)
+        }
     }
 
 }
