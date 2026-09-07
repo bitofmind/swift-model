@@ -139,6 +139,15 @@ private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.sha
 final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     private let lock = NSLock()
     private var outstanding = 0
+    /// Per-outstanding-job enqueue backtraces, kept ONLY when
+    /// `SWIFT_MODEL_QUIESCENCE_JOB_TRACE=1`. This is the instrument that turned
+    /// the semantic-quiescence "new says quiescent, old says busy" bucket from a
+    /// guess into a classification: at a disagreement it names, per still-ready
+    /// job, the stack of whatever made that job runnable. Disabled it costs one
+    /// already-loaded `Bool` per enqueue; enabled it symbolicates a stack per
+    /// enqueue and is far too slow for anything but a targeted diagnostic run.
+    private var _jobStacks: [UInt64: String] = [:]
+    private var _nextJobId: UInt64 = 0
     /// Birth time — the floor for `activityNs` so a test that hasn't yet
     /// enqueued any executor work reads "active as of now", not the epoch. (The
     /// raw timestamps below start at 0; `monotonicNs` is a large uptime value,
@@ -201,9 +210,23 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
         }
     }
 
+    /// The enqueue stacks of every job that is still ready/running, newest
+    /// first. Empty unless `SWIFT_MODEL_QUIESCENCE_JOB_TRACE=1`.
+    var outstandingJobStacks: [String] {
+        lock.withLock { _jobStacks.sorted { $0.key > $1.key }.map(\.value) }
+    }
+
     func enqueue(_ job: consuming ExecutorJob) {
         let unowned = UnownedJob(job)
-        lock.withLock { outstanding += 1; _lastEnqueueNs = _drainMonotonicNs() }
+        let stack = _quiescenceJobTraceEnabled ? _quiescenceEnqueueStack() : nil
+        let jobId: UInt64 = lock.withLock {
+            outstanding += 1
+            _lastEnqueueNs = _drainMonotonicNs()
+            guard let stack else { return 0 }
+            _nextJobId += 1
+            _jobStacks[_nextJobId] = stack
+            return _nextJobId
+        }
         Self._globalOutstanding.wrappingAdd(1, ordering: .relaxed)
         Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
         _sharedDrainQueue.async {
@@ -211,6 +234,7 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
             let toFire: [@Sendable () -> Void] = self.lock.withLock {
                 self.outstanding -= 1
                 self._lastCompletionNs = _drainMonotonicNs()
+                if jobId != 0 { self._jobStacks.removeValue(forKey: jobId) }
                 guard self.outstanding == 0 else { return [] }
                 let fns = self.idleWaiters.map(\.fire)
                 self.idleWaiters.removeAll()
@@ -342,6 +366,11 @@ extension TestAccess {
             // re-check cadence (not the ceiling) so a runaway that never lets
             // the executor go idle is still inspected periodically.
             let fireBaseline = runawayBound != nil ? _reactiveFireStats() : [:]
+            // Dual-run instrumentation only (design §5 property 2): the
+            // park-generation observed at the PREVIOUS check, so a disagreement
+            // can say whether some unit parked or unparked in between. `nil` on
+            // the first iteration.
+            var previousParkGeneration: UInt64? = nil
             while !Task.isCancelled {
                 let now = _drainMonotonicNs()
                 if now >= hangDeadlineNs { return .gaveUp }
@@ -353,6 +382,9 @@ extension TestAccess {
                 if !bg.isIdle { await bg.waitForCurrentItems(deadline: checkDeadline) }
                 if !main.isIdle { await main.waitForCurrentItems(deadline: checkDeadline) }
                 let idleNow = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.context.hasPendingStartTask
+                // One census read per iteration (cheap: a locked walk of the
+                // live-unit dictionaries). Feeds the trace only.
+                let census = _QuiescenceComparison.isTracing ? self.context.workUnitCensus : _WorkUnitCensus()
 
                 // DUAL-RUN INSTRUMENTATION (step 2 of the semantic-quiescence
                 // plan — `Docs/test-quiescence-redesign.md` §10). Compute the
@@ -369,8 +401,12 @@ extension TestAccess {
                         bg.isIdle ? nil : "bg",
                         main.isIdle ? nil : "main",
                         self.context.hasPendingStartTask ? "pendingStart" : nil,
-                    ].compactMap { $0 }.joined(separator: "+")
+                    ].compactMap { $0 }.joined(separator: "+"),
+                    existingBusyJobStacks: exec.outstandingJobStacks,
+                    workUnitCensus: census,
+                    parkGenerationChangedSinceLastCheck: previousParkGeneration.map { $0 != census.parkGeneration }
                 )
+                previousParkGeneration = census.parkGeneration
 
                 if idleNow {
                     // Debounce against COMPLETIONS too, not just writes and

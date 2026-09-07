@@ -41,6 +41,40 @@ import Foundation
 /// not started is simply *running*". So the counter starts at `1` at
 /// construction; the not-yet-started window is therefore running, and the
 /// semantic answer needs no separate pending-start predicate.
+///
+/// ## The async-work audit (design §4 / §4a) — what is NOT a work unit
+///
+/// Semantic quiescence is only sound if every framework path that can still
+/// write to a model owns a registered unit. Everything else must be in one of
+/// two explicitly-justified buckets. This is the completed inventory; keep it
+/// in sync when adding a `Task` to `Sources/`.
+///
+/// **(a) Test-drive machinery — not model work by construction.** None of it
+/// runs on the per-test drain executor (`_DrainTestExecutor` is applied *only*
+/// to `TaskCancellable` bodies, in the `convenience init` below), so it is
+/// invisible to the scheduler-observing answer too:
+///   * `TestExecutorDrive._startExecutorDrive`'s driver `Task` and its
+///     `_gtsSleep`s — the thing doing the asking; counting it would make every
+///     wait its own reason to keep waiting.
+///   * `GlobalTickScheduler` deadline entries — a scheduled wake, not work
+///     (design §4).
+///   * `ModelTestingTrait`'s `group.addTask` timeout/watchdog arms.
+///
+/// **(d) Excluded housekeeping — framework-spawned work no test may wait for.**
+/// Every entry here is a deliberate blind spot, so each carries its
+/// justification at the spawn site as well:
+///   * `Context.swift`'s last-seen TTL `Task` — memory reclamation on a
+///     user-configured TTL, never a model reaction. Counting it would make
+///     `settle()` wait out the whole TTL (design §4a).
+///   * `ObservedModel.swift`'s first-activation priming `Task` — a SwiftUI
+///     `objectWillChange.send()`; touches no model state.
+///
+/// **Counted, but not as `TaskCancellable`s.** `CallQueue`'s background-drain
+/// and main-registrar pumps are real model work and *are* part of the answer —
+/// `AnyContext.semanticQuiescence` folds in `backgroundCall.isIdle` and
+/// `mainCallQueue.isIdle` (design §4 counts a queue item as one running unit;
+/// the prototype keeps them as the two predicates they already were rather than
+/// re-plumbing `CallQueue`, which gives the same answer).
 final class ModelWorkUnit: @unchecked Sendable {
     /// The work unit owning the current task, if any. Set once per
     /// `TaskCancellable` body (see `TaskCancellable`'s convenience init), so it
@@ -52,6 +86,20 @@ final class ModelWorkUnit: @unchecked Sendable {
     private let lock = NSLock()
     private var _activityCount: Int = 1
     private var _hasStartedRunning = false
+    private var _parkGeneration: UInt64 = 0
+
+    /// Bumped on every park/unpark transition. Design §5 property 2: a
+    /// quiescence answer is only trustworthy if it holds across two observations
+    /// with **no park-generation change between them**, because between marking
+    /// parked and actually suspending — and, more importantly, between a
+    /// continuation being resumed and the resumed task running its `unpark()` —
+    /// the unit reads "parked" while it is about to run.
+    ///
+    /// Currently reported by the dual-run trace only; nothing consumes it for a
+    /// verdict. It is what a verdict switch would have to gate on.
+    var parkGeneration: UInt64 {
+        lock.withLock { _parkGeneration }
+    }
 
     /// `true` while this unit is not parked — see the type doc for the counter
     /// rule. A unit that has been created but whose body has not run yet is
@@ -73,12 +121,12 @@ final class ModelWorkUnit: @unchecked Sendable {
 
     /// Marks the unit parked (one level). Balanced by `unpark()`.
     func park() {
-        lock.withLock { _activityCount -= 1 }
+        lock.withLock { _activityCount -= 1; _parkGeneration &+= 1 }
     }
 
     /// Undoes one `park()`.
     func unpark() {
-        lock.withLock { _activityCount += 1 }
+        lock.withLock { _activityCount += 1; _parkGeneration &+= 1 }
     }
 }
 

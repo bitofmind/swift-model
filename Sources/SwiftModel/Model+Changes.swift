@@ -64,6 +64,11 @@ public extension Model {
     ) -> AsyncStream<()> {
         guard let context = enforcedContext() else { return .finished }
 
+        // `_eraseToParkedWaitStream()` adds the tier-1 park mark (design §5): a
+        // consumer suspended waiting for the next modification is parked, so a
+        // hand-written `for await _ in observeModifications() { … }` inside a
+        // `node.task` reads as parked rather than running forever. See
+        // `AsyncSequenceExtensions.swift`.
         return AsyncStream { cont in
 #if DEBUG
             // Capture label and printer once at setup time, not on every emission.
@@ -109,7 +114,7 @@ public extension Model {
             }
 
             cont.onTermination = { _ in cancel() }
-        }
+        }._eraseToParkedWaitStream()
     }
 
 }
@@ -361,6 +366,13 @@ public extension ModelNode {
 
 extension Observed {
     init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false, debug: DebugOptions? = nil) {
+        // The trailing `_eraseToParkedWaitStream()` is the tier-1 park mark
+        // (design §5). `Observed` is the single most common hand-written loop in
+        // the suite — `node.task { for await v in Observed { … } }` — and
+        // without a source-side mark every one of those tasks reads as *running*
+        // for its whole lifetime. Marking the source (rather than `forEach`)
+        // makes the sugar and the hand-written loop behave identically.
+        // See `AsyncSequenceExtensions.swift`.
         stream = AsyncStream { cont in
             // Detect whether accessed models use ObservationRegistrar.
             // If any accessed model was created with .disableObservationRegistrar, the
@@ -405,7 +417,7 @@ extension Observed {
             }
             cont.onTermination = { _ in cancellable() }
 #endif
-        }
+        }._eraseToParkedWaitStream()
     }
 }
 

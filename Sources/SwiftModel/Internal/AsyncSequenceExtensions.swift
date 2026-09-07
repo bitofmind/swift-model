@@ -44,3 +44,64 @@ extension AsyncSequence where Element: Equatable & Sendable {
         return AsyncStream { await box.next() }
     }
 }
+
+// MARK: - Tier 1: source-side parking
+//
+// `Docs/test-quiescence-redesign.md` §5: **the park mark belongs to the input
+// source, not to the consuming loop.** `node.forEach` parks around its own
+// `next()` (hook 1), but a user can write the loop by hand —
+//
+//     node.task { for await value in Observed { … } }         // no forEach
+//
+// — and if `forEach` were the only marking site that task would read as
+// *running* forever, blocking quiescence for as long as it lives. SwiftModel
+// owns every one of these sources (it produces the `AsyncStream` and holds the
+// continuation), so the mark goes where the framework can guarantee it: the
+// iterator's wait for the next yield.
+//
+// The mechanism is `AsyncStream(unfolding:)`, whose produce closure runs **on
+// the consuming task** — so `ModelWorkUnit.current` resolves to the consumer's
+// unit and the park is attributed correctly, wherever the stream was
+// constructed. (`UpdateStreamTests`' "captured" case builds the `Observed` in
+// `onActivate`'s scope and iterates it from a separate `node.task` body; the
+// park still lands on the iterating body.) This is the same shape
+// `removeDuplicates()` above and ConcurrencyExtras' `eraseToStream()` already
+// use, which is why events cost nothing extra: `_eraseToParkedWaitStream()`
+// REPLACES an `eraseToStream()` that was building an unfolding stream anyway.
+//
+// Only the wait is parked — never the consumer's body. Running the user's
+// closure is real model work.
+
+/// Drives an upstream iterator, parking the calling work unit around the wait.
+///
+/// `@unchecked Sendable` on the same terms as `_DedupBox`: `AsyncStream`'s
+/// unfolding iterator serialises calls to `next()`, so only one call is ever
+/// in flight and the captured iterator is never accessed concurrently.
+private final class _ParkedWaitBox<Element>: @unchecked Sendable {
+    private let _next: () async -> Element?
+
+    init<I: AsyncIteratorProtocol>(_ iterator: I) where I.Element == Element {
+        var iter = iterator
+        _next = {
+            // `try?` matches `eraseToStream()`'s own erasure semantics (a
+            // throwing upstream terminates the stream); none of SwiftModel's
+            // own sources throw.
+            await _withCurrentWorkUnitParked { try? await iter.next() }
+        }
+    }
+
+    func next() async -> Element? { await _next() }
+}
+
+extension AsyncSequence where Self: Sendable, Element: Sendable {
+    /// `eraseToStream()`, plus the tier-1 park mark on the consumer's wait.
+    ///
+    /// Use this for every stream SwiftModel itself produces and hands to model
+    /// code. Consumers that go through `node.forEach` park twice (once here,
+    /// once in `forEach`'s own `next()`); `ModelWorkUnit`'s activity **counter**
+    /// — rather than a `Bool` — is what makes that nesting compose.
+    func _eraseToParkedWaitStream() -> AsyncStream<Element> {
+        let box = _ParkedWaitBox<Element>(makeAsyncIterator())
+        return AsyncStream { await box.next() }
+    }
+}
