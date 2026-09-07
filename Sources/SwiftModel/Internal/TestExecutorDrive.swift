@@ -400,7 +400,26 @@ extension TestAccess {
                     let lastActivity = max(self._lastActivityNsLocked, exec.activityNs)
                     let sinceActivity = _drainMonotonicNs() &- lastActivity
                     if sinceActivity >= graceNs {
-                        return .reached   // idle, and no activity of any kind for a full grace window
+                        // Idle and quiet for a full grace window — but a task that has
+                        // YIELDED is invisible to `outstanding` while the runtime hops its
+                        // continuation through the global executor on the way back to this
+                        // executor's `enqueue`. On a starved 3-core CI runner that hop was
+                        // measured at 773 ms with the drive otherwise idle (children's
+                        // jobs ended at 0.7 ms, their yielded continuations ran at 774 ms,
+                        // settle fired at 807 ms — inside the second hop), so no grace
+                        // window bounds it. Yield from THIS task: it queues behind every
+                        // pending yielded child in the same global executor, so when
+                        // control returns those children have been re-enqueued
+                        // (outstanding > 0) or have run (activity stamped). Quiescence is
+                        // declared only if the system is still idle and quiet after that
+                        // round trip — an ordering signal, not a wall-clock one.
+                        await Task.yield()
+                        let stillIdle = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.context.hasPendingStartTask
+                        let activityAfter = max(self._lastActivityNsLocked, exec.activityNs)
+                        if stillIdle && activityAfter == lastActivity {
+                            return .reached
+                        }
+                        continue   // the yield surfaced pending work; go around again
                     }
                     // Idle but recent activity — wait out the remainder of the
                     // grace (non-starvable), then re-check; a resuming task will
