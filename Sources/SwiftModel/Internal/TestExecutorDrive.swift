@@ -133,7 +133,20 @@ func _makeTestExecutorBox() -> (any Sendable)? {
 /// runs. Each executor keeps its own `outstanding` counter, so per-test
 /// quiescence detection stays isolated.
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
-private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.shared", attributes: .concurrent)
+///
+/// The queue carries an explicit `.userInitiated` QoS, and every job is submitted with
+/// `.enforceQoS` at the same level. A concurrent queue with no QoS of its own runs each
+/// block at the QoS of the thread that submitted it, and a drive job is submitted by
+/// whichever thread resumes the task — a `DispatchQueue.global(qos: .background)`
+/// callback, a `.background` Task, a low-QoS test double. Under a saturated parallel run
+/// a background-QoS block can stay unscheduled for minutes; while it is pending it counts
+/// as `outstanding` (the executor reports itself busy), so the test's `settle()` can
+/// never reach its fixpoint and the inactivity watchdog never fires — the exact evidence
+/// the absolute-ceiling report describes, without any lock involved. Measured downstream
+/// as a smooth 4×–250× slowdown of `settle()`-heavy tests under an 18-target plan with an
+/// occasional 1500 s wedge, identical on releases before and after the lock changes. The
+/// drive's contract is "non-starvable"; pinning the QoS is what makes that true.
+private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.shared", qos: .userInitiated, attributes: .concurrent)
 
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
 final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
@@ -206,7 +219,7 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
         lock.withLock { outstanding += 1; _lastEnqueueNs = _drainMonotonicNs() }
         Self._globalOutstanding.wrappingAdd(1, ordering: .relaxed)
         Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
-        _sharedDrainQueue.async {
+        _sharedDrainQueue.async(qos: .userInitiated, flags: .enforceQoS) {
             unowned.runSynchronously(on: self.asUnownedTaskExecutor())
             let toFire: [@Sendable () -> Void] = self.lock.withLock {
                 self.outstanding -= 1

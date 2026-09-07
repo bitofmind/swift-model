@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **`.modelTesting` tests no longer wedge or crawl under a saturated parallel run when a model task is resumed from a background-QoS thread.** The executor drive ran every test's jobs on one process-wide GCD concurrent queue that carried no QoS of its own. A queue without a QoS runs each block at the QoS of the thread that submitted it, and a drive job is submitted by whichever thread resumes the task — a `DispatchQueue.global(qos: .background)` callback, a `.background` Task, a low-QoS test double. Such a job was a background-QoS block, which macOS can leave unscheduled for minutes when a large test plan saturates the machine; while it was pending it counted as `outstanding`, so the executor reported itself busy, the inactivity watchdog never fired, `settle()` could never reach its fixpoint, and long enough the absolute ceiling fired with its "almost certainly a deadlock" wording — with no lock involved anywhere. Measured downstream in an 18-target plan as a smooth 4×–250× slowdown of `settle()`-heavy tests (1.4 s in isolation → 5–343 s) with a ~3 % chance of a 1500 s wedge per run, identical on 1.0.16 and 1.0.17. The drain queue now carries `qos: .userInitiated` and every job is submitted with `.enforceQoS`, so a job runs at its task's own priority whoever resumed it. `DriveJobQoSTests` parks a `node.task` on a continuation resumed from a background thread and reads the resumed job's `qos_class_self()`: 9 (`background`) before, the task's own priority after. This is the drive's stated "non-starvable" contract made true; no wait budget or timeout changed.
+
 ---
 
 ## [1.0.17] — Hot-path performance: index-keyed accessors, lock-free registrar lookups, 10× faster collection reconcile
