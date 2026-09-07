@@ -353,6 +353,19 @@ extension TestAccess {
                 if !bg.isIdle { await bg.waitForCurrentItems(deadline: checkDeadline) }
                 if !main.isIdle { await main.waitForCurrentItems(deadline: checkDeadline) }
                 let idleNow = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.context.hasPendingStartTask
+
+                // DUAL-RUN INSTRUMENTATION (step 2 of the semantic-quiescence
+                // plan — `Docs/test-quiescence-redesign.md` §10). Compute the
+                // semantic answer beside the existing one and record every
+                // disagreement. `idleNow` — NOT the semantic answer — still
+                // decides this and every other verdict; this call has no effect
+                // on control flow.
+                _QuiescenceComparison.record(
+                    existingIsQuiescent: idleNow,
+                    semanticIsQuiescent: self.context.semanticQuiescence,
+                    runningUnits: self.context.runningWorkUnits
+                )
+
                 if idleNow {
                     // Debounce against COMPLETIONS too, not just writes and
                     // enqueues (`exec.activityNs` when idle = max(birth,

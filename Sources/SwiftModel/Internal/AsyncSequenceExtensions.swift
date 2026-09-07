@@ -21,7 +21,13 @@ private final class _DedupBox<Element: Equatable>: @unchecked Sendable {
         var iter = iterator
         var previous: Element? = nil
         _next = {
-            while let value = try? await iter.next() {
+            // Park around the upstream wait (semantic quiescence, hook 1). This
+            // closure runs on the CONSUMER's task — a `node.forEach` body — so
+            // when it is driven through `forEach` the park is nested inside
+            // `forEach`'s own park and the counter (not a Bool) keeps the unit
+            // parked until both scopes exit. Marking it here too means a
+            // hand-written `for await` over one of these streams parks as well.
+            while let value = await _withCurrentWorkUnitParked({ try? await iter.next() }) {
                 if value != previous { previous = value; return value }
             }
             return nil

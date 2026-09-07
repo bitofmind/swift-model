@@ -97,6 +97,31 @@ final class Cancellations: @unchecked Sendable {
         }
     }
 
+    /// SEMANTIC QUIESCENCE (computed, not yet used for verdicts).
+    ///
+    /// True if any registered work unit in this registry is **running** — i.e.
+    /// executing, or suspended somewhere SwiftModel did not put it. Work parked
+    /// at a suspension the framework owns (`forEach`'s `next()`, anything inside
+    /// `withModelParked`) does not count. See `ModelWorkUnit`.
+    var hasRunningWorkUnit: Bool {
+        lock {
+            registered.values.contains { ($0 as? TaskCancellable)?.workUnit.isRunning == true }
+        }
+    }
+
+    /// The running work units, for the disagreement trace / future backstop
+    /// message. Sorted by registration order for stable output.
+    var runningWorkUnits: [(modelName: String, name: String, fileAndLine: FileAndLine)] {
+        lock {
+            registered.values.compactMap { c -> (id: Int, modelName: String, name: String, fileAndLine: FileAndLine)? in
+                guard let task = c as? TaskCancellable, task.workUnit.isRunning else { return nil }
+                return (task.id, task.modelName, task.taskName, task.fileAndLine)
+            }
+            .sorted { $0.id < $1.id }
+            .map { (modelName: $0.modelName, name: $0.name, fileAndLine: $0.fileAndLine) }
+        }
+    }
+
     func cancelAll() {
         lock {
             defer {
