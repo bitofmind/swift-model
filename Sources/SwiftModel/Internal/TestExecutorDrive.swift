@@ -133,7 +133,34 @@ func _makeTestExecutorBox() -> (any Sendable)? {
 /// runs. Each executor keeps its own `outstanding` counter, so per-test
 /// quiescence detection stays isolated.
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
-private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.shared", attributes: .concurrent)
+///
+/// The queue carries an explicit `.userInitiated` QoS as a FLOOR. A concurrent queue with
+/// no QoS of its own runs each block at the QoS of the thread that submitted it, and a
+/// drive job is submitted by whichever thread resumes the task — a
+/// `DispatchQueue.global(qos: .background)` callback, a `.background` Task, a low-QoS test
+/// double. Under a saturated parallel run a background-QoS block can stay unscheduled for
+/// minutes; while it is pending it counts as `outstanding` (the executor reports itself
+/// busy), so the test's `settle()` can never reach its fixpoint and the inactivity
+/// watchdog never fires — the exact evidence the absolute-ceiling report describes,
+/// without any lock involved. Measured downstream as a smooth 4×–250× slowdown of
+/// `settle()`-heavy tests under an 18-target plan with an occasional 1500 s wedge,
+/// identical on releases before and after the lock changes. The drive's contract is
+/// "non-starvable"; the floor is what makes that true.
+///
+/// A floor, not `.enforceQoS`: with the queue's QoS set, a block submitted from a
+/// lower-QoS thread is raised to `.userInitiated`, while one submitted from a higher-QoS
+/// thread (the main thread, a `.userInteractive` task) keeps that QoS exactly as before.
+/// Forcing every job to one level changed the relative scheduling of drive jobs against
+/// work the drive cannot see — `Task.yield()` inside a task that prefers this executor
+/// resumes on the global pool, not here — and on CI's 3-core runner that let a
+/// `settle()` fixpoint check outrun a yielding child it could not count
+/// (`ExecutorDrainSettleTests.settleIsLoadIndependentAcrossChildTasks`). The floor fixes
+/// the starvation without touching that balance.
+private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.shared", qos: .userInitiated, attributes: .concurrent)
+
+/// The drain queue's QoS, for the regression test that pins the floor.
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
+var _drainQueueQoS: DispatchQoS { _sharedDrainQueue.qos }
 
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
 final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
@@ -373,7 +400,26 @@ extension TestAccess {
                     let lastActivity = max(self._lastActivityNsLocked, exec.activityNs)
                     let sinceActivity = _drainMonotonicNs() &- lastActivity
                     if sinceActivity >= graceNs {
-                        return .reached   // idle, and no activity of any kind for a full grace window
+                        // Idle and quiet for a full grace window — but a task that has
+                        // YIELDED is invisible to `outstanding` while the runtime hops its
+                        // continuation through the global executor on the way back to this
+                        // executor's `enqueue`. On a starved 3-core CI runner that hop was
+                        // measured at 773 ms with the drive otherwise idle (children's
+                        // jobs ended at 0.7 ms, their yielded continuations ran at 774 ms,
+                        // settle fired at 807 ms — inside the second hop), so no grace
+                        // window bounds it. Yield from THIS task: it queues behind every
+                        // pending yielded child in the same global executor, so when
+                        // control returns those children have been re-enqueued
+                        // (outstanding > 0) or have run (activity stamped). Quiescence is
+                        // declared only if the system is still idle and quiet after that
+                        // round trip — an ordering signal, not a wall-clock one.
+                        await Task.yield()
+                        let stillIdle = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.context.hasPendingStartTask
+                        let activityAfter = max(self._lastActivityNsLocked, exec.activityNs)
+                        if stillIdle && activityAfter == lastActivity {
+                            return .reached
+                        }
+                        continue   // the yield surfaced pending work; go around again
                     }
                     // Idle but recent activity — wait out the remainder of the
                     // grace (non-starvable), then re-check; a resuming task will
