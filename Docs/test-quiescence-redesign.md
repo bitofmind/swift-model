@@ -151,18 +151,33 @@ streams, memoize sentinels. SwiftModel produces the stream and holds the continu
 §5 applies with no user action. Works through `forEach` or a raw `for await` alike.
 
 **Tier 2 — declared. This is the tier the design lives or dies on.** A `clock.sleep` is the
-single most common suspension in these tests (`withTestClocks`, `TestClock` in nearly every
-`.modelTesting` suite) and SwiftModel cannot see it: it defines no clock, and `node.clock` is
-the user's own dependency property. If every clock sleep counted as running, `settle()` would
-hang in a large fraction of the existing suite, and the design would be dead on arrival. Two
-ways to fix that, and one of them must work:
+single most common suspension in these tests and SwiftModel cannot see it: it defines no clock,
+and `node.clock` is the user's own dependency property. If every clock sleep counted as running,
+`settle()` would hang across a large part of the existing suite.
 
-- *Wrap known suspending dependency kinds at access time.* Dependency reads already go through
-  SwiftModel (`node.<dep>` → `ModelDependencies`). In test mode, a value conforming to `Clock`
-  can be returned wrapped, so its `sleep` marks parked. Narrow, automatic, no user change.
-  Cost: a conformance check per dependency kind, cached; and it only covers the kinds we know.
-- *An explicit scope for everything else*: `node.awaitingExternalInput { await … }`, opt-in and
-  honest, for a user's own stream or client.
+**The obvious mechanism does not work.** My first proposal was to wrap values conforming to
+Swift's `Clock` at dependency-access time. Checked against the main downstream consumer and it
+fails: parallel-apple defines its **own** `Clock` protocol (`imagien/Sources/Clock/Clock.swift`)
+with `TestClock`, `RateClock`, `SyncClock`, `ImmediateClock`, `ConstantClock` conforming to it,
+none of them to `_Concurrency.Clock`. A conformance check SwiftModel writes would match nothing.
+Any mechanism that depends on recognising a *type* is fragile for the same reason.
+
+**What does work: the adoption point is the source's own implementation, not its call sites.**
+SwiftModel exposes one public primitive —
+
+```swift
+public func withModelParked<T>(_ body: () async throws -> T) async rethrows -> T
+```
+
+— which marks the calling task parked for the duration of `body`. Anything that hands external
+input to a model wraps its own suspension in it, once. That is not a per-call-site migration:
+parallel-apple's `Clock` protocol documents that *"callers always go through this method"*, so
+the whole surface is **one default implementation plus two overrides** (`Clock.swift`'s default
+`sleep(until:toleranceMs:)`, `TestClock`, `ImmediateClock`) — three edits in a module they own,
+covering every `clock.sleep` in every model.
+
+This generalises: any library feeding async input to models opts in with one wrap at its own
+suspension point, and needs to know nothing else about SwiftModel.
 
 **Tier 3 — foreign and undeclared.** Anything else counts as **running** until it returns. It
 is genuinely outstanding work, so `settle()` waiting for it is correct rather than a bug. If
@@ -174,10 +189,18 @@ A wall clock does come back, but only as a **reporter of unfinished work**, neve
 the quiescence decision. The verdict is semantic; the clock only bounds how long we wait
 before telling the user what is still running.
 
-That directly answers the infinite-loop case: a `node.task` running `while true { compute() }`
-with no suspension is *running* forever, `settle()` waits, and the backstop fires. That is a
-user error and should be reported as one — but the message can now be specific, because the
-registry knows exactly which work is outstanding and where it was created:
+**Unmarked work is bounded by teardown, not only by the backstop** (Måns, 2026-09-07). A task
+started from `onActivate` is lifetime-bound and registered, so end-of-test teardown cancels it
+(`cancelAllRecursively` / `sealRecursively`). So the worst case of an unmarked suspension is:
+`settle()` waits, the backstop reports it by name, and the task is reaped when the test ends —
+**not** a wedged process. That is what makes adoption incremental and safe: a codebase does not
+have to mark everything before the design is usable. Whatever is unmarked simply makes `settle()`
+fail with a message naming exactly what to mark next.
+
+That also answers the infinite-loop case: a `node.task` running `while true { compute() }` with
+no suspension is *running* forever, `settle()` waits, and the backstop fires. That is user error
+and should be reported as one — but the message can now be specific, because the registry knows
+exactly which work is outstanding and where it was created:
 
 > `settle() timed out: 1 task still running — "syncLoop() @ MyModel.swift:42" has not
 > returned since it started 30 s ago and is not parked on any input.`
@@ -213,11 +236,12 @@ invariant is deterministic: you assert the accounting directly.
 
 ## 9. Open questions — the things I am least sure about
 
-0. **Can tier 2 be made to work for clocks?** (§6) The most important question in this
-   document. If clock sleeps cannot be marked parked, the majority of `.modelTesting` tests
-   would hang under the new rule and the design is not viable. Prove this first, before the
-   inventory audit — a spike that wraps a `Clock`-conforming dependency at access time and
-   shows a `TestClock` sleep marking parked would settle it in an afternoon.
+0. **Tier 2 for clocks — narrowed, not closed.** (§6) Recognising a clock by *type* is dead
+   (parallel-apple has its own `Clock` protocol). The `withModelParked` primitive works and is
+   a 3-edit adoption there, but it is opt-in: an unadopted codebase gets `settle()` timeouts
+   naming the unmarked work rather than silent wrongness. Is that adoption cost acceptable, and
+   is one public primitive the right shape, or should SwiftModel also offer its own
+   `node.sleep(for:)` so the common case needs no adoption at all?
 
 1. **Is the inventory in §4 complete?** Any framework path that spawns work without
    registering it is a hole. Needs an audit, not a guess.
@@ -239,9 +263,9 @@ invariant is deterministic: you assert the accounting directly.
 
 ## 10. Suggested order of work
 
-0. **Spike the clock question (§6 tier 2) first.** It is the cheapest thing that can kill the
-   design, so it should go first: wrap a `Clock`-conforming dependency at access time in test
-   mode and show a `TestClock` sleep marking parked and unparking on `advance`.
+0. **Spike `withModelParked` first.** Cheapest thing that can kill the design. Show a task
+   awaiting a foreign clock marking parked, `settle()` returning while it sleeps, and unparking
+   on advance — then apply it to parallel-apple's three clock sites and run their plan.
 1. Audit §4 to completion, with a test that fails if any framework path spawns unregistered
    work. Cheap, and it either validates the design or kills it.
 2. Add the state + counter alongside the existing drive, with the new rule computed but
