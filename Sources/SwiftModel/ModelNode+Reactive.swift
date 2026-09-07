@@ -291,7 +291,13 @@ public extension ModelNode {
         guard cancelPrevious else {
             let fireFL = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
             return task(name, function: function, isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column) {
-                for await newValue in observed {
+                // Hook 1 (semantic quiescence, `Docs/test-quiescence-redesign.md` §6b):
+                // the loop is written out rather than using `for await` so the
+                // wait for the next element — a suspension SwiftModel owns —
+                // marks this work unit PARKED. The body is deliberately outside
+                // the park: running the user's closure is real work.
+                var iterator = observed.makeAsyncIterator()
+                while let newValue = await _withCurrentWorkUnitParked({ await iterator.next() }) {
                     guard !Task.isCancelled, !context.isDestructed else { return }
                     // Count this delivery for the settle-timeout runaway trigger and
                     // diagnostic (no-op outside tests). See ModelAccess.reactiveBodyFired.
@@ -330,7 +336,10 @@ public extension ModelNode {
             // scheduled. See `_forEachImpl` for the full rationale.
             var previousInner: TaskCancellable? = nil
 
-            for await newValue in observed {
+            // Hook 1 — park around the element wait only; see the non-
+            // cancelPrevious branch above.
+            var iterator = observed.makeAsyncIterator()
+            while let newValue = await _withCurrentWorkUnitParked({ await iterator.next() }) {
                 guard !Task.isCancelled, !context.isDestructed else { break }
                 // Count this delivery for the settle-timeout runaway trigger and
                 // diagnostic (no-op outside tests). See ModelAccess.reactiveBodyFired.
@@ -404,7 +413,15 @@ public extension ModelNode {
         guard cancelPrevious else {
             let fireFL = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
             return task(name, function: function, isDetached: isDetached, priority: priority, fileID: fileID, filePath: filePath, line: line, column: column, operation: {
-                for try await value in sequence {
+                // Hook 1 (semantic quiescence, `Docs/test-quiescence-redesign.md` §6b):
+                // park around `next()` only. This covers ANY `AsyncSequence` —
+                // including third-party operators such as
+                // swift-async-algorithms' `debounce`/`throttle` — because the
+                // consumer is suspended on this one await no matter how many
+                // tasks the operator runs internally, with no adoption by the
+                // sequence's author.
+                var iterator = sequence.makeAsyncIterator()
+                while let value = try await _withCurrentWorkUnitParked({ try await iterator.next() }) {
                     guard !Task.isCancelled, !context.isDestructed else { return }
                     // Count this delivery for the settle-timeout runaway diagnostic
                     // (no-op outside tests). See ModelAccess.reactiveBodyFired.
@@ -447,7 +464,10 @@ public extension ModelNode {
             // closure deadlocked whenever cancellation arrived before the body was scheduled.
             var previousInner: TaskCancellable? = nil
 
-            for try await value in sequence {
+            // Hook 1 — park around the element wait only; see the non-
+            // cancelPrevious branch above.
+            var iterator = sequence.makeAsyncIterator()
+            while let value = try await _withCurrentWorkUnitParked({ try await iterator.next() }) {
                 // Count this delivery for the settle-timeout runaway diagnostic
                 // (no-op outside tests). See ModelAccess.reactiveBodyFired.
                 ModelAccess.current?.reactiveBodyFired(fileAndLine)

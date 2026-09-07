@@ -565,6 +565,9 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
             activityProbe = nil
             #endif
             try await withoutActuallyEscaping(function) { escapingFunction in
+                // Names this test in the semantic-quiescence disagreement trace
+                // (`SWIFT_MODEL_QUIESCENCE_TRACE=1`). Instrumentation only.
+                try await _QuiescenceComparison.$testTag.withValue(testTag) {
                 try await _withTestTimeout(seconds: ModelTestingTraitOptions.testWallClockSeconds, testTag: testTag, activityProbe: activityProbe) {
                     try await _TestExecutorBox.$current.withValue(execBox) {
                         try await _ModelTestingLocals.$scope.withValue(pending) {
@@ -576,6 +579,7 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
                             await concrete.checkExhaustion(at: fl)
                         }
                     }
+                }
                 }
             }
         }

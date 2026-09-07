@@ -854,6 +854,47 @@ class AnyContext: @unchecked Sendable {
         return snapshot.contains { $0.hasPendingStartTask }
     }
 
+    // MARK: - Semantic quiescence (computed, NOT used for verdicts)
+    //
+    // The alternative answer to "is the model done reacting?" described in
+    // `Docs/test-quiescence-redesign.md`: instead of observing the scheduler
+    // (executor idle / queues idle / pending-start), ask the registry which
+    // framework-owned work is RUNNING. Everything the framework spawns is a
+    // registered `TaskCancellable` (one `ModelWorkUnit` each); a unit suspended
+    // at a suspension point SwiftModel owns is parked and does not block
+    // quiescence.
+    //
+    // Currently only compared against the existing answer inside
+    // `_driveToStableFixpoint` (dual-run instrumentation). Nothing depends on
+    // it.
+
+    /// True if any context in this subtree has a running work unit.
+    var hasRunningWorkUnit: Bool {
+        // Same lock-protected snapshot pattern as `activeTasks`.
+        let (selfRunning, snapshot) = lock { (cancellationsStore?.hasRunningWorkUnit ?? false, allChildren) }
+        if selfRunning { return true }
+        return snapshot.contains { $0.hasRunningWorkUnit }
+    }
+
+    /// The running work units in this subtree, for diagnostics.
+    var runningWorkUnits: [(modelName: String, name: String, fileAndLine: FileAndLine)] {
+        let (selfUnits, snapshot) = lock { (cancellationsStore?.runningWorkUnits ?? [], allChildren) }
+        return snapshot.reduce(into: selfUnits) { $0.append(contentsOf: $1.runningWorkUnits) }
+    }
+
+    /// The semantic quiescence answer for this subtree: no registered work unit
+    /// is running, and both call queues are idle.
+    ///
+    /// Design §4 folds the queues into the same counter — a background
+    /// (`Observed` / memoize recompute) or main-registrar (`@ObservedModel`
+    /// notification) queue item *is* a running unit. They are not
+    /// `TaskCancellable`s, so this prototype keeps them as the two extra
+    /// predicates they already are rather than re-plumbing `CallQueue`; the
+    /// resulting answer is the same.
+    var semanticQuiescence: Bool {
+        !hasRunningWorkUnit && backgroundCall.isIdle && mainCallQueue.isIdle
+    }
+
     /// Returns the main registrar if the main channel has been created (lazy), or nil
     /// otherwise. `_main` is lock-published, so the read takes the hierarchy lock too.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
