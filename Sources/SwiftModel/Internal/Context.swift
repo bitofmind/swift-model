@@ -400,6 +400,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
 
         let generation = referenceGeneration
+        // SEMANTIC QUIESCENCE — excluded housekeeping, category (d).
+        // Justification: this is memory reclamation on a user-configured TTL,
+        // not a model reaction. It writes nothing observable (it only releases
+        // already-destructed state, generation-guarded), so no test can be
+        // waiting for it; counting it as a running work unit would make every
+        // `settle()` after a teardown wait out the whole `lastSeenTimeToLive`.
+        // See the audit in `ModelWorkUnit.swift`.
         Task {
             try? await Task.sleep(nanoseconds: 1_000_000*UInt64(lastSeenTimeToLive*1000))
             // Same fix as the non-TTL path: hold AnyContext.lock while swapping state so that

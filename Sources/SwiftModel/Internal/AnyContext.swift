@@ -876,6 +876,18 @@ class AnyContext: @unchecked Sendable {
         return snapshot.contains { $0.hasRunningWorkUnit }
     }
 
+    /// `(registered, parked)` work-unit counts across this subtree — see
+    /// `Cancellations.workUnitCensus`. Diagnostic only.
+    var workUnitCensus: _WorkUnitCensus {
+        let (selfCensus, snapshot) = lock { (cancellationsStore?.workUnitCensus ?? _WorkUnitCensus(), allChildren) }
+        return snapshot.reduce(into: selfCensus) { acc, child in
+            let c = child.workUnitCensus
+            acc.registered += c.registered
+            acc.parked += c.parked
+            acc.parkGeneration &+= c.parkGeneration
+        }
+    }
+
     /// The running work units in this subtree, for diagnostics.
     var runningWorkUnits: [(modelName: String, name: String, fileAndLine: FileAndLine)] {
         let (selfUnits, snapshot) = lock { (cancellationsStore?.runningWorkUnits ?? [], allChildren) }

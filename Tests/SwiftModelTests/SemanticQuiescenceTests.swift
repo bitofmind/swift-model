@@ -351,3 +351,229 @@ struct SemanticQuiescenceTests {
         #expect(unit.isRunning == true)
     }
 }
+
+// MARK: - Tier 1: source-side parking (design §5)
+//
+// The park mark belongs to the INPUT SOURCE, not to `node.forEach`'s loop,
+// because a user can write the loop by hand. Every model below iterates a
+// SwiftModel-produced stream with a raw `for await` inside a plain `node.task`
+// — no `forEach` anywhere — and must behave exactly like the `forEach` case
+// above: parked while waiting for the next element, running while the body
+// runs.
+
+private struct QuiescenceTestError: Error, Equatable {}
+
+/// Hand-written `for await` over `Observed` — by far the most common shape in
+/// the suite, and the one that produced 23 of the 33 decisive disagreements in
+/// the first dual-run inventory.
+@Model private struct ObservedLoopConsumer {
+    var trigger = 0
+    var received = 0
+
+    func onActivate() {
+        node.task {
+            for await value in Observed(initial: false, removeDuplicates: false, { trigger }) {
+                node.quiescenceControl.bodyEntered.setValue(true)
+                await node.quiescenceControl.waitAtGate()
+                received = value
+            }
+        }
+    }
+}
+
+/// Hand-written `for await` over an event stream.
+@Model private struct EventLoopConsumer {
+    enum Event: Equatable, Sendable { case ping }
+
+    var received = 0
+
+    func onActivate() {
+        node.task {
+            for await _ in node.event(of: Event.ping) {
+                node.quiescenceControl.bodyEntered.setValue(true)
+                await node.quiescenceControl.waitAtGate()
+                received += 1
+            }
+        }
+    }
+
+    func ping() { node.send(.ping) }
+}
+
+/// Hand-written `for await` over `observeModifications()`. The body writes only
+/// out-of-band state — a model write here would re-trigger the stream and spin.
+@Model private struct ModificationLoopConsumer {
+    var trigger = 0
+
+    func onActivate() {
+        node.task {
+            let control = node.quiescenceControl
+            for await _ in observeModifications() {
+                control.bodyEntered.setValue(true)
+                await control.waitAtGate()
+                control.stop.setValue(true)
+            }
+        }
+    }
+}
+
+/// `node.task(catch:)` whose `catch` handler writes model state — the epilogue
+/// window (a task still executing after its work unit was unregistered).
+@Model private struct ThrowingCatcher {
+    var caught = ""
+    /// What the registry said about this very task *while its `catch` handler
+    /// was running*. Must be `true`: the unit has to outlive the epilogue.
+    var registryStillSawRunningWork: Bool? = nil
+
+    func onActivate() {
+        node.task {
+            throw QuiescenceTestError()
+        } catch: { _ in
+            registryStillSawRunningWork = anyContext?.hasRunningWorkUnit
+            caught = "caught"
+        }
+    }
+}
+
+@Suite(.modelTesting(exhaustivity: .off))
+struct SemanticQuiescenceTier1Tests {
+    /// A raw `for await` over `Observed` parks while waiting, exactly as
+    /// `node.forEach` does — no adoption, no `forEach`.
+    @Test func handWrittenObservedLoopParksWhileWaiting() async throws {
+        let control = QuiescenceControl()
+        let model = ObservedLoopConsumer().withAnchor {
+            $0.quiescenceControl = control
+        }
+        let context = model.anyContext!
+
+        // The task is registered and has not returned …
+        try await waitUntil(context.activeTasks.flatMap(\.tasks).count == 1)
+        // … but with nothing to deliver it is PARKED, so the model is
+        // semantically quiescent.
+        try await waitUntil(context.hasRunningWorkUnit == false)
+        #expect(context.semanticQuiescence == true)
+
+        // A write produces a value; the body is held at the gate, so the unit is
+        // unambiguously running while it is being delivered.
+        model.trigger = 7
+        try await waitUntil(control.bodyEntered.value)
+        #expect(context.hasRunningWorkUnit == true)
+
+        control.openGate()
+        await expect(model.received == 7)
+        // Parked again once the body returns to the wait.
+        try await waitUntil(model.anyContext?.hasRunningWorkUnit == false)
+    }
+
+    /// The same for a hand-written loop over `node.event(of:)`.
+    @Test func handWrittenEventLoopParksWhileWaiting() async throws {
+        let control = QuiescenceControl()
+        let model = EventLoopConsumer().withAnchor {
+            $0.quiescenceControl = control
+        }
+        let context = model.anyContext!
+
+        try await waitUntil(context.activeTasks.flatMap(\.tasks).count == 1)
+        try await waitUntil(context.hasRunningWorkUnit == false)
+        #expect(context.semanticQuiescence == true)
+
+        model.ping()
+        try await waitUntil(control.bodyEntered.value)
+        #expect(context.hasRunningWorkUnit == true)
+
+        control.openGate()
+        await expect(model.received == 1)
+        try await waitUntil(model.anyContext?.hasRunningWorkUnit == false)
+    }
+
+    /// And for `observeModifications()`.
+    @Test func handWrittenObserveModificationsLoopParksWhileWaiting() async throws {
+        let control = QuiescenceControl()
+        let model = ModificationLoopConsumer().withAnchor {
+            $0.quiescenceControl = control
+        }
+        let context = model.anyContext!
+
+        try await waitUntil(context.activeTasks.flatMap(\.tasks).count == 1)
+        try await waitUntil(context.hasRunningWorkUnit == false)
+
+        model.trigger = 1
+        try await waitUntil(control.bodyEntered.value)
+        #expect(context.hasRunningWorkUnit == true)
+
+        control.openGate()
+        try await waitUntil(control.stop.value)
+        try await waitUntil(model.anyContext?.hasRunningWorkUnit == false)
+    }
+
+    /// The epilogue window: a `catch` handler is user code that writes model
+    /// state, and it runs AFTER the body threw. The work unit must still be
+    /// registered and running at that point — otherwise the registry reads
+    /// "quiescent" with a model write still to come, and a wait could pass
+    /// prematurely.
+    @Test func catchHandlerRunsBeforeTheWorkUnitIsUnregistered() async throws {
+        let model = ThrowingCatcher().withAnchor()
+
+        await expect(model.caught == "caught")
+        #expect(model.registryStillSawRunningWork == true)
+        // …and the unit is gone once the epilogue is over.
+        try await waitUntil(model.anyContext?.hasRunningWorkUnit == false)
+    }
+}
+
+
+/// A cancelled task keeps running through its `defer` — and that `defer` writes
+/// model state. This is the *other* epilogue window, and by far the common one:
+/// `Cancellations` drops a task from its cancellation registry BEFORE the body
+/// unwinds (`cancelAll()` empties the dictionary and only then calls
+/// `onCancel()`), so an answer read off `registered` goes "quiescent" during
+/// every teardown / `task(id:)` replacement / `cancelPrevious` swap.
+@Model private struct CancelledDeferWriter {
+    var marker = "live"
+
+    func onActivate() {
+        node.task {
+            let control = node.quiescenceControl
+            defer {
+                // Observed from the unwind of a *cancelled* body, which is
+                // exactly where the registry used to say "nothing running".
+                control.stop.setValue(anyContext?.hasRunningWorkUnit == true)
+                marker = "cleared"
+            }
+            control.bodyEntered.setValue(true)
+            await control.waitAtGate()
+        }
+    }
+
+}
+
+@Suite(.modelTesting(exhaustivity: .off))
+struct SemanticQuiescenceCancellationEpilogueTests {
+    /// The work unit must still be visible — and running — while a cancelled
+    /// body runs its `defer`, because that `defer` can write to the model.
+    @Test func cancelledBodyStillOwnsItsWorkUnitWhileUnwinding() async throws {
+        let control = QuiescenceControl()
+        let model = CancelledDeferWriter().withAnchor {
+            $0.quiescenceControl = control
+        }
+        let context = model.anyContext!
+
+        // Wait for the body to be INSIDE its `defer`'s scope: a task cancelled
+        // before its first slot returns at the pre-body `guard !Task.isCancelled`
+        // without ever entering the user closure, and then there is no epilogue
+        // to test.
+        try await waitUntil(control.bodyEntered.value)
+        // (The gate is a raw continuation — tier 3, unmarked — so the body reads
+        // as running while it waits. That is not what this test is about.)
+
+        // Tear the anchor's tasks down, then release the body so it unwinds
+        // through its `defer`.
+        context.cancellations.cancelAll()
+        control.openGate()
+
+        try await waitUntil(model.marker == "cleared")
+        #expect(control.stop.value == true)
+        // …and the unit retires once the body has genuinely finished.
+        try await waitUntil(model.anyContext?.hasRunningWorkUnit == false)
+    }
+}

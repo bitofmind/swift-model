@@ -1,10 +1,57 @@
 import Foundation
 
+/// Diagnostic snapshot of a subtree's work units. `parkGeneration` is the sum
+/// of every live unit's park/unpark transition count — it changes iff some unit
+/// parked or unparked, which is design §5's "no flicker between two
+/// observations" check.
+struct _WorkUnitCensus {
+    var registered = 0
+    var parked = 0
+    var parkGeneration: UInt64 = 0
+}
+
+/// One entry in `Cancellations.liveWorkUnits` — a `TaskCancellable`'s work
+/// unit plus the identity the diagnostics need.
+struct _LiveWorkUnit {
+    let id: Int
+    let modelName: String
+    let taskName: String
+    let fileAndLine: FileAndLine
+    let unit: ModelWorkUnit
+}
+
 final class Cancellations: @unchecked Sendable {
     fileprivate let lock = NSLock()
     fileprivate var registered: [Int: InternalCancellable] = [:]
     fileprivate var keyed: [CancellableKey: [Int]] = [:]
     private var _sealed = false
+
+    /// SEMANTIC QUIESCENCE — the set of task bodies that are still ABLE TO RUN.
+    ///
+    /// This is deliberately NOT `registered`. `registered` is the
+    /// *cancellation* registry, and cancelling drops an entry **before** the
+    /// task has unwound: `cancel(_:)` goes through `unregister`, and
+    /// `cancelAll()` empties the dictionary and only then calls `onCancel()`.
+    /// A cancelled body keeps running through its `defer`s afterwards, and
+    /// those routinely write model state —
+    ///
+    ///     node.task {
+    ///         defer { playerController = nil; marker = "cleared" }   // <- writes
+    ///         ...
+    ///     }
+    ///
+    /// — so an answer derived from `registered` reads "quiescent" during every
+    /// teardown, `task(id:)` replacement and `cancelPrevious` swap while model
+    /// writes are still to come. That is the same premature-pass shape as the
+    /// `catch`-handler window (see `TaskCancellable`'s `defer { onDone() }`),
+    /// and it is much more common.
+    ///
+    /// Entries are inserted at registration and removed by exactly one thing:
+    /// the task body's outermost `defer`, via `retireWorkUnit(_:)`. So the unit
+    /// outlives cancellation and is retired only when the body genuinely cannot
+    /// run again. (The one path where the body never runs — cancelled before
+    /// `TaskCancellable.init` creates the `Task` — retires explicitly there.)
+    private var liveWorkUnits: [Int: _LiveWorkUnit] = [:]
 
     deinit {
         cancelAll()
@@ -31,8 +78,20 @@ final class Cancellations: @unchecked Sendable {
 
     func register(_ c: InternalCancellable) {
         let shouldImmediatelyCancel: Bool = lock {
+            // Sealed: no `Task` is ever created for this cancellable, so nothing
+            // will call `retireWorkUnit`. Registering a live unit here would
+            // pin the model as permanently non-quiescent.
             if _sealed { return true }
             registered[c.id] = c
+            if let task = c as? TaskCancellable {
+                liveWorkUnits[c.id] = _LiveWorkUnit(
+                    id: task.id,
+                    modelName: task.modelName,
+                    taskName: task.taskName,
+                    fileAndLine: task.fileAndLine,
+                    unit: task.workUnit
+                )
+            }
             for key in AnyCancellable.contexts {
                 keyed[key, default: []].append(c.id)
             }
@@ -41,6 +100,13 @@ final class Cancellations: @unchecked Sendable {
         if shouldImmediatelyCancel {
             c.onCancel()
         }
+    }
+
+    /// Drops the live work unit for `id`. Called from the task body's outermost
+    /// `defer` (and from the never-started path in `TaskCancellable.init`) —
+    /// see `liveWorkUnits`.
+    func retireWorkUnit(_ id: Int) {
+        lock { _ = liveWorkUnits.removeValue(forKey: id) }
     }
 
     func unregister(_ id: Int) -> InternalCancellable? {
@@ -105,7 +171,26 @@ final class Cancellations: @unchecked Sendable {
     /// `withModelParked`) does not count. See `ModelWorkUnit`.
     var hasRunningWorkUnit: Bool {
         lock {
-            registered.values.contains { ($0 as? TaskCancellable)?.workUnit.isRunning == true }
+            liveWorkUnits.values.contains { $0.unit.isRunning }
+        }
+    }
+
+    /// `(registered task-unit count, parked count)` for this registry.
+    /// Diagnostic only: it is what separates the two shapes of "new says
+    /// quiescent, old says busy". A snapshot with **parked > 0** is a work unit
+    /// whose continuation may already have been resumed while its `unpark()`
+    /// has not run yet (design §5's park→resume window); a snapshot with
+    /// **registered == 0** is an executor job that owns no unit at all, which is
+    /// where an unregistered-work hole would hide.
+    var workUnitCensus: _WorkUnitCensus {
+        lock {
+            var census = _WorkUnitCensus()
+            for entry in liveWorkUnits.values {
+                census.registered += 1
+                if !entry.unit.isRunning { census.parked += 1 }
+                census.parkGeneration &+= entry.unit.parkGeneration
+            }
+            return census
         }
     }
 
@@ -113,12 +198,10 @@ final class Cancellations: @unchecked Sendable {
     /// message. Sorted by registration order for stable output.
     var runningWorkUnits: [(modelName: String, name: String, fileAndLine: FileAndLine)] {
         lock {
-            registered.values.compactMap { c -> (id: Int, modelName: String, name: String, fileAndLine: FileAndLine)? in
-                guard let task = c as? TaskCancellable, task.workUnit.isRunning else { return nil }
-                return (task.id, task.modelName, task.taskName, task.fileAndLine)
-            }
-            .sorted { $0.id < $1.id }
-            .map { (modelName: $0.modelName, name: $0.name, fileAndLine: $0.fileAndLine) }
+            liveWorkUnits.values
+                .filter { $0.unit.isRunning }
+                .sorted { $0.id < $1.id }
+                .map { (modelName: $0.modelName, name: $0.taskName, fileAndLine: $0.fileAndLine) }
         }
     }
 

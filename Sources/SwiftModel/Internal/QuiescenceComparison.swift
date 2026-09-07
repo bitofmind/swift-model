@@ -16,6 +16,33 @@ import Foundation
 // always maintained — it is two integers behind a lock, only touched on a
 // drive check, and it is what the unit tests assert against.
 
+/// Opt-in, *expensive* second-level diagnostic: symbolicate the stack of
+/// whatever made each drain-executor job runnable, so a "new says quiescent,
+/// old says busy — `existingBusy=[executor]`" disagreement can be attributed to
+/// a concrete source instead of guessed at. Separate from
+/// `SWIFT_MODEL_QUIESCENCE_TRACE` because it symbolicates on EVERY enqueue and
+/// slows the suite by roughly an order of magnitude; use it on a filter, never
+/// on a full run.
+let _quiescenceJobTraceEnabled: Bool =
+    ProcessInfo.processInfo.environment["SWIFT_MODEL_QUIESCENCE_JOB_TRACE"] == "1"
+
+/// The current call stack, trimmed to the frames that identify the *source* of
+/// an enqueue (the executor/dispatch plumbing at the top is noise).
+func _quiescenceEnqueueStack() -> String {
+    #if os(WASI)
+    return ""
+    #else
+    return Thread.callStackSymbols.dropFirst(2).prefix(14)
+        .map { symbol -> String in
+            // `N   Image   0xADDR   mangled + off` → keep the mangled name only;
+            // addresses differ per run and defeat aggregation.
+            let parts = symbol.split(separator: " ", omittingEmptySubsequences: true)
+            return parts.count > 3 ? parts[3...].joined(separator: " ") : symbol
+        }
+        .joined(separator: " ← ")
+    #endif
+}
+
 /// One disagreement direction.
 enum _QuiescenceDisagreement: String, Sendable {
     /// Existing (executor/queue) answer said quiescent; semantic said work is
@@ -60,7 +87,10 @@ enum _QuiescenceComparison {
         existingIsQuiescent: Bool,
         semanticIsQuiescent: Bool,
         runningUnits: @autoclosure () -> [(modelName: String, name: String, fileAndLine: FileAndLine)],
-        existingBusyReason: @autoclosure () -> String = ""
+        existingBusyReason: @autoclosure () -> String = "",
+        existingBusyJobStacks: @autoclosure () -> [String] = [],
+        workUnitCensus: @autoclosure () -> _WorkUnitCensus = _WorkUnitCensus(),
+        parkGenerationChangedSinceLastCheck: Bool? = nil
     ) {
         let tag = testTag ?? "<no test>"
         let disagreement: _QuiescenceDisagreement?
@@ -102,7 +132,16 @@ enum _QuiescenceComparison {
                 line += " running=[\(shown)] count=\(units.count)"
             }
         case .newQuiescentOldNot:
-            line += " existingBusy=[\(existingBusyReason())]"
+            let census = workUnitCensus()
+            line += " existingBusy=[\(existingBusyReason())] units=(registered: \(census.registered), parked: \(census.parked))"
+            if let changed = parkGenerationChangedSinceLastCheck {
+                line += " parkGenChanged=\(changed)"
+            }
+            if _quiescenceJobTraceEnabled {
+                for stack in existingBusyJobStacks() {
+                    line += "\n    job: \(stack)"
+                }
+            }
         }
         _quiescenceTrace(line)
     }
