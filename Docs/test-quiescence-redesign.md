@@ -266,11 +266,13 @@ two kinds:
 - **Waiting for wall time** — a real-clock sleep resumes on its own. The model is arguably not
   "done"; it will do more work in 300 ms without anyone asking.
 
-Today's drive does not distinguish these either: an executor-idle check declares quiescence
-during a real sleep too, so treating both as parked preserves current behaviour and is what
-tests want in practice. But it is a conflation, and if it ever bites, the fix is to split the
-mark (`parkedUntilExternalInput` vs `parkedOnTimer`) and let `settle()` decide per kind.
-Recording it here so the choice is deliberate rather than accidental.
+**Resolved (Måns, 2026-09-07): treat both as parked, and treat a real-clock sleep in a test as
+the user error it is.** A test that sleeps on wall time is already wrong — it should be using a
+controllable clock with an `advance` — so the framework should not contort its quiescence rule
+to accommodate it. Today's drive does not distinguish the two either (an executor-idle check
+declares quiescence during a real sleep too), so a single mark both preserves current behaviour
+and points users at the right fix. If it ever needs splitting, `parkedUntilExternalInput` vs
+`parkedOnTimer` is the shape; not needed now.
 
 ## 6a. The backstop, and what a timeout means now
 
