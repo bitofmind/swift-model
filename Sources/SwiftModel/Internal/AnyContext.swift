@@ -163,10 +163,32 @@ class AnyContext: @unchecked Sendable {
     /// `Any` because the generic element type isn't visible at this layer.
     nonisolated(unsafe) var collectionElementPathMakersStore: [AnyKeyPath: @Sendable (AnyHashable, Any) -> AnyKeyPath]?
 
+    /// Protects `modeLifeTime` independently of the hierarchy lock — the same leaf-lock
+    /// pattern as `parentsLock` / `dependenciesLock` above.
+    ///
+    /// `lifetime` is read *across hierarchies*: `Model.shallowCopy` consults
+    /// `Reference.lifetime`, which forwards to `context?.lifetime`, and the context it
+    /// finds routinely belongs to a **different** tree (a `static let` dependency value is
+    /// shared between trees). Reading it under the *hierarchy* lock therefore let a thread
+    /// that already held tree A's hierarchy lock — `AnyContext.dependency(for:)` holds it
+    /// across `setupModelDependency` → `initialDependencyCopy` — go on to take tree B's,
+    /// while a second thread did the mirror image. That AB-BA wedged the whole process
+    /// (diagnosed 2026-09-07 from a live `sample` of a hung CI run).
+    ///
+    /// Leaf-lock discipline: nothing is ever acquired while this lock is held (the
+    /// critical sections below read or assign the enum and nothing else), so it can never
+    /// participate in a cycle. Writers (`onActivate`, `onRemoval`, `onAnyModification`'s
+    /// destructed guard) hold the hierarchy lock as well, in hierarchy → leaf order; that
+    /// keeps every existing check-then-act atomic for same-hierarchy callers and keeps the
+    /// unlocked `unprotectedIsDestructed` / `unprotectedLifetime` reads (which are only
+    /// performed under the hierarchy lock) exactly as race-free as they were before.
+    private let lifetimeLock = NSLock()
+
     /// `@exclusivity(unchecked)`: read on every tracked/untracked read and every property
-    /// write (`unprotectedIsDestructed`) and only ever accessed by plain get/set under the
-    /// hierarchy lock — no `_modify` ever holds it open, so the dynamic check has nothing to
-    /// catch (see `_modificationCount` below for the same argument).
+    /// write (`unprotectedIsDestructed`) and only ever accessed by plain get/set under
+    /// `lifetimeLock` and/or the hierarchy lock — no `_modify` ever holds it open, so the
+    /// dynamic check has nothing to catch (see `_modificationCount` below for the same
+    /// argument).
     @exclusivity(unchecked) private var modeLifeTime: ModelLifetime = .anchored
 
     private var eventContinuationsStore: [Int: AsyncStream<EventInfo>.Continuation]?
@@ -969,8 +991,14 @@ class AnyContext: @unchecked Sendable {
         unsafeDowncast(_registrarBox.unsafelyUnwrapped, to: RegistrarBox.self).pair.background
     }
 
+    /// The context's lifetime. Deliberately guarded by the leaf `lifetimeLock` rather than
+    /// the hierarchy lock — see `lifetimeLock`'s doc comment for why (cross-hierarchy
+    /// readers, AB-BA). Also removes a hierarchy-lock acquisition from a read path that
+    /// runs per model copy.
     var lifetime: ModelLifetime {
-        lock(modeLifeTime)
+        lifetimeLock.lock()
+        defer { lifetimeLock.unlock() }
+        return modeLifeTime
     }
 
     var isDestructed: Bool {
@@ -1061,6 +1089,10 @@ class AnyContext: @unchecked Sendable {
 
     func onActivate() -> Bool {
         return lock {
+            // The check-and-set is done entirely under the leaf lock so it stays atomic
+            // even for the (rare) case of two hierarchies racing on the same context.
+            lifetimeLock.lock()
+            defer { lifetimeLock.unlock() }
             switch modeLifeTime {
             case .anchored:
                 modeLifeTime = .active
@@ -1085,7 +1117,12 @@ class AnyContext: @unchecked Sendable {
 
         eventContinuations.removeAll()
         anyModificationCallbacks.removeAll()
+        // Hierarchy lock (held by every caller) → leaf lock. Same-hierarchy readers still
+        // see this flip atomically with the drains below via the hierarchy lock they hold;
+        // cross-hierarchy readers of `lifetime` get it via the leaf lock.
+        lifetimeLock.lock()
         modeLifeTime = .destructed
+        lifetimeLock.unlock()
         // Seal the task registry in the same locked scope that flips the
         // lifetime: a registration racing teardown (its context check passed
         // just before destruct) would otherwise land in the store AFTER the

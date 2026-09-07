@@ -6,6 +6,14 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fixed a whole-process deadlock between two model trees resolving each other's `@ModelDependency` values.** `AnyContext.dependency(for:)` (both overloads) holds *its own* hierarchy lock across `setupModelDependency`, and from there two code paths reached into a **different** tree's hierarchy lock: `Model.shallowCopy` reads `Reference.lifetime`, which forwards to `context?.lifetime` (`lock(modeLifeTime)`), and `MakeInitialDependencyCopyTransformer` calls `shallowCopy` → `ModelContext.makeFrozen` → `Reference.withHierarchyLockIfLive`. A dependency declared as a `static let` (`liveValue` / `testValue`) is shared across trees, so the model being copied is routinely owned by another tree's context — two threads resolving two such dependencies in opposite order took the two locks A→B and B→A and wedged. Diagnosed on 2026-09-07 from a live `sample` of a hung CI run: four threads in `__psynch_mutexwait` with none holding-and-running, the test executor queued behind one of them, which is what turned a two-thread deadlock into a hung process.
+
+  Both edges are removed rather than defended. `AnyContext.modeLifeTime` gets its own leaf lock (`lifetimeLock`), the same pattern `parentsLock` and `dependenciesLock` already use in that file, so `lifetime` / `isDestructed` no longer take the hierarchy lock at all; nothing is ever acquired while the leaf lock is held, so it cannot be in a cycle, and writers (`onActivate`, `onRemoval`, `onAnyModification`'s destructed guard) take it *under* the hierarchy lock they already hold, preserving every existing check-then-act. `MakeInitialDependencyCopyTransformer` now resolves genesis state *before* copying instead of after: `Reference.setContext` captures genesis on the very first anchor, so every Reference that has (or ever had) a live context has genesis — precisely the case in which `shallowCopy` would take a foreign hierarchy lock, and precisely the case in which the transformer already preferred genesis and threw the frozen state away. The remaining `shallowCopy` fallback runs only when `!_hasGenesis`, which implies the Reference was never anchored, so it has no context and no lock to take. The lock around `dependency(for:)`'s own bookkeeping is unchanged.
+
+  Regression coverage in `DependencyLockInversionTests`: two independent trees resolve two shared model dependencies in opposite order on two threads, 200 times. It deadlocked on the first iteration before the fix and completes all 200 in ~0.15 s after it. Its verdict is a stall detector (no forward progress for a scaled budget) rather than a wall-clock total, so it stays decisive under ThreadSanitizer and parallel execution.
+
 ---
 
 ## [1.0.17] — Hot-path performance: index-keyed accessors, lock-free registrar lookups, 10× faster collection reconcile
