@@ -134,19 +134,33 @@ func _makeTestExecutorBox() -> (any Sendable)? {
 /// quiescence detection stays isolated.
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
 ///
-/// The queue carries an explicit `.userInitiated` QoS, and every job is submitted with
-/// `.enforceQoS` at the same level. A concurrent queue with no QoS of its own runs each
-/// block at the QoS of the thread that submitted it, and a drive job is submitted by
-/// whichever thread resumes the task — a `DispatchQueue.global(qos: .background)`
-/// callback, a `.background` Task, a low-QoS test double. Under a saturated parallel run
-/// a background-QoS block can stay unscheduled for minutes; while it is pending it counts
-/// as `outstanding` (the executor reports itself busy), so the test's `settle()` can
-/// never reach its fixpoint and the inactivity watchdog never fires — the exact evidence
-/// the absolute-ceiling report describes, without any lock involved. Measured downstream
-/// as a smooth 4×–250× slowdown of `settle()`-heavy tests under an 18-target plan with an
-/// occasional 1500 s wedge, identical on releases before and after the lock changes. The
-/// drive's contract is "non-starvable"; pinning the QoS is what makes that true.
+/// The queue carries an explicit `.userInitiated` QoS as a FLOOR. A concurrent queue with
+/// no QoS of its own runs each block at the QoS of the thread that submitted it, and a
+/// drive job is submitted by whichever thread resumes the task — a
+/// `DispatchQueue.global(qos: .background)` callback, a `.background` Task, a low-QoS test
+/// double. Under a saturated parallel run a background-QoS block can stay unscheduled for
+/// minutes; while it is pending it counts as `outstanding` (the executor reports itself
+/// busy), so the test's `settle()` can never reach its fixpoint and the inactivity
+/// watchdog never fires — the exact evidence the absolute-ceiling report describes,
+/// without any lock involved. Measured downstream as a smooth 4×–250× slowdown of
+/// `settle()`-heavy tests under an 18-target plan with an occasional 1500 s wedge,
+/// identical on releases before and after the lock changes. The drive's contract is
+/// "non-starvable"; the floor is what makes that true.
+///
+/// A floor, not `.enforceQoS`: with the queue's QoS set, a block submitted from a
+/// lower-QoS thread is raised to `.userInitiated`, while one submitted from a higher-QoS
+/// thread (the main thread, a `.userInteractive` task) keeps that QoS exactly as before.
+/// Forcing every job to one level changed the relative scheduling of drive jobs against
+/// work the drive cannot see — `Task.yield()` inside a task that prefers this executor
+/// resumes on the global pool, not here — and on CI's 3-core runner that let a
+/// `settle()` fixpoint check outrun a yielding child it could not count
+/// (`ExecutorDrainSettleTests.settleIsLoadIndependentAcrossChildTasks`). The floor fixes
+/// the starvation without touching that balance.
 private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.shared", qos: .userInitiated, attributes: .concurrent)
+
+/// The drain queue's QoS, for the regression test that pins the floor.
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
+var _drainQueueQoS: DispatchQoS { _sharedDrainQueue.qos }
 
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
 final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
@@ -219,7 +233,7 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
         lock.withLock { outstanding += 1; _lastEnqueueNs = _drainMonotonicNs() }
         Self._globalOutstanding.wrappingAdd(1, ordering: .relaxed)
         Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
-        _sharedDrainQueue.async(qos: .userInitiated, flags: .enforceQoS) {
+        _sharedDrainQueue.async {
             unowned.runSynchronously(on: self.asUnownedTaskExecutor())
             let toFire: [@Sendable () -> Void] = self.lock.withLock {
                 self.outstanding -= 1
