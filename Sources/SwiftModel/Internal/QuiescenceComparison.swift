@@ -54,12 +54,13 @@ enum _QuiescenceComparison {
         }
     }
 
-    /// Records one check. `runningUnits` is only evaluated when a disagreement
-    /// is being traced.
+    /// Records one check. `runningUnits` and `existingBusyReason` are only
+    /// evaluated when a disagreement is being traced.
     static func record(
         existingIsQuiescent: Bool,
         semanticIsQuiescent: Bool,
-        runningUnits: @autoclosure () -> [(modelName: String, name: String, fileAndLine: FileAndLine)]
+        runningUnits: @autoclosure () -> [(modelName: String, name: String, fileAndLine: FileAndLine)],
+        existingBusyReason: @autoclosure () -> String = ""
     ) {
         let tag = testTag ?? "<no test>"
         let disagreement: _QuiescenceDisagreement?
@@ -83,13 +84,25 @@ enum _QuiescenceComparison {
 
         guard isTracing, let disagreement else { return }
         var line = "test=\"\(tag)\" \(disagreement.rawValue) existing=\(existingIsQuiescent ? "quiescent" : "busy") semantic=\(semanticIsQuiescent ? "quiescent" : "busy")"
-        if disagreement == .oldQuiescentNewNot {
+        switch disagreement {
+        case .oldQuiescentNewNot:
             let units = runningUnits()
             if units.isEmpty {
                 line += " running=[queue]"   // no registered unit; a call queue was busy
             } else {
-                line += " running=[" + units.map { "\($0.modelName).\($0.name) @ \($0.fileAndLine.description)" }.joined(separator: ", ") + "]"
+                // Cap the list: a wide hierarchy can have dozens of identical
+                // units and the interesting information is the call site.
+                let described = units.map { unit -> String in
+                    let site = unit.fileAndLine.description
+                    // `taskName` defaults to "function @ file:line" — don't repeat the site.
+                    return unit.name.hasSuffix(site) ? "\(unit.modelName).\(unit.name)" : "\(unit.modelName).\(unit.name) @ \(site)"
+                }
+                var shown = Array(Set(described)).sorted().prefix(5).joined(separator: ", ")
+                if units.count > 5 { shown += ", +\(units.count - 5) more" }
+                line += " running=[\(shown)] count=\(units.count)"
             }
+        case .newQuiescentOldNot:
+            line += " existingBusy=[\(existingBusyReason())]"
         }
         _quiescenceTrace(line)
     }
@@ -116,7 +129,13 @@ private let _quiescenceTraceFile: FileHandle? = {
     try? FileManager.default.removeItem(atPath: path)
     _ = FileManager.default.createFile(atPath: path, contents: nil)
     let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: path))
+    // The exit summary is a convenience over the per-check lines (which carry
+    // the same information). `atexit` is not part of the WASI surface this
+    // library is compile-checked against, and the trace is a macOS/Linux
+    // developer tool, so it is simply skipped there.
+    #if !os(WASI)
     atexit(_quiescenceDumpSummaryAtExit)
+    #endif
     return handle
 }()
 
@@ -131,6 +150,7 @@ func _quiescenceTrace(_ msg: @autoclosure () -> String) {
 }
 
 /// `atexit` handler — must capture nothing (`@convention(c)`).
+#if !os(WASI)
 private func _quiescenceDumpSummaryAtExit() {
     guard let fh = _quiescenceTraceFile else { return }
     let text = _QuiescenceComparison.summaryLines().joined(separator: "\n") + "\n"
@@ -138,3 +158,4 @@ private func _quiescenceDumpSummaryAtExit() {
         try? fh.write(contentsOf: Data(text.utf8))
     }
 }
+#endif

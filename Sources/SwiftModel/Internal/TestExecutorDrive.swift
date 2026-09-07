@@ -363,7 +363,13 @@ extension TestAccess {
                 _QuiescenceComparison.record(
                     existingIsQuiescent: idleNow,
                     semanticIsQuiescent: self.context.semanticQuiescence,
-                    runningUnits: self.context.runningWorkUnits
+                    runningUnits: self.context.runningWorkUnits,
+                    existingBusyReason: [
+                        exec.isExecutorIdle ? nil : "executor",
+                        bg.isIdle ? nil : "bg",
+                        main.isIdle ? nil : "main",
+                        self.context.hasPendingStartTask ? "pendingStart" : nil,
+                    ].compactMap { $0 }.joined(separator: "+")
                 )
 
                 if idleNow {
