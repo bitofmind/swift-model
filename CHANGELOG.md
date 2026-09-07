@@ -6,6 +6,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **A model dependency shared across model trees could deadlock the process.** `AnyContext.dependency(for:)` resolves a model dependency while holding its own tree's hierarchy lock, and the resolution copied the dependency model through `MakeInitialDependencyCopyTransformer` → `Model.shallowCopy` → `ModelContext.makeFrozen`, which reads the model's state under **that model's** hierarchy lock. A dependency declared as a `static let` is shared, so the model being copied is routinely anchored in a *different* tree: two threads resolving two such dependencies in opposite order took the two locks in opposite order and deadlocked. Every other thread that then wanted either lock — in a `.modelTesting` run, including the executor the wait verbs drain — queued behind them, so a two-thread deadlock became a whole-process hang in which every `expect` rode to its ceiling and reported a timeout. It was diagnosed from a live `sample` of a hung CI run showing four threads in `__psynch_mutexwait` with none holding-and-running, which is what an AB-BA looks like; it reproduced at roughly 3% of full test-plan runs on 1.0.16 and 1.0.17 alike, and neither the drain queue's QoS nor the number of cores affected it.
+
+  The transformer now resolves genesis state *before* copying rather than after, which removes the foreign-lock acquisition entirely — and the frozen state it used to take that lock for was never used on this path. `Reference.setContext` captures genesis on the very first anchor, so every Reference that has (or ever had) a live context has genesis, which is exactly the case in which `shallowCopy` would freeze under a foreign lock; and `!_hasGenesis` implies the Reference was never anchored, so it has no context and no lock to take. The retained fallback is therefore foreign-lock-free by construction. The one observable side effect of the skipped `shallowCopy` — clearing `modelContext.access` when it freezes an anchored model — is preserved under the identical condition. `DependencyLockInversionTests` is the regression test: two trees, two `@Model`-typed `static let` dependencies resolved concurrently in opposite order, with a progress-based verdict rather than a wall-clock one so a slow machine cannot fail it.
+
 ---
 
 ## [1.0.17] — Hot-path performance: index-keyed accessors, lock-free registrar lookups, 10× faster collection reconcile

@@ -52,27 +52,37 @@ private final class Flag: @unchecked Sendable {
     var value: Bool { get { l.lock(); defer { l.unlock() }; return v } set { l.lock(); v = newValue; l.unlock() } }
 }
 
+private final class Counter: @unchecked Sendable {
+    private let l = NSLock(); private var v = 0
+    var value: Int { l.lock(); defer { l.unlock() }; return v }
+    func increment() { l.lock(); v += 1; l.unlock() }
+}
+
 struct DependencyLockInversionTests {
-    /// KNOWN ISSUE — this deadlocks on `main` today. It is the reproduction for the
-    /// production bug diagnosed on 2026-09-07 from a live `sample` of a wedged CI run.
-    /// Wrapped in `withKnownIssue` so it documents the bug without reddening CI; delete the
-    /// wrapper when the fix lands. Bounded at 30 s so a regression reports instead of hanging.
+    /// Regression test for the AB-BA fixed by giving `modeLifeTime` its own leaf lock and
+    /// by resolving genesis state before `shallowCopy` in `MakeInitialDependencyCopyTransformer`
+    /// — the two places where `dependency(for:)` reached a *foreign* hierarchy lock while
+    /// holding its own. Deadlocked on the very first iteration before the fix (zero
+    /// iterations completed); completes 200 iterations in ~0.2 s after it.
     ///
-    /// A first fix attempt — dropping the hierarchy lock from `AnyContext.dependency(for:)`
-    /// and making the dependency-cache install first-wins — DOES make this pass (0.15 s
-    /// instead of a 30 s deadlock) but crashes the full parallel suite deterministically
-    /// (3/3 runs) inside Swift-runtime generic-metadata instantiation, reached from a
-    /// generic `ModelAccess.willAccess` override in `ObservedModelDebugIsolationTests`. So
-    /// that lock is doing more than guarding the check-then-act, and the real fix has to
-    /// narrow what runs unlocked rather than remove the lock wholesale.
+    /// The verdict is a *stall* detector rather than a total-runtime budget — see the
+    /// comment in the body — so a regression reports instead of hanging the suite, without
+    /// the pass/fail line depending on how loaded the machine is.
+    ///
+    /// Note for future fixers: removing the `lock { }` from `dependency(for:)` altogether
+    /// (with a first-wins dependency-cache install) also makes this pass, but crashes the
+    /// full parallel suite deterministically inside Swift-runtime generic-metadata
+    /// instantiation. That lock does more than guard the cache check-then-act; the fix has
+    /// to remove the foreign-lock edges from under it, not remove the lock.
     @Test func concurrentDependencyResolutionAcrossTreesDoesNotDeadlock() async {
         let iterations = 200
         let done = Flag()
-        let progressed = Flag()
+        let stop = Flag()
+        let progress = Counter()
 
-        await withKnownIssue("AB-BA between two contexts' hierarchy locks — see the doc comment") {
         let worker = Thread {
             for _ in 0..<iterations {
+                if stop.value { break }
                 let (one, anchorOne) = LeafOne().returningAnchor()
                 let (two, anchorTwo) = LeafTwo().returningAnchor()
                 let ready = DispatchSemaphore(value: 0)
@@ -88,16 +98,51 @@ struct DependencyLockInversionTests {
                 ready.wait(); ready.wait()
                 go.signal(); go.signal()
                 finished.wait(); finished.wait()
-                progressed.value = true
+                progress.increment()
                 withExtendedLifetime((anchorOne, anchorTwo)) {}
             }
             done.value = true
         }
         worker.start()
 
-        let deadline = Date().addingTimeInterval(30)
-        while !done.value && Date() < deadline { try? await Task.sleep(nanoseconds: 20_000_000) }
-        #expect(done.value, "concurrent cross-tree dependency resolution deadlocked (progressed at least once: \(progressed.value))")
+        // Evidence-based verdict, not a wall-clock budget: an AB-BA parks both resolver
+        // threads forever, so the iteration counter stops moving and never restarts. A
+        // merely slow run (TSan is 5-15x, and this suite runs in parallel with 860+ other
+        // tests) keeps incrementing it. So we fail only on a *stall* — no forward progress
+        // for `stallBudget` — and treat "still progressing when the overall ceiling is
+        // reached" as a pass, since sustained forward progress is exactly what the test
+        // asserts. Both bounds honour SWIFT_MODEL_TIMEOUT_SCALE like the rest of the suite.
+        let scale = ProcessInfo.processInfo.environment["SWIFT_MODEL_TIMEOUT_SCALE"].flatMap(Double.init) ?? 1
+        let stallBudget = 10.0 * scale
+        let ceiling = Date().addingTimeInterval(120 * scale)
+
+        var lastProgress = progress.value
+        var lastProgressAt = Date()
+        var stalled = false
+        while !done.value && Date() < ceiling {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            let current = progress.value
+            if current != lastProgress {
+                lastProgress = current
+                lastProgressAt = Date()
+            } else if Date().timeIntervalSince(lastProgressAt) > stallBudget {
+                stalled = true
+                break
+            }
+        }
+        stop.value = true
+
+        #expect(
+            !stalled,
+            """
+            concurrent cross-tree dependency resolution made no progress for \(stallBudget)s \
+            after \(lastProgress)/\(iterations) iterations — the two hierarchy locks are \
+            deadlocked again
+            """
+        )
+        // Let the worker unwind before the test returns so its threads do not outlive it.
+        while !done.value && !stalled && Date() < ceiling.addingTimeInterval(5 * scale) {
+            try? await Task.sleep(nanoseconds: 20_000_000)
         }
     }
 }
