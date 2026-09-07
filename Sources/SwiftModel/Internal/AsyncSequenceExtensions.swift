@@ -71,6 +71,36 @@ extension AsyncSequence where Element: Equatable & Sendable {
 //
 // Only the wait is parked — never the consumer's body. Running the user's
 // closure is real model work.
+//
+// ## Why `AsyncStream(unfolding:)` and not a custom iterator
+//
+// The obvious alternative is to give `Observed` its own `AsyncIterator` that
+// parks around the upstream `next()`. Two reasons not to:
+//
+//   * **Public API.** `Observed.makeAsyncIterator()` returns
+//     `AsyncStream<Element>.Iterator`, and `node.event(…)` /
+//     `observeModifications()` return `AsyncStream<T>` outright. Unfolding keeps
+//     every one of those types exactly as it was; a custom iterator would change
+//     the `AsyncIterator` associated type.
+//   * **SE-0431 (`next(isolation:)`).** Because the consumer still iterates a
+//     plain `AsyncStream`, it gets the *stdlib's* `next(isolation:)`, so `for
+//     await`'s desugaring is untouched and we never have to decide whether to
+//     witness an availability-gated requirement (`next(isolation:)` is
+//     SwiftStdlib 6.0; this library deploys to macOS 11). A hand-written
+//     iterator implementing only `next()` would silently downgrade every
+//     `for await` over these streams to the non-isolated path.
+//
+// The residual cost is real and worth knowing: the produce closure is
+// `@Sendable` and non-isolated, so a consumer that iterates one of these streams
+// **from an actor** now hops off it once per element to run `produce`. Model
+// task bodies are non-isolated, so the common path is unaffected — and every
+// `node.event(…)` stream already paid exactly this, because
+// `eraseToStream()` is itself an unfolding wrapper.
+//
+// `_ParkedWaitBox` is generic over the *iterator* rather than over `Element`
+// for the same reason `_DedupBox` is: it keeps `Self.AsyncIterator.Type` out of
+// the `@Sendable` unfolding closure, whose metatype is not guaranteed `Sendable`
+// in a generic context.
 
 /// Drives an upstream iterator, parking the calling work unit around the wait.
 ///
