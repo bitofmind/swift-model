@@ -183,7 +183,96 @@ suspension point, and needs to know nothing else about SwiftModel.
 is genuinely outstanding work, so `settle()` waiting for it is correct rather than a bug. If
 it never finishes, a generous backstop reports it — see §6a.
 
-### 6a. The backstop, and what a timeout means now
+#### 6b. Worked examples: sleeps, clocks, and third-party sequences
+
+The question that decides adoption cost is *where* the park mark goes. There are three
+hooks, and they cover different amounts of ground for different amounts of work.
+
+**Hook 1 — `node.forEach` marks its own `await`. Zero adoption, covers the most.**
+
+`forEach` owns the loop, so it can park around its own `next()` call *whatever the sequence
+is*. That includes every third-party operator, because the consumer is suspended on one
+await regardless of how many tasks the operator runs internally:
+
+```swift
+// swift-async-algorithms debounce, consumed through forEach.
+// Parks correctly with no user action and no knowledge of debounce's internals.
+node.forEach(searchQueries.debounce(for: .seconds(0.3), clock: clock)) { query in
+    results = await api.search(query)          // running: real work
+}
+```
+
+While `debounce` is holding its 300 ms, the consuming task is suspended inside `forEach`'s
+`next()`, so it is parked and `settle()` does not wait for it. The same holds for `throttle`,
+`merge`, `chunked`, or anything else conforming to `AsyncSequence`. **This is why the design
+is cheap in practice: `forEach` is the idiomatic API, so the common path needs no adoption.**
+
+**Hook 2 — the sequence wrapper, for a hand-written loop over a foreign sequence.**
+
+```swift
+node.task {
+    for await tick in externalTicker.parkedInModelTasks() { … }
+}
+```
+
+One await, one park, no propagation subtleties. This is the most robust hook and the one to
+recommend when someone insists on writing the loop themselves.
+
+**Hook 3 — the source wraps its own suspension, for a bare sleep with no sequence.**
+
+A `clock.sleep` sitting directly in a task body is not inside any `next()`, so hooks 1 and 2
+do not see it. Here the clock wraps its own await, once, in code the clock's author owns.
+
+For parallel-apple's `Clock` protocol this is genuinely three sites, because the protocol
+already funnels every caller through one method (*"Callers always go through this method,
+never `nonAdjustedSleep` directly"*):
+
+```swift
+// imagien/Sources/Clock/Clock.swift — the default implementation every clock inherits
+extension Clock {
+    public func sleep(until date: Date, toleranceMs: UInt64 = 100) async throws {
+        try await withModelParked {                     // ← the only change
+            try await retry { try await nonAdjustedSleep(until: date, toleranceMs: toleranceMs) }
+        }
+    }
+}
+```
+
+plus the two clocks that override `sleep(until:)` directly (`TestClock`, `ImmediateClock`).
+Three edits cover every `clock.sleep` in every model in the repo, and models themselves are
+untouched. A clock that does *not* adopt still works — its sleeps count as running, so
+`settle()` reports it by name (§6a) rather than being silently wrong.
+
+**What a third-party library author has to do: nothing.** `swift-async-algorithms` needs no
+change, because its operators are consumed through hook 1 or 2. A library only needs
+`withModelParked` if it hands a model a *bare* suspension that is not an `AsyncSequence` and
+not routed through a clock the user controls — which is rare, and is the same shape as
+"provide a dependency" that the framework already asks for.
+
+**Where task-locals do and do not help.** `withModelParked` identifies the work unit through
+a task-local, so a suspension inside a child task the library spawned still marks the right
+unit. That is what makes hook 3 work through library internals. It is also why hook 1 is
+preferred where both apply: with one await there is exactly one thing to mark, whereas an
+operator running several concurrent children could in principle park one while another runs.
+`forEach`'s single `next()` makes that question disappear.
+
+### 6c. An honest wrinkle: "parked" conflates two different things
+
+`withModelParked` as described means *this task is suspended awaiting input*. But there are
+two kinds:
+
+- **Waiting for the test to act** — a `TestClock` sleep only resumes when the test calls
+  `advance`. Ignoring it in the quiescence decision is exactly right.
+- **Waiting for wall time** — a real-clock sleep resumes on its own. The model is arguably not
+  "done"; it will do more work in 300 ms without anyone asking.
+
+Today's drive does not distinguish these either: an executor-idle check declares quiescence
+during a real sleep too, so treating both as parked preserves current behaviour and is what
+tests want in practice. But it is a conflation, and if it ever bites, the fix is to split the
+mark (`parkedUntilExternalInput` vs `parkedOnTimer`) and let `settle()` decide per kind.
+Recording it here so the choice is deliberate rather than accidental.
+
+## 6a. The backstop, and what a timeout means now
 
 A wall clock does come back, but only as a **reporter of unfinished work**, never as part of
 the quiescence decision. The verdict is semantic; the clock only bounds how long we wait
