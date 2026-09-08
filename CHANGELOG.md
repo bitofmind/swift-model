@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.18] — Cross-tree model-dependency deadlock fix
+
 ### Fixed
 
 - **A model dependency shared across model trees could deadlock the process.** `AnyContext.dependency(for:)` resolves a model dependency while holding its own tree's hierarchy lock, and the resolution copied the dependency model through `MakeInitialDependencyCopyTransformer` → `Model.shallowCopy` → `ModelContext.makeFrozen`, which reads the model's state under **that model's** hierarchy lock. A dependency declared as a `static let` is shared, so the model being copied is routinely anchored in a *different* tree: two threads resolving two such dependencies in opposite order took the two locks in opposite order and deadlocked. Every other thread that then wanted either lock — in a `.modelTesting` run, including the executor the wait verbs drain — queued behind them, so a two-thread deadlock became a whole-process hang in which every `expect` rode to its ceiling and reported a timeout. It was diagnosed from a live `sample` of a hung CI run showing four threads in `__psynch_mutexwait` with none holding-and-running, which is what an AB-BA looks like; it reproduced at roughly 3% of full test-plan runs on 1.0.16 and 1.0.17 alike, and neither the drain queue's QoS nor the number of cores affected it.
