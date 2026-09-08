@@ -311,7 +311,12 @@ public extension ModelNode {
                     }
 
                     do {
-                        try await operation(oldValue, newValue)
+                        // The user's closure runs in THIS unit, which has
+                        // parked around `next()`. Mark the stretch so the
+                        // quiescence rule does not credit the loop's park
+                        // history to code it cannot see inside — see
+                        // `_withUserBodyRegion`.
+                        try await _withUserBodyRegion { try await operation(oldValue, newValue) }
                     } catch {
                         onError(error)
                     }
@@ -428,7 +433,8 @@ public extension ModelNode {
                     ModelAccess.current?.reactiveBodyFired(fireFL)
 
                     do {
-                        try await operation(value)
+                        // See the `onChange` branch above / `_withUserBodyRegion`.
+                        try await _withUserBodyRegion { try await operation(value) }
                     } catch {
                         if abortIfOperationThrows {
                             throw error

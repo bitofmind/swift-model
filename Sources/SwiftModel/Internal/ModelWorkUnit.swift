@@ -135,6 +135,11 @@ final class ModelWorkUnit: @unchecked Sendable {
     /// the per-unit analogue of the drive's global activity stamp, and the only
     /// evidence available for a unit that is running but silent.
     private var _lastActivityNs: UInt64 = _drainMonotonicNs()
+    /// Nesting depth of `_withUserBodyRegion` — the stretches of this unit's
+    /// lifetime that are executing the USER's closure rather than framework
+    /// code. See `classify(nowNs:quietNs:)` for why the park history has to be
+    /// scoped to a region rather than the unit.
+    private var _userBodyDepth = 0
 
     /// Bumped on every park/unpark transition. Design §5 property 2: a
     /// quiescence answer is only trustworthy if it holds across two observations
@@ -184,12 +189,61 @@ final class ModelWorkUnit: @unchecked Sendable {
     ///     suspension the framework was never told about (an unadopted clock,
     ///     a bare `Task.sleep`, a foreign `await`). The framework cannot see
     ///     inside it, so it defers to the scheduler-observing answer.
+    ///
+    /// ## Why the park history is scoped to a region, not to the unit
+    ///
+    /// One work unit can span two code regions with completely different
+    /// visibility. `node.forEach`'s outer loop parks around its own `next()`
+    /// (hook 1) and then runs the USER's per-element closure **in the same
+    /// unit** — the body is deliberately outside the park, because running the
+    /// closure is real model work. So a unit whose loop has parked can be
+    /// sitting inside user code that suspends somewhere the framework knows
+    /// nothing about:
+    ///
+    ///     node.forEach(stream) { value in
+    ///         try await someUnadoptedClock.sleep(for: .seconds(1))   // invisible
+    ///     }
+    ///
+    /// Attributing the *loop's* park to the *body* would say "this unit is one
+    /// we can see inside" about a stretch we demonstrably cannot, and the wait
+    /// would hang where it returns today (verified: `settle()` 22 ms → the trait
+    /// cap). `_withUserBodyRegion` marks those stretches, and inside one the
+    /// park history is ignored — only the quiet window decides.
+    ///
+    /// This does NOT give back the mid-flight guarantee the fallback exists to
+    /// protect, because the window it protects lies OUTSIDE the region: a
+    /// producer's eager unpark, the scheduling gap before the resumed consumer
+    /// returns from `next()`, and the return into the loop are all framework
+    /// stretches, where `_hasEverParked` still applies in full. A starved
+    /// resumption is therefore still waited for; only user code that has gone
+    /// quiet for a whole grace window inside its own body is allowed to fall
+    /// back — which is exactly the set the framework has no claim to know
+    /// about. (Residual: a hand-written `for await` loop, where SwiftModel does
+    /// not own the loop and so cannot mark the body. Adoption —
+    /// `withModelParked` at the clock — closes that one.)
     func classify(nowNs: UInt64, quietNs: UInt64) -> _WorkUnitRunState {
         lock.withLock {
             guard _activityCount > 0 else { return .parked }
-            guard !_hasEverParked else { return .midFlight }
+            guard !_hasEverParked || _userBodyDepth > 0 else { return .midFlight }
             guard nowNs >= _lastActivityNs, nowNs &- _lastActivityNs >= quietNs else { return .midFlight }
             return .looksUndeclared
+        }
+    }
+
+    /// Enters a user-body region — see `classify(nowNs:quietNs:)`. Entering is
+    /// itself a transition, so the body gets a full quiet window before it can
+    /// look undeclared.
+    fileprivate func beginUserBody() {
+        lock.withLock {
+            _userBodyDepth += 1
+            _lastActivityNs = _drainMonotonicNs()
+        }
+    }
+
+    fileprivate func endUserBody() {
+        lock.withLock {
+            _userBodyDepth -= 1
+            _lastActivityNs = _drainMonotonicNs()
         }
     }
 
@@ -280,6 +334,24 @@ struct _ParkTicket {
 /// is inherent to hook 1 — the price of parking any `AsyncSequence` with no
 /// adoption at all — and design §6b hook 2 (`parkedInModelTasks()`) is the
 /// opt-in that would close it.
+/// Runs `body` as a USER-CODE stretch of the current work unit.
+///
+/// `node.forEach` / `node.onChange` run the user's per-element closure inside
+/// the *same* unit as the loop that parked around `next()`. The framework knows
+/// where its own loop suspends and nothing at all about where the closure does,
+/// so the park history must not be carried into it — see
+/// `ModelWorkUnit.classify(nowNs:quietNs:)`. A no-op outside a model task, and
+/// a no-op for the `cancelPrevious` branches, whose bodies already get their
+/// own `TaskCancellable` (and therefore their own unit, which has never
+/// parked).
+@inline(__always)
+func _withUserBodyRegion<T>(_ body: () async throws -> T) async rethrows -> T {
+    guard let unit = ModelWorkUnit.current else { return try await body() }
+    unit.beginUserBody()
+    defer { unit.endUserBody() }
+    return try await body()
+}
+
 @inline(__always)
 func _withCurrentWorkUnitParked<T>(_ body: () async throws -> T) async rethrows -> T {
     guard let unit = ModelWorkUnit.current else { return try await body() }

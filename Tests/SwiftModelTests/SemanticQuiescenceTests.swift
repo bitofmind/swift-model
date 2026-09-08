@@ -448,10 +448,15 @@ struct SemanticQuiescenceTests {
         await expect(model.didFinish)
     }
 
-    /// A `forEach` body executing user code has parked before (at `next()`), so
-    /// the fallback must NOT fire for it — this is the mid-flight case the
-    /// combined rule has to keep waiting on.
-    @Test func forEachBodyInFlightIsNotAFallbackReason() async throws {
+    /// A `forEach` body runs in the SAME unit as the loop that parked around
+    /// `next()`, so the loop's park history must not be credited to it: the
+    /// framework knows where its own `next()` suspends and nothing about where
+    /// the user's closure does. Inside the body the quiet window is the whole
+    /// discriminator — which means a body that has just started is mid-flight,
+    /// and a body that has gone quiet (here, suspended at a gate SwiftModel
+    /// cannot see) is honestly reported as undeclared. Without the region mark
+    /// this hangs where it returns today; see `_withUserBodyRegion`.
+    @Test func forEachBodyIsClassifiedByItsOwnQuietWindowNotTheLoopsPark() async throws {
         let control = QuiescenceControl()
         let model = StreamConsumer().withAnchor {
             $0.quiescenceControl = control
@@ -462,11 +467,17 @@ struct SemanticQuiescenceTests {
 
         control.yieldValue(7)
         try await waitUntil(control.bodyEntered.value)
-        // Held at the gate: unambiguously running, and it has parked before.
-        let verdict = context.semanticVerdict(nowNs: _drainMonotonicNs() &+ 60_000_000_000, quietNs: 0)
-        #expect(verdict.isQuiescent == false)
-        #expect(verdict.allRunningLookUndeclared == false)
-        #expect(verdict.undeclared.isEmpty)
+
+        // Just entered the body: recent activity, so still mid-flight.
+        let fresh = context.semanticVerdict(nowNs: _drainMonotonicNs(), quietNs: 60_000_000_000)
+        #expect(fresh.running == 1)
+        #expect(fresh.allRunningLookUndeclared == false)
+
+        // Quiet for a whole window while suspended at a gate we cannot see:
+        // the honest answer is "undeclared", and the fallback may conclude.
+        let quiet = context.semanticVerdict(nowNs: _drainMonotonicNs() &+ 60_000_000_000, quietNs: 0)
+        #expect(quiet.running == 1)
+        #expect(quiet.allRunningLookUndeclared == true)
 
         control.openGate()
         await expect(model.received == 7)
@@ -475,6 +486,12 @@ struct SemanticQuiescenceTests {
     /// A mixed subtree: one undeclared sleeper beside one mid-flight consumer.
     /// `allRunningLookUndeclared` is an ALL-quantifier, so the mid-flight unit
     /// vetoes the fallback for the whole subtree — the wait keeps waiting.
+    ///
+    /// The mid-flight unit here is a HAND-WRITTEN `for await` loop: SwiftModel
+    /// owns the stream (so the wait parks) but not the loop, so there is no
+    /// user-body region and the unit's park history applies to its body too.
+    /// That is the design's known residual, and it is what makes it a stable
+    /// fixture for "running, has parked, arbitrarily quiet, still mid-flight".
     @Test func oneMidFlightUnitVetoesTheFallbackForTheWholeSubtree() async throws {
         let clock = ForeignClock()
         let control = QuiescenceControl()
@@ -490,7 +507,7 @@ struct SemanticQuiescenceTests {
 
         // Wake the child consumer and hold its body: now two units are running,
         // and one of them has parked before.
-        control.yieldValue(7)
+        parent.consumer.trigger = 1
         try await waitUntil(control.bodyEntered.value)
         let verdict = context.semanticVerdict(nowNs: _drainMonotonicNs() &+ 60_000_000_000, quietNs: 0)
         #expect(verdict.running == 2)
@@ -501,8 +518,27 @@ struct SemanticQuiescenceTests {
         clock.advance()
         await expect {
             parent.didFinish
-            parent.consumer.received == 7
+            parent.consumer.received == 1
         }
+    }
+
+    /// The region is what separates the two, asserted on a bare unit: the same
+    /// already-parked unit is mid-flight in a framework stretch and classified
+    /// by its quiet window inside a user-body stretch.
+    @Test func theUserBodyRegionIsWhatDropsTheParkHistory() async {
+        let unit = ModelWorkUnit()
+        unit.park().release()
+        #expect(unit.classify(nowNs: _drainMonotonicNs() &+ 60_000_000_000, quietNs: 0) == .midFlight)
+
+        await ModelWorkUnit.$current.withValue(unit) {
+            await _withUserBodyRegion {
+                #expect(unit.classify(nowNs: _drainMonotonicNs() &+ 60_000_000_000, quietNs: 0) == .looksUndeclared)
+                // …but still mid-flight while the region is fresh.
+                #expect(unit.classify(nowNs: _drainMonotonicNs(), quietNs: 60_000_000_000) == .midFlight)
+            }
+        }
+        // Back in framework code, the park history applies again.
+        #expect(unit.classify(nowNs: _drainMonotonicNs() &+ 60_000_000_000, quietNs: 0) == .midFlight)
     }
 }
 
@@ -510,7 +546,7 @@ struct SemanticQuiescenceTests {
 /// `oneMidFlightUnitVetoesTheFallbackForTheWholeSubtree`.
 @Model private struct MixedFallbackParent {
     var didFinish = false
-    var consumer = StreamConsumer()
+    var consumer = ObservedLoopConsumer()
 
     func onActivate() {
         node.task {
