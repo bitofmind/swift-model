@@ -38,7 +38,7 @@ struct ClockTests {
     @Test func testClockStepByStep() async {
         let clock = TestClock()
         let model = TimerModel().withAnchor {
-            $0.continuousClock = clock
+            $0.continuousClock = ParkedClock(clock)
         }
         // The `forEach(clock.timer(...))` consumer subscribes to the clock
         // lazily, on its first `next()`. Settling here (and between steps)
@@ -68,7 +68,7 @@ struct ClockTests {
     @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
     @Test(.modelTesting(.removing(.state))) func testImmediateClock() async {
         let model = TimerModel().withAnchor {
-            $0.continuousClock = ImmediateClock()
+            $0.continuousClock = ParkedClock(ImmediateClock())
         }
         // ImmediateClock drives the timer as fast as the model processes it;
         // we just need to let it settle before asserting.

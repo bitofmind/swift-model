@@ -108,7 +108,7 @@ struct OnChangeTests {
     @Test func testOnChangeCancelPreviousDiscardsStalework() async {
         let clock = TestClock()
         let model = OnChangeCancelPreviousModel().withAnchor {
-            $0.continuousClock = clock
+            $0.continuousClock = ParkedClock(clock)
         }
         // initial: false — no initial emission
         await settle {}

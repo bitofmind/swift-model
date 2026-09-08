@@ -257,3 +257,42 @@ final class CapturingIssueReporter: IssueReporter, @unchecked Sendable {
         lock.withLock { _messages.append(m) }
     }
 }
+
+// MARK: - ParkedClock
+//
+// Semantic quiescence, design §6b hook 3 (`Docs/test-quiescence-redesign.md`,
+// `Docs/Testing.md` → "Telling SwiftModel where a custom clock suspends").
+//
+// SwiftModel defines no clock: `node.continuousClock` is the user's own
+// dependency, and the test clocks this suite uses (`TestClock`,
+// `ImmediateClock`) come from swift-clocks, which knows nothing about
+// SwiftModel. An unwrapped `clock.sleep` is therefore a suspension the
+// framework cannot see, so the work unit sitting in it reads as RUNNING and the
+// combined quiescence rule has to fall back to observing the scheduler.
+//
+// `ParkedClock` is the three-line adoption, applied to a clock we do not own by
+// wrapping it: it forwards everything and wraps only its own `sleep` in
+// `withModelParked`. Every `clock.sleep` in every model driven by this clock is
+// then declared, with no change to any model or any call site. Injecting it in
+// the suite's clock-driven tests is what makes those tests exercise the PARKED
+// path rather than the undeclared-work fallback.
+
+/// A `Clock` that declares its own suspension to SwiftModel — see above.
+@available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
+struct ParkedClock<Base: Clock>: Clock {
+    typealias Instant = Base.Instant
+    typealias Duration = Base.Duration
+
+    let base: Base
+
+    init(_ base: Base) { self.base = base }
+
+    var now: Instant { base.now }
+    var minimumResolution: Duration { base.minimumResolution }
+
+    func sleep(until deadline: Instant, tolerance: Duration?) async throws {
+        try await withModelParked {
+            try await base.sleep(until: deadline, tolerance: tolerance)
+        }
+    }
+}

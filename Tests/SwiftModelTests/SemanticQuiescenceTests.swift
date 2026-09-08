@@ -350,6 +350,174 @@ struct SemanticQuiescenceTests {
         }
         #expect(unit.isRunning == true)
     }
+
+    // MARK: - The combined rule's fallback classification
+    //
+    //     quiescent := oldSaysDone AND (newSaysDone OR runningWorkLooksUndeclared)
+    //
+    // These assert the third term directly. `looksUndeclared` is the ONLY shape
+    // that may defer to the scheduler-observing answer, so the two failure modes
+    // to guard are (a) it misses a genuinely undeclared sleep and a wait that
+    // returns today starts hanging, and (b) it swallows a mid-flight unit and
+    // the correctness fix this design exists for is silently undone.
+
+    /// A brand-new unit has never parked and has just been created, so it is
+    /// MID-FLIGHT against any non-zero quiet window (it may simply not have had
+    /// its first CPU slot yet — design §7's `hasPendingStartTask` case) and
+    /// LOOKS UNDECLARED only once it has been silent for the whole window.
+    @Test func classifyNeverParkedUnitNeedsAFullQuietWindow() {
+        let unit = ModelWorkUnit()
+        let now = _drainMonotonicNs()
+        #expect(unit.classify(nowNs: now, quietNs: 1_000_000_000) == .midFlight)
+        #expect(unit.classify(nowNs: now, quietNs: 0) == .looksUndeclared)
+    }
+
+    /// A parked unit is never either: it does not block quiescence and it is
+    /// not a fallback reason.
+    @Test func classifyParkedUnitIsParked() {
+        let unit = ModelWorkUnit()
+        let ticket = unit.park()
+        #expect(unit.classify(nowNs: _drainMonotonicNs(), quietNs: 0) == .parked)
+        ticket.release()
+    }
+
+    /// THE ANTI-SWALLOW GUARANTEE. Once a unit has parked even once, SwiftModel
+    /// knows where it suspends — so any later window in which it reads *running*
+    /// is a resumption, a yield hop or a starved job, i.e. mid-flight. It can
+    /// never look undeclared again, no matter how long it stays quiet.
+    @Test func classifyUnitThatHasParkedIsNeverUndeclared() {
+        let unit = ModelWorkUnit()
+        let ticket = unit.park()
+        ticket.release()
+        #expect(unit.isRunning == true)
+        // Quiet window of zero — the most permissive possible — still midFlight.
+        #expect(unit.classify(nowNs: _drainMonotonicNs(), quietNs: 0) == .midFlight)
+        // And a far-future "now", i.e. arbitrarily long silence.
+        #expect(unit.classify(nowNs: _drainMonotonicNs() &+ 60_000_000_000, quietNs: 0) == .midFlight)
+    }
+
+    /// The eager unpark is a transition too, so a unit resumed by
+    /// `noteResumeInFlight()` (a producer about to yield, a cancellation) is
+    /// mid-flight even on the never-parked path — the resume itself is recent
+    /// activity.
+    @Test func classifyResumeInFlightCountsAsActivity() {
+        let unit = ModelWorkUnit()
+        unit.noteResumeInFlight()
+        #expect(unit.classify(nowNs: _drainMonotonicNs(), quietNs: 1_000_000_000) == .midFlight)
+    }
+
+    /// End to end: an unmarked foreign sleep is what the fallback is FOR. The
+    /// subtree verdict says work is running, and says every running unit looks
+    /// undeclared — which is what lets the combined rule conclude.
+    @Test func unmarkedForeignSleepIsTheFallbackShape() async throws {
+        let clock = ForeignClock()
+        let model = UnmarkedClockSleeper().withAnchor {
+            $0.foreignClock = clock
+        }
+        let context = model.anyContext!
+
+        try await waitUntil(clock.sleeperCount == 1)
+        // `quietNs: 0` removes the wall clock from the assertion entirely: the
+        // classification is structural (never parked), not a timing race.
+        let verdict = context.semanticVerdict(nowNs: _drainMonotonicNs(), quietNs: 0)
+        #expect(verdict.isQuiescent == false)
+        #expect(verdict.running == 1)
+        #expect(verdict.allRunningLookUndeclared == true)
+        #expect(verdict.undeclared.first?.modelName == "UnmarkedClockSleeper")
+
+        clock.advance()
+        await expect(model.didFinish)
+    }
+
+    /// The same sleep with `withModelParked` disappears from the verdict
+    /// altogether — the adoption path (design §6b hook 3): no running unit, so
+    /// no fallback is needed and the new answer decides on its own.
+    @Test func markedForeignSleepNeedsNoFallback() async throws {
+        let clock = ForeignClock()
+        let model = ParkedClockSleeper().withAnchor {
+            $0.foreignClock = clock
+        }
+        let context = model.anyContext!
+
+        try await waitUntil(clock.sleeperCount == 1)
+        let verdict = context.semanticVerdict(nowNs: _drainMonotonicNs(), quietNs: 0)
+        #expect(verdict.isQuiescent == true)
+        #expect(verdict.allRunningLookUndeclared == false)
+
+        clock.advance()
+        await expect(model.didFinish)
+    }
+
+    /// A `forEach` body executing user code has parked before (at `next()`), so
+    /// the fallback must NOT fire for it — this is the mid-flight case the
+    /// combined rule has to keep waiting on.
+    @Test func forEachBodyInFlightIsNotAFallbackReason() async throws {
+        let control = QuiescenceControl()
+        let model = StreamConsumer().withAnchor {
+            $0.quiescenceControl = control
+        }
+        let context = model.anyContext!
+
+        try await waitUntil(context.hasRunningWorkUnit == false)
+
+        control.yieldValue(7)
+        try await waitUntil(control.bodyEntered.value)
+        // Held at the gate: unambiguously running, and it has parked before.
+        let verdict = context.semanticVerdict(nowNs: _drainMonotonicNs() &+ 60_000_000_000, quietNs: 0)
+        #expect(verdict.isQuiescent == false)
+        #expect(verdict.allRunningLookUndeclared == false)
+        #expect(verdict.undeclared.isEmpty)
+
+        control.openGate()
+        await expect(model.received == 7)
+    }
+
+    /// A mixed subtree: one undeclared sleeper beside one mid-flight consumer.
+    /// `allRunningLookUndeclared` is an ALL-quantifier, so the mid-flight unit
+    /// vetoes the fallback for the whole subtree — the wait keeps waiting.
+    @Test func oneMidFlightUnitVetoesTheFallbackForTheWholeSubtree() async throws {
+        let clock = ForeignClock()
+        let control = QuiescenceControl()
+        let parent = MixedFallbackParent().withAnchor {
+            $0.foreignClock = clock
+            $0.quiescenceControl = control
+        }
+        let context = parent.anyContext!
+
+        try await waitUntil(clock.sleeperCount == 1)
+        try await waitUntil(context.runningWorkUnits.count == 1)   // just the sleeper
+        #expect(context.semanticVerdict(nowNs: _drainMonotonicNs(), quietNs: 0).allRunningLookUndeclared == true)
+
+        // Wake the child consumer and hold its body: now two units are running,
+        // and one of them has parked before.
+        control.yieldValue(7)
+        try await waitUntil(control.bodyEntered.value)
+        let verdict = context.semanticVerdict(nowNs: _drainMonotonicNs() &+ 60_000_000_000, quietNs: 0)
+        #expect(verdict.running == 2)
+        #expect(verdict.undeclared.count == 1)
+        #expect(verdict.allRunningLookUndeclared == false)
+
+        control.openGate()
+        clock.advance()
+        await expect {
+            parent.didFinish
+            parent.consumer.received == 7
+        }
+    }
+}
+
+/// Parent holding both fallback shapes at once — see
+/// `oneMidFlightUnitVetoesTheFallbackForTheWholeSubtree`.
+@Model private struct MixedFallbackParent {
+    var didFinish = false
+    var consumer = StreamConsumer()
+
+    func onActivate() {
+        node.task {
+            await node.foreignClock.sleep()      // undeclared: never parks
+            didFinish = true
+        }
+    }
 }
 
 // MARK: - Tier 1: source-side parking (design §5)
