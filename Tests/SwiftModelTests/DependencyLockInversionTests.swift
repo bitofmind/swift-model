@@ -4,6 +4,10 @@ import Foundation
 import SwiftModel
 import Dependencies
 
+// WASI is single-threaded and has neither `Thread` nor `DispatchSemaphore`, so the race
+// this reproduces cannot occur there and the test cannot be expressed.
+#if !os(WASI)
+
 /// Reproduction for the AB-BA deadlock between two contexts' hierarchy locks.
 ///
 /// `AnyContext.dependency(for:)` holds ITS OWN hierarchy lock while resolving a model
@@ -146,3 +150,6 @@ struct DependencyLockInversionTests {
         }
     }
 }
+
+
+#endif
