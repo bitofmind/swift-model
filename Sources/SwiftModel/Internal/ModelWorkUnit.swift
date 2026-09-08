@@ -211,10 +211,34 @@ struct _ParkTicket {
 /// Internal spelling of `withModelParked`, used by the framework's own hooks
 /// (`forEach` parking around its `next()`); identical semantics, no public
 /// surface.
+///
+/// ## The cancellation handler
+///
+/// This is the generic half of the eager unpark, and the only half available
+/// for a **foreign** suspension — `node.forEach` over a third-party
+/// `AsyncSequence` (design §6b hook 1), or a clock that adopted
+/// `withModelParked` (hook 3). SwiftModel produces neither, so it cannot mark
+/// the resume the way `_ParkSource` does for its own streams. But it *does*
+/// own the cancellation: `Cancellations.cancelAll` → `TaskCancellable.onCancel`
+/// → `Task.cancel()` runs this handler synchronously, before the cancelled task
+/// is resumed — and cancellation is the resume that matters most, because it is
+/// the one with no activity signal behind it and the one that goes straight
+/// into model-writing `defer`s.
+///
+/// The residual is a foreign source *delivering a value*: `swift-clocks`'
+/// `ImmediateClock` timer resuming its consumer is not a cancellation and not
+/// our continuation, so the unit reads parked until the resumed task runs. That
+/// is inherent to hook 1 — the price of parking any `AsyncSequence` with no
+/// adoption at all — and design §6b hook 2 (`parkedInModelTasks()`) is the
+/// opt-in that would close it.
 @inline(__always)
 func _withCurrentWorkUnitParked<T>(_ body: () async throws -> T) async rethrows -> T {
     guard let unit = ModelWorkUnit.current else { return try await body() }
     let ticket = unit.park()
     defer { ticket.release() }
-    return try await body()
+    return try await withTaskCancellationHandler {
+        try await body()
+    } onCancel: {
+        unit.noteResumeInFlight()
+    }
 }

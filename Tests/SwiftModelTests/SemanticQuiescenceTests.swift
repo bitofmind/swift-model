@@ -695,6 +695,28 @@ struct SemanticQuiescenceEagerUnparkTests {
         await expect(model.received == 1)
     }
 
+    /// The generic half, for a source SwiftModel does NOT own: `node.forEach`
+    /// over a foreign `AsyncStream` parks through hook 1, and its *delivery* is
+    /// not ours to mark — but its **cancellation** is, because SwiftModel is the
+    /// one cancelling the task. `_withCurrentWorkUnitParked`'s cancellation
+    /// handler runs synchronously inside `Task.cancel()`, before the parked task
+    /// is resumed into its `defer`s.
+    @Test func cancellingAForeignSequenceConsumerUnparksEagerly() async throws {
+        let control = QuiescenceControl()
+        let model = StreamConsumer().withAnchor {
+            $0.quiescenceControl = control
+        }
+        let context = model.anyContext!
+
+        try await waitUntil(context.activeTasks.flatMap(\.tasks).count == 1)
+        try await waitUntil(context.hasRunningWorkUnit == false)
+
+        context.cancellations.cancelAll()
+        #expect(context.hasRunningWorkUnit == true)
+
+        try await waitUntil(model.anyContext?.hasRunningWorkUnit == false)
+    }
+
     /// A stale ticket releases nothing, so an eagerly-unparked unit is not
     /// re-parked by the `defer`s unwinding behind it — however many park scopes
     /// were open — and a fresh park still works afterwards.
