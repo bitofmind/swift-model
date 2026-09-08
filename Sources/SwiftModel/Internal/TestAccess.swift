@@ -542,6 +542,42 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         _fireStatsLock.withLock { _fireStats }
     }
 
+    // MARK: - Undeclared-work fallback diagnostic
+
+    /// Every work unit that has, at least once during this test, been the
+    /// reason `_driveToStableFixpoint`'s combined rule fell back to the
+    /// scheduler-observing answer — i.e. it was running, had never parked, and
+    /// had been silent for a whole grace window.
+    ///
+    /// The user-facing value is that the *site* can be found: a clock that has
+    /// not adopted `withModelParked` is a place where SwiftModel's quiescence
+    /// answer is guessing rather than knowing. It is a diagnostic, never a
+    /// failure — falling back is the documented, correct behaviour for work the
+    /// framework cannot see inside. Surfaced only when some other wait in the
+    /// same test later times out (`settleDiagnostics()`), and — for every
+    /// occurrence — under `SWIFT_MODEL_QUIESCENCE_TRACE=1`.
+    ///
+    /// Shares `_fireStatsLock` for the same reason the fire stats have their
+    /// own lock: it must never contend the main access lock.
+    nonisolated(unsafe) private var _undeclaredFallbackSites: [_RunningWorkUnitInfo: Int] = [:]
+
+    func _noteUndeclaredWorkFallback(_ units: [_RunningWorkUnitInfo]) {
+        _fireStatsLock.withLock {
+            for unit in units { _undeclaredFallbackSites[unit, default: 0] += 1 }
+        }
+        // Process-wide tally + per-occurrence trace line (item 4: how often the
+        // fallback actually fires across a suite, and where).
+        _QuiescenceComparison.recordUndeclaredFallback(units)
+    }
+
+    /// `(site description, times it was the fallback's reason)`, most frequent
+    /// first. Empty when the fallback never fired in this test.
+    func _undeclaredWorkFallbackSites() -> [(site: String, count: Int)] {
+        _fireStatsLock.withLock { _undeclaredFallbackSites }
+            .map { (site: $0.key.description, count: $0.value) }
+            .sorted { $0.count == $1.count ? $0.site < $1.site : $0.count > $1.count }
+    }
+
     // Erased executor-drain hooks (overrides must be in the class body, not an
     // extension). Implementations live in TestExecutorDrive.swift.
     override var hasTestExecutorErased: Bool { _isExecutorDriveActive }

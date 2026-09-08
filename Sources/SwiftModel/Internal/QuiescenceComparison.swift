@@ -59,6 +59,13 @@ struct _QuiescenceTally: Sendable, Equatable {
     var agreements = 0
     var oldQuiescentNewNot = 0
     var newQuiescentOldNot = 0
+    /// How many waits concluded via the combined rule's UNDECLARED-WORK
+    /// fallback: the existing answer said "done", the semantic answer said work
+    /// was still running, and every running unit looked undeclared (never
+    /// parked, silent for a grace window) so the old answer was deferred to.
+    /// Every one of these is a site where `withModelParked` adoption would turn
+    /// a guess into knowledge.
+    var undeclaredFallbacks = 0
 }
 
 enum _QuiescenceComparison {
@@ -71,6 +78,10 @@ enum _QuiescenceComparison {
     nonisolated(unsafe) private static var _tally = _QuiescenceTally()
     /// Per-test disagreement counts, for the exit summary.
     nonisolated(unsafe) private static var _byTest: [String: (old: Int, new: Int, checks: Int)] = [:]
+    /// `site → (occurrences, tests that hit it)` for the undeclared-work
+    /// fallback. This is the adoption worklist: every entry is a suspension
+    /// SwiftModel had to guess about.
+    nonisolated(unsafe) private static var _undeclaredSites: [String: (count: Int, tests: Set<String>)] = [:]
 
     static var tally: _QuiescenceTally { lock.withLock { _tally } }
 
@@ -78,7 +89,36 @@ enum _QuiescenceComparison {
         lock.withLock {
             _tally = _QuiescenceTally()
             _byTest = [:]
+            _undeclaredSites = [:]
         }
+    }
+
+    /// One wait concluded through the combined rule's undeclared-work fallback.
+    /// `units` is every running unit at that instant (all of which looked
+    /// undeclared — that is the precondition for the fallback).
+    static func recordUndeclaredFallback(_ units: [_RunningWorkUnitInfo]) {
+        let tag = testTag ?? "<no test>"
+        lock.withLock {
+            _tally.undeclaredFallbacks += 1
+            for unit in units {
+                var entry = _undeclaredSites[unit.description] ?? (count: 0, tests: [])
+                entry.count += 1
+                entry.tests.insert(tag)
+                _undeclaredSites[unit.description] = entry
+            }
+        }
+        guard isTracing else { return }
+        _quiescenceTrace(
+            "test=\"\(tag)\" undeclaredFallback running=[\(units.map(\.description).sorted().joined(separator: ", "))] count=\(units.count)"
+        )
+    }
+
+    /// `(site, occurrences, tests)` for the undeclared-work fallback, most
+    /// frequent first.
+    static func undeclaredFallbackSites() -> [(site: String, count: Int, tests: [String])] {
+        lock.withLock { _undeclaredSites }
+            .map { (site: $0.key, count: $0.value.count, tests: $0.value.tests.sorted()) }
+            .sorted { $0.count == $1.count ? $0.site < $1.site : $0.count > $1.count }
     }
 
     /// Records one check. `runningUnits` and `existingBusyReason` are only
@@ -150,7 +190,14 @@ enum _QuiescenceComparison {
         let (tally, byTest) = lock.withLock { (_tally, _byTest) }
         var lines: [String] = []
         lines.append("=== SEMANTIC QUIESCENCE DISAGREEMENT SUMMARY ===")
-        lines.append("checks=\(tally.checks) agree=\(tally.agreements) oldQuiescentNewNot=\(tally.oldQuiescentNewNot) newQuiescentOldNot=\(tally.newQuiescentOldNot)")
+        lines.append("checks=\(tally.checks) agree=\(tally.agreements) oldQuiescentNewNot=\(tally.oldQuiescentNewNot) newQuiescentOldNot=\(tally.newQuiescentOldNot) undeclaredFallbacks=\(tally.undeclaredFallbacks)")
+        let sites = undeclaredFallbackSites()
+        if !sites.isEmpty {
+            lines.append("--- undeclared-work fallback sites (adoption worklist) ---")
+            for site in sites {
+                lines.append("  \(site.site): \(site.count)× in \(site.tests.count) test(s): \(site.tests.prefix(4).joined(separator: ", "))")
+            }
+        }
         let interesting = byTest.filter { $0.value.old > 0 || $0.value.new > 0 }
             .sorted { ($0.value.old + $0.value.new) > ($1.value.old + $1.value.new) }
         for (test, counts) in interesting {
