@@ -10,6 +10,47 @@ struct _WorkUnitCensus {
     var parkGeneration: UInt64 = 0
 }
 
+/// One running work unit, named for a diagnostic.
+struct _RunningWorkUnitInfo: Sendable, Hashable {
+    let modelName: String
+    let name: String
+    let fileAndLine: FileAndLine
+
+    /// `taskName` already defaults to `"function @ file:line"`, so only append
+    /// the site when it isn't already there.
+    var description: String {
+        let site = fileAndLine.description
+        return name.hasSuffix(site) ? "\(modelName).\(name)" : "\(modelName).\(name) @ \(site)"
+    }
+}
+
+/// The semantic answer for one subtree, in the form the combined rule needs.
+///
+/// `Docs/test-quiescence-redesign.md` §3 says quiescent ⇔ no registered work is
+/// running. That is `isQuiescent`. `undeclared` carries the fallback: the
+/// running units the framework cannot see inside (never parked, and silent for
+/// a whole grace window), which is the only shape where deferring to the
+/// scheduler-observing answer is right — see
+/// `TestAccess._driveToStableFixpoint`.
+struct _SemanticVerdict {
+    var running = 0
+    var undeclared: [_RunningWorkUnitInfo] = []
+
+    /// The new answer: no registered unit is running.
+    var isQuiescent: Bool { running == 0 }
+
+    /// At least one unit is running and EVERY one of them looks undeclared.
+    /// One mid-flight unit anywhere in the subtree defeats it — the whole point
+    /// of the conjunction is that a resumption in flight must still be waited
+    /// for even when an unadopted clock is sleeping beside it.
+    var allRunningLookUndeclared: Bool { running > 0 && undeclared.count == running }
+
+    mutating func merge(_ other: _SemanticVerdict) {
+        running += other.running
+        undeclared.append(contentsOf: other.undeclared)
+    }
+}
+
 /// One entry in `Cancellations.liveWorkUnits` — a `TaskCancellable`'s work
 /// unit plus the identity the diagnostics need.
 struct _LiveWorkUnit {
@@ -202,6 +243,29 @@ final class Cancellations: @unchecked Sendable {
                 .filter { $0.unit.isRunning }
                 .sorted { $0.id < $1.id }
                 .map { (modelName: $0.modelName, name: $0.taskName, fileAndLine: $0.fileAndLine) }
+        }
+    }
+
+    /// SEMANTIC QUIESCENCE — the verdict this registry contributes to the
+    /// combined rule. One pass, classifying each live unit exactly once so the
+    /// running count and the undeclared list are a consistent snapshot.
+    func semanticVerdict(nowNs: UInt64, quietNs: UInt64) -> _SemanticVerdict {
+        lock {
+            var verdict = _SemanticVerdict()
+            for entry in liveWorkUnits.values.sorted(by: { $0.id < $1.id }) {
+                switch entry.unit.classify(nowNs: nowNs, quietNs: quietNs) {
+                case .parked:
+                    continue
+                case .midFlight:
+                    verdict.running += 1
+                case .looksUndeclared:
+                    verdict.running += 1
+                    verdict.undeclared.append(
+                        _RunningWorkUnitInfo(modelName: entry.modelName, name: entry.taskName, fileAndLine: entry.fileAndLine)
+                    )
+                }
+            }
+            return verdict
         }
     }
 

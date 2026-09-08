@@ -1,5 +1,13 @@
 import Foundation
 
+/// How one running work unit looks to the combined quiescence rule — see
+/// `ModelWorkUnit.classify(nowNs:quietNs:)`.
+enum _WorkUnitRunState: Sendable, Equatable {
+    case parked
+    case midFlight
+    case looksUndeclared
+}
+
 /// The running/parked state of one unit of framework-owned async work.
 ///
 /// Every `TaskCancellable` — i.e. every `node.task` / `node.forEach` /
@@ -116,6 +124,17 @@ final class ModelWorkUnit: @unchecked Sendable {
     /// Bumped by `noteResumeInFlight()` only. A `_ParkTicket` minted under an
     /// older epoch releases nothing — see the type doc.
     private var _epoch: UInt64 = 0
+    /// `true` once this unit has parked at least once, i.e. it has suspended at
+    /// a point SwiftModel owns (`forEach`'s `next()`, a source-side park, a
+    /// `withModelParked` scope). Never reset — the question the fallback asks is
+    /// "has the framework EVER been told where this unit suspends", not "is it
+    /// parked now". See `classify(nowNs:quietNs:)`.
+    private var _hasEverParked = false
+    /// Monotonic timestamp of the last observable transition of this unit:
+    /// creation, body start, and every park / unpark / resume-in-flight. It is
+    /// the per-unit analogue of the drive's global activity stamp, and the only
+    /// evidence available for a unit that is running but silent.
+    private var _lastActivityNs: UInt64 = _drainMonotonicNs()
 
     /// Bumped on every park/unpark transition. Design §5 property 2: a
     /// quiescence answer is only trustworthy if it holds across two observations
@@ -145,7 +164,33 @@ final class ModelWorkUnit: @unchecked Sendable {
     }
 
     func markBodyStarted() {
-        lock.withLock { _hasStartedRunning = true }
+        lock.withLock {
+            _hasStartedRunning = true
+            _lastActivityNs = _drainMonotonicNs()
+        }
+    }
+
+    /// Classifies this unit for the combined quiescence rule — see
+    /// `AnyContext.semanticVerdict(nowNs:quietNs:)`.
+    ///
+    ///   * **parked** — suspended where the framework put it; never blocks.
+    ///   * **midFlight** — running, and *either* it has parked before (so it is
+    ///     a unit whose suspensions we can see, currently between two of them:
+    ///     a resumption, a yield hop, a starved job) *or* it changed state
+    ///     within `quietNs` (it is visibly still moving). Waiting for it is the
+    ///     correctness the semantic answer exists to provide.
+    ///   * **looksUndeclared** — running, has *never* parked, and has produced
+    ///     no transition for a whole `quietNs`. That is a compute loop or a
+    ///     suspension the framework was never told about (an unadopted clock,
+    ///     a bare `Task.sleep`, a foreign `await`). The framework cannot see
+    ///     inside it, so it defers to the scheduler-observing answer.
+    func classify(nowNs: UInt64, quietNs: UInt64) -> _WorkUnitRunState {
+        lock.withLock {
+            guard _activityCount > 0 else { return .parked }
+            guard !_hasEverParked else { return .midFlight }
+            guard nowNs >= _lastActivityNs, nowNs &- _lastActivityNs >= quietNs else { return .midFlight }
+            return .looksUndeclared
+        }
     }
 
     /// Marks the unit parked (one level). Balanced by exactly one
@@ -155,6 +200,8 @@ final class ModelWorkUnit: @unchecked Sendable {
         lock.withLock {
             _activityCount -= 1
             _parkGeneration &+= 1
+            _hasEverParked = true
+            _lastActivityNs = _drainMonotonicNs()
             return _ParkTicket(unit: self, epoch: _epoch)
         }
     }
@@ -174,6 +221,7 @@ final class ModelWorkUnit: @unchecked Sendable {
             if _activityCount < 1 { _activityCount = 1 }
             _epoch &+= 1
             _parkGeneration &+= 1
+            _lastActivityNs = _drainMonotonicNs()
         }
     }
 
@@ -184,6 +232,7 @@ final class ModelWorkUnit: @unchecked Sendable {
             guard epoch == _epoch else { return }
             _activityCount += 1
             _parkGeneration &+= 1
+            _lastActivityNs = _drainMonotonicNs()
         }
     }
 }

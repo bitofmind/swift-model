@@ -912,6 +912,19 @@ class AnyContext: @unchecked Sendable {
         !hasRunningWorkUnit && backgroundCall.isIdle && mainCallQueue.isIdle
     }
 
+    /// The semantic verdict for this subtree — running-unit count plus the
+    /// subset that looks undeclared. Backs the combined rule in
+    /// `TestAccess._driveToStableFixpoint`; the queues are deliberately NOT
+    /// folded in here, because the rule only consults this once the existing
+    /// answer (which already requires both queues idle) has said "done".
+    func semanticVerdict(nowNs: UInt64, quietNs: UInt64) -> _SemanticVerdict {
+        // Same lock-protected snapshot pattern as `activeTasks`.
+        let (selfVerdict, snapshot) = lock {
+            (cancellationsStore?.semanticVerdict(nowNs: nowNs, quietNs: quietNs) ?? _SemanticVerdict(), allChildren)
+        }
+        return snapshot.reduce(into: selfVerdict) { $0.merge($1.semanticVerdict(nowNs: nowNs, quietNs: quietNs)) }
+    }
+
     /// Returns the main registrar if the main channel has been created (lazy), or nil
     /// otherwise. `_main` is lock-published, so the read takes the hierarchy lock too.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)

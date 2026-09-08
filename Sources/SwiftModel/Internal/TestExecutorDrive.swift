@@ -428,7 +428,60 @@ extension TestAccess {
                     let lastActivity = max(self._lastActivityNsLocked, exec.activityNs)
                     let sinceActivity = _drainMonotonicNs() &- lastActivity
                     if sinceActivity >= graceNs {
-                        return .reached   // idle, and no activity of any kind for a full grace window
+                        // THE COMBINED RULE (`Docs/test-quiescence-redesign.md`
+                        // §3/§6, adoption increment). The existing
+                        // scheduler-observing answer has just said "done"; the
+                        // SEMANTIC answer now gets a veto:
+                        //
+                        //     quiescent := oldSaysDone
+                        //               && (newSaysDone || runningWorkLooksUndeclared)
+                        //
+                        // `oldSaysDone` stays a REQUIRED conjunct, which is what
+                        // makes this increment safe on its own: the residual
+                        // window where a foreign source delivers a value we
+                        // cannot observe (design §6b hook 1's known price)
+                        // could only ever make the semantic answer say "done"
+                        // early, and an early "done" it cannot act on. So the
+                        // only verdicts that change are ones where the old
+                        // answer passed and the new one says work is still
+                        // running — i.e. we now WAIT where we used to conclude.
+                        //
+                        // `runningWorkLooksUndeclared` is the fallback, and the
+                        // whole reason the design is adoptable incrementally:
+                        // work SwiftModel cannot see inside (an unadopted
+                        // clock's sleep, a bare `Task.sleep`, a compute loop) is
+                        // correctly reported as *running*, and believing that
+                        // would hang waits that return today. A running unit
+                        // that has NEVER parked and has produced no transition
+                        // for a full settle grace is exactly that shape, and
+                        // only there do we defer to the old answer —
+                        // reproducing today's behaviour bit for bit.
+                        //
+                        // A running unit that HAS parked before, or that
+                        // transitioned within the grace, is mid-flight (a yield
+                        // hop, a resumption already in flight, a starved job).
+                        // The fallback must not swallow those: waiting for them
+                        // is the correctness fix this design exists for, so a
+                        // single mid-flight unit anywhere in the subtree keeps
+                        // the wait open (`allRunningLookUndeclared` is an
+                        // all-quantifier, not an any-quantifier).
+                        let verdict = self.context.semanticVerdict(
+                            nowNs: _drainMonotonicNs(),
+                            quietNs: Self._settleGraceNs
+                        )
+                        if verdict.isQuiescent {
+                            return .reached   // both answers agree: done
+                        }
+                        if verdict.allRunningLookUndeclared {
+                            self._noteUndeclaredWorkFallback(verdict.undeclared)
+                            return .reached
+                        }
+                        // Semantic answer says real framework-owned work is
+                        // still mid-flight. Keep waiting — no wall clock is
+                        // added here; the loop is bounded by the same
+                        // `hangDeadlineNs` as every other path.
+                        await _gtsSleep(Self._settleGraceNs, hangDeadlineNs: hangDeadlineNs)
+                        continue
                     }
                     // Idle but recent activity — wait out the remainder of the
                     // grace (non-starvable), then re-check; a resuming task will
