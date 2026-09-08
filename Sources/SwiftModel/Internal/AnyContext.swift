@@ -169,15 +169,20 @@ class AnyContext: @unchecked Sendable {
     /// catch (see `_modificationCount` below for the same argument).
     @exclusivity(unchecked) private var modeLifeTime: ModelLifetime = .anchored
 
-    private var eventContinuationsStore: [Int: AsyncStream<EventInfo>.Continuation]?
-    private var eventContinuations: [Int: AsyncStream<EventInfo>.Continuation] {
+    /// `_ParkedYield` rather than a bare `AsyncStream.Continuation`: it is the
+    /// same continuation, plus the eager unpark of whichever work unit is
+    /// suspended in this stream's `next()` (semantic quiescence, tier 1 — see
+    /// `AsyncSequenceExtensions.swift`). `yield` / `finish` / `onTermination`
+    /// are spelled identically, so every use site below is unchanged.
+    private var eventContinuationsStore: [Int: _ParkedYield<EventInfo>]?
+    private var eventContinuations: [Int: _ParkedYield<EventInfo>] {
         _read { yield eventContinuationsStore ?? [:] }
         _modify {
             if eventContinuationsStore != nil {
                 yield &eventContinuationsStore!
                 if eventContinuationsStore!.isEmpty { eventContinuationsStore = nil }
             } else {
-                var temp: [Int: AsyncStream<EventInfo>.Continuation] = [:]
+                var temp: [Int: _ParkedYield<EventInfo>] = [:]
                 yield &temp
                 if !temp.isEmpty { eventContinuationsStore = temp }
             }
@@ -1427,7 +1432,15 @@ class AnyContext: @unchecked Sendable {
             guard !isDestructed else {
                 return .finished
             }
-            let (stream, cont) = AsyncStream<EventInfo>.makeStream()
+            // Park-marked at the SOURCE (design §5 / tier 1): a consumer
+            // suspended in this stream's `next()` reads parked, and every
+            // resume of that wait — `yield`, `finish`, or the consumer's task
+            // being cancelled (which the stdlib routes through
+            // `onTermination` before it resumes `next()` with nil) — unparks it
+            // eagerly. The `node.event(…)` overloads filter DOWNSTREAM of this,
+            // which is exactly why the mark is here and not on the filtered
+            // stream: see `ModelNode+Events.swift`.
+            let (stream, cont) = _makeParkedStream(of: EventInfo.self)
             let key = generateKey()
 
             cont.onTermination = { [weak self] _ in

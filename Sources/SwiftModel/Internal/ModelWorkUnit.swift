@@ -33,6 +33,32 @@ import Foundation
 /// reason hook 1 (`forEach`'s single `next()`) is preferred over hooks that can
 /// fan out. Nothing in SwiftModel itself produces that shape today.
 ///
+/// ## Eager unpark: `noteResumeInFlight()` and the park epoch
+///
+/// The counter alone is a *lazy* mark: the unit leaves "parked" only when the
+/// resumed task next gets a CPU slot and runs the parking scope's `defer`.
+/// Between a continuation being **resumed** and that slot, the unit still reads
+/// parked while model-writing work is already inbound — the
+/// park→resume-in-flight window. Design §5 assumed that window was benign (the
+/// yield is itself an activity signal) and that a park-generation double-check
+/// would catch it; measurement killed both claims. The `AsyncStream`
+/// cancellation path (`_Storage.finish()` from `next()`'s cancel handler — 62 %
+/// of the observed window) emits no activity signal at all and resumes a body
+/// that then runs model-writing `defer`s, and the generation never changed
+/// across a check.
+///
+/// So the unpark is made **eager**: whoever resumes the continuation calls
+/// `noteResumeInFlight()` *before* resuming, and the resumed side's `defer`
+/// becomes a no-op. That requires the release to be idempotent, which is what
+/// the **epoch** is for: `park()` hands back a `_ParkTicket` stamped with the
+/// epoch current at park time, `noteResumeInFlight()` bumps the epoch, and a
+/// ticket whose epoch is stale releases nothing. One force therefore
+/// invalidates *every* open park scope on the unit — which is exactly right,
+/// because a resumed task is running regardless of how many nested `park()`
+/// scopes (`forEach`'s own `next()` wrapped around a stream that also parks) it
+/// is unwinding through. It stays running until it *voluntarily parks again*,
+/// which is the property a lazy, per-scope unpark cannot provide.
+///
 /// ## Why it starts running rather than at body entry
 ///
 /// The sketch says "start 1 when the body begins". A unit is created (and
@@ -87,6 +113,9 @@ final class ModelWorkUnit: @unchecked Sendable {
     private var _activityCount: Int = 1
     private var _hasStartedRunning = false
     private var _parkGeneration: UInt64 = 0
+    /// Bumped by `noteResumeInFlight()` only. A `_ParkTicket` minted under an
+    /// older epoch releases nothing — see the type doc.
+    private var _epoch: UInt64 = 0
 
     /// Bumped on every park/unpark transition. Design §5 property 2: a
     /// quiescence answer is only trustworthy if it holds across two observations
@@ -119,14 +148,61 @@ final class ModelWorkUnit: @unchecked Sendable {
         lock.withLock { _hasStartedRunning = true }
     }
 
-    /// Marks the unit parked (one level). Balanced by `unpark()`.
-    func park() {
-        lock.withLock { _activityCount -= 1; _parkGeneration &+= 1 }
+    /// Marks the unit parked (one level). Balanced by exactly one
+    /// `_ParkTicket.release()`, which the parking scope runs from a `defer` —
+    /// and which is a no-op if the unit was force-resumed in the meantime.
+    func park() -> _ParkTicket {
+        lock.withLock {
+            _activityCount -= 1
+            _parkGeneration &+= 1
+            return _ParkTicket(unit: self, epoch: _epoch)
+        }
     }
 
-    /// Undoes one `park()`.
-    func unpark() {
-        lock.withLock { _activityCount += 1; _parkGeneration &+= 1 }
+    /// EAGER UNPARK. Called by whoever is about to **resume** the continuation
+    /// this unit is parked on: the producer immediately before
+    /// `AsyncStream.Continuation.yield`, and the stream's `onTermination`
+    /// handler, which the stdlib documents as running before `next()` is
+    /// resumed with `nil` ("handler must be invoked before yielding nil for
+    /// termination", `AsyncStream._Storage.cancel`).
+    ///
+    /// Makes the unit running *now* and invalidates every open park scope, so
+    /// the resumed task's own `defer` adds nothing and the unit stays running
+    /// until it parks again of its own accord.
+    func noteResumeInFlight() {
+        lock.withLock {
+            if _activityCount < 1 { _activityCount = 1 }
+            _epoch &+= 1
+            _parkGeneration &+= 1
+        }
+    }
+
+    fileprivate func release(epoch: UInt64) {
+        lock.withLock {
+            // Stale: a `noteResumeInFlight()` already took this unit out of the
+            // park, so the scope's `defer` has nothing left to undo.
+            guard epoch == _epoch else { return }
+            _activityCount += 1
+            _parkGeneration &+= 1
+        }
+    }
+}
+
+/// One open park scope, handed out by `ModelWorkUnit.park()`.
+///
+/// A value type on purpose: `park()` sits on the per-element path of every
+/// SwiftModel-owned stream, so the ticket must not allocate. Idempotence
+/// against an eager unpark comes from the epoch stamp, not from a per-ticket
+/// flag.
+struct _ParkTicket {
+    fileprivate let unit: ModelWorkUnit
+    fileprivate let epoch: UInt64
+
+    /// Ends the scope. A no-op if `ModelWorkUnit.noteResumeInFlight()` ran
+    /// while the scope was open — which is what makes it safe to call from a
+    /// `defer` that runs after an eager unpark.
+    func release() {
+        unit.release(epoch: epoch)
     }
 }
 
@@ -138,7 +214,7 @@ final class ModelWorkUnit: @unchecked Sendable {
 @inline(__always)
 func _withCurrentWorkUnitParked<T>(_ body: () async throws -> T) async rethrows -> T {
     guard let unit = ModelWorkUnit.current else { return try await body() }
-    unit.park()
-    defer { unit.unpark() }
+    let ticket = unit.park()
+    defer { ticket.release() }
     return try await body()
 }

@@ -577,3 +577,206 @@ struct SemanticQuiescenceCancellationEpilogueTests {
         try await waitUntil(model.anyContext?.hasRunningWorkUnit == false)
     }
 }
+
+// MARK: - Eager unpark: the park→resume-in-flight window
+//
+// A lazy unpark — the resumed task's own `defer` — leaves the unit reading
+// PARKED from the moment its continuation is resumed until the cooperative pool
+// gives it a slot. Model-writing work is inbound throughout that window, so a
+// wait that consulted the semantic answer there would pass early. It was the
+// single largest surviving disagreement in the dual-run inventory, and design
+// §5's containment argument does not cover the half of it that matters: an
+// `AsyncStream` consumer resumed by CANCELLATION emits no activity signal, and
+// the body it resumes goes on to run model-writing `defer`s.
+//
+// The fix is for the RESUMER to unpark, before it resumes
+// (`ModelWorkUnit.noteResumeInFlight()`), with the resumed side's `defer`
+// becoming a no-op via the park epoch. The tests below assert both halves
+// synchronously — every `#expect` after a `send` / `cancelAll` runs on the
+// producing thread, before the resumed task can possibly have had a slot.
+
+/// Parks in a SwiftModel-owned event stream, and writes model state from the
+/// `defer` that cancellation unwinds through: the exact shape the eager unpark
+/// exists for.
+@Model private struct ParkedEventWaiter {
+    enum Event: Equatable, Sendable { case matching, other }
+
+    var marker = "live"
+    var received = 0
+
+    func onActivate() {
+        node.task {
+            let control = node.quiescenceControl
+            defer {
+                // A cancelled body writes model state on its way out. If the
+                // unit read parked while this was still to come, a wait could
+                // conclude before it ran.
+                marker = "cleared"
+            }
+            control.bodyEntered.setValue(true)
+            for await _ in node.event(of: Event.matching) {
+                received += 1
+            }
+        }
+    }
+
+    func sendMatching() { node.send(.matching) }
+    func sendOther() { node.send(.other) }
+}
+
+@Suite(.modelTesting(exhaustivity: .off))
+struct SemanticQuiescenceEagerUnparkTests {
+    /// A yield unparks the consumer **at the yield**, not at the resumed task's
+    /// next slot. `node.send` is synchronous, so the assertion below runs on the
+    /// sending thread with the consumer's resume still in flight.
+    @Test func yieldUnparksTheConsumerBeforeItIsResumed() async throws {
+        let control = QuiescenceControl()
+        let model = ParkedEventWaiter().withAnchor {
+            $0.quiescenceControl = control
+        }
+        let context = model.anyContext!
+
+        try await waitUntil(control.bodyEntered.value)
+        try await waitUntil(context.hasRunningWorkUnit == false)
+
+        model.sendMatching()
+        #expect(context.hasRunningWorkUnit == true)
+
+        await expect(model.received == 1)
+        try await waitUntil(model.anyContext?.hasRunningWorkUnit == false)
+    }
+
+    /// The half with no activity signal behind it: cancelling a consumer parked
+    /// in `next()` resumes it with `nil` through `AsyncStream`'s `onTermination`
+    /// — which the stdlib invokes *before* the resume — and the body then runs a
+    /// model-writing `defer`. The unit must read running from the instant
+    /// `cancelAll()` returns.
+    @Test func cancellationUnparksTheConsumerBeforeItIsResumed() async throws {
+        let control = QuiescenceControl()
+        let model = ParkedEventWaiter().withAnchor {
+            $0.quiescenceControl = control
+        }
+        let context = model.anyContext!
+
+        try await waitUntil(control.bodyEntered.value)
+        try await waitUntil(context.hasRunningWorkUnit == false)
+
+        context.cancellations.cancelAll()
+        #expect(context.hasRunningWorkUnit == true)
+
+        try await waitUntil(model.marker == "cleared")
+        try await waitUntil(model.anyContext?.hasRunningWorkUnit == false)
+    }
+
+    /// The reason the park mark sits on the RAW source rather than on the
+    /// filtered stream `node.event(of:)` hands back. A non-matching event
+    /// resumes the consumer just the same — so it unparks eagerly — and the
+    /// consumer then drops it and goes back to waiting. With the mark wrapped
+    /// around the filter, that second wait would be inside the *same* open park
+    /// scope, and the unit would read running until the next matching event.
+    @Test func anEventThatFailsTheFilterUnparksAndThenReParks() async throws {
+        let control = QuiescenceControl()
+        let model = ParkedEventWaiter().withAnchor {
+            $0.quiescenceControl = control
+        }
+        let context = model.anyContext!
+
+        try await waitUntil(control.bodyEntered.value)
+        try await waitUntil(context.hasRunningWorkUnit == false)
+
+        model.sendOther()
+        #expect(context.hasRunningWorkUnit == true)
+        // …and back to parked, without ever running the body.
+        try await waitUntil(context.hasRunningWorkUnit == false)
+        #expect(model.received == 0)
+
+        // Still live afterwards.
+        model.sendMatching()
+        await expect(model.received == 1)
+    }
+
+    /// A stale ticket releases nothing, so an eagerly-unparked unit is not
+    /// re-parked by the `defer`s unwinding behind it — however many park scopes
+    /// were open — and a fresh park still works afterwards.
+    @Test func aTicketStaleAfterAnEagerUnparkReleasesNothing() {
+        let unit = ModelWorkUnit()
+        let outer = unit.park()
+        let inner = unit.park()
+        #expect(unit.isRunning == false)
+
+        unit.noteResumeInFlight()
+        #expect(unit.isRunning == true)
+
+        inner.release()
+        outer.release()
+        #expect(unit.isRunning == true)
+
+        let next = unit.park()
+        #expect(unit.isRunning == false)
+        next.release()
+        #expect(unit.isRunning == true)
+    }
+
+    /// `_ParkSource`, directly: park, eager unpark on yield, no-op release,
+    /// re-park once the delivery has been taken out.
+    @Test func parkSourceUnparksOnYieldAndReParksAfterDelivery() {
+        let source = _ParkSource()
+        let unit = ModelWorkUnit()
+        ModelWorkUnit.$current.withValue(unit) {
+            let ticket = source.beginWait()
+            #expect(ticket != nil)
+            #expect(unit.isRunning == false)
+
+            source.willYield()
+            #expect(unit.isRunning == true)
+
+            ticket?.release()
+            #expect(unit.isRunning == true)
+            source.endWait(delivered: true)
+
+            let next = source.beginWait()
+            #expect(next != nil)
+            #expect(unit.isRunning == false)
+            next?.release()
+        }
+    }
+
+    /// A value yielded while the consumer was *running* sits in the stream's
+    /// buffer, so the next wait must not park — and refusing to park is not
+    /// enough on its own, because `node.forEach` wraps its own park around the
+    /// whole call. `beginWait` therefore breaks out of the enclosing scope too.
+    @Test func parkSourceRefusesToParkUnderAnEnclosingScopeWhenAValueIsBuffered() {
+        let source = _ParkSource()
+        let unit = ModelWorkUnit()
+        ModelWorkUnit.$current.withValue(unit) {
+            source.willYield()
+
+            let outer = unit.park()          // `node.forEach`'s hook-1 park
+            #expect(unit.isRunning == false)
+
+            let inner = source.beginWait()
+            #expect(inner == nil)
+            #expect(unit.isRunning == true)
+
+            outer.release()                  // stale
+            #expect(unit.isRunning == true)
+        }
+    }
+
+    /// Termination is a resume too: `finish()` and a cancelled consumer both
+    /// wake `next()` with `nil`, and the body unwinds from there.
+    @Test func parkSourceUnparksOnTermination() {
+        let source = _ParkSource()
+        let unit = ModelWorkUnit()
+        ModelWorkUnit.$current.withValue(unit) {
+            let ticket = source.beginWait()
+            #expect(unit.isRunning == false)
+
+            source.willTerminate()
+            #expect(unit.isRunning == true)
+
+            ticket?.release()
+            #expect(unit.isRunning == true)
+        }
+    }
+}
