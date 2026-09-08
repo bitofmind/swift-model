@@ -78,31 +78,56 @@ private struct MakeInitialTransformer: ModelTransformer {
 
 private struct MakeInitialDependencyCopyTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
-        // Capture the original reference BEFORE shallowCopy may convert an anchored model
-        // to a frozen snapshot. shallowCopy creates a brand-new Reference with no genesis,
-        // losing the original's _genesisState. We need the original to recover genesis.
-        // For pre-anchor models, shallowCopy returns self unchanged, so originalRef === srcRef.
-        let originalRef = model.modelContext._source.reference
+        let src = model.modelContext._source
+        let originalRef = src.reference
+
+        // Prefer genesis state when available — matching reserveOrFork() — so that a fresh
+        // dependency copy always starts from the clean initial state, not from mutations
+        // made by a concurrently-running test that has the same static `testValue` anchored.
+        //
+        // Genesis is resolved BEFORE any `shallowCopy`, and that ordering is load-bearing
+        // for more than efficiency. `shallowCopy` freezes an anchored model by reading its
+        // state under **that model's** hierarchy lock (`makeFrozen` →
+        // `Reference.withHierarchyLockIfLive`). A shared `static let` dependency value is
+        // routinely anchored in a *different* tree, so that is a foreign lock — and this
+        // transformer runs inside `AnyContext.dependency(for:)`, which already holds its
+        // own tree's hierarchy lock. Two threads resolving two such dependencies in
+        // opposite order took the two locks A→B and B→A and deadlocked the process
+        // (diagnosed 2026-09-07 from a live `sample` of a hung CI run).
+        //
+        // Taking the genesis path first removes that edge entirely, because the frozen
+        // state was never used in the first place: `Reference.setContext` captures genesis
+        // on the very first anchor, so *every* Reference that has (or has ever had) a live
+        // context has genesis — exactly the case in which `shallowCopy` would take a
+        // foreign hierarchy lock. Conversely `!_hasGenesis` implies the Reference was never
+        // anchored, so it has no context and `withHierarchyLockIfLive` finds no lock to
+        // take. The fallback below is therefore foreign-lock-free by construction.
+        if originalRef._hasGenesis {
+            let sourceState = originalRef._genesisState
+            let newRef = Context<M>.Reference(modelID: .generate(), state: sourceState)
+            newRef._genesisState = sourceState
+            newRef._hasGenesis = true
+            // `shallowCopy` drops the access when it freezes an anchored model; preserve
+            // that here, under the same condition, now that we skip the copy.
+            if !src._isLive, originalRef.context != nil {
+                model.modelContext.access = nil
+            }
+            model.modelContext.setReference(newRef)
+            return
+        }
+
+        // No genesis — the Reference was never anchored (pre-anchor value, or a
+        // frozen/lastSeen snapshot). `shallowCopy` cannot reach a live context's hierarchy
+        // lock from here; it either returns `self` or freezes a snapshot Reference, whose
+        // `_context` is always nil.
         model = model.shallowCopy
         // Create a fresh Reference with a new identity and copy state from the frozen copy.
         // Without state, Context.init's `hasState` assertion would fire when anchoring this copy.
         let srcRef = model.modelContext._source.reference
-        // Prefer genesis state when available — matching reserveOrFork() — so that a fresh
-        // dependency copy always starts from the clean initial state, not from mutations
-        // made by a concurrently-running test that has the same static `testValue` anchored.
-        // Use originalRef for genesis since shallowCopy may have replaced srcRef with a
-        // frozen snapshot reference that has no _hasGenesis/_genesisState of its own.
-        // If state has been cleared post-TTL but genesis was captured, genesis is also used.
-        // If neither live state nor genesis is available, bail out and leave model.context
-        // intact; setupModelDependency guards against this residual non-nil context.
-        let genesisRef = originalRef._hasGenesis ? originalRef : srcRef
-        guard !srcRef._stateCleared || genesisRef._hasGenesis else { return }
-        let sourceState = genesisRef._hasGenesis ? genesisRef._genesisState : srcRef.state
-        let newRef = Context<M>.Reference(modelID: .generate(), state: sourceState)
-        if genesisRef._hasGenesis {
-            newRef._genesisState = genesisRef._genesisState
-            newRef._hasGenesis = true
-        }
+        // If state has been cleared post-TTL and no genesis was captured, bail out and leave
+        // model.context intact; setupModelDependency guards against this residual non-nil context.
+        guard !srcRef._stateCleared else { return }
+        let newRef = Context<M>.Reference(modelID: .generate(), state: srcRef.state)
         model.modelContext.setReference(newRef)
     }
 }
