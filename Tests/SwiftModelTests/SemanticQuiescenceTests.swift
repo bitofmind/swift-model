@@ -62,6 +62,11 @@ final class ForeignClock: @unchecked Sendable {
 final class QuiescenceControl: @unchecked Sendable {
     let stop = LockIsolated(false)
     let bodyEntered = LockIsolated(false)
+    /// Opt-in: when true, the consumer body parks at the gate after each delivery, so
+    /// "the unit is running" is a durable state a test can observe rather than a
+    /// transient one it has to catch. Counts deliveries so a test can wait for one.
+    let holdBody = LockIsolated(false)
+    let bodyIterations = LockIsolated(0)
 
     private let lock = NSLock()
     private var streamContinuation: AsyncStream<Int>.Continuation?
@@ -820,6 +825,8 @@ struct SemanticQuiescenceCancellationEpilogueTests {
             control.bodyEntered.setValue(true)
             for await _ in node.event(of: Event.matching) {
                 received += 1
+                control.bodyIterations.withValue { $0 += 1 }
+                if control.holdBody.value { await control.waitAtGate() }
             }
         }
     }
@@ -841,11 +848,21 @@ struct SemanticQuiescenceEagerUnparkTests {
         let context = model.anyContext!
 
         try await waitUntil(control.bodyEntered.value)
+        // Reach the parked state through the documented wait verb rather than racing
+        // the consumer's first `next()`; the assertion below is about the STATE.
+        await settle()
         try await waitUntil(context.hasRunningWorkUnit == false)
 
+        // Hold the body so "running" is durable: without the eager unpark the unit
+        // would still read PARKED here, because the lazy `defer { unpark() }` cannot
+        // run while the body is stopped at the gate. That is what makes this a real
+        // test of the property rather than a race against the consumer finishing.
+        control.holdBody.setValue(true)
         model.sendMatching()
+        try await waitUntil(control.bodyIterations.value == 1)
         #expect(context.hasRunningWorkUnit == true)
 
+        control.openGate()
         await expect(model.received == 1)
         try await waitUntil(model.anyContext?.hasRunningWorkUnit == false)
     }
@@ -863,6 +880,9 @@ struct SemanticQuiescenceEagerUnparkTests {
         let context = model.anyContext!
 
         try await waitUntil(control.bodyEntered.value)
+        // Reach the parked state through the documented wait verb rather than racing
+        // the consumer's first `next()`; the assertion below is about the STATE.
+        await settle()
         try await waitUntil(context.hasRunningWorkUnit == false)
 
         context.cancellations.cancelAll()
@@ -886,11 +906,19 @@ struct SemanticQuiescenceEagerUnparkTests {
         let context = model.anyContext!
 
         try await waitUntil(control.bodyEntered.value)
+        // Reach the parked state through the documented wait verb rather than racing
+        // the consumer's first `next()`; the assertion below is about the STATE.
+        await settle()
         try await waitUntil(context.hasRunningWorkUnit == false)
 
         model.sendOther()
-        #expect(context.hasRunningWorkUnit == true)
-        // …and back to parked, without ever running the body.
+        // The durable property, not the transient one: the unit returns to parked
+        // WITHOUT the body ever running. Asserting the intermediate `running` state
+        // here is unobservable — the eager unpark, the filter and the re-park can all
+        // complete between the send and any check. This still fails on the placement
+        // the test exists to reject: marking around the filter would leave the unit
+        // running until the next MATCHING event, so the wait below would never resolve.
+        await settle()
         try await waitUntil(context.hasRunningWorkUnit == false)
         #expect(model.received == 0)
 
@@ -913,11 +941,23 @@ struct SemanticQuiescenceEagerUnparkTests {
         let context = model.anyContext!
 
         try await waitUntil(context.activeTasks.flatMap(\.tasks).count == 1)
+        // Reach the parked state through the documented wait verb rather than racing
+        // the consumer's first `next()`; the assertion below is about the STATE.
+        await settle()
         try await waitUntil(context.hasRunningWorkUnit == false)
 
         context.cancellations.cancelAll()
-        #expect(context.hasRunningWorkUnit == true)
-
+        // The durable property: cancellation must not leave the unit PARKED, so the
+        // consumer finishes unwinding and the subtree goes quiet. The intermediate
+        // `running` state is not reliably observable here — the cancelled task can
+        // complete and unregister between `cancelAll()` returning and any check. The
+        // eager-unpark-before-resume property is pinned deterministically for the YIELD
+        // path by `yieldUnparksTheConsumerBeforeItIsResumed`, which holds the body at a
+        // gate so the lazy unpark cannot run. For the cancellation path there is no
+        // equivalent hold — the resumed body only unwinds `defer`s — so that half rests
+        // on the job-stack measurement instead (the AsyncStream cancellation-resume
+        // family went from 160/256 samples to 0), which is stated in the PR rather than
+        // asserted here.
         try await waitUntil(model.anyContext?.hasRunningWorkUnit == false)
     }
 
