@@ -64,12 +64,14 @@ public extension Model {
     ) -> AsyncStream<()> {
         guard let context = enforcedContext() else { return .finished }
 
-        // `_eraseToParkedWaitStream()` adds the tier-1 park mark (design §5): a
-        // consumer suspended waiting for the next modification is parked, so a
+        // `_makeParkedStream` adds the tier-1 park mark (design §5): a consumer
+        // suspended waiting for the next modification is parked, so a
         // hand-written `for await _ in observeModifications() { … }` inside a
-        // `node.task` reads as parked rather than running forever. See
-        // `AsyncSequenceExtensions.swift`.
-        return AsyncStream { cont in
+        // `node.task` reads as parked rather than running forever — and every
+        // resume of that wait (`cont.yield`, `cont.finish`, the consumer being
+        // cancelled) unparks it EAGERLY, at the resume rather than at the
+        // resumed task's next CPU slot. See `AsyncSequenceExtensions.swift`.
+        return _makeParkedStream { cont in
 #if DEBUG
             // Capture label and printer once at setup time, not on every emission.
             let debugState: (label: String, printer: PrinterBox)? = debug.flatMap { d in
@@ -114,7 +116,7 @@ public extension Model {
             }
 
             cont.onTermination = { _ in cancel() }
-        }._eraseToParkedWaitStream()
+        }
     }
 
 }
@@ -366,14 +368,15 @@ public extension ModelNode {
 
 extension Observed {
     init(access: @Sendable @escaping () -> Element, initial: Bool = true, isSame: (@Sendable (Element, Element) -> Bool)?, coalesceUpdates: Bool = false, debug: DebugOptions? = nil) {
-        // The trailing `_eraseToParkedWaitStream()` is the tier-1 park mark
-        // (design §5). `Observed` is the single most common hand-written loop in
-        // the suite — `node.task { for await v in Observed { … } }` — and
-        // without a source-side mark every one of those tasks reads as *running*
-        // for its whole lifetime. Marking the source (rather than `forEach`)
-        // makes the sugar and the hand-written loop behave identically.
-        // See `AsyncSequenceExtensions.swift`.
-        stream = AsyncStream { cont in
+        // `_makeParkedStream` is the tier-1 park mark (design §5). `Observed` is
+        // the single most common hand-written loop in the suite —
+        // `node.task { for await v in Observed { … } }` — and without a
+        // source-side mark every one of those tasks reads as *running* for its
+        // whole lifetime. Marking the source (rather than `forEach`) makes the
+        // sugar and the hand-written loop behave identically; yielding through
+        // the wrapper makes each resume of the consumer's wait unpark it
+        // eagerly. See `AsyncSequenceExtensions.swift`.
+        stream = _makeParkedStream { cont in
             // Detect whether accessed models use ObservationRegistrar.
             // If any accessed model was created with .disableObservationRegistrar, the
             // withObservationTracking path won't fire (the model's access(path:from:) is a no-op).
@@ -417,7 +420,7 @@ extension Observed {
             }
             cont.onTermination = { _ in cancellable() }
 #endif
-        }._eraseToParkedWaitStream()
+        }
     }
 }
 

@@ -42,6 +42,13 @@ public extension ModelNode {
     }
 }
 
+// The tier-1 park mark for events lives in `AnyContext.events()`, NOT here.
+// These APIs are `events().compactMap { … }`, and a park scope wrapped around
+// the filter would stay open across events that fail it — so an eager unpark at
+// the yield would strand the consumer's work unit reading *running* until the
+// next event that happens to match. Parking the raw source instead means the
+// scope is entered and left exactly once per event, and the filter re-parks by
+// construction. See `AsyncSequenceExtensions.swift`.
 public extension ModelNode {
     /// Returns a stream of all events sent from this model or any of its descendants, typed as `Any`.
     ///
@@ -49,7 +56,7 @@ public extension ModelNode {
     /// Use this only when the event type is not known at compile time.
     func event() -> AsyncStream<Any&Sendable> {
         guard let context = enforcedContext() else { return .never }
-        return context.events().map(\.event)._eraseToParkedWaitStream()
+        return context.events().map(\.event).eraseToStream()
     }
 
     /// Returns a stream of events of type `Event` sent from this model or any of its descendants.
@@ -64,7 +71,7 @@ public extension ModelNode {
         return context.events().compactMap {
             guard let e = $0.event as? Event else { return nil }
             return e
-        }._eraseToParkedWaitStream()
+        }.eraseToStream()
     }
 
     /// Returns a stream of events sent by models of type `FromModel` within this subtree.
@@ -86,7 +93,7 @@ public extension ModelNode {
         return context.events().compactMap {
             guard let event = $0.event as? FromModel.Event, let model = $0.model as? FromModel else { return nil }
             return (event, model)
-        }._eraseToParkedWaitStream()
+        }.eraseToStream()
     }
 
     /// Returns a stream of events of type `Event` sent by models of type `FromModel` within this subtree.
@@ -107,7 +114,7 @@ public extension ModelNode {
         return context.events().compactMap {
             guard let event = $0.event as? Event, let model = $0.model as? FromModel else { return nil }
             return (event, model)
-        }._eraseToParkedWaitStream()
+        }.eraseToStream()
     }
 }
 
@@ -127,7 +134,7 @@ public extension ModelNode {
         return context.events().compactMap {
             guard let e = $0.event as? M.Event, e == event, $0.context === context else { return nil }
             return ()
-        }._eraseToParkedWaitStream()
+        }.eraseToStream()
     }
 
     /// Returns a stream that emits `()` each time the specified event value is sent from this model or any descendant.
@@ -146,7 +153,7 @@ public extension ModelNode {
         return context.events().compactMap {
             guard let e = $0.event as? Event, e == event else { return nil }
             return ()
-        }._eraseToParkedWaitStream()
+        }.eraseToStream()
     }
 
     /// Returns a stream that emits the sending model each time a specific event is sent by a model of type `FromModel`.
@@ -164,7 +171,7 @@ public extension ModelNode {
         return context.events().compactMap {
             guard let e = $0.event as? FromModel.Event, e == event, let model = $0.model as? FromModel else { return nil }
             return model
-        }._eraseToParkedWaitStream()
+        }.eraseToStream()
     }
 
     /// Returns a stream that emits the sending model each time a specific event value is sent by a model of type `FromModel`.
@@ -182,7 +189,7 @@ public extension ModelNode {
         return context.events().compactMap {
             guard let e = $0.event as? Event, e == event, let model = $0.model as? FromModel else { return nil }
             return model
-        }._eraseToParkedWaitStream()
+        }.eraseToStream()
     }
 }
 
