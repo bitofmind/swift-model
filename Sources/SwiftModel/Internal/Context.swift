@@ -2648,6 +2648,27 @@ extension Context {
             }
         }
 
+        /// `lifetime == .destructed` without ever blocking on the context's hierarchy lock.
+        ///
+        /// Answers `false` ("still alive") when the owning context's lock is momentarily
+        /// held, which is the same answer this reference would have given had the caller
+        /// arrived an instant earlier — the state is in flux either way. `false` is the
+        /// deliberate choice over `true`: at the one call site (`setupModelDependency`) a
+        /// `true` verdict *replaces* the recorded dependency context, so guessing `true`
+        /// about a live shared dependency would break sharing and never self-correct,
+        /// whereas guessing `false` merely defers the rebuild to the next resolution, by
+        /// which time teardown has finished and the lock is free.
+        ///
+        /// The reference's own lock is a leaf lock — never held across another
+        /// acquisition — so taking it cannot participate in a cycle.
+        var isDestructedNonBlocking: Bool {
+            if let _snapshotLifetime { return _snapshotLifetime == .destructed }
+            guard let context else {
+                return lock { _isDestructed }
+            }
+            return context.lifetimeIfUncontended == .destructed
+        }
+
         @usableFromInline
         var context: Context<M>? {
             // Explicit lock()/unlock() rather than `lock { _context }`: the latter routes

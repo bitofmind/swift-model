@@ -973,6 +973,26 @@ class AnyContext: @unchecked Sendable {
         lock(modeLifeTime)
     }
 
+    /// `lifetime`, but never blocks: `nil` when the hierarchy lock is not immediately
+    /// available.
+    ///
+    /// This exists for the one caller that must read the lifetime of a context in a
+    /// *different* tree: `setupModelDependency`, which resolves a shared (`static let`)
+    /// `@Model` dependency while already holding its own tree's hierarchy lock. Blocking
+    /// on the other tree's lock there closes an AB-BA cycle whenever two trees resolve two
+    /// such dependencies in opposite orders — a real deadlock, reproduced by
+    /// `DependencyLockInversionTests`.
+    ///
+    /// Reading `modeLifeTime` without the lock is not an option: the field is documented
+    /// as only ever accessed under the hierarchy lock (see its declaration), so an
+    /// unsynchronised read would be a genuine data race and TSan is a merge gate.
+    /// `try()` keeps the read fully protected while making it impossible to wait.
+    var lifetimeIfUncontended: ModelLifetime? {
+        guard lock.try() else { return nil }
+        defer { lock.unlock() }
+        return modeLifeTime
+    }
+
     var isDestructed: Bool {
         lifetime == .destructed
     }
@@ -1538,7 +1558,11 @@ class AnyContext: @unchecked Sendable {
                     child.addParent(self, callbacks: &postSetups)
                 }
                 return
-            } else if dependencyContext(for: ObjectIdentifier(D.self)) == nil || reference.lifetime == .destructed {
+            // `isDestructedNonBlocking`, not `lifetime == .destructed`: `reference` is
+            // anchored in a *different* tree here (the `child.rootParent === rootParent`
+            // branch above already claimed the same-tree case), and we hold our own
+            // hierarchy lock. Reaching for the other tree's lock closes an AB-BA cycle.
+            } else if dependencyContext(for: ObjectIdentifier(D.self)) == nil || reference.isDestructedNonBlocking {
                 if let cacheKey {
                     if let context = rootParent.dependencyContext(for: ObjectIdentifier(D.self)) as? Context<D> {
                         model.withContextAdded(context: context)
