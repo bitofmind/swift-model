@@ -63,11 +63,24 @@ private final class Counter: @unchecked Sendable {
 }
 
 struct DependencyLockInversionTests {
-    /// Regression test for the AB-BA fixed by giving `modeLifeTime` its own leaf lock and
-    /// by resolving genesis state before `shallowCopy` in `MakeInitialDependencyCopyTransformer`
-    /// — the two places where `dependency(for:)` reached a *foreign* hierarchy lock while
-    /// holding its own. Deadlocked on the very first iteration before the fix (zero
-    /// iterations completed); completes 200 iterations in ~0.2 s after it.
+    /// Regression test for the AB-BA fixed by resolving genesis state before `shallowCopy`
+    /// in `MakeInitialDependencyCopyTransformer` — one of the places where `dependency(for:)`
+    /// reached a *foreign* hierarchy lock while holding its own. Deadlocked on the very
+    /// first iteration before the fix (zero iterations completed); completes 200 iterations
+    /// in ~0.2 s after it.
+    ///
+    /// **Coverage limit — read before trusting a green run here.** This test does NOT
+    /// exercise the other foreign-lock edge, the `reference` lifetime read in
+    /// `setupModelDependency`. Every iteration anchors fresh trees and resolves each
+    /// dependency for the *first* time, so `dependencyContext(for:)` is nil and the
+    /// `||` short-circuits before the lifetime read is ever evaluated. Reaching that edge
+    /// needs an already-anchored model injected as a dependency override into a tree that
+    /// already holds a dependency context for that type. A green run here is therefore
+    /// silent about that edge, in either direction.
+    ///
+    /// An earlier attempt also gave `modeLifeTime` its own leaf lock. That was reverted:
+    /// it crashed the full suite deterministically (see the note below about what the
+    /// hierarchy lock is doing beyond guarding the cache).
     ///
     /// The verdict is a *stall* detector rather than a total-runtime budget — see the
     /// comment in the body — so a regression reports instead of hanging the suite, without
