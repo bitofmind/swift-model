@@ -1,0 +1,107 @@
+#!/bin/bash
+# Capture a stack from a wedged test host, and classify it.
+#
+# The problem this exists for: a swift-model AB-BA lock inversion freezes the
+# test host with every participant blocked. The freeze is rare, so by the time
+# a human or an agent notices it, the run has usually been killed. A previous
+# reproduction produced 79 watchdog "ceiling" reports and zero stacks, because
+# nothing was watching at the moment it wedged. This must be started BEFORE the
+# run, not after the freeze.
+#
+#   scripts/wedge-sampler <logfile> [freeze-seconds] [outdir]
+#   scripts/wedge-sampler --                        # no log; use CPU-time only
+#
+# Leave it running alongside the test command; it exits when no test host has
+# been seen for a while, or on Ctrl-C.
+#
+# Detection is deliberately NOT a `ps %cpu` filter. In an AB-BA every thread is
+# blocked, so %cpu is 0 -- but %cpu is also 0 for a process legitimately parked
+# on I/O or an async wait, and a wedge with one spinning thread reads as busy.
+# %cpu cannot separate those. Progress can: a run that is alive emits test
+# output and burns CPU time. So we watch for the ABSENCE of progress (log file
+# not growing AND cumulative CPU time flat), sample every test host we can see,
+# and let the stack do the classifying.
+
+set -uo pipefail
+
+LOG="${1:-}"
+FREEZE="${2:-90}"
+OUTDIR="${3:-/tmp/wedge-stacks}"
+POLL=5
+IDLE_EXIT=600      # give up after this long with no test host at all
+
+if [[ "$(uname)" != "Darwin" ]]; then
+    echo "wedge-sampler: needs macOS (uses sample(1)); on Linux use gdb/eu-stack" >&2
+    exit 2
+fi
+command -v sample >/dev/null || { echo "wedge-sampler: sample(1) not found" >&2; exit 2; }
+[[ "$LOG" == "--" ]] && LOG=""
+
+mkdir -p "$OUTDIR"
+echo "wedge-sampler: watching${LOG:+ log=$LOG}, freeze=${FREEZE}s, out=$OUTDIR"
+[[ -n "$LOG" ]] || echo "wedge-sampler: no log given -- CPU-time signal only (coarser)"
+
+last_sig=""          # progress fingerprint: log size + summed CPU time
+last_change=$SECONDS
+last_seen=$SECONDS
+sampled_for=""       # fingerprint we already sampled, so one freeze = one capture
+
+while true; do
+    pids=$(pgrep -x xctest 2>/dev/null; pgrep -f 'swift-testing|\.xctest/Contents/MacOS/' 2>/dev/null)
+    pids=$(echo "$pids" | tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u)
+
+    if [[ -z "$pids" ]]; then
+        (( SECONDS - last_seen > IDLE_EXIT )) && { echo "wedge-sampler: no test host for ${IDLE_EXIT}s, exiting"; exit 0; }
+        sleep $POLL; continue
+    fi
+    last_seen=$SECONDS
+
+    # Progress fingerprint. Cumulative CPU time advances whenever ANY thread
+    # runs, so it stays flat exactly when nothing is making progress -- which is
+    # the condition we want, and is not the same as "%cpu is low right now".
+    cpu=$(ps -o time= -p $(echo "$pids" | paste -sd, -) 2>/dev/null | tr -d ' ' | paste -sd+ -)
+    size=""
+    [[ -n "$LOG" && -f "$LOG" ]] && size=$(wc -c < "$LOG" | tr -d ' ')
+    sig="${size}|${cpu}"
+
+    if [[ "$sig" != "$last_sig" ]]; then
+        last_sig="$sig"; last_change=$SECONDS
+        sleep $POLL; continue
+    fi
+
+    frozen=$(( SECONDS - last_change ))
+    if (( frozen < FREEZE )) || [[ "$sig" == "$sampled_for" ]]; then
+        sleep $POLL; continue
+    fi
+
+    stamp=$(date +%Y%m%d-%H%M%S)
+    echo "wedge-sampler: NO PROGRESS for ${frozen}s -- sampling $(echo "$pids" | wc -l | tr -d ' ') process(es)"
+    combined="$OUTDIR/wedge-$stamp.txt"
+    {
+        echo "# wedge-sampler $stamp  frozen=${frozen}s  fingerprint=$sig"
+        echo "# pids: $(echo "$pids" | paste -sd' ' -)"
+        [[ -n "$LOG" ]] && { echo "# --- tail of $LOG ---"; tail -40 "$LOG"; }
+    } > "$combined"
+
+    for pid in $pids; do
+        echo "# ===== sample $pid =====" >> "$combined"
+        # Sample every process we found. No %cpu pre-filter: the whole point is
+        # that a deadlocked process looks idle.
+        sample "$pid" 6 -mayDie -f /dev/stdout 2>/dev/null >> "$combined" \
+            || echo "# sample $pid FAILED (needs the same user, or a developer-mode grant)" >> "$combined"
+    done
+    sampled_for="$sig"
+
+    # Classify. These are the two swift-model hypotheses we are separating; the
+    # third outcome (neither) is the informative one and must not be silent.
+    echo "wedge-sampler: wrote $combined"
+    if grep -q 'setupModelDependency' "$combined" && grep -qE 'Reference\.lifetime|AnyContext\.lifetime|lifetime\.getter' "$combined"; then
+        echo "wedge-sampler: VERDICT = surviving foreign-lock edge (setupModelDependency -> lifetime -> hierarchy lock)."
+        echo "               Candidate fix: swift-model branch audit/foreign-lock."
+    elif grep -qE 'dependency\(for:\)|setupModelDependency' "$combined"; then
+        echo "wedge-sampler: VERDICT = dependency-resolution path, but NOT via lifetime. Related, not the known edge."
+    else
+        echo "wedge-sampler: VERDICT = neither known signature -- a SECOND mechanism. This is the interesting one."
+        grep -E '__psynch_mutexwait|NSRecursiveLock|_lock' "$combined" | head -10
+    fi
+done
