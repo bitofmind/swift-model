@@ -599,6 +599,14 @@ internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Senda
             return firstActivation
         }
         if needsPriming {
+            // SEMANTIC QUIESCENCE — excluded housekeeping, category (d).
+            // Justification: this is a SwiftUI view invalidation
+            // (`objectWillChange`), reached only from `attachDebug` on the first
+            // render that requests debug output. It touches no model state, so
+            // no model assertion can depend on it. (Design §4a suggests routing
+            // it through `mainCallQueue` so it would be counted for free; that
+            // is a SwiftUI-timing change and is deliberately left out of the
+            // quiescence work.) See the audit in `ModelWorkUnit.swift`.
             Task { @MainActor [weak self] in
                 self?.objectWillChange.send()
             }

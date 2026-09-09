@@ -202,11 +202,38 @@ extension TestAccess {
                 lines.append("  \(info.modelName): \"\(taskName)\" @ \(fl.fileID):\(fl.line)")
             }
         }
-        let listing = lines.joined(separator: "\n")
+        var listing = lines.joined(separator: "\n")
+        if let undeclared = _undeclaredWorkDiagnosticLine() {
+            listing += (listing.isEmpty ? "" : "\n") + undeclared
+        }
         if let runaway = _runawayDiagnosticLine() {
             return runaway + "\n" + listing
         }
         return listing
+    }
+
+    /// If some earlier wait in this test concluded through the combined
+    /// quiescence rule's UNDECLARED-WORK fallback, name the sites.
+    ///
+    /// This is not the cause of the timeout — the fallback lets a wait finish,
+    /// it never stalls one. It is here because a timeout is the moment someone
+    /// is actually reading this output, and an undeclared suspension is the one
+    /// thing about this test's timing that SwiftModel had to guess at. A clock
+    /// that adopts `withModelParked` moves from "guessed" to "known". Returns
+    /// nil (and so changes no existing message) when the fallback never fired.
+    private func _undeclaredWorkDiagnosticLine() -> String? {
+        let sites = _undeclaredWorkFallbackSites()
+        guard !sites.isEmpty else { return nil }
+        let named = sites.prefix(5).map { "     • \($0.site) (\($0.count)×)" }.joined(separator: "\n")
+        return """
+          ℹ️ undeclared async work: SwiftModel could not see where the following task(s) suspend,
+             so quiescence for them fell back to observing the scheduler:
+        \(named)
+             Each has never parked at a suspension point the framework owns. If one of them
+             sleeps on a clock (or any other bare suspension), wrap that source's own `sleep`
+             in `withModelParked { }` — see Docs/Testing.md. `node.forEach` over any
+             AsyncSequence already parks with no adoption.
+        """
     }
 
     /// If exactly the failure shape "a reactive body that never stops firing"

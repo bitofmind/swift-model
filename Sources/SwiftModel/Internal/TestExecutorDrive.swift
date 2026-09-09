@@ -139,6 +139,15 @@ private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.sha
 final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     private let lock = NSLock()
     private var outstanding = 0
+    /// Per-outstanding-job enqueue backtraces, kept ONLY when
+    /// `SWIFT_MODEL_QUIESCENCE_JOB_TRACE=1`. This is the instrument that turned
+    /// the semantic-quiescence "new says quiescent, old says busy" bucket from a
+    /// guess into a classification: at a disagreement it names, per still-ready
+    /// job, the stack of whatever made that job runnable. Disabled it costs one
+    /// already-loaded `Bool` per enqueue; enabled it symbolicates a stack per
+    /// enqueue and is far too slow for anything but a targeted diagnostic run.
+    private var _jobStacks: [UInt64: String] = [:]
+    private var _nextJobId: UInt64 = 0
     /// Birth time — the floor for `activityNs` so a test that hasn't yet
     /// enqueued any executor work reads "active as of now", not the epoch. (The
     /// raw timestamps below start at 0; `monotonicNs` is a large uptime value,
@@ -201,9 +210,23 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
         }
     }
 
+    /// The enqueue stacks of every job that is still ready/running, newest
+    /// first. Empty unless `SWIFT_MODEL_QUIESCENCE_JOB_TRACE=1`.
+    var outstandingJobStacks: [String] {
+        lock.withLock { _jobStacks.sorted { $0.key > $1.key }.map(\.value) }
+    }
+
     func enqueue(_ job: consuming ExecutorJob) {
         let unowned = UnownedJob(job)
-        lock.withLock { outstanding += 1; _lastEnqueueNs = _drainMonotonicNs() }
+        let stack = _quiescenceJobTraceEnabled ? _quiescenceEnqueueStack() : nil
+        let jobId: UInt64 = lock.withLock {
+            outstanding += 1
+            _lastEnqueueNs = _drainMonotonicNs()
+            guard let stack else { return 0 }
+            _nextJobId += 1
+            _jobStacks[_nextJobId] = stack
+            return _nextJobId
+        }
         Self._globalOutstanding.wrappingAdd(1, ordering: .relaxed)
         Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
         _sharedDrainQueue.async {
@@ -211,6 +234,7 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
             let toFire: [@Sendable () -> Void] = self.lock.withLock {
                 self.outstanding -= 1
                 self._lastCompletionNs = _drainMonotonicNs()
+                if jobId != 0 { self._jobStacks.removeValue(forKey: jobId) }
                 guard self.outstanding == 0 else { return [] }
                 let fns = self.idleWaiters.map(\.fire)
                 self.idleWaiters.removeAll()
@@ -342,6 +366,11 @@ extension TestAccess {
             // re-check cadence (not the ceiling) so a runaway that never lets
             // the executor go idle is still inspected periodically.
             let fireBaseline = runawayBound != nil ? _reactiveFireStats() : [:]
+            // Dual-run instrumentation only (design §5 property 2): the
+            // park-generation observed at the PREVIOUS check, so a disagreement
+            // can say whether some unit parked or unparked in between. `nil` on
+            // the first iteration.
+            var previousParkGeneration: UInt64? = nil
             while !Task.isCancelled {
                 let now = _drainMonotonicNs()
                 if now >= hangDeadlineNs { return .gaveUp }
@@ -353,6 +382,32 @@ extension TestAccess {
                 if !bg.isIdle { await bg.waitForCurrentItems(deadline: checkDeadline) }
                 if !main.isIdle { await main.waitForCurrentItems(deadline: checkDeadline) }
                 let idleNow = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.context.hasPendingStartTask
+                // One census read per iteration (cheap: a locked walk of the
+                // live-unit dictionaries). Feeds the trace only.
+                let census = _QuiescenceComparison.isTracing ? self.context.workUnitCensus : _WorkUnitCensus()
+
+                // DUAL-RUN INSTRUMENTATION (step 2 of the semantic-quiescence
+                // plan — `Docs/test-quiescence-redesign.md` §10). Compute the
+                // semantic answer beside the existing one and record every
+                // disagreement. `idleNow` — NOT the semantic answer — still
+                // decides this and every other verdict; this call has no effect
+                // on control flow.
+                _QuiescenceComparison.record(
+                    existingIsQuiescent: idleNow,
+                    semanticIsQuiescent: self.context.semanticQuiescence,
+                    runningUnits: self.context.runningWorkUnits,
+                    existingBusyReason: [
+                        exec.isExecutorIdle ? nil : "executor",
+                        bg.isIdle ? nil : "bg",
+                        main.isIdle ? nil : "main",
+                        self.context.hasPendingStartTask ? "pendingStart" : nil,
+                    ].compactMap { $0 }.joined(separator: "+"),
+                    existingBusyJobStacks: exec.outstandingJobStacks,
+                    workUnitCensus: census,
+                    parkGenerationChangedSinceLastCheck: previousParkGeneration.map { $0 != census.parkGeneration }
+                )
+                previousParkGeneration = census.parkGeneration
+
                 if idleNow {
                     // Debounce against COMPLETIONS too, not just writes and
                     // enqueues (`exec.activityNs` when idle = max(birth,
@@ -373,7 +428,60 @@ extension TestAccess {
                     let lastActivity = max(self._lastActivityNsLocked, exec.activityNs)
                     let sinceActivity = _drainMonotonicNs() &- lastActivity
                     if sinceActivity >= graceNs {
-                        return .reached   // idle, and no activity of any kind for a full grace window
+                        // THE COMBINED RULE (`Docs/test-quiescence-redesign.md`
+                        // §3/§6, adoption increment). The existing
+                        // scheduler-observing answer has just said "done"; the
+                        // SEMANTIC answer now gets a veto:
+                        //
+                        //     quiescent := oldSaysDone
+                        //               && (newSaysDone || runningWorkLooksUndeclared)
+                        //
+                        // `oldSaysDone` stays a REQUIRED conjunct, which is what
+                        // makes this increment safe on its own: the residual
+                        // window where a foreign source delivers a value we
+                        // cannot observe (design §6b hook 1's known price)
+                        // could only ever make the semantic answer say "done"
+                        // early, and an early "done" it cannot act on. So the
+                        // only verdicts that change are ones where the old
+                        // answer passed and the new one says work is still
+                        // running — i.e. we now WAIT where we used to conclude.
+                        //
+                        // `runningWorkLooksUndeclared` is the fallback, and the
+                        // whole reason the design is adoptable incrementally:
+                        // work SwiftModel cannot see inside (an unadopted
+                        // clock's sleep, a bare `Task.sleep`, a compute loop) is
+                        // correctly reported as *running*, and believing that
+                        // would hang waits that return today. A running unit
+                        // that has NEVER parked and has produced no transition
+                        // for a full settle grace is exactly that shape, and
+                        // only there do we defer to the old answer —
+                        // reproducing today's behaviour bit for bit.
+                        //
+                        // A running unit that HAS parked before, or that
+                        // transitioned within the grace, is mid-flight (a yield
+                        // hop, a resumption already in flight, a starved job).
+                        // The fallback must not swallow those: waiting for them
+                        // is the correctness fix this design exists for, so a
+                        // single mid-flight unit anywhere in the subtree keeps
+                        // the wait open (`allRunningLookUndeclared` is an
+                        // all-quantifier, not an any-quantifier).
+                        let verdict = self.context.semanticVerdict(
+                            nowNs: _drainMonotonicNs(),
+                            quietNs: Self._settleGraceNs
+                        )
+                        if verdict.isQuiescent {
+                            return .reached   // both answers agree: done
+                        }
+                        if verdict.allRunningLookUndeclared {
+                            self._noteUndeclaredWorkFallback(verdict.undeclared)
+                            return .reached
+                        }
+                        // Semantic answer says real framework-owned work is
+                        // still mid-flight. Keep waiting — no wall clock is
+                        // added here; the loop is bounded by the same
+                        // `hangDeadlineNs` as every other path.
+                        await _gtsSleep(Self._settleGraceNs, hangDeadlineNs: hangDeadlineNs)
+                        continue
                     }
                     // Idle but recent activity — wait out the remainder of the
                     // grace (non-starvable), then re-check; a resuming task will

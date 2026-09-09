@@ -128,6 +128,29 @@ await clock.advance(by: .seconds(1))
 await expect(model.secondsElapsed == 1)
 ```
 
+#### Telling SwiftModel where a custom clock suspends
+
+`expect`, `settle` and `waitUntil` all have to answer one question: *is the model done reacting?* Work that is suspended waiting for input that can only arrive from outside — a clock deadline, an external event source — is **not** reacting, and a wait must not sit around for it. SwiftModel marks its own suspension points automatically, so in almost every case there is nothing to do:
+
+- `node.forEach(anySequence) { … }` parks around its own `next()`. That covers *any* `AsyncSequence`, including `swift-async-algorithms` operators like `debounce` and `throttle` — **no adoption at all**.
+- `node.event(…)`, `Observed`, and modification streams park at the source, so a hand-written `for await` over them behaves identically to `forEach`.
+
+The one shape SwiftModel cannot see is a **bare suspension that is not an `AsyncSequence`** — canonically a custom clock's `sleep`. Wrap that clock's own `sleep` in `withModelParked`:
+
+```swift
+extension MyClock {
+    public func sleep(until deadline: Instant, tolerance: Duration?) async throws {
+        try await withModelParked {                 // ← the only change
+            try await self.nonAdjustedSleep(until: deadline, tolerance: tolerance)
+        }
+    }
+}
+```
+
+**The adoption point is the clock implementation, not its call sites.** A clock protocol that funnels every caller through one `sleep` method needs one wrap, and every `clock.sleep` in every model is covered — models themselves are untouched. `withModelParked` finds the work unit through a task-local, so a suspension inside a child task the clock spawned still marks the right unit; called outside any model task it is a plain passthrough.
+
+Not adopting is safe, merely less precise: an unmarked suspension counts as running work, so quiescence for that task falls back to observing the scheduler (exactly what SwiftModel did before this existed). If a wait in that test later times out, the diagnostic names the task and its call site so you can find the clock to wrap.
+
 ### Refactor-resilient tests
 
 SwiftModel tests assert **final state**, not the sequence of actions or effects that produced it. There is no action enum to enumerate and no `send`/`receive` script to keep in sync — you call a method and assert the outcome:

@@ -169,15 +169,20 @@ class AnyContext: @unchecked Sendable {
     /// catch (see `_modificationCount` below for the same argument).
     @exclusivity(unchecked) private var modeLifeTime: ModelLifetime = .anchored
 
-    private var eventContinuationsStore: [Int: AsyncStream<EventInfo>.Continuation]?
-    private var eventContinuations: [Int: AsyncStream<EventInfo>.Continuation] {
+    /// `_ParkedYield` rather than a bare `AsyncStream.Continuation`: it is the
+    /// same continuation, plus the eager unpark of whichever work unit is
+    /// suspended in this stream's `next()` (semantic quiescence, tier 1 — see
+    /// `AsyncSequenceExtensions.swift`). `yield` / `finish` / `onTermination`
+    /// are spelled identically, so every use site below is unchanged.
+    private var eventContinuationsStore: [Int: _ParkedYield<EventInfo>]?
+    private var eventContinuations: [Int: _ParkedYield<EventInfo>] {
         _read { yield eventContinuationsStore ?? [:] }
         _modify {
             if eventContinuationsStore != nil {
                 yield &eventContinuationsStore!
                 if eventContinuationsStore!.isEmpty { eventContinuationsStore = nil }
             } else {
-                var temp: [Int: AsyncStream<EventInfo>.Continuation] = [:]
+                var temp: [Int: _ParkedYield<EventInfo>] = [:]
                 yield &temp
                 if !temp.isEmpty { eventContinuationsStore = temp }
             }
@@ -854,6 +859,72 @@ class AnyContext: @unchecked Sendable {
         return snapshot.contains { $0.hasPendingStartTask }
     }
 
+    // MARK: - Semantic quiescence (computed, NOT used for verdicts)
+    //
+    // The alternative answer to "is the model done reacting?" described in
+    // `Docs/test-quiescence-redesign.md`: instead of observing the scheduler
+    // (executor idle / queues idle / pending-start), ask the registry which
+    // framework-owned work is RUNNING. Everything the framework spawns is a
+    // registered `TaskCancellable` (one `ModelWorkUnit` each); a unit suspended
+    // at a suspension point SwiftModel owns is parked and does not block
+    // quiescence.
+    //
+    // Currently only compared against the existing answer inside
+    // `_driveToStableFixpoint` (dual-run instrumentation). Nothing depends on
+    // it.
+
+    /// True if any context in this subtree has a running work unit.
+    var hasRunningWorkUnit: Bool {
+        // Same lock-protected snapshot pattern as `activeTasks`.
+        let (selfRunning, snapshot) = lock { (cancellationsStore?.hasRunningWorkUnit ?? false, allChildren) }
+        if selfRunning { return true }
+        return snapshot.contains { $0.hasRunningWorkUnit }
+    }
+
+    /// `(registered, parked)` work-unit counts across this subtree — see
+    /// `Cancellations.workUnitCensus`. Diagnostic only.
+    var workUnitCensus: _WorkUnitCensus {
+        let (selfCensus, snapshot) = lock { (cancellationsStore?.workUnitCensus ?? _WorkUnitCensus(), allChildren) }
+        return snapshot.reduce(into: selfCensus) { acc, child in
+            let c = child.workUnitCensus
+            acc.registered += c.registered
+            acc.parked += c.parked
+            acc.parkGeneration &+= c.parkGeneration
+        }
+    }
+
+    /// The running work units in this subtree, for diagnostics.
+    var runningWorkUnits: [(modelName: String, name: String, fileAndLine: FileAndLine)] {
+        let (selfUnits, snapshot) = lock { (cancellationsStore?.runningWorkUnits ?? [], allChildren) }
+        return snapshot.reduce(into: selfUnits) { $0.append(contentsOf: $1.runningWorkUnits) }
+    }
+
+    /// The semantic quiescence answer for this subtree: no registered work unit
+    /// is running, and both call queues are idle.
+    ///
+    /// Design §4 folds the queues into the same counter — a background
+    /// (`Observed` / memoize recompute) or main-registrar (`@ObservedModel`
+    /// notification) queue item *is* a running unit. They are not
+    /// `TaskCancellable`s, so this prototype keeps them as the two extra
+    /// predicates they already are rather than re-plumbing `CallQueue`; the
+    /// resulting answer is the same.
+    var semanticQuiescence: Bool {
+        !hasRunningWorkUnit && backgroundCall.isIdle && mainCallQueue.isIdle
+    }
+
+    /// The semantic verdict for this subtree — running-unit count plus the
+    /// subset that looks undeclared. Backs the combined rule in
+    /// `TestAccess._driveToStableFixpoint`; the queues are deliberately NOT
+    /// folded in here, because the rule only consults this once the existing
+    /// answer (which already requires both queues idle) has said "done".
+    func semanticVerdict(nowNs: UInt64, quietNs: UInt64) -> _SemanticVerdict {
+        // Same lock-protected snapshot pattern as `activeTasks`.
+        let (selfVerdict, snapshot) = lock {
+            (cancellationsStore?.semanticVerdict(nowNs: nowNs, quietNs: quietNs) ?? _SemanticVerdict(), allChildren)
+        }
+        return snapshot.reduce(into: selfVerdict) { $0.merge($1.semanticVerdict(nowNs: nowNs, quietNs: quietNs)) }
+    }
+
     /// Returns the main registrar if the main channel has been created (lazy), or nil
     /// otherwise. `_main` is lock-published, so the read takes the hierarchy lock too.
     @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
@@ -1374,7 +1445,15 @@ class AnyContext: @unchecked Sendable {
             guard !isDestructed else {
                 return .finished
             }
-            let (stream, cont) = AsyncStream<EventInfo>.makeStream()
+            // Park-marked at the SOURCE (design §5 / tier 1): a consumer
+            // suspended in this stream's `next()` reads parked, and every
+            // resume of that wait — `yield`, `finish`, or the consumer's task
+            // being cancelled (which the stdlib routes through
+            // `onTermination` before it resumes `next()` with nil) — unparks it
+            // eagerly. The `node.event(…)` overloads filter DOWNSTREAM of this,
+            // which is exactly why the mark is here and not on the filtered
+            // stream: see `ModelNode+Events.swift`.
+            let (stream, cont) = _makeParkedStream(of: EventInfo.self)
             let key = generateKey()
 
             cont.onTermination = { [weak self] _ in

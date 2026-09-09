@@ -69,13 +69,18 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
     /// racing a `forEach` task registration). Passing the box in removes the
     /// window rather than defending it; the observable value is unchanged
     /// (`false` until the body runs).
-    let _hasStartedRunningBox: LockIsolated<Bool>
-    var hasStartedRunning: Bool { _hasStartedRunningBox.value }
+    ///
+    /// The box is a `ModelWorkUnit`, which also carries this task's
+    /// running/parked state for semantic quiescence. Same object, same
+    /// publication rules — no extra allocation over the `LockIsolated<Bool>`
+    /// it replaced.
+    let workUnit: ModelWorkUnit
+    var hasStartedRunning: Bool { workUnit.hasStartedRunning }
 
-    init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, hasStartedRunningBox: LockIsolated<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
+    init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, workUnit: ModelWorkUnit, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
         // Assigned before `cancellations.register(self)` below publishes this
-        // instance to any settle thread — see `_hasStartedRunningBox`.
-        self._hasStartedRunningBox = hasStartedRunningBox
+        // instance to any settle thread — see `workUnit`.
+        self.workUnit = workUnit
         // Resolve the registry ONCE, before `lock` is taken. `AnyContext.cancellations`
         // acquires the per-context hierarchy lock (H); this instance's `lock` is T.
         // Evaluating `context.cancellations` *inside* `lock { }` — as the capture-list
@@ -109,15 +114,29 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
 
         cancellations.register(self)
 
-        lock {
+        let bodyWillNeverRun: Bool = lock {
             guard !self.hasBeenCancelled else {
                 // Task was cancelled before init reached the task-creation point;
                 // the underlying Task stays nil and never runs.
-                return
+                return true
             }
             self.task = task { [weak cancellations] in
                 _ = cancellations?.unregister(id)
+                // Semantic quiescence: the body cannot run again, so the work
+                // unit retires here and ONLY here — see
+                // `Cancellations.liveWorkUnits`.
+                cancellations?.retireWorkUnit(id)
             }
+            return false
+        }
+        // Nothing will ever call `onDone` on this path, so the live work unit
+        // has to be retired explicitly or it would pin the model as
+        // non-quiescent forever. Done OUTSIDE `lock` (T): every other path into
+        // `Cancellations` (C) runs with T released, and adding a T→C edge here
+        // would be the only one in the file going that way — see the H→T
+        // ordering note in `init` above.
+        if bodyWillNeverRun {
+            cancellations.retireWorkUnit(id)
         }
     }
 
@@ -152,41 +171,74 @@ extension TaskCancellable {
 
     convenience init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, isDetached: Bool, priority: TaskPriority?, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async throws -> Void, `catch`: (@Sendable (Error) -> Void)?) {
         // Constructed BEFORE self.init so the factory closure can capture it.
-        // Stored on `self` AFTER self.init completes — see `_hasStartedRunningBox`.
-        let hasStartedRunningBox = LockIsolated(false)
+        // Stored on `self` AFTER self.init completes — see `workUnit`.
+        let workUnit = ModelWorkUnit()
 
-        self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, context: context, hasStartedRunningBox: hasStartedRunningBox) { onDone in
+        self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, context: context, workUnit: workUnit) { onDone in
             let contexts = AnyCancellable.contexts
             let operation = { @Sendable in
-                do {
-                    // Use context.capturedDependencies directly (not withDependencies(from: context))
-                    // so the task inherits exactly the context's dep overrides. withDependencies(from:)
-                    // would merge against DependencyValues._current, potentially losing overrides.
-                    try await DependencyValues.$_current.withValue(context.capturedDependencies) {
-                        try await ModelAccess.$isInModelTaskContext.withValue(true) {
-                            try await AnyCancellable.$inheritedContexts.withValue(contexts) {
-                                try await AnyCancellable.$contexts.withValue([]) {
-                                    defer { onDone() }
+                // UNREGISTER LAST — the work unit must outlive the whole task
+                // body, `catch` handler included.
+                //
+                // `onDone()` unregisters this `TaskCancellable` from
+                // `Cancellations`, which is what makes the unit disappear from
+                // `hasRunningWorkUnit`. It used to sit in a `defer` INSIDE the
+                // innermost task-local scope, i.e. it fired before the
+                // `catch` block below ran — and `catch` is user code
+                // (`node.task(catch:)`, `node.onChange(catch:)`) that routinely
+                // writes model state:
+                //
+                //     node.task { try await mayFail() } catch: { error in
+                //         self.error = "\(error)"          // <- model write
+                //     }
+                //
+                // Under the scheduler-observing answer that window was covered
+                // for free (the executor job is still outstanding), but under
+                // semantic quiescence the registry would already read
+                // "quiescent" while a model write was still to come — a
+                // premature pass. Hoisting the `defer` to the closure's
+                // outermost scope closes it: the unit is unregistered only once
+                // nothing in the body can run again.
+                //
+                // Unconditional either way, so `underlyingTask.value` (which
+                // `_forEachImpl` uses to serialise bodies) still resolves after
+                // it, exactly as its doc-comment states.
+                defer { onDone() }
 
-                                    guard !Task.isCancelled, !context.isDestructed else { return }
+                // Publish this body's work unit to the task-local so
+                // `withModelParked` — called from anywhere inside the body,
+                // including child tasks and library code the body calls into,
+                // and including the `catch` handler — finds the right unit to
+                // mark parked. Set once per body; see `ModelWorkUnit`.
+                await ModelWorkUnit.$current.withValue(workUnit) {
+                    do {
+                        // Use context.capturedDependencies directly (not withDependencies(from: context))
+                        // so the task inherits exactly the context's dep overrides. withDependencies(from:)
+                        // would merge against DependencyValues._current, potentially losing overrides.
+                        try await DependencyValues.$_current.withValue(context.capturedDependencies) {
+                            try await ModelAccess.$isInModelTaskContext.withValue(true) {
+                                try await AnyCancellable.$inheritedContexts.withValue(contexts) {
+                                    try await AnyCancellable.$contexts.withValue([]) {
+                                        guard !Task.isCancelled, !context.isDestructed else { return }
 
-                                    // Signal that the body has now actually started executing —
-                                    // see `ModelAccess.taskBodyStarted` and
-                                    // `TaskCancellable._hasStartedRunningBox`. Setting the box
-                                    // BEFORE notifying the access avoids a window where settle
-                                    // could re-check `hasPendingStartTask`, see this task still
-                                    // not-started, and re-arm pointlessly.
-                                    hasStartedRunningBox.setValue(true)
-                                    ModelAccess.current?.taskBodyStarted()
+                                        // Signal that the body has now actually started executing —
+                                        // see `ModelAccess.taskBodyStarted` and
+                                        // `TaskCancellable.workUnit`. Setting the box
+                                        // BEFORE notifying the access avoids a window where settle
+                                        // could re-check `hasPendingStartTask`, see this task still
+                                        // not-started, and re-arm pointlessly.
+                                        workUnit.markBodyStarted()
+                                        ModelAccess.current?.taskBodyStarted()
 
-                                    try await operation()
+                                        try await operation()
+                                    }
                                 }
                             }
                         }
+                    } catch {
+                        if Task.isCancelled || error is CancellationError { return }
+                        `catch`?(error)
                     }
-                } catch {
-                    if Task.isCancelled || error is CancellationError { return }
-                    `catch`?(error)
                 }
             }
 

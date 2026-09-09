@@ -42,6 +42,13 @@ public extension ModelNode {
     }
 }
 
+// The tier-1 park mark for events lives in `AnyContext.events()`, NOT here.
+// These APIs are `events().compactMap { … }`, and a park scope wrapped around
+// the filter would stay open across events that fail it — so an eager unpark at
+// the yield would strand the consumer's work unit reading *running* until the
+// next event that happens to match. Parking the raw source instead means the
+// scope is entered and left exactly once per event, and the filter re-parks by
+// construction. See `AsyncSequenceExtensions.swift`.
 public extension ModelNode {
     /// Returns a stream of all events sent from this model or any of its descendants, typed as `Any`.
     ///
