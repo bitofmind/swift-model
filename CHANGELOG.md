@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.20] — Xcode 27 consumer fixes: one `IssueReporting` identity per toolchain + declared `ConcurrencyExtras` dependency
+
 ### Fixed
 
 - **Consumers building with Xcode 27 / Swift 6.4 no longer get two `IssueReporting` package identities, and `SwiftModel` links as a standalone dynamic framework.** Two manifest-only changes, both surfaced by parallel-phoenix-apple's Xcode 27 CI (`Multiple commands produce '…/IssueReporting_…_PackageProduct.framework'` ×18, and `Undefined symbols … ConcurrencyExtras.AnyHashableSendable … referenced from SwiftModel.o` at the `SwiftModel` framework link):
