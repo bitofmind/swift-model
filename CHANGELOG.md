@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.19] — Swift 6.4 `@Model` closure-property compiler crash fix
+
 ### Fixed
 
 - **`@Model` no longer crashes the Swift 6.4 (Xcode 27.0) compiler for closure-typed properties.** 1.0.0 gave function-typed `@Model` properties a plain `get` read accessor instead of a `_read` coroutine to work around a swift-frontend 6.3 IRGen crash (`ScalarPairTypeInfo<FuncTypeInfo,…>::loadAsTake`) when the closure's signature carries a struct passed indirectly — more than four fields — in `-Onone` builds. That carve-out was gated on `#if !compiler(>=6.4)` on the assumption the bug would be fixed in 6.4. It was not: Swift 6.4 SIGSEGVs with the same signature on `@Model struct M { var make: @Sendable (String) -> SixFieldStruct }`, so any debug build of a client with such a property failed to compile on Xcode 27. The gate is removed; the `get` now applies on every compiler version. Observation is unchanged (the `get` calls the same `_$modelSource[read:]` subscript), and the write path (`_modify`, which yields an address rather than a value) never had the problem.
