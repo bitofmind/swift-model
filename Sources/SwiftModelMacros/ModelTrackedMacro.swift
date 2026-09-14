@@ -34,25 +34,24 @@ import SwiftSyntaxMacros
 /// expander only — the compiler keeps the initializer, and the init accessors still fire for
 /// defaulted properties (pinned at runtime by `PendingConstructionBoundaryTests`).
 ///
-/// `isFunctionType` properties get a plain `get` instead of `_read` **when this macro plugin
-/// is built with Swift 6.3**: swift-frontend 6.3 SIGSEGVs during IRGen when emitting a `_read`
-/// (yield-once) coroutine that yields a *function value by value* whose parameter is passed
-/// indirectly by the Swift calling convention (an aggregate of >4 fields). This is a
-/// platform-general `-Onone` bug — reproduced on both `aarch64-unknown-linux-android28` and
-/// `arm64-apple-macosx` debug builds (optimised builds inline the coroutine away and don't
-/// crash, which is why it first surfaced only in Imagien's debug Android cross-compile).
-/// A plain `get` (which returns a copy of the closure — trivial for a 2-word value) sidesteps it;
-/// it calls the same `_$modelSource[read:]` subscript, so observation is unchanged, and the write
-/// path (`_modify`, which yields an *address*, not a value) is unaffected.
+/// `isFunctionType` properties get a plain `get` instead of `_read`: swift-frontend SIGSEGVs
+/// during IRGen when emitting a `_read` (yield-once) coroutine that yields a *function value by
+/// value* whose parameter or result is passed indirectly by the Swift calling convention (an
+/// aggregate of >4 fields). This is a platform-general `-Onone` bug — reproduced on both
+/// `aarch64-unknown-linux-android28` and `arm64-apple-macosx` debug builds (optimised builds
+/// inline the coroutine away and don't crash, which is why it first surfaced only in Imagien's
+/// debug Android cross-compile). A plain `get` (which returns a copy of the closure — trivial for
+/// a 2-word value) sidesteps it; it calls the same `_$modelSource[read:]` subscript, so observation
+/// is unchanged, and the write path (`_modify`, which yields an *address*, not a value) is unaffected.
 ///
-/// The carve-out is gated on `#if compiler(>=6.4)` — i.e. on the Swift version, not the platform.
+/// The carve-out applies on every compiler version. It was originally gated to Swift 6.3 on the
+/// assumption the bug would be fixed in 6.4, but Swift 6.4 (Xcode 27.0) still crashes with the
+/// same `ScalarPairTypeInfo<FuncTypeInfo,…>::loadAsTake` signature, and a version gate that
+/// re-enables the crash on every new toolchain is worse than a `get` that costs a closure copy.
 /// It can't be scoped per-target anyway (the macro runs on the host and can't see the target, and
-/// `#if` can't switch between accessor *kinds* inside an accessor block), and it shouldn't be:
-/// the bug isn't Android-specific, so the `get` correctly applies on every platform under 6.3
-/// (harmless — a closure copy is ~free). Under Swift 6.4+ we emit `_read` again, unconditionally:
-/// if the bug was fixed this restores borrow-without-copy uniformly; if it regressed, debug builds
-/// crash here and surface it, rather than the workaround being carried silently forever. Delete
-/// this gate (and `isFunctionType`) once 6.3 support is dropped or the fix is confirmed.
+/// `#if` can't switch between accessor *kinds* inside an accessor block), and it shouldn't be: the
+/// bug isn't platform-specific. Revisit only once a toolchain is confirmed to compile the
+/// function-typed `_read` (see `testModelClosureProperty` for the expansion).
 private func makeGetSet(
     identifier: String,
     index: Int,
@@ -72,11 +71,6 @@ private func makeGetSet(
     """
 
     let readAccessor: AccessorDeclSyntax
-    #if compiler(>=6.4)
-    // Swift 6.4+: emit the coroutine unconditionally (function types included). `isFunctionType`
-    // is intentionally unused here — the carve-out below only exists for the 6.3 compiler bug.
-    readAccessor = readCoroutine
-    #else
     if isFunctionType {
         readAccessor =
         """
@@ -87,7 +81,6 @@ private func makeGetSet(
     } else {
         readAccessor = readCoroutine
     }
-    #endif
 
     let writeAccessor: AccessorDeclSyntax
     if didSet != nil || willSet != nil {
