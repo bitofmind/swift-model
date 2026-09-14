@@ -6,6 +6,15 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Consumers building with Xcode 27 / Swift 6.4 no longer get two `IssueReporting` package identities, and `SwiftModel` links as a standalone dynamic framework.** Two manifest-only changes, both surfaced by parallel-phoenix-apple's Xcode 27 CI (`Multiple commands produce '…/IssueReporting_…_PackageProduct.framework'` ×18, and `Undefined symbols … ConcurrencyExtras.AnyHashableSendable … referenced from SwiftModel.o` at the `SwiftModel` framework link):
+
+  - *IssueReporting identity.* pointfreeco split `xctest-dynamic-overlay` into `swift-issue-reporting` (2.x, the real module) and kept `xctest-dynamic-overlay` 1.13 as a shim whose 6.4 manifest re-exports a product also named `IssueReporting`. Their libraries pick the URL by tools version (SE-0152 versioned manifests): < 6.4 → `xctest-dynamic-overlay`, 6.4+ → `swift-issue-reporting`. swift-model's unconditional `xctest-dynamic-overlay` declaration therefore kept a second identity in every 6.4 consumer's graph; SwiftPM tolerates that for static linking, but Xcode names dynamic package-product frameworks after the *product*, so both packages produced the same framework. The manifest now mirrors pointfree's own with a `#if compiler(>=6.4)` switch (`swift-issue-reporting` from 2.1.0, the first tag of the split-out repo; `xctest-dynamic-overlay` from 1.11.0 as before, the `OMIT_DYNAMIC_TEST_SUPPORT` floor the WASM job relies on — 2.1.0 carries the same lever). Toolchains < 6.4 (CI's Linux/Android/WASM lanes, Xcode 26) resolve exactly as before; on 6.4 the graph carries `swift-issue-reporting` only.
+  - *Undeclared `ConcurrencyExtras` import.* `SwiftModel` imports `ConcurrencyExtras` (`Internal/TestExpect.swift`) but only reached it transitively through swift-dependencies. Xcode 27 builds each package product a dynamic consumer depends on as its own dynamic framework and links a product only against what its target declares, so the transitive reach became a link failure. `swift-concurrency-extras` is now declared on the `SwiftModel` target. It was already in the graph via swift-dependencies, so nothing new is fetched.
+
+  Verified with the full suite on both Xcode 26 (6.3.3 → `xctest-dynamic-overlay` 1.13.1) and Xcode 27 (6.4 → `swift-issue-reporting` 2.1.0), and by parallel-phoenix-apple's `StudioPreview` / `StreamsApp` schemes building on Xcode 27 against the patched package.
+
 ### Tests
 
 - **The test suite compiles on Swift 6.4 (Xcode 27.0).** 6.4's region-isolation checker rejects two `withTaskCancellationHandler` call sites in `CancellationTests` and `InheritCancellationContextTests` ("passing closure as a `sending` parameter risks causing data races"): the `onCancel` closure implicitly captured a `LockIsolated` counter that the enclosing `model.task { }` closure also uses, and the checker merges the two closures' regions. An explicit `[$count]` / `[$cancelCount]` capture list gives `onCancel` its own copy of the (Sendable) reference and the checker is satisfied. No behavioural change; the library itself already compiled on 6.4 once 1.0.19 landed.
