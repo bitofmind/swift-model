@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Tests
+
+- **The test suite compiles on Swift 6.4 (Xcode 27.0).** 6.4's region-isolation checker rejects two `withTaskCancellationHandler` call sites in `CancellationTests` and `InheritCancellationContextTests` ("passing closure as a `sending` parameter risks causing data races"): the `onCancel` closure implicitly captured a `LockIsolated` counter that the enclosing `model.task { }` closure also uses, and the checker merges the two closures' regions. An explicit `[$count]` / `[$cancelCount]` capture list gives `onCancel` its own copy of the (Sendable) reference and the checker is satisfied. No behavioural change; the library itself already compiled on 6.4 once 1.0.19 landed.
+
 ---
 
 ## [1.0.19] — Swift 6.4 `@Model` closure-property compiler crash fix

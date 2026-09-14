@@ -103,7 +103,7 @@ struct CancellationTests {
                     // Using a long sleep so the task cannot complete naturally before being cancelled.
                     await inHandler.send(())
                     try await Task.sleep(nanoseconds: nanosPerSecond * 60)
-                } onCancel: {
+                } onCancel: { [$count] in
                     $count.wrappedValue += 1
                 }
                 $count.wrappedValue += 5

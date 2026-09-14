@@ -45,7 +45,7 @@ struct InheritCancellationContextTests {
                         // This guarantees cancelAll below fires onCancel synchronously.
                         await inHandler.send(())
                         try await Task.sleep(nanoseconds: nanosPerSecond * 60)
-                    } onCancel: {
+                    } onCancel: { [$cancelCount] in
                         $cancelCount.wrappedValue += 1
                     }
                 } catch: { _ in }
