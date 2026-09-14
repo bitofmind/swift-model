@@ -171,12 +171,9 @@ struct ModelMacroTests {
         }
     }
 
-    // The `get`-for-function-types carve-out is gated on Swift 6.3 (see ModelTrackedMacro.makeGetSet);
-    // under 6.4+ the macro emits `_read` again, so this expectation only holds while built with 6.3.
-    #if !compiler(>=6.4)
     /// Function-typed stored properties get a plain `get` read accessor instead of `_read`.
     ///
-    /// swift-frontend 6.3 SIGSEGVs during IRGen when emitting a `_read` (yield-once) coroutine
+    /// swift-frontend (6.3 and 6.4 alike) SIGSEGVs during IRGen when emitting a `_read` (yield-once) coroutine
     /// that yields a function value by value whose parameter is passed indirectly — a platform-general
     /// `-Onone` bug (Apple + Android debug). The plain `get` (a copy) sidesteps it; the `nonmutating
     /// _modify` write path — which yields an address, not a value — is unchanged. See `ModelTrackedMacro.makeGetSet`.
@@ -299,8 +296,6 @@ struct ModelMacroTests {
             """#
         }
     }
-
-    #endif // !compiler(>=6.4)
 
     /// Model with an explicit type annotation but no default (requires user init).
     @Test func testModelCustomInit() {
