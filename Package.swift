@@ -55,6 +55,58 @@ let swiftDependenciesPackage: Package.Dependency = .package(
 )
 #endif
 
+// ── IssueReporting: ONE package identity per toolchain ──────────────────────
+// pointfreeco split `xctest-dynamic-overlay` into `swift-issue-reporting` (the
+// real `IssueReporting` module, 2.x) and kept `xctest-dynamic-overlay` as a
+// compatibility shim. Their libraries select the URL by tools version (SE-0152
+// versioned manifests): toolchains < 6.4 pick `Package@swift-6.3.swift` & co.,
+// which declare `xctest-dynamic-overlay` (whose own < 6.4 manifest vends the
+// `IssueReporting` module directly); 6.4+ picks `Package.swift`, which declares
+// `swift-issue-reporting` from 2.1.0 — and `xctest-dynamic-overlay` 1.13's 6.4
+// manifest is then a thin wrapper (`_IssueReporting` → swift-issue-reporting's
+// `IssueReporting`) vending a product ALSO named `IssueReporting`.
+//
+// A consumer must declare the SAME identity the toolchain makes the pointfree
+// graph use, or the graph carries both:
+//   • 6.4+ (Xcode 27): declaring `xctest-dynamic-overlay` puts two packages
+//     vending a product named `IssueReporting` in the graph. SwiftPM tolerates
+//     that for static linking (the module names differ), but an Xcode app
+//     target that embeds package products as dynamic frameworks names the
+//     framework after the PRODUCT, so both packages produce
+//     `IssueReporting_…_PackageProduct.framework` → "Multiple commands
+//     produce". This is what broke parallel-phoenix-apple's nightly on
+//     2026-09-14: every other declarer had moved, and 1.0.19's unconditional
+//     `xctest-dynamic-overlay` alone kept the second identity alive.
+//   • < 6.4 (e.g. the swift-6.3-RELEASE toolchain on Android/WASM lanes):
+//     declaring `swift-issue-reporting` puts two MODULES named `IssueReporting`
+//     in the graph (2.1.0's + the shim's real one), which SwiftPM rejects.
+// Hence the toolchain switch, mirroring pointfree's own manifests. `compiler()`
+// rather than `swift()`: SE-0152 manifest selection follows the toolchain's
+// tools version, not the language mode this manifest is compiled in.
+//
+// Floors: `swift-issue-reporting` 2.1.0 is the first tag of the split-out repo
+// (its 1.x tags are pre-split history with the old module layout; a lower
+// floor lets the resolver reach one that collides again). On the old identity
+// 1.11.0 stays the floor: it ships the `OMIT_DYNAMIC_TEST_SUPPORT` env lever
+// (pointfreeco/swift-issue-reporting#183) that demotes the
+// `IssueReportingTestSupport` product from `.dynamic` to automatic linkage —
+// what lets the WASM job link a test executable at all (see the `wasm` job in
+// `.github/workflows/ci.yml`). swift-issue-reporting 2.1.0 carries the same
+// lever.
+#if compiler(>=6.4)
+let issueReportingPackageName = "swift-issue-reporting"
+let issueReportingPackage: Package.Dependency = .package(
+    url: "https://github.com/pointfreeco/swift-issue-reporting",
+    from: "2.1.0"
+)
+#else
+let issueReportingPackageName = "xctest-dynamic-overlay"
+let issueReportingPackage: Package.Dependency = .package(
+    url: "https://github.com/pointfreeco/xctest-dynamic-overlay",
+    from: "1.11.0"
+)
+#endif
+
 #if swift(>=6.2)
 let defaultIsolationTargets: [Target] = [
     .testTarget(
@@ -65,7 +117,7 @@ let defaultIsolationTargets: [Target] = [
             // See SwiftModelTests for WASI exclusion rationale.
             .product(
                 name: "IssueReportingTestSupport",
-                package: "xctest-dynamic-overlay",
+                package: issueReportingPackageName,
                 condition: .when(platforms: [.macOS, .linux, .iOS, .tvOS, .watchOS, .macCatalyst, .android])
             ),
         ],
@@ -188,14 +240,19 @@ let package = Package(
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.18.6"),
         .package(url: "https://github.com/apple/swift-collections", from: "1.1.0"),
         .package(url: "https://github.com/pointfreeco/swift-identified-collections", from: "1.1.0"), // Used by SwiftModelBenchmarks only
-        // 1.11.0 is the floor: it ships the `OMIT_DYNAMIC_TEST_SUPPORT` env
-        // lever (pointfreeco/swift-issue-reporting#183) that demotes the
-        // `IssueReportingTestSupport` product from `.dynamic` to automatic
-        // linkage. That's what lets the WASM job link a test executable at all
-        // — see the `wasm` job in `.github/workflows/ci.yml`.
-        .package(url: "https://github.com/pointfreeco/xctest-dynamic-overlay", from: "1.11.0"),
+        // IssueReporting / IssueReportingTestSupport — see `issueReportingPackage`
+        // above: the package identity is a function of the toolchain.
+        issueReportingPackage,
         .package(url: "https://github.com/pointfreeco/swift-clocks", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),
+        // `SwiftModel` imports ConcurrencyExtras directly (Internal/TestExpect.swift)
+        // and previously reached it only transitively through swift-dependencies.
+        // That compiles, but Xcode 27 builds each package product a dynamic
+        // consumer depends on as its OWN dynamic framework and links a product
+        // only against the products its target DECLARES — so the undeclared
+        // import became "Undefined symbols: ConcurrencyExtras.AnyHashableSendable…"
+        // at the SwiftModel framework link. Declare what is imported.
+        .package(url: "https://github.com/pointfreeco/swift-concurrency-extras", from: "1.0.0"),
     ],
     targets: [
         .target(name: "SwiftModel", dependencies: [
@@ -203,7 +260,8 @@ let package = Package(
             .product(name: "Dependencies", package: "swift-dependencies"),
             .product(name: "CustomDump", package: "swift-custom-dump"),
             .product(name: "OrderedCollections", package: "swift-collections"),
-            .product(name: "IssueReporting", package: "xctest-dynamic-overlay"),
+            .product(name: "IssueReporting", package: issueReportingPackageName),
+            .product(name: "ConcurrencyExtras", package: "swift-concurrency-extras"),
         ]),
         .testTarget(
             name: "SwiftModelTests",
@@ -228,7 +286,7 @@ let package = Package(
                 // that switch against.
                 .product(
                     name: "IssueReportingTestSupport",
-                    package: "xctest-dynamic-overlay",
+                    package: issueReportingPackageName,
                     condition: .when(platforms: [.macOS, .linux, .iOS, .tvOS, .watchOS, .macCatalyst, .android])
                 ),
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
@@ -251,7 +309,7 @@ let package = Package(
                 // See SwiftModelTests for WASI exclusion rationale.
                 .product(
                     name: "IssueReportingTestSupport",
-                    package: "xctest-dynamic-overlay",
+                    package: issueReportingPackageName,
                     condition: .when(platforms: [.macOS, .linux, .iOS, .tvOS, .watchOS, .macCatalyst, .android])
                 ),
             ]
@@ -266,7 +324,7 @@ let package = Package(
                 // See SwiftModelTests for WASI exclusion rationale.
                 .product(
                     name: "IssueReportingTestSupport",
-                    package: "xctest-dynamic-overlay",
+                    package: issueReportingPackageName,
                     condition: .when(platforms: [.macOS, .linux, .iOS, .tvOS, .watchOS, .macCatalyst, .android])
                 ),
             ]
