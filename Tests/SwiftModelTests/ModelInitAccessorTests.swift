@@ -341,7 +341,7 @@ struct ModelInitAccessorTests {
     }
 
     @Test func childModelNoDefaultPreAnchorMutate() async {
-        var m = OuterWithNoDefaultChild(startCount: 3)
+        let m = OuterWithNoDefaultChild(startCount: 3)
         m.child.count = 99
         let live = m.withAnchor()
         await expect { live.child.count == 99 }

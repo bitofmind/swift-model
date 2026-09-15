@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Warning-free build on Swift 6.4 (Xcode 27.0).** Five warnings the 6.4 toolchain introduced, none on 6.3: `withExpectedIssue` is deprecated in `swift-issue-reporting` 2.x (the `IssueReporting` identity the manifest selects on 6.4+) — the one library-code site, `TestAccess`'s soft "skipped assertion" failure, now calls `_withKnownIssue` behind `#if compiler(>=6.4)`, the drop-in the deprecation names for exactly that use and, in 2.1.0, literally what `withExpectedIssue` forwarded to (xctest-dynamic-overlay 1.x, the < 6.4 identity, keeps `withExpectedIssue`); a `ModelScope` snapshot test is now `@MainActor` (its `init` and `body` are main-actor-isolated SwiftUI); an unnecessary `try` on a non-throwing `withKnownIssue` body; a `var` whose only "mutation" is a `nonmutating set`. Full suite green on both toolchains.
+
 ---
 
 ## [1.0.20] — Xcode 27 consumer fixes: one `IssueReporting` identity per toolchain + declared `ConcurrencyExtras` dependency

@@ -1586,9 +1586,20 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         if lock({ exhaustivity.contains(area) }) {
             fail(annotated, at: fileAndLine)
         } else if lock({ showSkippedAssertions }) {
+            // A soft (known-issue) failure: shown, not failing. The spelling follows the
+            // `IssueReporting` identity the manifest selects per toolchain (see `Package.swift`):
+            // swift-issue-reporting 2.x (Swift 6.4+) deprecates `withExpectedIssue` in favour of
+            // `_withKnownIssue` for exactly this use; xctest-dynamic-overlay 1.x (< 6.4) has only
+            // `withExpectedIssue`.
+            #if compiler(>=6.4)
+            _withKnownIssue {
+                fail(annotated, at: fileAndLine)
+            }
+            #else
             withExpectedIssue {
                 fail(annotated, at: fileAndLine)
             }
+            #endif
         }
     }
 
