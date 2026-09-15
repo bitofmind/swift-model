@@ -1051,3 +1051,42 @@ Each step is independently shippable and reversible.
 > purely to keep its ordering catchable-in-test at every scale; the invariants
 > (trait window < backstop < trait ceiling < drive termination ceiling) are
 > pinned by `driveBoundsKeepTheirOrderingAtEveryScale`.
+
+> **Update 28 — the drain queue inherits the submitter's QoS; the floor is not
+> landed (PR #70, closed 2026-09-15).** `_sharedDrainQueue` is a concurrent GCD
+> queue with no QoS of its own, so each drive job runs at the QoS of the thread
+> that *resumed* the task. A resumption from a `DispatchQueue.global(qos:
+> .background)` callback, a `.background` Task or a low-QoS test double
+> therefore yields a background-QoS job — measured directly (`qos_class_self()`
+> read inside the resumed job: 9 = `QOS_CLASS_BACKGROUND` on main, the task's
+> own priority with a `.userInitiated` floor on the queue). Under a saturated
+> machine such a job can stay unscheduled for a long time while still counting
+> as `outstanding`, so the executor reports busy and `settle()` cannot reach its
+> fixpoint. This is a genuine gap in the "non-starvable" contract. It is
+> **victimless today**: the full-plan wedge that motivated the investigation
+> was the cross-tree dependency deadlock fixed in 1.0.18, sampled from a
+> process that predated the fix.
+>
+> Why the obvious fix is not landed: the floor alone (`qos: .userInitiated` on
+> the queue) makes settle *prematurely* right on CI's 3-core runner —
+> `ExecutorDrainSettleTests.settleIsLoadIndependentAcrossChildTasks` failed
+> twice — because `Task.yield()` inside a task that prefers the drive executor
+> re-enqueues through the *global* executor, not ours, so a yielding child is
+> invisible to `outstanding` during the hop and covered only by the grace
+> window; faster drive jobs let the fixpoint outrun it. The branch closed that
+> with a `Task.yield()` round-trip from settle's own task before declaring
+> quiescence (an ordering signal: it queues behind every pending yielded child).
+> That is correct but not free. Measured here on 1.0.20, 12 interleaved
+> paired full-suite `--parallel` runs (M1 Max): wall time indistinguishable
+> (~25 s both), but summed per-test in-flight time +14 % median (473 → 527 s),
+> +20 % mean, slower in 10/12 pairs, with a heavy tail (two runs at +40–90 %;
+> no baseline run near them) — and spread *uniformly* across every test, which
+> is what one global-executor hop per `settle()` (every test pays its teardown
+> settle) looks like under a saturated pool. A downstream settle-heavy suite
+> multiplies that per settle. Not worth paying for a hole with no victim.
+>
+> If a victim appears: the floor is the fix and the round-trip is the cost, so
+> attack the yield blind spot with something cheaper than a hop — e.g. count
+> yields of drive-preferring tasks (the runtime gives no hook today), or accept
+> the floor with a grace-window bump justified by measurement. Do **not**
+> re-land the yield round-trip without a downstream paired measurement.
