@@ -546,7 +546,7 @@ struct DualRegistrarTests {
         // as expected. The framework's first-party Observable mechanisms
         // (`Observed { model.property }` on `@Model` types, `ObservedModel`
         // for SwiftUI) are not affected by this.
-        try await withKnownIssue(isIntermittent: true) {
+        await withKnownIssue(isIntermittent: true) {
             let observable = PureObservableModel()
             let model = ModelHoldingObservable(observable: observable).withAnchor()
 

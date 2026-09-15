@@ -1412,7 +1412,7 @@ struct DebugTests {
 
     /// API surface — confirms the `debug:` initialiser compiles and `body`
     /// renders without crashing for both `nil` and a real options value.
-    @Test func modelScopeDebug_initialisesWithDebugOptions() {
+    @Test @MainActor func modelScopeDebug_initialisesWithDebugOptions() {
         let opts = DebugOptions(name: "scope")
         let scope = ModelScope(debug: opts) {
             EmptyView()
