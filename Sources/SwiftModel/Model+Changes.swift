@@ -597,7 +597,12 @@ private extension ModelNode {
         // AB-BA family as the `reduceHierarchy` fix (#29), on the site #29 did
         // not cover. Both locks are recursive, so the nested transaction's own
         // acquireWriteLock/`lock` re-enter harmlessly.
-        let memoizeWriteLockHolder = ModelAccess.active ?? ModelAccess.current
+        // Resolved THROUGH non-owning accesses (`writeLockOwner`) — the probe installed
+        // by `Observed`'s registrar detection, by `AccessCollector` or by `ForceObserver`
+        // must not terminate this chain, or this first-access takes no A and the nested
+        // memoize inside `produce()` (which runs with `active` cleared, see `observe`)
+        // asks for A holding B. See `ModelAccess.writeLockOwner`.
+        let memoizeWriteLockHolder = ModelAccess.active?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
         memoizeWriteLockHolder?.acquireWriteLock()
         defer { memoizeWriteLockHolder?.releaseWriteLock() }
         return context.lock {

@@ -420,7 +420,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         self.tickScheduler = tickScheduler
         context = Context(model: model, lock: NSRecursiveLock(), dependencies: dependencies, parent: nil)
 
-        super.init(useWeakReference: true)
+        super.init(useWeakReference: true, ownsWriteLock: true)
 
         // Register on the root context so ModelNode+Undo can find this TestAccess
         // (via `as? TestAccess<…>`) and propagate `didModify` notifications when

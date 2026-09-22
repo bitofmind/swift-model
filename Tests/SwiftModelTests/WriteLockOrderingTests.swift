@@ -38,7 +38,7 @@ import ConcurrencyExtras
 /// own `TestAccess` and we want our `RecordingAccess` to be the one whose
 /// `acquireWriteLock` / `releaseWriteLock` Context._modify calls.
 @Test func writerAcquiresAccessWriteLockAroundEachContextWrite() async {
-    let access = RecordingAccess(useWeakReference: false)
+    let access = RecordingAccess()
     let model = LockOrderRegularModel().withAccess(access)
     let (anchored, anchor) = model.returningAnchor()
     _ = anchor  // keep anchor alive for the test duration
@@ -79,8 +79,17 @@ import ConcurrencyExtras
 /// `ModelAccess` subclass that records each `acquireWriteLock` / `releaseWriteLock`
 /// call in order. `shouldPropagateToChildren: true` mirrors `TestAccess` so the
 /// access stamping reaches the live model the test writes into.
+///
+/// `ownsWriteLock: true` is required, and this test is the guard for it: an access that
+/// implements `acquireWriteLock` must declare that it owns one, or the writer's holder
+/// resolution treats it as a transparent read probe and never calls it (see
+/// `ModelAccess.writeLockOwner`). Without the flag the expectation below records an empty
+/// log — which is exactly the failure a future lock-owning `ModelAccess` that forgets the
+/// flag would produce.
 fileprivate final class RecordingAccess: ModelAccess, @unchecked Sendable {
     let log = LockIsolated<[String]>([])
+
+    init() { super.init(useWeakReference: false, ownsWriteLock: true) }
 
     override var shouldPropagateToChildren: Bool { true }
 

@@ -1078,7 +1078,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // a concurrent `subscript._modify` on another thread can deadlock
         // against an in-flight transaction that holds `context.lock` and
         // then tries to acquire `TestAccess.lock` for its nested writes.
-        let writeLockHolder = modelContext.access ?? ModelAccess.current
+        let writeLockHolder = modelContext.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
         writeLockHolder?.acquireWriteLock()
         defer { writeLockHolder?.releaseWriteLock() }
         // Defer `ObservationTracking.onObservedChange` enqueues until this write's
@@ -1404,7 +1404,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         //
         // The chain is resolved once here and carried in the scope: `finishWrite` reuses
         // it as the active access, so the two task-locals are read once per write.
-        let writeLockHolder = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
+        let writeLockHolder = ModelAccess.active?.writeLockOwner ?? accessBox._reference?.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
         writeLockHolder?.acquireWriteLock()
         // Defer `ObservationTracking.onObservedChange`'s `backgroundCallQueue(performUpdate)`
         // enqueue until AFTER this write's lock-held + postLockCallbacks phases finish.
@@ -1704,7 +1704,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // Take the access's write lock BEFORE the context lock so we match the reader's
         // lock order (TestAccess.lock → context.lock) and writers don't race the
         // valueUpdates append against a concurrent predicate evaluation.
-        let writeLockHolder = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
+        let writeLockHolder = ModelAccess.active?.writeLockOwner ?? accessBox._reference?.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
         writeLockHolder?.acquireWriteLock()
         defer { writeLockHolder?.releaseWriteLock() }
         // Defer `ObservationTracking.onObservedChange` enqueues until this write's
