@@ -121,3 +121,40 @@ fileprivate final class RecordingAccess: ModelAccess, @unchecked Sendable {
 }
 
 @Model fileprivate struct RaceChild {}
+
+/// A write must NOTIFY the first access in the chain (`didModify`) even when that access
+/// owns no write lock — the two resolutions in `beginDirectWrite` / `stateTransaction` are
+/// separate and must not be conflated.
+///
+/// Regression test for a defect in the first cut of `ModelAccess.writeLockOwner`: the lock
+/// holder and `finishWrite`'s `activeAccess` were the same value, so narrowing the holder to
+/// lock-owning accesses silently stopped `didModify` from reaching every *non*-owning one —
+/// `ViewAccess` (SwiftUI's re-render signal), `AccessCollector`, `LastSeenAccess`. Nothing in
+/// the suite failed, and CI was green; it would have shipped as "SwiftUI views stop updating
+/// on the non-registrar path".
+@Test func writeNotifiesANonLockOwningAccess() async {
+    let access = NotifyingAccess()
+    let model = LockOrderRegularModel().withAccess(access)
+    let (anchored, anchor) = model.returningAnchor()
+    _ = anchor
+
+    anchored.count = 1
+    anchored.count = 2
+
+    #expect(access.didModifyCount.value == 2, "a non-lock-owning access stopped receiving didModify")
+}
+
+/// Owns no write lock (the default) but records `didModify`, i.e. exactly the shape of
+/// `ViewAccess` / `AccessCollector`.
+fileprivate final class NotifyingAccess: ModelAccess, @unchecked Sendable {
+    let didModifyCount = LockIsolated(0)
+
+    init() { super.init(useWeakReference: false) }
+
+    override var shouldPropagateToChildren: Bool { true }
+
+    override func didModify<M: Model, Value>(from context: Context<M>, at path: @autoclosure () -> (KeyPath<M._ModelState, Value> & Sendable)) -> (() -> Void)? {
+        didModifyCount.withValue { $0 += 1 }
+        return nil
+    }
+}

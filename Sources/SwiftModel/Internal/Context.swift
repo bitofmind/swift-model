@@ -1078,7 +1078,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // a concurrent `subscript._modify` on another thread can deadlock
         // against an in-flight transaction that holds `context.lock` and
         // then tries to acquire `TestAccess.lock` for its nested writes.
-        let writeLockHolder = modelContext.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
+        let writeLockHolder = modelContext.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner  // lock only; `didModify` goes through `modelContext.invokeDidModify` below
         writeLockHolder?.acquireWriteLock()
         defer { writeLockHolder?.releaseWriteLock() }
         // Defer `ObservationTracking.onObservedChange` enqueues until this write's
@@ -1366,6 +1366,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// closes the write captures this `let` and nothing else: a `var` captured across a
     /// yield is boxed on the heap.
     struct DirectWriteScope {
+        /// The access this write notifies (`finishWrite` → `didModify`). See the two-term
+        /// resolution in `beginDirectWrite`; not the same thing as `writeLockHolder`.
+        let activeAccess: ModelAccess?
         let writeLockHolder: ModelAccess?
         let tl: ThreadLocals
         let lhbcOwned: Bool
@@ -1404,7 +1407,22 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         //
         // The chain is resolved once here and carried in the scope: `finishWrite` reuses
         // it as the active access, so the two task-locals are read once per write.
-        let writeLockHolder = ModelAccess.active?.writeLockOwner ?? accessBox._reference?.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
+        // Two different resolutions off one chain walk, and they must NOT be conflated:
+        //
+        // `activeAccess` is the access this write NOTIFIES (`finishWrite` → `didModify`) —
+        // the first access in the chain, probe or not. `ViewAccess` (SwiftUI's re-render
+        // signal), `AccessCollector` and `LastSeenAccess` all learn about writes this way,
+        // so narrowing it drops observation on the floor.
+        //
+        // `writeLockHolder` is the access whose write LOCK is taken before `lock`, and it
+        // must skip non-owning accesses (`writeLockOwner`) — a probe standing as `active`
+        // used to terminate the chain at itself, so the write took no A and then took B,
+        // inverting the order against every other writer. See `ModelAccess.writeLockOwner`.
+        // The `?? ModelAccess.current` tail is what a probe falls through to, and it is the
+        // same instance the nested resolutions inside this write will pick, which is what
+        // makes the recursive re-entry work.
+        let activeAccess = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
+        let writeLockHolder = activeAccess?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
         writeLockHolder?.acquireWriteLock()
         // Defer `ObservationTracking.onObservedChange`'s `backgroundCallQueue(performUpdate)`
         // enqueue until AFTER this write's lock-held + postLockCallbacks phases finish.
@@ -1429,7 +1447,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         } else {
             mode = .live
         }
-        return DirectWriteScope(writeLockHolder: writeLockHolder, tl: tl, lhbcOwned: lhbcOwned, mode: mode)
+        return DirectWriteScope(activeAccess: activeAccess, writeLockHolder: writeLockHolder, tl: tl, lhbcOwned: lhbcOwned, mode: mode)
     }
 
     /// Completes a direct write opened by `beginDirectWrite`: writes `value` back (unless
@@ -1461,7 +1479,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 lock.unlock()
                 return
             }
-            finishWrite(index: index, activeAccess: scope.writeLockHolder, tl: scope.tl, path: path())
+            finishWrite(index: index, activeAccess: scope.activeAccess, tl: scope.tl, path: path())
         }
     }
 
@@ -1704,7 +1722,22 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // Take the access's write lock BEFORE the context lock so we match the reader's
         // lock order (TestAccess.lock → context.lock) and writers don't race the
         // valueUpdates append against a concurrent predicate evaluation.
-        let writeLockHolder = ModelAccess.active?.writeLockOwner ?? accessBox._reference?.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
+        // Two different resolutions off one chain walk, and they must NOT be conflated:
+        //
+        // `activeAccess` is the access this write NOTIFIES (`finishWrite` → `didModify`) —
+        // the first access in the chain, probe or not. `ViewAccess` (SwiftUI's re-render
+        // signal), `AccessCollector` and `LastSeenAccess` all learn about writes this way,
+        // so narrowing it drops observation on the floor.
+        //
+        // `writeLockHolder` is the access whose write LOCK is taken before `lock`, and it
+        // must skip non-owning accesses (`writeLockOwner`) — a probe standing as `active`
+        // used to terminate the chain at itself, so the write took no A and then took B,
+        // inverting the order against every other writer. See `ModelAccess.writeLockOwner`.
+        // The `?? ModelAccess.current` tail is what a probe falls through to, and it is the
+        // same instance the nested resolutions inside this write will pick, which is what
+        // makes the recursive re-entry work.
+        let activeAccess = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
+        let writeLockHolder = activeAccess?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
         writeLockHolder?.acquireWriteLock()
         defer { writeLockHolder?.releaseWriteLock() }
         // Defer `ObservationTracking.onObservedChange` enqueues until this write's
@@ -1734,7 +1767,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 return result
             }
 
-            finishWrite(index: index, activeAccess: writeLockHolder, tl: tl, path: path())
+            finishWrite(index: index, activeAccess: activeAccess, tl: tl, path: path())
         }
         return result
     }

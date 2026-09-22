@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **A write stopped notifying non-lock-owning accesses — `ViewAccess` (SwiftUI's re-render signal), `AccessCollector`, `LastSeenAccess`.** Regression introduced in this cycle by the `ModelAccess.writeLockOwner` change below: `beginDirectWrite` / `stateTransaction` resolved *one* value and used it for two unrelated jobs — the access whose write lock is taken before the hierarchy lock, and the access `finishWrite` calls `didModify` on. Narrowing it to lock-owning accesses therefore also narrowed the notification, so on the non-registrar observation path a SwiftUI view would stop updating. The two are now resolved separately off one chain walk: `activeAccess` is the first access in the chain, probe or not; `writeLockHolder` skips non-owning accesses and falls through to `ModelAccess.current`. `WriteLockOrderingTests.writeNotifiesANonLockOwningAccess` is the regression test — it fails (0 notifications instead of 2) against the intermediate version and passes here. It also removed a 2-in-20 flake in `InheritCancellationContextTests.testForEachCancelPreviousInheritsContext` that the intermediate version introduced (0-in-20 before and after, 2-in-20 with it).
+
 ---
 
 ## [1.0.21] — Write-lock holder resolves through read probes (AB-BA deadlock fix)
