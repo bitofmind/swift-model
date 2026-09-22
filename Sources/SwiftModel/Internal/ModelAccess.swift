@@ -102,6 +102,31 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
     func acquireWriteLock() {}
     func releaseWriteLock() {}
 
+    /// The access whose write lock a writer must take BEFORE the context lock, or `nil` if
+    /// this access owns no such lock and is *transparent* to that resolution.
+    ///
+    /// Default `nil`, matching the no-op `acquireWriteLock` above — and it has to be the
+    /// default rather than an opt-out, because most `ModelAccess` subclasses are not
+    /// writers at all but short-lived **probes** installed with `usingActiveAccess` to
+    /// observe reads: `RegistrarDetector` (run by *every* `Observed` with the default
+    /// `coalesceUpdates: true`), `AccessCollector`, `ForceObserver`, `PathCollector`, the
+    /// debug and undo collectors. A probe left standing as `ModelAccess.active` used to
+    /// *terminate* the holder chain (`ModelAccess.active ?? … ?? ModelAccess.current`) at
+    /// itself, so the writer took no write lock and then took the context lock — while a
+    /// nested evaluation that ran with the probe cleared (`memoize`'s `observe` does
+    /// exactly that, so nested memoizes don't inherit it) resolved the chain down to the
+    /// real `TestAccess` and asked for the write lock with the context lock already held.
+    /// That B→A against every other writer's A→B deadlocked a downstream test process
+    /// (`MemoizeProbeLockInversionTests`). Resolving *through* probes keeps one order for
+    /// everybody, and keeps the outer and nested resolutions on the same instance — which
+    /// is what makes the recursive re-entry work (`NSRecursiveLock` re-enters on identity,
+    /// not on "any `TestAccess`" — see `Context.transaction(writeLockHolder:_:)`).
+    ///
+    /// Stored rather than overridden: this is read on every write, and the branch is
+    /// cheaper than a dynamic dispatch on the write path.
+    @inline(__always)
+    var writeLockOwner: ModelAccess? { ownsWriteLock ? self : nil }
+
     /// Called from the prelude of every `TaskCancellable`'s body — i.e. the
     /// FIRST time the task actually gets a CPU slot after being scheduled.
     /// Used by `TestAccess.settle()` to keep its quiet window open until
@@ -170,7 +195,11 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
 
     typealias Reference = ModelAccessReference
 
-    init(useWeakReference: Bool) {
+    /// See `writeLockOwner`. Only `TestAccess` passes `true`.
+    let ownsWriteLock: Bool
+
+    init(useWeakReference: Bool, ownsWriteLock: Bool = false) {
+        self.ownsWriteLock = ownsWriteLock
         if useWeakReference {
             let weak = Weak()
             _weak = weak

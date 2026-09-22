@@ -348,7 +348,7 @@ public extension ModelNode {
                 // Use the same writeLockHolder chain that `stateTransaction`
                 // uses for nested property writes — see the comment block in
                 // `Context.transaction(writeLockHolder:_:)`.
-                let writeLockHolder = ModelAccess.active ?? _$modelContext._access._reference?.access ?? ModelAccess.current
+                let writeLockHolder = ModelAccess.active?.writeLockOwner ?? _$modelContext._access._reference?.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
                 return context.transaction(writeLockHolder: writeLockHolder, callback)
             }
         } else {

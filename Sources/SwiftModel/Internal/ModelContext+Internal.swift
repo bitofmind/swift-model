@@ -231,7 +231,7 @@ extension ModelContext {
             // ?? ModelAccess.current`), so the outer transaction's
             // `TestAccess.lock` matches the nested writes' `TestAccess.lock`
             // by identity. See the long comment at `Context.transaction(writeLockHolder:_:)`.
-            let writeLockHolder = ModelAccess.active ?? _access._reference?.access ?? ModelAccess.current
+            let writeLockHolder = ModelAccess.active?.writeLockOwner ?? _access._reference?.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
             return try context.transaction(writeLockHolder: writeLockHolder, callback)
         } else {
             return try callback()
@@ -245,7 +245,7 @@ extension ModelContext {
     func stateTransaction<T>(_ callback: () throws -> T) rethrows -> T {
         if let context {
             // Same writeLockHolder chain as `transaction(_:)` above.
-            let writeLockHolder = ModelAccess.active ?? _access._reference?.access ?? ModelAccess.current
+            let writeLockHolder = ModelAccess.active?.writeLockOwner ?? _access._reference?.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
             return try context.transaction(writeLockHolder: writeLockHolder, callback)
         } else {
             return try callback()
