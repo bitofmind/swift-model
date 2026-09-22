@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.0.21] — Write-lock holder resolves through read probes (AB-BA deadlock fix)
+
 ### Fixed
 
 - **A `memoize` first-access evaluated under a read probe deadlocked against any concurrent writer.** Every write path takes the access write lock (A) before the context hierarchy lock (B), resolving the holder from `ModelAccess.active ?? … ?? ModelAccess.current`. But several `ModelAccess` subclasses are not writers at all — they are short-lived *probes* installed with `usingActiveAccess` to observe reads: `RegistrarDetector` (run by **every** `Observed` with the default `coalesceUpdates: true`), `AccessCollector`, `ForceObserver`, the debug/undo/path collectors. Their `acquireWriteLock()` is the inherited no-op, so a probe standing as `active` *terminated* the holder chain at itself: the memoize took no A and then took B — while the nested memoize inside its `produce()`, which runs with `active` deliberately cleared so nested memoizes don't inherit the probe, resolved the chain down to the real `TestAccess` and asked for A with B already held. That B→A against any concurrent `beginDirectWrite`'s A→B is an AB-BA, and it wedged a downstream `xctest` process in roughly 3 of 5 full-module runs (diagnosed from a live `sample`: one thread in `Observed.init`'s detector probe → `memoize` → `context.lock` → nested `memoize` → `TestAccess.acquireWriteLock`, blocked, against another holding A inside `Context.beginDirectWrite` blocked on B, with 41 of 46 threads queued behind them).
