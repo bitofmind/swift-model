@@ -75,7 +75,13 @@ struct MemoizeProbeLockInversionTests {
             for _ in 0..<iterations {
                 if stop.value { break }
 
-                let tester = ModelTester(Root())
+                // `exhaustivity: .off`: this test asserts a lock ORDER, not model state, and
+                // its `bump` writes are never asserted. With exhaustivity on, every tester
+                // reports an unasserted-state issue at teardown — from a raw `Thread` with no
+                // current test, so it surfaces as `Test «unknown» recorded an issue` and fails
+                // the run (swift-testing on Xcode 26 counts those; Xcode 27 downgrades them to
+                // warnings, which is why this only showed up on CI).
+                let tester = ModelTester(Root(), exhaustivity: .off)
                 let model = tester.model
                 // The access the model's own tasks would carry (`TaskCancellable`'s prelude
                 // sets `ModelAccess.current`); the racing writer reaches the same instance
