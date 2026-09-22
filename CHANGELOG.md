@@ -6,10 +6,6 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
-### Fixed
-
-- **A write stopped notifying non-lock-owning accesses — `ViewAccess` (SwiftUI's re-render signal), `AccessCollector`, `LastSeenAccess`.** Regression introduced in this cycle by the `ModelAccess.writeLockOwner` change below: `beginDirectWrite` / `stateTransaction` resolved *one* value and used it for two unrelated jobs — the access whose write lock is taken before the hierarchy lock, and the access `finishWrite` calls `didModify` on. Narrowing it to lock-owning accesses therefore also narrowed the notification, so on the non-registrar observation path a SwiftUI view would stop updating. The two are now resolved separately off one chain walk: `activeAccess` is the first access in the chain, probe or not; `writeLockHolder` skips non-owning accesses and falls through to `ModelAccess.current`. `WriteLockOrderingTests.writeNotifiesANonLockOwningAccess` is the regression test — it fails (0 notifications instead of 2) against the intermediate version and passes here. It also removed a 2-in-20 flake in `InheritCancellationContextTests.testForEachCancelPreviousInheritsContext` that the intermediate version introduced (0-in-20 before and after, 2-in-20 with it).
-
 ---
 
 ## [1.0.21] — Write-lock holder resolves through read probes (AB-BA deadlock fix)
@@ -22,6 +18,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 - **Warning-free build on Swift 6.4 (Xcode 27.0).** Five warnings the 6.4 toolchain introduced, none on 6.3: `withExpectedIssue` is deprecated in `swift-issue-reporting` 2.x (the `IssueReporting` identity the manifest selects on 6.4+) — the one library-code site, `TestAccess`'s soft "skipped assertion" failure, now calls `_withKnownIssue` behind `#if compiler(>=6.4)`, the drop-in the deprecation names for exactly that use and, in 2.1.0, literally what `withExpectedIssue` forwarded to (xctest-dynamic-overlay 1.x, the < 6.4 identity, keeps `withExpectedIssue`); a `ModelScope` snapshot test is now `@MainActor` (its `init` and `body` are main-actor-isolated SwiftUI); an unnecessary `try` on a non-throwing `withKnownIssue` body; a `var` whose only "mutation" is a `nonmutating set`. Full suite green on both toolchains.
 
+  **Two resolutions, not one.** `beginDirectWrite` / `stateTransaction` resolve two different things off a single chain walk, and conflating them is the trap: `activeAccess` — the first access in the chain, probe or not — is the one `finishWrite` notifies via `didModify`, which is how `ViewAccess` (SwiftUI's re-render signal), `AccessCollector` and `LastSeenAccess` learn about a write; `writeLockHolder` is the one whose write lock is taken before the hierarchy lock, and only that one skips non-owning accesses. An intermediate version of this fix used one value for both and silently stopped notifying every non-owning access — a SwiftUI view would have stopped updating on the non-registrar path — and neither the full suite nor any of the seven CI jobs caught it; it was found by re-running CI on `main` before tagging, via a 2-in-20 serial flake in `testForEachCancelPreviousInheritsContext`. `WriteLockOrderingTests.writeNotifiesANonLockOwningAccess` pins it.
 ---
 
 ## [1.0.20] — Xcode 27 consumer fixes: one `IssueReporting` identity per toolchain + declared `ConcurrencyExtras` dependency
