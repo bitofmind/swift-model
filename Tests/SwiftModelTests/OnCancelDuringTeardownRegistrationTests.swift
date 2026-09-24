@@ -18,8 +18,8 @@ import IssueReporting
 //
 // The fix distinguishes that case from the legitimate, expected-silent one —
 // a registration racing teardown from another thread, whose own context
-// check simply lost the race — via a `@TaskLocal` (`Cancellations
-// .isDrainingTeardown`) set only around the synchronous `onCancel()` drain.
+// check simply lost the race — via a thread-local (`threadLocals
+// .isDrainingCancellations`) set only around the synchronous `onCancel()` drain.
 struct OnCancelDuringTeardownRegistrationTests {
     // (1) RED→GREEN: an onCancel handler that starts a task during the sealed
     // teardown drain is reported, and the task body never runs.
@@ -68,10 +68,9 @@ struct OnCancelDuringTeardownRegistrationTests {
     // (3) The distinguisher itself, exercised directly and deterministically at
     // the `Cancellations` level (a genuine cross-thread race is not reliably
     // reproducible in a test): registering on a store that is sealed but NOT
-    // currently being drained — i.e. `isDrainingTeardown` is false, exactly the
-    // state the losing side of a cross-thread teardown race observes — cancels
-    // immediately but stays silent, as documented at `Cancellations
-    // .isDrainingTeardown`.
+    // currently being drained — i.e. `isDrainingCancellations` is false, exactly
+    // the state the losing side of a cross-thread teardown race observes —
+    // cancels immediately but stays silent.
     @Test func registeringOnSealedStoreOutsideDrainStaysSilent() {
         let reporter = CapturingIssueReporter()
         let cancellations = Cancellations()
@@ -85,18 +84,47 @@ struct OnCancelDuringTeardownRegistrationTests {
         #expect(dummy.wasCancelled.value)
         #expect(reporter.messages.isEmpty)
     }
+
+    // (4) The drain flag must not escape the drain: a `Task { }` spawned from an
+    // `onCancel` handler registers later, from its own thread, like any other
+    // cross-thread race against teardown — it stays silent. (A `@TaskLocal` flag
+    // would be inherited by the unstructured task and report here.)
+    @Test func taskSpawnedFromDrainRegisteringLaterStaysSilent() async {
+        let reporter = CapturingIssueReporter()
+        let cancellations = Cancellations()
+        let late = DummyCancellable(id: cancellations.nextId)
+        let spawned = LockIsolated<Task<Void, Never>?>(nil)
+        cancellations.register(DummyCancellable(id: cancellations.nextId) {
+            spawned.setValue(Task {
+                cancellations.register(late)
+            })
+        })
+
+        await withIssueReporters([reporter]) {
+            cancellations.seal()
+            cancellations.cancelAll()
+            await spawned.value?.value
+        }
+
+        #expect(spawned.value != nil)
+        #expect(late.wasCancelled.value)
+        #expect(reporter.messages.isEmpty)
+    }
 }
 
-private final class DummyCancellable: InternalCancellable {
+private final class DummyCancellable: InternalCancellable, Sendable {
     let id: Int
     let wasCancelled = LockIsolated(false)
+    let action: @Sendable () -> Void
 
-    init(id: Int) {
+    init(id: Int, action: @escaping @Sendable () -> Void = {}) {
         self.id = id
+        self.action = action
     }
 
     func onCancel() {
         wasCancelled.setValue(true)
+        action()
     }
 }
 
