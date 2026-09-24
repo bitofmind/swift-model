@@ -221,6 +221,15 @@ final class ThreadLocals: @unchecked Sendable {
     /// `!(isInsideAsyncPerformUpdate && cachedActive != nil)` guard.
     @exclusivity(unchecked) var gapShadowCollector: ModelAccess? = nil
 
+    /// `true` while `Cancellations.cancelAll()` / `cancelAll(for:)` is synchronously running
+    /// its drained cancellables' `onCancel()` callbacks on this thread — i.e. while a model
+    /// (or subtree) is being deactivated. Read by `Cancellations.register` to report work a
+    /// user `onCancel` handler starts during teardown (it lands on a sealed store and never
+    /// runs). Thread-local rather than a `@TaskLocal` so a `Task { }` spawned from such a
+    /// handler does not inherit it: that task's later registrations race teardown from its own
+    /// thread, the expected, silent case.
+    var isDrainingCancellations = false
+
     var pendingStack = _PendingStackBox()
 
     fileprivate init() {}

@@ -1,4 +1,5 @@
 import Foundation
+import IssueReporting
 
 final class Cancellations: @unchecked Sendable {
     fileprivate let lock = NSLock()
@@ -39,6 +40,26 @@ final class Cancellations: @unchecked Sendable {
             return false
         }
         if shouldImmediatelyCancel {
+            // Not while holding `lock` — `reportIssue` must never run inside a
+            // context/cancellations critical section (see the AB-BA discussion
+            // in Cancellables.swift); we're already outside it here.
+            // A user `onCancel` handler that starts new work (`node.task { }`, a nested
+            // `node.onCancel { }`, `forEach`, …) registers synchronously from inside a
+            // teardown drain — on the store being drained, or another already-sealed one
+            // (a parent torn down in the same removal). Report that; a registration racing
+            // teardown from another thread is expected and stays silent (see the seal
+            // ordering comment in `AnyContext.onRemoval`).
+            if threadLocals.isDrainingCancellations {
+                let subject = (c as? TaskCancellable).map {
+                    "Task '\($0.taskName)' on `\($0.modelName)`"
+                } ?? "A cancellable"
+                let message = "\(subject) was registered while a model is being deactivated (from an `onCancel` handler); it is cancelled immediately and never runs. Work that must outlive a model belongs to a model that outlives it (e.g. start it with the parent's `node.task`)."
+                if let fileAndLine = (c as? TaskCancellable)?.fileAndLine {
+                    reportIssue(message, fileID: fileAndLine.fileID, filePath: fileAndLine.filePath, line: fileAndLine.line, column: fileAndLine.column)
+                } else {
+                    reportIssue(message)
+                }
+            }
             c.onCancel()
         }
     }
@@ -61,12 +82,15 @@ final class Cancellations: @unchecked Sendable {
     }
 
     func cancelAll(for key: some Hashable&Sendable) {
-        lock {
+        let cancellables = lock {
             (keyed.removeValue(forKey: .init(key: key)) ?? []).compactMap { id in
                 registered.removeValue(forKey: id)
             }
-        }.forEach {
-            $0.onCancel()
+        }
+        threadLocals.withValue(true, at: \.isDrainingCancellations) {
+            cancellables.forEach {
+                $0.onCancel()
+            }
         }
     }
 
@@ -98,14 +122,17 @@ final class Cancellations: @unchecked Sendable {
     }
 
     func cancelAll() {
-        lock {
+        let cancellables = lock {
             defer {
                 registered.removeAll()
                 keyed.removeAll()
             }
             return registered.values
-        }.forEach {
-            $0.onCancel()
+        }
+        threadLocals.withValue(true, at: \.isDrainingCancellations) {
+            cancellables.forEach {
+                $0.onCancel()
+            }
         }
     }
 
