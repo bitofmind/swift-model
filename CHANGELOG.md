@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **A user `onCancel` handler that started new work during a sealed model's teardown drain was silently dropped.** `AnyContext.onRemoval` seals a model's `Cancellations` store, then drains it synchronously via `cancelAll()`/`cancelAll(for:)`. If one of the drained `onCancel` closures itself called `node.task { }`, a nested `node.onCancel { }`, or `forEach`, that registration landed on the already-sealed store: `Cancellations.register` cancelled it immediately before its body ever ran, with no signal — indistinguishable from the expected-silent case of a registration racing teardown from a different thread. `Cancellations.register` now checks a `@TaskLocal`, `Cancellations.isDrainingTeardown`, set only around the synchronous drain in `cancelAll()`/`cancelAll(for:)`, and calls `reportIssue` (outside the lock) when a same-thread registration lands on a store sealed by the drain it's running inside of. A cross-thread race against teardown still stays silent, as intended — that call stack never inherits the drain thread's TaskLocal. `OnCancelDuringTeardownRegistrationTests` is the regression coverage.
+
 ---
 
 ## [1.0.21] — Write-lock holder resolves through read probes (AB-BA deadlock fix)
