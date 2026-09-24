@@ -1,10 +1,35 @@
 import Foundation
+import IssueReporting
 
 final class Cancellations: @unchecked Sendable {
     fileprivate let lock = NSLock()
     fileprivate var registered: [Int: InternalCancellable] = [:]
     fileprivate var keyed: [CancellableKey: [Int]] = [:]
     private var _sealed = false
+
+    /// Set for the duration of draining a sealed store's registered cancellables
+    /// (`cancelAll()` / `cancelAll(for:)` running their `onCancel()` callbacks) —
+    /// i.e. while a model (or a subtree of models) is being deactivated.
+    ///
+    /// A user `onCancel` handler that itself starts new work (`node.task { }`,
+    /// nested `node.onCancel { }`, `forEach`, …) calls `Cancellations.register`
+    /// synchronously, on the same thread, from inside that drain — whether the
+    /// target store is the same one being drained (the common case) or a
+    /// different model's store that happens to already be sealed too (e.g. a
+    /// parent torn down in the same removal, since parent callbacks run before
+    /// children's — see `AnyContext.onRemoval`). Either way the registration
+    /// lands on a sealed store and is cancelled immediately, silently, before
+    /// its body ever runs. `register` checks this flag to distinguish that case
+    /// from the *expected*, silent one: a registration racing teardown from
+    /// another thread, whose context check simply lost the race (see the
+    /// `AnyContext.onRemoval` seal-ordering comment). That case is NOT covered
+    /// by this flag — it runs its own call stack, never inheriting a drain
+    /// thread's TaskLocal — so it stays silent, as intended.
+    ///
+    /// A `@TaskLocal`, not an instance flag: it must apply uniformly regardless
+    /// of which `Cancellations` instance `register` lands on, and `withValue`
+    /// gives synchronous, same-thread, non-escaping scoping for free.
+    @TaskLocal static var isDrainingTeardown: Bool = false
 
     deinit {
         cancelAll()
@@ -39,6 +64,20 @@ final class Cancellations: @unchecked Sendable {
             return false
         }
         if shouldImmediatelyCancel {
+            // Not while holding `lock` — `reportIssue` must never run inside a
+            // context/cancellations critical section (see the AB-BA discussion
+            // in Cancellables.swift); we're already outside it here.
+            if Cancellations.isDrainingTeardown {
+                let subject = (c as? TaskCancellable).map {
+                    "Task '\($0.taskName)' on `\($0.modelName)`"
+                } ?? "A cancellable"
+                let message = "\(subject) was registered while a model is being deactivated (from an `onCancel` handler); it is cancelled immediately and never runs. Work that must outlive a model belongs to a model that outlives it (e.g. start it with the parent's `node.task`)."
+                if let fileAndLine = (c as? TaskCancellable)?.fileAndLine {
+                    reportIssue(message, fileID: fileAndLine.fileID, filePath: fileAndLine.filePath, line: fileAndLine.line, column: fileAndLine.column)
+                } else {
+                    reportIssue(message)
+                }
+            }
             c.onCancel()
         }
     }
@@ -61,12 +100,15 @@ final class Cancellations: @unchecked Sendable {
     }
 
     func cancelAll(for key: some Hashable&Sendable) {
-        lock {
+        let cancellables = lock {
             (keyed.removeValue(forKey: .init(key: key)) ?? []).compactMap { id in
                 registered.removeValue(forKey: id)
             }
-        }.forEach {
-            $0.onCancel()
+        }
+        Cancellations.$isDrainingTeardown.withValue(true) {
+            cancellables.forEach {
+                $0.onCancel()
+            }
         }
     }
 
@@ -98,14 +140,17 @@ final class Cancellations: @unchecked Sendable {
     }
 
     func cancelAll() {
-        lock {
+        let cancellables = lock {
             defer {
                 registered.removeAll()
                 keyed.removeAll()
             }
             return registered.values
-        }.forEach {
-            $0.onCancel()
+        }
+        Cancellations.$isDrainingTeardown.withValue(true) {
+            cancellables.forEach {
+                $0.onCancel()
+            }
         }
     }
 
