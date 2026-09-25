@@ -348,6 +348,38 @@ suppress the other's signal.
 on `.package(...)`, used by the `swift-custom-dump` fork dependency. Pre-6.1
 Swift toolchains can't read this manifest.
 
+## Session conventions
+
+### Watch every PR you open
+
+Opening a PR does not end the job. Whenever you open a PR, start watching it
+right away, without being asked, and keep watching until it is merged or closed:
+
+- If the session has `subscribe_pr_activity` (remote sessions do), subscribe to
+  the PR. Otherwise, run `gh pr checks <n> --watch` in the background
+  (`run_in_background`) and deal with the result when it finishes. Re-arm the
+  watch after every push.
+- **CI red** → find the root cause, fix it and push. Do this again on every new
+  failure until CI is green. Don't call a failure a flake, and never skip or
+  disable a test. The CI section and the load-sensitive-tests list above
+  explain how to tell a real failure from a known one.
+- **Review comments** → make the fix and push, or reply saying why not. Resolve
+  the threads you've dealt with.
+- **Merge conflict** → merge `main` into the branch (don't rebase a branch that's
+  already been pushed and shared) and push.
+- Once CI is green, the branch is mergeable and no threads are waiting on you,
+  say once that the PR is waiting on review, then stop.
+
+### Notify Måns when blocked on him
+
+When you stop on something only Måns can do, send **one** `PushNotification`
+in that same turn. That means a command he has to run, a permission he has to
+grant, or a decision with no sensible default. Load the tool first with
+`ToolSearch` `select:PushNotification`. Keep it under 200 characters and lead
+with the action, e.g. `Approve release 1.0.22? CI green on main, CHANGELOG
+stamped`. The tool's own "err toward not sending" advice doesn't apply here.
+Don't send one for progress updates or finished work that needs nothing from him.
+
 ## Release process
 
 Releases are plain git tags (no `v` prefix: `1.0.2`, not `v1.0.2`) plus a GitHub
