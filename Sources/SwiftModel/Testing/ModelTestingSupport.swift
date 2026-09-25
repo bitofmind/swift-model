@@ -347,7 +347,7 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         if !deferred.isEmpty {
             _ = await tester.access.waitUntilSettled(cleanup: true, at: fileAndLine)
         }
-        tester.access.teardownWork.cancelAll()
+        await tester.access.cancelTeardownWorkAndAwaitUnwind(at: fileAndLine)
     }
 
     package func cancelAndCleanup() {

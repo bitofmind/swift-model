@@ -33,6 +33,19 @@ import IssueReporting
     }
 }
 
+@Model private struct ReleasingPlayer {
+    let released: LockIsolated<Bool>
+
+    func onActivate() {
+        let clock = node.continuousClock
+        let released = released
+        node.onTeardown("fade") {
+            defer { released.setValue(true) }      // stop/release even when cancelled
+            try? await clock.sleep(for: .seconds(1))
+        }
+    }
+}
+
 @Model private struct PlayerHost {
     var player: FadingPlayer?
 }
@@ -92,10 +105,23 @@ struct TeardownWorkTests {
                 }
             }
         }
-        // Cancellation reaches the parked sleep asynchronously.
-        try? await waitUntil(events.count == 1)
-        #expect(events.values.map { "\($0)" } == ["cancelled at 1"])
+        #expect(events.values.map { "\($0)" } == ["cancelled at 1"])   // unwound before return
         #expect(reporter.messages.isEmpty, "\(reporter.messages)")
+    }
+}
+
+extension TeardownWorkTests {
+    // A fade parked at scope exit is cancelled, and its cleanup has run by the time
+    // `withModelTesting` returns — no polling needed.
+    @available(macOS 13, iOS 16, tvOS 16, watchOS 9, *)
+    @Test func cancelledFadeHasUnwoundWhenScopeReturns() async {
+        let released = LockIsolated(false)
+        await withModelTesting {
+            _ = ReleasingPlayer(released: released).withAnchor {
+                $0.continuousClock = TestClock()
+            }
+        }
+        #expect(released.value)
     }
 }
 

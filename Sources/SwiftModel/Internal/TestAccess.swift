@@ -530,6 +530,27 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// `nil` = not in harness teardown.
     private let deferredRemovals = LockIsolated<[@Sendable () -> Void]?>(nil)
 
+    /// Cancels hosted teardown work still running at the end of a test and waits for it
+    /// to unwind, so cleanup in a cancelled run (`defer { stop(); release() }`) has
+    /// happened before `withModelTesting` returns. Evidence-based bound: stops waiting
+    /// once the drive reaches quiescence — a run that ignores cancellation and parks
+    /// again can't hang the test.
+    func cancelTeardownWorkAndAwaitUnwind(at fileAndLine: FileAndLine) async {
+        let runs = teardownWork.registered(of: TaskCancellable.self).compactMap(\.underlyingTask)
+        teardownWork.cancelAll()
+        guard !runs.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for run in runs { _ = try? await run.value }
+            }
+            group.addTask {
+                _ = await self.waitUntilSettled(cleanup: true, at: fileAndLine)
+            }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
     func beginHarnessTeardown() {
         deferredRemovals.setValue([])
     }
