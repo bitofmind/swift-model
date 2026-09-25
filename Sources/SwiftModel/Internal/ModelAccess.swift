@@ -139,6 +139,18 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
     /// Default: no-op. `TestAccess` overrides to fire `_noteActivity`.
     func taskBodyStarted() {}
 
+    /// The store that hosts signal-handler runs (`onSignal`, `onTeardown`). A run is
+    /// never hosted by its own model, which may be removed while it runs — or already
+    /// be gone, for the final `.removed` call. `nil` in production: runs are plain
+    /// tasks. `TestAccess` returns a store it owns, so runs stay visible to `settle()`
+    /// and the end-of-test task check after their model is gone.
+    var signalWorkStore: Cancellations? { nil }
+
+    /// While the test harness tears the model tree down at the end of a test, removal
+    /// calls are deferred until after the exhaustion check (so they are neither checked
+    /// nor reported). Returns `true` if `start` was deferred. Production: `false`.
+    func deferRemovalCall(_ start: @escaping @Sendable () -> Void) -> Bool { false }
+
     /// Records that a reactive body (`node.forEach` / `node.onChange`) delivered
     /// an element, keyed by its source location. Powers `settle()`'s runaway
     /// diagnostic: a registration that keeps firing right up to a settle timeout

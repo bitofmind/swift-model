@@ -30,6 +30,17 @@ final class Cancellations: @unchecked Sendable {
         lock { _sealed = true }
     }
 
+    /// Sealed stores are being torn down (model removal / end-of-test teardown); an
+    /// `onCancel()` arriving from one is a removal, not a user cancellation.
+    var isSealed: Bool {
+        lock { _sealed }
+    }
+
+    /// Registered cancellables of a given type (signal-handler lookup).
+    func registered<T>(of type: T.Type) -> [T] {
+        lock { registered.values.compactMap { $0 as? T } }
+    }
+
     func register(_ c: InternalCancellable) {
         let shouldImmediatelyCancel: Bool = lock {
             if _sealed { return true }
@@ -53,7 +64,7 @@ final class Cancellations: @unchecked Sendable {
                 let subject = (c as? TaskCancellable).map {
                     "Task '\($0.taskName)' on `\($0.modelName)`"
                 } ?? "A cancellable"
-                let message = "\(subject) was registered while a model is being deactivated (from an `onCancel` handler); it is cancelled immediately and never runs. Work that must outlive a model belongs to a model that outlives it (e.g. start it with the parent's `node.task`)."
+                let message = "\(subject) was registered while a model is being deactivated (from an `onCancel` handler); it is cancelled immediately and never runs. Register work that must run after removal while the model is live, with `node.onTeardown { … }` (or a signal handler's final call)."
                 if let fileAndLine = (c as? TaskCancellable)?.fileAndLine {
                     reportIssue(message, fileID: fileAndLine.fileID, filePath: fileAndLine.filePath, line: fileAndLine.line, column: fileAndLine.column)
                 } else {

@@ -323,6 +323,10 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         // The seal makes that drain unnecessary.
         tester.access.context.sealRecursively()
 
+        // From here on removals are the harness's, not the test's: their signal-handler
+        // removal calls are deferred past the exhaustion check (`TestAccess.deferredRemovals`).
+        tester.access.beginHarnessTeardown()
+
         // Phase 2: Cancel all currently-registered onActivate tasks.
         tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
 
@@ -334,13 +338,25 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
 
         tester.access.checkExhaustion(at: fileAndLine, includeUpdates: false, checkTasks: true)
         tester.access.context.onRemoval()
+
+        // Now run the harness teardown's removal calls — unchecked — until quiet,
+        // so "let the model go at scope exit, then assert its cleanup ran" works; cancel
+        // whatever is still parked (e.g. on a clock nobody advances).
+        let deferred = tester.access.takeDeferredRemovals()
+        for start in deferred { start() }
+        if !deferred.isEmpty {
+            _ = await tester.access.waitUntilSettled(cleanup: true, at: fileAndLine)
+        }
+        await tester.access.cancelSignalWorkAndAwaitUnwind(at: fileAndLine)
     }
 
     package func cancelAndCleanup() {
         // Mark tester so its deinit skips cleanup — we are running it here instead.
         tester.cleanupHandledExternally = true
+        tester.access.beginHarnessTeardown()   // cancelled test: deferred removal calls are dropped
         tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
         tester.access.context.onRemoval()
+        tester.access.signalWork.cancelAll()
     }
 
     package func waitForTeardown() async {

@@ -72,11 +72,18 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
     let _hasStartedRunningBox: LockIsolated<Bool>
     var hasStartedRunning: Bool { _hasStartedRunningBox.value }
 
-    init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, hasStartedRunningBox: LockIsolated<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
+    convenience init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, hasStartedRunningBox: LockIsolated<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
+        // `context.cancellations` is resolved HERE, before the designated init takes
+        // `lock` — see the AB-BA note there.
+        self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, cancellations: context.cancellations, hasStartedRunningBox: hasStartedRunningBox, task: task)
+    }
+
+    init(modelName: String, taskName: String, fileAndLine: FileAndLine, cancellations: Cancellations, hasStartedRunningBox: LockIsolated<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
         // Assigned before `cancellations.register(self)` below publishes this
         // instance to any settle thread — see `_hasStartedRunningBox`.
         self._hasStartedRunningBox = hasStartedRunningBox
-        // Resolve the registry ONCE, before `lock` is taken. `AnyContext.cancellations`
+        // The registry is resolved by the caller, before `lock` is taken (the convenience
+        // init evaluates `context.cancellations` up front). `AnyContext.cancellations`
         // acquires the per-context hierarchy lock (H); this instance's `lock` is T.
         // Evaluating `context.cancellations` *inside* `lock { }` — as the capture-list
         // expression below used to — orders this init T→H, while teardown runs H→T:
@@ -90,15 +97,14 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
         // which holds it across its entire body (`Context.transaction`), so the drain
         // still runs under H. Citing `onRemoval` alone gets this dismissed on review.
         //
-        // Hoisting is free — the value is needed on the first line anyway, so this
-        // takes and releases H exactly where it already did, just once. The ordering
-        // is now uniformly H-before-T and the cycle is gone by construction.
+        // Hoisting is free — the value is needed first anyway, so this takes and
+        // releases H exactly where it already did, just once. The ordering is now
+        // uniformly H-before-T and the cycle is gone by construction.
         //
         // Same family as the `reduceHierarchy` (#29) and `memoize` (#30) inversions:
         // whenever a leaf lock is held, do not evaluate anything that reaches a
         // context lock — including capture-list expressions, which are evaluated at
         // closure-formation time, i.e. inside the enclosing critical section.
-        let cancellations = context.cancellations
         self.cancellations = cancellations
         let id = cancellations.nextId
         self.id = id

@@ -517,6 +517,63 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         _noteActivity()
     }
 
+    /// Hosts signal-handler runs — see `ModelAccess.signalWorkStore`. Never sealed with
+    /// the model tree; cancelled (and awaited) when the test scope exits.
+    let signalWork = Cancellations()
+    override var signalWorkStore: Cancellations? { signalWork }
+
+    /// Removal calls (`onSignal` final call, `onTeardown`) caused by the harness's own
+    /// end-of-test teardown. They start only AFTER the exhaustion check — the test didn't
+    /// trigger that removal, so its work is neither checked nor reported — and are then
+    /// driven until quiet; whatever is still parked (e.g. on a frozen clock) is cancelled.
+    /// `nil` = not in harness teardown.
+    private let deferredRemovals = LockIsolated<[@Sendable () -> Void]?>(nil)
+
+    /// Cancels signal-handler runs still running at the end of a test and waits for it
+    /// to unwind, so cleanup in a cancelled run (`defer { stop(); release() }`) has
+    /// happened before `withModelTesting` returns. Evidence-based bound: stops waiting
+    /// once the drive reaches quiescence — a run that ignores cancellation and parks
+    /// again can't hang the test.
+    func cancelSignalWorkAndAwaitUnwind(at fileAndLine: FileAndLine) async {
+        let runs = signalWork.registered(of: TaskCancellable.self).compactMap(\.underlyingTask)
+        signalWork.cancelAll()
+        guard !runs.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for run in runs { _ = try? await run.value }
+            }
+            group.addTask {
+                _ = await self.waitUntilSettled(cleanup: true, at: fileAndLine)
+            }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    func beginHarnessTeardown() {
+        deferredRemovals.setValue([])
+    }
+
+    func takeDeferredRemovals() -> [@Sendable () -> Void] {
+        deferredRemovals.withValue { pending in
+            defer { pending = [] }
+            return pending ?? []
+        }
+    }
+
+    override func deferRemovalCall(_ start: @escaping @Sendable () -> Void) -> Bool {
+        deferredRemovals.withValue { pending in
+            guard pending != nil else { return false }
+            pending!.append(start)
+            return true
+        }
+    }
+
+    /// Pending-start across the model tree AND hosted signal-handler runs.
+    var hasPendingStartWork: Bool {
+        context.hasPendingStartTask || signalWork.hasPendingStartTask
+    }
+
     // MARK: - Runaway diagnostic (settle-timeout)
 
     /// Per-call-site reactive-body fire counts, keyed by source location. A
@@ -1487,7 +1544,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 // window so we keep polling rather than hang forever on a
                 // task that never schedules (the total budget catches that
                 // case as a normal settle timeout).
-                if !pastBudget && context.hasPendingStartTask {
+                if !pastBudget && hasPendingStartWork {
                     let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
                     pending.deadlineNs = newDeadline
                     let entryId = pending.id
@@ -1551,7 +1608,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             // `.settled` branch): even with bg idle, if a registered
             // `TaskCancellable` body hasn't executed once yet, we must
             // keep waiting. Re-arm GTS and abandon this fire.
-            if case .settled(let quietWindowNs, _) = pending.mode, context.hasPendingStartTask {
+            if case .settled(let quietWindowNs, _) = pending.mode, hasPendingStartWork {
                 let now = monotonicNanoseconds()
                 let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
                 pending.deadlineNs = newDeadline
@@ -1629,7 +1686,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
     func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false, capturedUpdates: [PartialKeyPath<Root>: [ValueUpdate]]? = nil) {
         if checkTasks {
-            for info in context.activeTasks {
+            for info in context.activeTasks + signalWork.activeTasks {
                 let taskWord = info.tasks.count == 1 ? "task" : "tasks"
                 fail("Models of type `\(info.modelName)` have \(info.tasks.count) active \(taskWord) still running", for: .tasks, at: fileAndLine)
 

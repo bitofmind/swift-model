@@ -107,6 +107,7 @@ import Testing
 ### Async Work
 
 - ``Cancellable``
+- ``SignalCause``
 
 ### Observation
 
