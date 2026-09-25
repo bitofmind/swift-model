@@ -72,8 +72,8 @@ jobs:
     #     scheduling diversity is what surfaces races.
     #   • `--skip testObservedStreamWithModelAccessingObservable`: the one
     #     documented-unsupported test (plain `@Observable` interop) that races
-    #     BY DESIGN in its own test code — see CLAUDE.md "Known load-sensitive
-    #     tests". Everything else must be clean.
+    #     BY DESIGN in its own test code — see "Known load-sensitive tests" in
+    #     Docs/Contributing/TestInfrastructure.md. Everything else must be clean.
     #   • `SWIFT_MODEL_TIMEOUT_SCALE=6` (not 3): TSan slows execution 5–15×,
     #     so wait budgets need more headroom than the plain jobs. The first CI
     #     run of this job caught `withTestTimeout_cancelsBodyThroughWaitPrimitive`
