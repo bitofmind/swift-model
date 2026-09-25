@@ -23,6 +23,23 @@ private struct SimpleCounter {
     var count: Int = 0
 }
 
+// A model with an optional property, for the `T? == T` builder overload.
+@Model
+private struct OptionalCounter {
+    var count: Int? = nil
+}
+
+private enum Outcome: Equatable, Sendable {
+    case pending
+    case needsNewPlayer
+}
+
+// A model with an enum property, for builder `==` against an implicit member.
+@Model
+private struct OutcomeHolder {
+    var outcome: Outcome = .pending
+}
+
 // A parent model that holds a child model, for testing how replacement diffs look
 @Model
 private struct ItemHolder {
@@ -250,6 +267,57 @@ struct TesterAssertOutputTests {
 
                     − 99
                     + 3
+
+                (Expected: −, Actual: +)
+                """
+            }
+        }
+    }
+
+    // The `==` overloads returning `TestPredicate` are `@_disfavoredOverload` (so a plain
+    // `let b = x == y` outside a builder infers `Bool`), and so is the builder's `Bool?`
+    // `buildExpression`; the tie must still go to the `TestPredicate` path so both sides print.
+    // These pin that with no type annotation, for shapes that have no concrete `Bool ==` shortcut
+    // (optional vs. value, enum vs. implicit member — the latter is the shape that regressed when
+    // only the operators were disfavored). Shapes like `Int == literal` resolve toolchain-
+    // dependently (Swift 6.3 takes the `TestPredicate` path, 6.4 the concrete `Int.==`), so they
+    // are deliberately not snapshotted here.
+    @Test("builder optional == predicate failure shows lhs/rhs diff")
+    func builderOptionalEqualityFailureMessage() async {
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let model = OptionalCounter().withAnchor()
+                    model.count = 3
+                    await expect { model.count == 99 }
+                }
+            } matches: {
+                """
+                Expectation not met: OptionalCounter.count: …
+
+                    − 99
+                    + 3
+
+                (Expected: −, Actual: +)
+                """
+            }
+        }
+    }
+
+    @Test("builder enum == implicit member failure shows lhs/rhs diff")
+    func builderEnumEqualityFailureMessage() async {
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let model = OutcomeHolder().withAnchor()
+                    await expect { model.outcome == .needsNewPlayer }
+                }
+            } matches: {
+                """
+                Expectation not met: OutcomeHolder.outcome: …
+
+                    − Outcome.needsNewPlayer
+                    + Outcome.pending
 
                 (Expected: −, Actual: +)
                 """
