@@ -78,10 +78,11 @@ struct TeardownWorkTests {
         #expect(reporter.messages.contains { $0.contains("Active task 'fade' of `FadingPlayer` still running") })
     }
 
-    // Removed by the harness's own end-of-test teardown: the test didn't cause that
-    // removal, so the fade is not started (and so neither runs nor gets reported).
+    // Removed by the harness's own end-of-test teardown: the fade starts after the
+    // exhaustion check (unchecked, unreported), runs until quiet, and — parked on a
+    // clock nobody advances — is then cancelled.
     @available(macOS 13, iOS 16, tvOS 16, watchOS 9, *)
-    @Test func fadeIsNotStartedByEndOfTestTeardown() async {
+    @Test func fadeStartedByEndOfTestTeardownIsCancelledNotReported() async {
         let reporter = CapturingIssueReporter()
         let events = TestProbe()
         await withIssueReporters([reporter]) {
@@ -91,7 +92,9 @@ struct TeardownWorkTests {
                 }
             }
         }
-        #expect(events.count == 0)
+        // Cancellation reaches the parked sleep asynchronously.
+        try? await waitUntil(events.count == 1)
+        #expect(events.values.map { "\($0)" } == ["cancelled at 1"])
         #expect(reporter.messages.isEmpty, "\(reporter.messages)")
     }
 }

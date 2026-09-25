@@ -523,12 +523,31 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     let teardownWork = Cancellations()
     override var teardownWorkStore: Cancellations? { teardownWork }
 
-    /// Set once the harness starts its own end-of-test teardown. Removal calls
-    /// (`onSignal` final call, `onTeardown`) are NOT started from then on: the test
-    /// didn't cause that removal, so its work is not the test's concern — the same way
-    /// `onActivate` tasks are cancelled rather than reported.
-    let isHarnessTeardown = LockIsolated(false)
-    override var isInHarnessTeardown: Bool { isHarnessTeardown.value }
+    /// Removal calls (`onSignal` final call, `onTeardown`) caused by the harness's own
+    /// end-of-test teardown. They start only AFTER the exhaustion check — the test didn't
+    /// trigger that removal, so its work is neither checked nor reported — and are then
+    /// driven until quiet; whatever is still parked (e.g. on a frozen clock) is cancelled.
+    /// `nil` = not in harness teardown.
+    private let deferredRemovals = LockIsolated<[@Sendable () -> Void]?>(nil)
+
+    func beginHarnessTeardown() {
+        deferredRemovals.setValue([])
+    }
+
+    func takeDeferredRemovals() -> [@Sendable () -> Void] {
+        deferredRemovals.withValue { pending in
+            defer { pending = [] }
+            return pending ?? []
+        }
+    }
+
+    override func deferRemovalCall(_ start: @escaping @Sendable () -> Void) -> Bool {
+        deferredRemovals.withValue { pending in
+            guard pending != nil else { return false }
+            pending!.append(start)
+            return true
+        }
+    }
 
     /// Pending-start across the model tree AND hosted teardown work.
     var hasPendingStartWork: Bool {

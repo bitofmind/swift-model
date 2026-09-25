@@ -7,7 +7,9 @@ import ConcurrencyExtras
 // call runs AFTER the model is gone, so it must not be hosted by the model: in
 // production it is a plain task, in `.modelTesting` it is hosted by the test harness
 // (runs on the test's executor, seen by `settle()`, reported if still running at the
-// end of the test when the test itself triggered it).
+// end of the test when the test itself triggered it). Removals caused by the harness's
+// own end-of-test teardown run after the exhaustion check, unchecked, and are driven
+// until quiet; work still parked then is cancelled.
 
 /// Why a signal handler is running.
 public enum SignalCause: Sendable, Equatable {
@@ -50,7 +52,8 @@ public extension ModelNode {
     }
 
     /// Runs every handler registered for `key` on the models `relation` reaches,
-    /// concurrently, and returns when all of those runs have finished.
+    /// concurrently, and returns when all of those runs have finished. Cancelling the
+    /// calling task cancels those runs.
     func signal(_ key: some Hashable & Sendable, to relation: ModelRelation = [.self, .descendants]) async {
         await _signal(CancellableKey(key: key), to: relation)
     }
@@ -87,8 +90,14 @@ private extension ModelNode {
             result += store?.registered(of: SignalHandler.self).filter { $0.matches(key) } ?? []
         }
         let runs = handlers.compactMap { $0.start(.requested) }
-        for run in runs {
-            _ = try? await run.value
+        // Structured like a task group: cancelling the caller cancels the runs this call
+        // started (e.g. a deadline wrapped around the signal).
+        await withTaskCancellationHandler {
+            for run in runs {
+                _ = try? await run.value
+            }
+        } onCancel: {
+            for run in runs { run.cancel() }
         }
     }
 }
@@ -146,8 +155,8 @@ final class SignalHandler: Cancellable, InternalCancellable, @unchecked Sendable
     /// it is a user cancellation (`cancelAll(for:)`) → unregister only.
     func onCancel() {
         if cancellations?.isSealed ?? true {
-            // The harness's own end-of-test teardown: not the test's removal — skip.
-            guard access?.isInHarnessTeardown != true else { return }
+            // The harness's own end-of-test teardown defers it past the exhaustion check.
+            if access?.deferRemovalCall({ [self] in _ = self.start(.removed) }) == true { return }
             _ = start(.removed)
         } else {
             lock { isUnregistered = true }

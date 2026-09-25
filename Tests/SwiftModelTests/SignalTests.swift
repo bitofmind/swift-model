@@ -3,6 +3,7 @@ import Testing
 import ConcurrencyExtras
 import Clocks
 import Foundation
+import IssueReporting
 
 // SPIKE acceptance tests for `onSignal` / `signal`.
 
@@ -137,6 +138,35 @@ struct SignalTests {
         async let b: Void = model.node.signal(Lifecycle.flush)
         _ = await (a, b)
         #expect(log.value == ["begin", "end", "begin", "end"], "\(log.value)")
+    }
+
+    // "Let the model go at scope exit, then assert its cleanup ran": the harness's own
+    // teardown runs the final call after the exhaustion check — unchecked, so the probe
+    // call isn't an unasserted-probe failure — and drives it to completion.
+    @Test func finalCallAtScopeExitRunsUnchecked() async {
+        let reporter = CapturingIssueReporter()
+        let calls = TestProbe()
+        await withIssueReporters([reporter]) {
+            await withModelTesting {
+                _ = Show(reporter: Reporter(calls: calls)).withAnchor()
+            }
+        }
+        #expect(calls.values.map { "\($0)" } == ["flush removed"])
+        #expect(reporter.messages.isEmpty, "\(reporter.messages)")
+    }
+
+    // Cancelling the caller of `signal` cancels the runs it started (a deadline wrapped
+    // around a signal must reach the handlers).
+    @available(macOS 13, iOS 16, tvOS 16, watchOS 9, *)
+    @Test func cancellingTheCallerCancelsItsRuns() async {
+        let log = LockIsolated<[String]>([])
+        let model = Parking(log: log).withAnchor { $0.continuousClock = TestClock() }
+
+        let caller = Task { await model.node.signal(Lifecycle.flush) }
+        await settle()                                   // run 1 parked on the frozen clock
+        caller.cancel()
+        await caller.value
+        #expect(log.value == ["park", "cancelled"])
     }
 
     @available(macOS 13, iOS 16, tvOS 16, watchOS 9, *)
