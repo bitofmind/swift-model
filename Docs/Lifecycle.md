@@ -97,7 +97,42 @@ node.cancellationContext(for: saveFlowID) {       // group
 node.cancelAll(for: saveFlowID)                   // cancels both
 ```
 
-To **cancel-in-flight** — replace an ongoing operation each time a function is called — use `.cancelInFlight()` (id synthesised from the call site) or `.cancel(for: id, cancelInFlight: true)`. Nested work can join its parent's context with `.inheritCancellationContext()`, and `node.onCancel { … }` runs cleanup on cancellation.
+To **cancel-in-flight** — replace an ongoing operation each time a function is called — use `.cancelInFlight()` (id synthesised from the call site) or `.cancel(for: id, cancelInFlight: true)`. Nested work can join its parent's context with `.inheritCancellationContext()`, and `node.onCancel { … }` runs cleanup on cancellation. For cleanup that has to `await`, see [Signals and work that outlives a model](#signals-and-work-that-outlives-a-model).
+
+### Signals and work that outlives a model
+
+`onCancel` runs synchronously while the model is being torn down, so it can't `await` anything. And a `Task` started from it is invisible to tests, while `node.task` can no longer start at that point. Work that has to finish *after* the model is gone — fading out audio, flushing a last analytics batch — goes in `onTeardown`:
+
+```swift
+func onActivate() {
+    let player = player                       // capture what the work needs
+    let clock = node.continuousClock
+    node.onTeardown {
+        defer { player.stop() }               // also when cancelled
+        await player.fadeOut(over: .seconds(1), on: clock)
+    }
+}
+```
+
+When the work should also run **on request** — flush before leaving, save before syncing — register a signal handler instead. `signal` reaches handlers like `send` reaches event listeners (by default the model and its descendants), runs them all concurrently, and returns once they're done. Every handler also gets one final call when its model is removed:
+
+```swift
+enum Lifecycle: Hashable, Sendable { case flush, leave }
+
+// ExperienceReporter
+node.onSignal(Lifecycle.flush) { cause in
+    await reporter.flush(final: cause == .removed)
+}
+
+// The leaving side: announce while the tree is live, then remove.
+func leave() async {
+    await node.signal(Lifecycle.leave)
+    experience = nil
+    await node.signal(Lifecycle.flush)
+}
+```
+
+The `cause` tells a handler whether its model is still live (`.requested`: use `node` as usual) or already gone (`.removed`: use only captured values). Runs of one handler never overlap: a new request waits for the running one, or with `cancelPrevious: true` cancels it first. `once: true` runs a handler at most once in total, on the first request or on removal. Cancelling the returned `Cancellable` unregisters the handler. Cancelling the task that called `signal` cancels the runs that call started, so a deadline around a signal reaches the handlers.
 
 ### Transactions
 

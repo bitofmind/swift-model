@@ -128,6 +128,21 @@ await clock.advance(by: .seconds(1))
 await expect(model.secondsElapsed == 1)
 ```
 
+Prefer `TestClock` for anything that sleeps inside model work. `ImmediateClock` "sleeps" by awaiting detached background tasks, which run outside the test's scheduler and can starve when tests run in parallel.
+
+### Signals and teardown work
+
+`await node.signal(…)` returns once every handler it reached has finished, so you can assert on the result right after it. Work started by `onTeardown` or a handler's final `.removed` call runs on the test's executor even though its model is gone. `settle()` waits for it, and if the test removed the model and the work is still running when the test ends, it's reported as an active task. A fade parked on a `TestClock` steps forward as you advance the clock:
+
+```swift
+host.player = nil                             // starts the player's onTeardown fade
+await settle()                                // fade parked on its next sleep
+await clock.advance(by: .seconds(1))
+await expect(events.wasCalled(with: "stopped"))
+```
+
+Models still alive when the test ends are removed by the test harness. Their final calls run *after* the exhaustivity check, so what they do is neither checked nor reported. The scope waits for them before returning and cancels whatever is still parked, such as a fade on a clock nobody advances. So a test can let a model go at the end of `withModelTesting` and then assert that its cleanup ran.
+
 ### Refactor-resilient tests
 
 SwiftModel tests assert **final state**, not the sequence of actions or effects that produced it. There is no action enum to enumerate and no `send`/`receive` script to keep in sync — you call a method and assert the outcome:

@@ -5,7 +5,7 @@ import Clocks
 import Foundation
 import IssueReporting
 
-// SPIKE acceptance tests for `onSignal` / `signal`.
+// Tests for `onSignal` / `signal`.
 
 private enum Lifecycle: Hashable, Sendable { case flush, leave }
 

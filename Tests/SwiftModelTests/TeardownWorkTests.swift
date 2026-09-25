@@ -5,7 +5,7 @@ import Clocks
 import Foundation
 import IssueReporting
 
-// SPIKE acceptance tests for `node.onTeardown` — async work that starts when a model
+// Tests for `node.onTeardown` — async work that starts when a model
 // is deactivated and outlives it. The motivating case is an audio fade that must keep
 // running after its player's model is removed (a stream switch), stepping on an
 // injected clock. Started as a raw `Task` from `onCancel`, such work is invisible to

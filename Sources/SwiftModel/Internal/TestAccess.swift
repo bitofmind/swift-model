@@ -517,11 +517,10 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         _noteActivity()
     }
 
-    /// SPIKE: hosts `node.onTeardown` work after its model is removed — see
-    /// `ModelAccess.teardownWorkStore`. Never sealed with the model tree; cancelled
-    /// after the final exhaustion check (and by `Cancellations.deinit`).
-    let teardownWork = Cancellations()
-    override var teardownWorkStore: Cancellations? { teardownWork }
+    /// Hosts signal-handler runs — see `ModelAccess.signalWorkStore`. Never sealed with
+    /// the model tree; cancelled (and awaited) when the test scope exits.
+    let signalWork = Cancellations()
+    override var signalWorkStore: Cancellations? { signalWork }
 
     /// Removal calls (`onSignal` final call, `onTeardown`) caused by the harness's own
     /// end-of-test teardown. They start only AFTER the exhaustion check — the test didn't
@@ -530,14 +529,14 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// `nil` = not in harness teardown.
     private let deferredRemovals = LockIsolated<[@Sendable () -> Void]?>(nil)
 
-    /// Cancels hosted teardown work still running at the end of a test and waits for it
+    /// Cancels signal-handler runs still running at the end of a test and waits for it
     /// to unwind, so cleanup in a cancelled run (`defer { stop(); release() }`) has
     /// happened before `withModelTesting` returns. Evidence-based bound: stops waiting
     /// once the drive reaches quiescence — a run that ignores cancellation and parks
     /// again can't hang the test.
-    func cancelTeardownWorkAndAwaitUnwind(at fileAndLine: FileAndLine) async {
-        let runs = teardownWork.registered(of: TaskCancellable.self).compactMap(\.underlyingTask)
-        teardownWork.cancelAll()
+    func cancelSignalWorkAndAwaitUnwind(at fileAndLine: FileAndLine) async {
+        let runs = signalWork.registered(of: TaskCancellable.self).compactMap(\.underlyingTask)
+        signalWork.cancelAll()
         guard !runs.isEmpty else { return }
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
@@ -570,9 +569,9 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         }
     }
 
-    /// Pending-start across the model tree AND hosted teardown work.
+    /// Pending-start across the model tree AND hosted signal-handler runs.
     var hasPendingStartWork: Bool {
-        context.hasPendingStartTask || teardownWork.hasPendingStartTask
+        context.hasPendingStartTask || signalWork.hasPendingStartTask
     }
 
     // MARK: - Runaway diagnostic (settle-timeout)
@@ -1687,7 +1686,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
     func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false, capturedUpdates: [PartialKeyPath<Root>: [ValueUpdate]]? = nil) {
         if checkTasks {
-            for info in context.activeTasks + teardownWork.activeTasks {
+            for info in context.activeTasks + signalWork.activeTasks {
                 let taskWord = info.tasks.count == 1 ? "task" : "tasks"
                 fail("Models of type `\(info.modelName)` have \(info.tasks.count) active \(taskWord) still running", for: .tasks, at: fileAndLine)
 
