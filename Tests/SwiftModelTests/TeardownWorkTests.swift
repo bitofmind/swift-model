@@ -78,11 +78,10 @@ struct TeardownWorkTests {
         #expect(reporter.messages.contains { $0.contains("Active task 'fade' of `FadingPlayer` still running") })
     }
 
-    // Removed by the harness's own end-of-test teardown: the fade is started (not
-    // dropped), but — like `onActivate` tasks — cancelled after cleanup rather than
-    // reported, even when it parks on a clock nobody advances.
+    // Removed by the harness's own end-of-test teardown: the test didn't cause that
+    // removal, so the fade is not started (and so neither runs nor gets reported).
     @available(macOS 13, iOS 16, tvOS 16, watchOS 9, *)
-    @Test func fadeStartedByEndOfTestTeardownIsCancelledNotReported() async {
+    @Test func fadeIsNotStartedByEndOfTestTeardown() async {
         let reporter = CapturingIssueReporter()
         let events = TestProbe()
         await withIssueReporters([reporter]) {
@@ -92,9 +91,7 @@ struct TeardownWorkTests {
                 }
             }
         }
-        // Cancellation reaches the parked sleep asynchronously.
-        try? await waitUntil(events.count == 1)
-        #expect(events.values.map { "\($0)" } == ["cancelled at 1"])
+        #expect(events.count == 0)
         #expect(reporter.messages.isEmpty, "\(reporter.messages)")
     }
 }
@@ -106,8 +103,10 @@ struct TeardownWorkReleaseTests {
     @Test func fadeRunsWhenWholeTreeIsReleased() async throws {
         let events = TestProbe()
         await waitUntilRemoved {
+            // A real clock: `ImmediateClock.sleep` hops through detached `.background`
+            // tasks (`megaYield`), which starve under parallel load.
             PlayerHost(player: FadingPlayer(events: events)).withAnchor {
-                $0.continuousClock = ImmediateClock()
+                $0.continuousClock = ContinuousClock()
             }
         }
         try await waitUntil(events.values.map { "\($0)" } == ["stopped"])

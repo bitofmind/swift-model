@@ -145,6 +145,10 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
     /// to `settle()` and the end-of-test task check after the model is gone.
     var teardownWorkStore: Cancellations? { nil }
 
+    /// SPIKE: `true` while the test harness tears down the model tree at the end of a
+    /// test — removal calls are skipped then. Always `false` in production.
+    var isInHarnessTeardown: Bool { false }
+
     /// Records that a reactive body (`node.forEach` / `node.onChange`) delivered
     /// an element, keyed by its source location. Powers `settle()`'s runaway
     /// diagnostic: a registration that keeps firing right up to a settle timeout

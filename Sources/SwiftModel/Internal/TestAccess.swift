@@ -523,11 +523,12 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     let teardownWork = Cancellations()
     override var teardownWorkStore: Cancellations? { teardownWork }
 
-    /// Teardown work eligible for the end-of-test "still running" report: only work the
-    /// TEST started (by removing a model mid-test). Work started by the harness's own
-    /// end-of-test teardown is cancelled afterwards, not reported — the same way
-    /// `onActivate` tasks are cancelled rather than reported. `nil` = report all.
-    var reportableTeardownWork: Set<Int>?
+    /// Set once the harness starts its own end-of-test teardown. Removal calls
+    /// (`onSignal` final call, `onTeardown`) are NOT started from then on: the test
+    /// didn't cause that removal, so its work is not the test's concern — the same way
+    /// `onActivate` tasks are cancelled rather than reported.
+    let isHarnessTeardown = LockIsolated(false)
+    override var isInHarnessTeardown: Bool { isHarnessTeardown.value }
 
     /// Pending-start across the model tree AND hosted teardown work.
     var hasPendingStartWork: Bool {
@@ -1646,7 +1647,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
     func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false, capturedUpdates: [PartialKeyPath<Root>: [ValueUpdate]]? = nil) {
         if checkTasks {
-            for info in context.activeTasks + teardownWork.activeTasks(only: lock { reportableTeardownWork }) {
+            for info in context.activeTasks + teardownWork.activeTasks {
                 let taskWord = info.tasks.count == 1 ? "task" : "tasks"
                 fail("Models of type `\(info.modelName)` have \(info.tasks.count) active \(taskWord) still running", for: .tasks, at: fileAndLine)
 

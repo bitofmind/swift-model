@@ -30,6 +30,17 @@ final class Cancellations: @unchecked Sendable {
         lock { _sealed = true }
     }
 
+    /// Sealed stores are being torn down (model removal / end-of-test teardown); an
+    /// `onCancel()` arriving from one is a removal, not a user cancellation.
+    var isSealed: Bool {
+        lock { _sealed }
+    }
+
+    /// Registered cancellables of a given type (SPIKE: signal handler lookup).
+    func registered<T>(of type: T.Type) -> [T] {
+        lock { registered.values.compactMap { $0 as? T } }
+    }
+
     func register(_ c: InternalCancellable) {
         let shouldImmediatelyCancel: Bool = lock {
             if _sealed { return true }
@@ -94,20 +105,10 @@ final class Cancellations: @unchecked Sendable {
         }
     }
 
-    /// IDs of everything currently registered (SPIKE: used to tell mid-test teardown
-    /// work from work the harness's own end-of-test teardown started).
-    var registeredIDs: Set<Int> {
-        lock { Set(registered.keys) }
-    }
-
     var activeTasks: [(modelName: String, tasks: [(name: String, fileAndLine: FileAndLine)])] {
-        activeTasks(only: nil)
-    }
-
-    func activeTasks(only ids: Set<Int>?) -> [(modelName: String, tasks: [(name: String, fileAndLine: FileAndLine)])] {
         lock {
             // Sort by task ID (registration order) for stable diagnostic output.
-            registered.filter { ids?.contains($0.key) ?? true }.values.reduce(into: [String: [(id: Int, name: String, fileAndLine: FileAndLine)]]()) { dict, c in
+            registered.values.reduce(into: [String: [(id: Int, name: String, fileAndLine: FileAndLine)]]()) { dict, c in
                 if let task = c as? TaskCancellable {
                     dict[task.modelName, default: []].append((task.id, task.taskName, task.fileAndLine))
                 }
