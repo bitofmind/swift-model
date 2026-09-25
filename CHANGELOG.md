@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.1.0] — Signals (`onSignal` / `signal` / `onTeardown`) + `TestPredicate` `==` no longer leaks into app code
+
 ### Added
 
 - **Signals: `onSignal` / `signal` / `onTeardown` — async work on request, and work that outlives its model.** `onCancel` runs synchronously during teardown, so it can't `await`. And a `Task` started from it is invisible to tests (and starves under parallel test load), while `node.task` can no longer start there — the whole removed subtree is already sealed. Apps ended up with raw `Task.detached` fallbacks and hand-built shutdown registries.
