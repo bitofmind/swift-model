@@ -96,7 +96,7 @@ public extension ModelNode {
     func cancellationContext(perform: () throws -> Void) rethrows -> Cancellable {
         guard let cancellations = enforcedContext()?.cancellations else { return EmptyCancellable() }
 
-        let key = UUID()
+        let key = ContextToken()   // one-shot: stays cancelled once cancelled
         try AnyCancellable.$contexts.withValue(AnyCancellable.contexts + [CancellableKey(key: key)]) {
             try perform()
         }
@@ -112,7 +112,7 @@ public extension ModelNode {
     func cancellationContext(perform: () async throws -> Void) async rethrows -> Cancellable {
         guard let cancellations = enforcedContext()?.cancellations else { return EmptyCancellable() }
 
-        let key = UUID()
+        let key = ContextToken()   // one-shot: stays cancelled once cancelled
         let cancellable = AnyCancellable(cancellations: cancellations) { [weak cancellations] in
             cancellations?.cancelAll(for: key)
         }
