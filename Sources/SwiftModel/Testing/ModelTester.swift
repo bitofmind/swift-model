@@ -386,11 +386,14 @@ public extension AssertBuilder {
         layers.flatMap { $0 }
     }
 
-    @_disfavoredOverload
-    static func buildExpression(_ predicate: @autoclosure @escaping @Sendable () -> Bool, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Result {
-        [Predicate(predicate: predicate, fileAndLine: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))]
-    }
-
+    // Overload resolution inside the builder: the `==` overloads below that return
+    // `TestPredicate` are `@_disfavoredOverload` (so plain code outside a builder infers `Bool`),
+    // and so is this one. That leaves the `TestPredicate` path (rich lhs/rhs failure diff) and
+    // the plain `Bool ==` path tied on disfavored overloads, and the tie must go to
+    // `TestPredicate`. There is deliberately no `buildExpression(Bool)`: a plain `Bool` reaches
+    // this `Bool?` overload through a value-to-optional conversion, and that extra cost is what
+    // breaks the tie. Adding a `Bool` overload back makes `expect { model.outcome == .x }` lose
+    // its diff (pinned by the `builder … == …` snapshots in `OutputSnapshotTests`).
     @_disfavoredOverload
     static func buildExpression(_ predicate: @autoclosure @escaping @Sendable () -> Bool?, fileID: StaticString = #fileID, filePath: StaticString = #filePath, line: UInt = #line, column: UInt = #column) -> Result {
         [Predicate(predicate: { predicate() == true }, fileAndLine: FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column))]
@@ -412,10 +415,14 @@ public struct TestPredicate: Sendable {
     var values: @Sendable () -> (Any, Any)? = { nil }
 }
 
+// `==` returning `TestPredicate`, for `expect { a == b }` failures that show both sides. Disfavored
+// so they never win outside the `AssertBuilder`: `let b = x == y` in app code must infer `Bool`.
+@_disfavoredOverload
 public func == <T: Equatable&Sendable>(lhs: @escaping @Sendable @autoclosure () -> T, rhs: @escaping @Sendable @autoclosure () -> T) -> TestPredicate {
     TestPredicate(predicate: { lhs() == rhs() }, values: { (lhs(), rhs()) })
 }
 
+@_disfavoredOverload
 public func == <T: Equatable&Sendable>(lhs: @escaping @Sendable @autoclosure () -> T?, rhs: @escaping @Sendable @autoclosure () -> T) -> TestPredicate {
     TestPredicate(predicate: { lhs() == rhs() }, values: { (lhs() as Any, rhs() as Any) })
 }

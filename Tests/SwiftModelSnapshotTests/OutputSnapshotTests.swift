@@ -23,6 +23,24 @@ private struct SimpleCounter {
     var count: Int = 0
 }
 
+// A model with an optional property, for the `T? == T` builder overload.
+@Model
+private struct OptionalCounter {
+    var count: Int? = nil
+}
+
+private enum Outcome: Equatable, Sendable {
+    case pending
+    case needsNewPlayer
+}
+
+// A model with an enum and a String property, for builder `==` against an implicit member / literal.
+@Model
+private struct OutcomeHolder {
+    var outcome: Outcome = .pending
+    var name: String = ""
+}
+
 // A parent model that holds a child model, for testing how replacement diffs look
 @Model
 private struct ItemHolder {
@@ -252,6 +270,87 @@ struct TesterAssertOutputTests {
                     + 3
 
                 (Expected: −, Actual: +)
+                """
+            }
+        }
+    }
+
+    // The `==` overloads returning `TestPredicate` are `@_disfavoredOverload` (so a plain
+    // `let b = x == y` outside a builder infers `Bool`). Inside `expect { }` the builder's
+    // `Bool` `buildExpression`s are disfavored too, so the solver must still pick the
+    // `TestPredicate` path and print both sides. These pin that, with no type annotation.
+    @Test("builder == predicate failure shows lhs/rhs diff")
+    func builderEqualityFailureMessage() async {
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let model = SimpleCounter().withAnchor()
+                    model.count = 3
+                    await expect { model.count == 99 }
+                }
+            } matches: {
+                """
+                Expectation not met: SimpleCounter.count == 3
+                """
+            }
+        }
+    }
+
+    @Test("builder optional == predicate failure shows lhs/rhs diff")
+    func builderOptionalEqualityFailureMessage() async {
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let model = OptionalCounter().withAnchor()
+                    model.count = 3
+                    await expect { model.count == 99 }
+                }
+            } matches: {
+                """
+                Expectation not met: OptionalCounter.count: …
+
+                    − 99
+                    + 3
+
+                (Expected: −, Actual: +)
+                """
+            }
+        }
+    }
+
+    @Test("builder enum == implicit member failure shows lhs/rhs diff")
+    func builderEnumEqualityFailureMessage() async {
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let model = OutcomeHolder().withAnchor()
+                    await expect { model.outcome == .needsNewPlayer }
+                }
+            } matches: {
+                """
+                Expectation not met: OutcomeHolder.outcome: …
+
+                    − Outcome.needsNewPlayer
+                    + Outcome.pending
+
+                (Expected: −, Actual: +)
+                """
+            }
+        }
+    }
+
+    @Test("builder string == literal failure shows lhs/rhs diff")
+    func builderStringEqualityFailureMessage() async {
+        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
+            await assertIssueSnapshot {
+                await withModelTesting(exhaustivity: .off) {
+                    let model = OutcomeHolder().withAnchor()
+                    model.name = "actual"
+                    await expect { model.name == "expected" }
+                }
+            } matches: {
+                """
+                Expectation not met: OutcomeHolder.name == "actual"
                 """
             }
         }
