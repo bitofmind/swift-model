@@ -94,10 +94,20 @@ final class Cancellations: @unchecked Sendable {
         }
     }
 
+    /// IDs of everything currently registered (SPIKE: used to tell mid-test teardown
+    /// work from work the harness's own end-of-test teardown started).
+    var registeredIDs: Set<Int> {
+        lock { Set(registered.keys) }
+    }
+
     var activeTasks: [(modelName: String, tasks: [(name: String, fileAndLine: FileAndLine)])] {
+        activeTasks(only: nil)
+    }
+
+    func activeTasks(only ids: Set<Int>?) -> [(modelName: String, tasks: [(name: String, fileAndLine: FileAndLine)])] {
         lock {
             // Sort by task ID (registration order) for stable diagnostic output.
-            registered.values.reduce(into: [String: [(id: Int, name: String, fileAndLine: FileAndLine)]]()) { dict, c in
+            registered.filter { ids?.contains($0.key) ?? true }.values.reduce(into: [String: [(id: Int, name: String, fileAndLine: FileAndLine)]]()) { dict, c in
                 if let task = c as? TaskCancellable {
                     dict[task.modelName, default: []].append((task.id, task.taskName, task.fileAndLine))
                 }

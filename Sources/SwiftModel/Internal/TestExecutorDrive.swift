@@ -352,7 +352,7 @@ extension TestAccess {
                 await exec.waitUntilIdleOrDeadline(checkDeadline)
                 if !bg.isIdle { await bg.waitForCurrentItems(deadline: checkDeadline) }
                 if !main.isIdle { await main.waitForCurrentItems(deadline: checkDeadline) }
-                let idleNow = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.context.hasPendingStartTask
+                let idleNow = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.hasPendingStartWork
                 if idleNow {
                     // Debounce against COMPLETIONS too, not just writes and
                     // enqueues (`exec.activityNs` when idle = max(birth,

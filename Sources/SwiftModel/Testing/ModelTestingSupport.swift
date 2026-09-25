@@ -323,6 +323,10 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         // The seal makes that drain unnecessary.
         tester.access.context.sealRecursively()
 
+        // SPIKE: teardown work already running now was started by the test itself.
+        let midTestTeardownWork = tester.access.teardownWork.registeredIDs
+        tester.access.lock { tester.access.reportableTeardownWork = midTestTeardownWork }
+
         // Phase 2: Cancel all currently-registered onActivate tasks.
         tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
 
@@ -334,6 +338,7 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
 
         tester.access.checkExhaustion(at: fileAndLine, includeUpdates: false, checkTasks: true)
         tester.access.context.onRemoval()
+        tester.access.teardownWork.cancelAll()
     }
 
     package func cancelAndCleanup() {

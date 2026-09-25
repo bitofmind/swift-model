@@ -139,6 +139,12 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
     /// Default: no-op. `TestAccess` overrides to fire `_noteActivity`.
     func taskBodyStarted() {}
 
+    /// SPIKE (async teardown work): the store that hosts `node.onTeardown` work once
+    /// its model has been removed. `nil` in production — the work runs as a plain,
+    /// untracked task. `TestAccess` returns a store it owns, so the work stays visible
+    /// to `settle()` and the end-of-test task check after the model is gone.
+    var teardownWorkStore: Cancellations? { nil }
+
     /// Records that a reactive body (`node.forEach` / `node.onChange`) delivered
     /// an element, keyed by its source location. Powers `settle()`'s runaway
     /// diagnostic: a registration that keeps firing right up to a settle timeout

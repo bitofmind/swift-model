@@ -72,7 +72,12 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
     let _hasStartedRunningBox: LockIsolated<Bool>
     var hasStartedRunning: Bool { _hasStartedRunningBox.value }
 
-    init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, hasStartedRunningBox: LockIsolated<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
+    convenience init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, hasStartedRunningBox: LockIsolated<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
+        // See the AB-BA note in the designated init: resolve the registry before any lock.
+        self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, cancellations: context.cancellations, hasStartedRunningBox: hasStartedRunningBox, task: task)
+    }
+
+    init(modelName: String, taskName: String, fileAndLine: FileAndLine, cancellations: Cancellations, hasStartedRunningBox: LockIsolated<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
         // Assigned before `cancellations.register(self)` below publishes this
         // instance to any settle thread — see `_hasStartedRunningBox`.
         self._hasStartedRunningBox = hasStartedRunningBox
@@ -98,7 +103,6 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
         // whenever a leaf lock is held, do not evaluate anything that reaches a
         // context lock — including capture-list expressions, which are evaluated at
         // closure-formation time, i.e. inside the enclosing critical section.
-        let cancellations = context.cancellations
         self.cancellations = cancellations
         let id = cancellations.nextId
         self.id = id

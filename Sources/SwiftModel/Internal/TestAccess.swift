@@ -517,6 +517,23 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         _noteActivity()
     }
 
+    /// SPIKE: hosts `node.onTeardown` work after its model is removed — see
+    /// `ModelAccess.teardownWorkStore`. Never sealed with the model tree; cancelled
+    /// after the final exhaustion check (and by `Cancellations.deinit`).
+    let teardownWork = Cancellations()
+    override var teardownWorkStore: Cancellations? { teardownWork }
+
+    /// Teardown work eligible for the end-of-test "still running" report: only work the
+    /// TEST started (by removing a model mid-test). Work started by the harness's own
+    /// end-of-test teardown is cancelled afterwards, not reported — the same way
+    /// `onActivate` tasks are cancelled rather than reported. `nil` = report all.
+    var reportableTeardownWork: Set<Int>?
+
+    /// Pending-start across the model tree AND hosted teardown work.
+    var hasPendingStartWork: Bool {
+        context.hasPendingStartTask || teardownWork.hasPendingStartTask
+    }
+
     // MARK: - Runaway diagnostic (settle-timeout)
 
     /// Per-call-site reactive-body fire counts, keyed by source location. A
@@ -1487,7 +1504,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 // window so we keep polling rather than hang forever on a
                 // task that never schedules (the total budget catches that
                 // case as a normal settle timeout).
-                if !pastBudget && context.hasPendingStartTask {
+                if !pastBudget && hasPendingStartWork {
                     let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
                     pending.deadlineNs = newDeadline
                     let entryId = pending.id
@@ -1551,7 +1568,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             // `.settled` branch): even with bg idle, if a registered
             // `TaskCancellable` body hasn't executed once yet, we must
             // keep waiting. Re-arm GTS and abandon this fire.
-            if case .settled(let quietWindowNs, _) = pending.mode, context.hasPendingStartTask {
+            if case .settled(let quietWindowNs, _) = pending.mode, hasPendingStartWork {
                 let now = monotonicNanoseconds()
                 let newDeadline = Self._quietDeadline(nowNs: now, quietWindowNs: quietWindowNs, budgetEndNs: pending.totalBudgetEndNs)
                 pending.deadlineNs = newDeadline
@@ -1629,7 +1646,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
     func checkExhaustion(at fileAndLine: FileAndLine, includeUpdates: Bool, checkTasks: Bool = false, capturedUpdates: [PartialKeyPath<Root>: [ValueUpdate]]? = nil) {
         if checkTasks {
-            for info in context.activeTasks {
+            for info in context.activeTasks + teardownWork.activeTasks(only: lock { reportableTeardownWork }) {
                 let taskWord = info.tasks.count == 1 ? "task" : "tasks"
                 fail("Models of type `\(info.modelName)` have \(info.tasks.count) active \(taskWord) still running", for: .tasks, at: fileAndLine)
 
