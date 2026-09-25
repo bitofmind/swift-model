@@ -34,11 +34,10 @@ private enum Outcome: Equatable, Sendable {
     case needsNewPlayer
 }
 
-// A model with an enum and a String property, for builder `==` against an implicit member / literal.
+// A model with an enum property, for builder `==` against an implicit member.
 @Model
 private struct OutcomeHolder {
     var outcome: Outcome = .pending
-    var name: String = ""
 }
 
 // A parent model that holds a child model, for testing how replacement diffs look
@@ -276,26 +275,13 @@ struct TesterAssertOutputTests {
     }
 
     // The `==` overloads returning `TestPredicate` are `@_disfavoredOverload` (so a plain
-    // `let b = x == y` outside a builder infers `Bool`). Inside `expect { }` the builder's
-    // `Bool` `buildExpression`s are disfavored too, so the solver must still pick the
-    // `TestPredicate` path and print both sides. These pin that, with no type annotation.
-    @Test("builder == predicate failure shows lhs/rhs diff")
-    func builderEqualityFailureMessage() async {
-        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
-            await assertIssueSnapshot {
-                await withModelTesting(exhaustivity: .off) {
-                    let model = SimpleCounter().withAnchor()
-                    model.count = 3
-                    await expect { model.count == 99 }
-                }
-            } matches: {
-                """
-                Expectation not met: SimpleCounter.count == 3
-                """
-            }
-        }
-    }
-
+    // `let b = x == y` outside a builder infers `Bool`), and so is the builder's `Bool?`
+    // `buildExpression`; the tie must still go to the `TestPredicate` path so both sides print.
+    // These pin that with no type annotation, for shapes that have no concrete `Bool ==` shortcut
+    // (optional vs. value, enum vs. implicit member — the latter is the shape that regressed when
+    // only the operators were disfavored). Shapes like `Int == literal` resolve toolchain-
+    // dependently (Swift 6.3 takes the `TestPredicate` path, 6.4 the concrete `Int.==`), so they
+    // are deliberately not snapshotted here.
     @Test("builder optional == predicate failure shows lhs/rhs diff")
     func builderOptionalEqualityFailureMessage() async {
         await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
@@ -334,23 +320,6 @@ struct TesterAssertOutputTests {
                     + Outcome.pending
 
                 (Expected: −, Actual: +)
-                """
-            }
-        }
-    }
-
-    @Test("builder string == literal failure shows lhs/rhs diff")
-    func builderStringEqualityFailureMessage() async {
-        await TestAccessOverrides.$hardCapNanoseconds.withValue(50_000_000) {
-            await assertIssueSnapshot {
-                await withModelTesting(exhaustivity: .off) {
-                    let model = OutcomeHolder().withAnchor()
-                    model.name = "actual"
-                    await expect { model.name == "expected" }
-                }
-            } matches: {
-                """
-                Expectation not met: OutcomeHolder.name == "actual"
                 """
             }
         }
