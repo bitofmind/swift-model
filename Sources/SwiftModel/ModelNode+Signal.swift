@@ -23,7 +23,8 @@ public extension ModelNode {
     /// The handler also gets exactly one final call with `.removed` when this model is
     /// removed (unless `once` and it already ran). Runs of one handler are serialized
     /// (a new request waits for the running one), or with `cancelPrevious` the new one
-    /// cancels it. Different handlers always run concurrently.
+    /// cancels it and starts once it has unwound. Different handlers always run
+    /// concurrently.
     ///
     /// Cancelling the returned `Cancellable` (or `cancelAll(for:)` on a key it was
     /// registered under) unregisters the handler: it won't run again, not even on removal.
@@ -184,7 +185,10 @@ final class SignalHandler: Cancellable, InternalCancellable, @unchecked Sendable
             if once && hasRun { return (nil, nil) }
             hasRun = true
             let previous = tail
-            let serialized = cancelPrevious ? nil : previous
+            // Always wait for the previous run — with `cancelPrevious` it is cancelled
+            // first, but runs of one handler never overlap (as `forEach(cancelPrevious:)`
+            // starts the next body only after the previous one has fully unwound).
+            let serialized = previous
 
             let makeTask: @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error> = { onDone in
                 let body = { @Sendable () async throws -> Void in
