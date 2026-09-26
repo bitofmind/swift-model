@@ -652,6 +652,10 @@ private extension ModelNode {
                 let useWithObservationTracking = context.hasObservationRegistrar && useCoalescing
                 let usesAsyncTracking = useWithObservationTracking  // Capture for cache entry
 
+                // The last value `produce()` returned, served instead of re-producing once
+                // this model has been torn down (see the destructed check below).
+                let lastProduced = LockIsolated<T?>(nil)
+
                 return update(
                     initial: true,
                     isSame: nil,
@@ -684,14 +688,29 @@ private extension ModelNode {
                     // performUpdate's access() call. This avoids spurious extra computes from
                     // other access() call sites (forceObserver setup, initial registration,
                     // dirty-path sync reads).
-                    let (entry, version): (AnyContext.MemoizeCacheEntry?, UInt64) = context.lock {
+                    let (entry, version, isTornDown): (AnyContext.MemoizeCacheEntry?, UInt64, Bool) = context.lock {
                         let entry = context._memoizeCache[key]
-                        return (entry, entry?.dirtyVersion ?? 0)
+                        return (entry, entry?.dirtyVersion ?? 0, context.unprotectedIsDestructed)
+                    }
+                    // Torn down: never run the producer on a removed model. A teardown
+                    // cuts parent links before it destructs a model and cancels its
+                    // memoizes, and the parent-link change wakes memoizes that read
+                    // ancestors. A re-evaluation already scheduled past the cancellation
+                    // check blocks on `context.lock` above until the cascade finishes,
+                    // and would then run `produce()` on a model with no ancestors — e.g.
+                    // falling back to a fresh, never-anchored model and calling memoize on
+                    // it, reporting "unanchored model node" unattributed to any test. The
+                    // result would be discarded anyway (the cache is gone), so serve the
+                    // last produced value.
+                    if isTornDown, let last = lastProduced.value {
+                        return (last, version)
                     }
                     if !threadLocals.isInsideAsyncPerformUpdate, let entry = entry, !entry.isDirty {
                         return (entry.value as! T, version)
                     }
-                    return (produce(), version)
+                    let value = produce()
+                    lastProduced.setValue(value)
+                    return (value, version)
                 } onUpdate: { @Sendable (produced: (value: T, version: UInt64)) in
                     let value = produced.value
                     var postLockCallbacks: [() -> Void] = []

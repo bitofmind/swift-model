@@ -6,6 +6,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **A memoize re-evaluated during its model's teardown ran its producer on the torn-down model, recording unattributed "memoize(...) on an unanchored model node" issues.** A teardown cuts a model's parent links before it destructs the model and cancels its memoizes, and the parent-link change wakes memoizes that read ancestors. On the `withObservationTracking` path the re-evaluation is scheduled on the background queue; one already past its cancellation check blocked on the context lock until the cascade finished, then ran `produce()` on a model with no ancestors. A producer like `node.memoize { node.member(in: .ancestors) ?? TimelineModel() }` then fell back to a fresh, never-anchored model, and the memoize it called on that model reported. The report was raised on the background queue after the test had finished, so it was attributed to no test and made `xcodebuild` exit nonzero despite `TEST SUCCEEDED` (57 per `ParallelEditorTests` run downstream).
+  - Once inside the context lock, the memoize's update closure now checks whether the model has been destructed, and if so serves its last produced value instead of running the producer. The result would have been discarded anyway, because teardown clears the cache.
+  - `MemoizeDuringTeardownTests` reproduces the downstream shape. Without the fix, 200 iterations ran the producer on a torn-down model 293 times and recorded 186 unattributed issues; with it, zero and zero.
+
 ---
 
 ## [1.1.0] — Signals (`onSignal` / `signal` / `onTeardown`) + `TestPredicate` `==` no longer leaks into app code
