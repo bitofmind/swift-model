@@ -20,9 +20,17 @@ final class Cancellations: @unchecked Sendable {
             cancelAll(for: key)
         }
 
-        lock {
-            guard registered[c.id] != nil else { return }
-            keyed[.init(key: key), default: []].append(c.id)
+        let cancelNow: Bool = lock {
+            guard registered[c.id] != nil else { return false }
+            let key = CancellableKey(key: key)
+            // Keying into a context that has already been cancelled: its cancel has run
+            // and will never reach this one — cancel it now instead (see `ContextToken`).
+            if key.contextToken?.isCancelled == true { return true }
+            keyed[key, default: []].append(c.id)
+            return false
+        }
+        if cancelNow {
+            cancel(c)
         }
     }
 
@@ -42,13 +50,26 @@ final class Cancellations: @unchecked Sendable {
     }
 
     func register(_ c: InternalCancellable) {
+        let contexts = AnyCancellable.contexts
+        var inCancelledContext = false
         let shouldImmediatelyCancel: Bool = lock {
             if _sealed { return true }
+            // Registered inside a context that has already been cancelled (e.g. a task
+            // started by a task whose context was just cancelled): cancel at once, or
+            // nothing ever would (see `ContextToken`).
+            if contexts.contains(where: { $0.contextToken?.isCancelled == true }) {
+                inCancelledContext = true
+                return false
+            }
             registered[c.id] = c
-            for key in AnyCancellable.contexts {
+            for key in contexts {
                 keyed[key, default: []].append(c.id)
             }
             return false
+        }
+        if inCancelledContext {
+            c.onCancel()
+            return
         }
         if shouldImmediatelyCancel {
             // Not while holding `lock` — `reportIssue` must never run inside a
@@ -93,8 +114,13 @@ final class Cancellations: @unchecked Sendable {
     }
 
     func cancelAll(for key: some Hashable&Sendable) {
+        let key = CancellableKey(key: key)
         let cancellables = lock {
-            (keyed.removeValue(forKey: .init(key: key)) ?? []).compactMap { id in
+            // Close a one-shot context in the SAME critical section that takes the
+            // snapshot, so a concurrent registration under it either lands in this
+            // snapshot or sees it closed — never neither.
+            key.contextToken?.markCancelled()
+            return (keyed.removeValue(forKey: key) ?? []).compactMap { id in
                 registered.removeValue(forKey: id)
             }
         }
@@ -165,8 +191,33 @@ enum ContextCancellationKey {
     case onActivate
 }
 
+/// The key of a one-shot cancellation context: the anonymous `cancellationContext { }`,
+/// and the context `node.task` wraps every task in. Unlike a user key, such a context is
+/// never reused, so once cancelled it stays cancelled — and a cancellable registered
+/// under it AFTER its cancel has run must be cancelled immediately rather than left
+/// running with nothing left to cancel it.
+///
+/// That window is real: a child task is spawned first and keyed into its parent's
+/// context afterwards (`inheritCancellationContext()`), so the parent can be cancelled
+/// in between — `forEach(cancelPrevious:)` then left its in-flight body running after
+/// the subscription was cancelled. `isCancelled` is set and read under the
+/// `Cancellations` lock that also guards `keyed`, which makes "register" and "cancel"
+/// linearizable per store.
+final class ContextToken: Hashable, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _isCancelled = false
+
+    var isCancelled: Bool { lock { _isCancelled } }
+    func markCancelled() { lock { _isCancelled = true } }
+
+    static func == (lhs: ContextToken, rhs: ContextToken) -> Bool { lhs === rhs }
+    func hash(into hasher: inout Hasher) { hasher.combine(ObjectIdentifier(self)) }
+}
+
 struct CancellableKey: Hashable, @unchecked Sendable {
     var key: AnyHashable
+
+    var contextToken: ContextToken? { key.base as? ContextToken }
 
     init<Key: Hashable&Sendable>(key: Key) {
         if let key = key as? CancellableKey {

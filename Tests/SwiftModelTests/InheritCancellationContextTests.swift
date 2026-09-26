@@ -1,6 +1,7 @@
 import Testing
 import AsyncAlgorithms
 import Foundation
+import ConcurrencyExtras
 @testable import SwiftModel
 
 struct InheritCancellationContextTests {
@@ -147,6 +148,82 @@ struct InheritCancellationContextTests {
             #expect(processedCount == 0)
         }
     }
+}
+
+// MARK: - Keying into an already-cancelled context
+
+/// A child is spawned first and keyed into its parent's context afterwards, so the
+/// parent's context can be cancelled in between. Its cancel has then already run; the
+/// late child must be cancelled at once, not left running with nothing to cancel it.
+/// (`forEach(cancelPrevious:)` hit exactly this: cancelling the subscription while a body
+/// had just started left the body running — `testForEachCancelPreviousInheritsContext`
+/// timed out when `subscription.cancel()` landed in that window.)
+struct CancelledContextKeyingTests {
+    @Test func inheritingAnAlreadyCancelledContextCancelsImmediately() async throws {
+        let model = InheritModel().withAnchor().testNode
+        let started = AsyncChannel<Void>()
+        let childCancelled = LockIsolated(false)
+        let parentDone = LockIsolated(false)
+
+        let parent = model.task {
+            await started.send(())
+            while !Task.isCancelled { await Task.yield() }   // our context is now cancelled
+            model.onCancel { childCancelled.setValue(true) }.inheritCancellationContext()
+            parentDone.setValue(true)
+        }
+
+        var it = started.makeAsyncIterator()
+        await it.next()
+        parent.cancel()
+        try await waitUntil(parentDone.value)
+        #expect(childCancelled.value)
+    }
+
+    @Test func registeringUnderACancelledOneShotContextCancelsImmediately() {
+        let cancellations = Cancellations()
+        let context = ContextToken()
+        let inside = Recording(id: cancellations.nextId)
+        AnyCancellable.$contexts.withValue([CancellableKey(key: context)]) {
+            cancellations.register(inside)
+        }
+
+        cancellations.cancelAll(for: context)
+        #expect(inside.cancelled.value)
+
+        // Keyed in after the cancel (`inheritCancellationContext` / `cancel(for:)`).
+        let keyedLate = Recording(id: cancellations.nextId)
+        cancellations.register(keyedLate)
+        cancellations.cancel(keyedLate, for: context, cancelInFlight: false)
+        #expect(keyedLate.cancelled.value)
+
+        // Registered inside the cancelled context.
+        let registeredLate = Recording(id: cancellations.nextId)
+        AnyCancellable.$contexts.withValue([CancellableKey(key: context)]) {
+            cancellations.register(registeredLate)
+        }
+        #expect(registeredLate.cancelled.value)
+    }
+
+    @Test func userKeysStayReusableAfterCancelAll() {
+        let cancellations = Cancellations()
+        let first = Recording(id: cancellations.nextId)
+        cancellations.register(first)
+        cancellations.cancel(first, for: "reload", cancelInFlight: false)
+        cancellations.cancelAll(for: "reload")
+        #expect(first.cancelled.value)
+
+        let second = Recording(id: cancellations.nextId)
+        cancellations.register(second)
+        cancellations.cancel(second, for: "reload", cancelInFlight: false)
+        #expect(!second.cancelled.value)   // a user key is not one-shot
+    }
+}
+
+private final class Recording: InternalCancellable, Sendable {
+    let id: Int
+    let cancelled = LockIsolated(false)
+    init(id: Int) { self.id = id }
+    func onCancel() { cancelled.setValue(true) }
 }
 
 // MARK: - Supporting types

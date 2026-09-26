@@ -12,6 +12,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
   - Once inside the context lock, the memoize's update closure now checks whether the model has been destructed, and if so serves its last produced value instead of running the producer. The result would have been discarded anyway, because teardown clears the cache.
   - `MemoizeDuringTeardownTests` reproduces the downstream shape. Without the fix, 200 iterations ran the producer on a torn-down model 293 times and recorded 186 unattributed issues; with it, zero and zero.
 
+- **Cancelling a `forEach(cancelPrevious: true)` subscription could leave its in-flight body running.** A child task is spawned first and keyed into its parent's cancellation context afterwards (`inheritCancellationContext()`), so the parent's context could be cancelled in between. Its cancel had then already run and never reached the child. For `forEach(cancelPrevious:)` that meant `subscription.cancel()`, landing right after a body started, cancelled the outer loop but left the body running to completion. The same hole applied to any `task { … }.inheritCancellationContext()` inside a task whose context was just cancelled. `InheritCancellationContextTests.testForEachCancelPreviousInheritsContext` hit it intermittently in CI and 7 times in 10 when run alone locally.
+  - One-shot contexts — the anonymous `cancellationContext { }`, which every `node.task` is wrapped in — now use a `ContextToken` key that stays cancelled once cancelled.
+  - Closing the token and taking the snapshot of its registrations happen in one critical section under the store's lock. Keying a cancellable into a closed context (or registering one inside it) takes the same lock and cancels it at once. So a registration racing the cancel either lands in the snapshot or sees the context closed, never neither.
+  - User keys (`cancellationContext(for: key)`, `cancel(for:)`, `cancelInFlight`) stay reusable: they are not one-shot.
+  - Validation: with the race window artificially widened, the test failed every run before the fix and passes every run after it. Alone it went from 3/10 passing to 20/20. `CancelledContextKeyingTests` pins the behaviour deterministically; its public-API case fails without the fix.
+
 ---
 
 ## [1.1.0] — Signals (`onSignal` / `signal` / `onTeardown`) + `TestPredicate` `==` no longer leaks into app code
