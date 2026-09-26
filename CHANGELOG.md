@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.1.1] — Memoize no longer re-evaluates on torn-down models + `forEach(cancelPrevious:)` cancellation fix
+
 ### Fixed
 
 - **A memoize re-evaluated during its model's teardown ran its producer on the torn-down model, recording unattributed "memoize(...) on an unanchored model node" issues.** A teardown cuts a model's parent links before it destructs the model and cancels its memoizes, and the parent-link change wakes memoizes that read ancestors. On the `withObservationTracking` path the re-evaluation is scheduled on the background queue; one already past its cancellation check blocked on the context lock until the cascade finished, then ran `produce()` on a model with no ancestors. A producer like `node.memoize { node.member(in: .ancestors) ?? TimelineModel() }` then fell back to a fresh, never-anchored model, and the memoize it called on that model reported. The report was raised on the background queue after the test had finished, so it was attributed to no test and made `xcodebuild` exit nonzero despite `TEST SUCCEEDED` (57 per `ParallelEditorTests` run downstream).
