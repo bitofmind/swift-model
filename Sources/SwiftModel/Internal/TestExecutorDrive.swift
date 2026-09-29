@@ -352,7 +352,22 @@ extension TestAccess {
                 await exec.waitUntilIdleOrDeadline(checkDeadline)
                 if !bg.isIdle { await bg.waitForCurrentItems(deadline: checkDeadline) }
                 if !main.isIdle { await main.waitForCurrentItems(deadline: checkDeadline) }
-                let idleNow = exec.isExecutorIdle && bg.isIdle && main.isIdle && !self.hasPendingStartWork
+                let queuesIdle = exec.isExecutorIdle && bg.isIdle && main.isIdle
+                let idleNow = queuesIdle && !self.hasPendingStartWork
+                if queuesIdle && !idleNow {
+                    // Only a task pending its first run holds the window open, and none
+                    // of the waits above suspended: they all resolve at once on idle
+                    // queues, and a continuation resumed inside its own body does not
+                    // suspend the task. Re-checking straight away would spin on this
+                    // thread — and a pending task whose first job needs it (one spawned
+                    // without the harness executor runs on the cooperative pool, which
+                    // enough spinning waits fill up) could never start, while the
+                    // pool-hosted trait-cap watchdogs starve too. Give the thread up for
+                    // a poll interval instead; a task start is not an event the drive
+                    // can await (the start may not even see this test's `ModelAccess`).
+                    await _gtsSleep(Self._pendingStartPollNs, hangDeadlineNs: hangDeadlineNs)
+                    continue
+                }
                 if idleNow {
                     // Debounce against COMPLETIONS too, not just writes and
                     // enqueues (`exec.activityNs` when idle = max(birth,
@@ -386,6 +401,10 @@ extension TestAccess {
         #endif
         return .reached
     }
+
+    /// How often `_driveToStableFixpoint` re-checks while the only thing keeping the model
+    /// from idle is a task that has not started yet. Cadence only — never a verdict.
+    static var _pendingStartPollNs: UInt64 { 1_000_000 }   // 1 ms
 
     /// How often the busy-side waits in `_driveToStableFixpoint` wake to
     /// re-inspect the runaway-fire delta (and the termination ceiling) while
