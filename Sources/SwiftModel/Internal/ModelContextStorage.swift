@@ -455,30 +455,3 @@ extension AnyContext {
         }
     }
 }
-
-// MARK: - Internal Model subscript for context storage observation
-//
-// Provides a WritableKeyPath<M, V> rooted at the Model type itself.
-// Swift requires keypath subscript indices to be Hashable; AnyHashableSendable satisfies this,
-// and distinct storage keys produce distinct AnyHashableSendable values, so Swift forms
-// a distinct WritableKeyPath<M, V> per storage key. This path composes with rootPaths in
-// TestAccess exactly like a regular @Model property keypath.
-//
-// This subscript is internal-only — it is the bridge between the typed storage system
-// and the TestAccess observation machinery. Users always use `node.context.myKey`;
-// `Context<M>` uses this subscript internally in willAccessStorage/didModifyStorage
-// to produce the typed keypath needed for TestAccess snapshot tracking.
-extension Model {
-    subscript<V>(_metadata storage: ContextStorage<V>) -> V {
-        // The subscript index must be Hashable for keypath formation. We use a wrapper
-        // that hashes/equals on storage.key so distinct storages produce distinct paths.
-        get {
-            guard let context = node._context else { return storage.defaultValue }
-            switch storage.propagation {
-            case .local: return context[storage]
-            case .environment: return context.environmentValue(for: storage)
-            }
-        }
-        set { node._context?[storage] = newValue }
-    }
-}

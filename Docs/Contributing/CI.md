@@ -23,7 +23,11 @@ GitHub Actions (`.github/workflows/ci.yml`):
   and `SwiftModelBenchmarks` doesn't compile for WASI (`DispatchTime`,
   `DispatchQueue.concurrentPerform`). Running the bundle under wasmtime is still
   open — `GlobalTickScheduler` is GCD-backed and would need a WASI-native path
-  first.
+  first. Until then, `scripts/wasm-smoke` is the runtime check, run locally
+  before a PR: it builds `Tests/WASMSmoke` (a small executable, not the suite)
+  and runs it under wasmtime. It exists because a Swift compiler bug with key
+  path indices aligned beyond a pointer made `LocalStorage<UInt64>` trap on
+  wasm32 while compiling fine.
 
 **Linux `swift test` goes through `scripts/ci-test`.** On Linux, swift-syntax's
 compiler-plugin message handler intermittently logs `Internal Error:

@@ -219,21 +219,27 @@ public extension _ModelStateType {
     subscript(environmentKey _: AnyHashableSendable) -> AnyHashableSendable { fatalError() }
     subscript(preferenceKey _: AnyHashableSendable) -> AnyHashableSendable { fatalError() }
     subscript(memoizeKey _: AnyHashableSendable) -> AnyHashableSendable { fatalError() }
-
-    // Writable stub paths for typed TestAccess snapshot tracking.
-    // The getter is never called (precomputedStorageValue thread-local provides the value).
-    // The setter is a no-op (context storage lives outside _State).
-    subscript<V>(_metadata _: ContextStorage<V>) -> V {
-        get { fatalError() }
-        set {}
-    }
-    subscript<V>(_preference _: PreferenceStorage<V>) -> V {
-        get { fatalError() }
-        set {}
-    }
 }
 
 extension _ModelStateType {
+    // Writable stub paths for typed TestAccess snapshot tracking, indexed by the storage's key.
+    // The getter is never called (precomputedStorageValue thread-local provides the value).
+    // The setter is a no-op (context storage lives outside _State).
+    //
+    // The index is deliberately the non-generic key, not the `ContextStorage<V>` /
+    // `PreferenceStorage<V>`: those embed a `defaultValue: V`, and a key path formed in generic
+    // code whose index layout depends on `V` is misread by the Swift compiler when `V` is
+    // aligned beyond a pointer (`UInt64`/`Double` on wasm32, SIMD types on 64-bit).
+    // See `OverAlignedKeyPathIndexTests`.
+    subscript<V>(_metadata _: AnyHashableSendable) -> V {
+        get { fatalError() }
+        set {}
+    }
+    subscript<V>(_preference _: AnyHashableSendable) -> V {
+        get { fatalError() }
+        set {}
+    }
+
     // Internal-only: `_ParentsObservationKey` is an internal type so this subscript
     // cannot be public. Only accessed via `\M._ModelState[_parentsObservationKey: ...]`
     // inside the framework.

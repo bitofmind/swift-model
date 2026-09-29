@@ -29,6 +29,7 @@ Tests/
   SwiftModelSnapshotTests/   # InlineSnapshotTesting-based output / diff tests
   SwiftModelBenchmarkTests/  # Performance benchmarks (skipped from regular runs)
   SwiftModelMacroTests/      # Macro expansion tests (MacroTesting)
+  WASMSmoke/                 # Separate package: wasm32 runtime smoke (scripts/wasm-smoke)
 Examples/                    # Standalone example apps (each embeds a copy of the library)
 Docs/                        # User-facing guides (linked from README)
 Docs/Contributing/           # Contributor / agent deep-dives
@@ -44,6 +45,9 @@ scripts/test
 
 # One test (forwards --filter to swift test).
 scripts/test --filter SwiftModelTests.SomeTestName
+
+# Runtime smoke under wasmtime (CI only compiles WASM).
+scripts/wasm-smoke
 
 # Stress loop. Use after touching observation / coalescing / settling code.
 scripts/test --loop 100
@@ -153,6 +157,12 @@ based on evidence and progress, not wall-clock time.
   `CHANGELOG.md`, so a release only has to stamp that section.
 - Run `scripts/test` (and `--no-parallel` for anything touching
   observation or settling) before pushing.
+- Run `scripts/wasm-smoke` before opening a PR that changes `Sources/`. CI only
+  compiles for WASM; this runs a small executable under wasmtime, because
+  wasm32's 4-byte pointers change what the compiler generates (see
+  `OverAlignedKeyPathIndexTests`). It needs wasmtime, a Swift WASM SDK and the
+  matching open-source toolchain (the script's header says how it finds them).
+  If they aren't installed, say so in the PR rather than skipping silently.
 
 ## Further reading
 
