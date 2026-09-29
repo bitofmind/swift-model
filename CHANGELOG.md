@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.1.2] — Over-aligned storage and element ids no longer crash (wasm `LocalStorage<UInt64>`) + WASM runtime smoke in CI
+
 ### Fixed
 
 - **Local, environment and preference storage of an over-aligned value type, and collection elements with an over-aligned `id`, read garbage or crashed.** On wasm32 that is any 8-byte-aligned type: reading a `LocalStorage<UInt64>` trapped with "null function" in `keypath_destroy` under `Context.willAccessStorage`, and `Int64` or `Double` did the same. On 64-bit platforms it takes a 16-byte-aligned type, such as a SIMD vector. The cause is a Swift compiler bug, present in 6.3.3 and 6.4.0: a key path formed in generic code whose subscript index has a layout that depends on a generic parameter is packed and unpacked at different offsets when that index is aligned beyond a pointer. SwiftModel formed such key paths for storage (`[_metadata: ContextStorage<V>]`), preferences (`[_preference: PreferenceStorage<V>]`) and container elements (`[cursor: ContainerCursor<ID, …>]`).
