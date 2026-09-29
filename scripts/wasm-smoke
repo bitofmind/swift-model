@@ -1,11 +1,10 @@
 #!/bin/bash
 # Build Tests/WASMSmoke for wasm32-unknown-wasip1 and run it under wasmtime.
 #
-# CI only *compiles* SwiftModel for WASM; the test suite can't run on WASI yet
-# (see Docs/Contributing/CI.md). This smoke executable is the runtime check:
-# it exercises code paths that have broken on wasm32 before, where a
-# 32-bit pointer size changes what the compiler generates. Run it before
-# opening a PR that changes the library.
+# The test suite can't run on WASI yet (see Docs/Contributing/CI.md), so this
+# smoke executable is the runtime check: it exercises code paths that have
+# broken on wasm32 before, where a 32-bit pointer size changes what the
+# compiler generates. CI's WASM job runs it; run it locally to reproduce.
 #
 # Usage:
 #   scripts/wasm-smoke                 # debug build
