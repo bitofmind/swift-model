@@ -329,8 +329,15 @@ jobs:
           swift build --build-tests \
             --swift-sdk swift-6.3-RELEASE_wasm
 
+      - name: Install xz (unpacks the wasmtime release tarball)
+        # The swift:6.3.0 container image doesn't ship xz, and the setup
+        # action below extracts a .tar.xz.
+        run: apt-get update -qq && apt-get install -y -qq xz-utils
+
       - name: Install wasmtime
         uses: bytecodealliance/actions/wasmtime/setup@v1
+        with:
+          version: "49.0.1"
 
       - name: Run WASM smoke under wasmtime
         # The test bundle above can't run on WASI yet: `GlobalTickScheduler`
