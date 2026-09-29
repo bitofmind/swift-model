@@ -6,6 +6,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **`settle()` could spin forever on a CPU core while a model task was waiting to start, and starve the whole test process.** The drive loop holds its quiet window open while a registered task has not run yet. When that was the only pending work, every wait in the loop returned at once, so the loop re-checked in a tight spin without giving up its thread. A task spawned without the harness executor (for example from a main-queue callback) starts on the cooperative pool. Once enough tests spun at the same time they held every pool thread, so those tasks never started and no settle could finish. The `.modelTesting` trait-cap watchdogs run on the same pool, so they starved too and never cancelled the test. Downstream, one `settle()` pinned about 10 cores for over 23 minutes, most of it in `hasPendingStartTask`'s tree walk.
+  - While a task that hasn't started is the only thing keeping the model from idle, the loop now sleeps a 1 ms poll interval on the timer, freeing its thread, instead of re-checking at once.
+  - `SettlePendingStartSpinTests` reproduces the deadlock on a single-thread task executor: a pending task needs the thread `settle()` runs on. Before the fix the test hit its 30 s trait cap; after it, it passes in under 0.1 s.
+
 ---
 
 ## [1.1.2] — Over-aligned storage and element ids no longer crash (wasm `LocalStorage<UInt64>`) + WASM runtime smoke in CI
