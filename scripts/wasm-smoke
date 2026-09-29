@@ -1,0 +1,53 @@
+#!/bin/bash
+# Build Tests/WASMSmoke for wasm32-unknown-wasip1 and run it under wasmtime.
+#
+# The test suite can't run on WASI yet (see Docs/Contributing/CI.md), so this
+# smoke executable is the runtime check: it exercises code paths that have
+# broken on wasm32 before, where a 32-bit pointer size changes what the
+# compiler generates. CI's WASM job runs it; run it locally to reproduce.
+#
+# Usage:
+#   scripts/wasm-smoke                 # debug build
+#   scripts/wasm-smoke -c release      # extra args are forwarded to `swift build`
+#
+# Needs:
+#   • a Swift WASM SDK (`swift sdk list`); override the pick with SWIFT_WASM_SDK.
+#   • a matching open-source toolchain — Xcode's `swift` can't target WASM.
+#     On macOS the script uses ~/Library/Developer/Toolchains/swift-<version>-RELEASE.xctoolchain
+#     for the SDK's version; elsewhere, `swift` on PATH. Override with SWIFT_BIN.
+#   • wasmtime (`brew install wasmtime`, or https://wasmtime.dev).
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PACKAGE_DIR="$REPO_ROOT/Tests/WASMSmoke"
+
+if ! command -v wasmtime >/dev/null 2>&1; then
+    echo "error: wasmtime not found (brew install wasmtime, or see https://wasmtime.dev)" >&2
+    exit 1
+fi
+
+SDK="${SWIFT_WASM_SDK:-}"
+if [[ -z "$SDK" ]]; then
+    # Newest non-embedded WASM SDK, e.g. swift-6.4.0-RELEASE_wasm.
+    SDK="$(swift sdk list 2>/dev/null | grep -E '_wasm$' | sort -V | tail -1 || true)"
+fi
+if [[ -z "$SDK" ]]; then
+    echo "error: no Swift WASM SDK installed (swift sdk list). Install one from https://www.swift.org/install/ or set SWIFT_WASM_SDK." >&2
+    exit 1
+fi
+
+SWIFT="${SWIFT_BIN:-}"
+if [[ -z "$SWIFT" ]]; then
+    TOOLCHAIN="$HOME/Library/Developer/Toolchains/${SDK%_wasm}.xctoolchain/usr/bin/swift"
+    if [[ -x "$TOOLCHAIN" ]]; then
+        SWIFT="$TOOLCHAIN"
+    else
+        SWIFT="swift"
+    fi
+fi
+
+echo "wasm-smoke: SDK $SDK, toolchain $SWIFT"
+cd "$PACKAGE_DIR"
+"$SWIFT" build --swift-sdk "$SDK" --product WASMSmoke "$@"
+BIN_DIR="$("$SWIFT" build --swift-sdk "$SDK" --product WASMSmoke --show-bin-path "$@")"
+wasmtime "$BIN_DIR/WASMSmoke.wasm"

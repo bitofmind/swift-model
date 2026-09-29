@@ -54,7 +54,7 @@ final class ThreadLocals: @unchecked Sendable {
     /// the typed context storage path calls so context changes are reported under `.local`.
     var modificationArea: _ExhaustivityBits? = nil
     /// Guards against infinite recursion in `willAccessStorage`/`didModifyStorage`.
-    /// Reading `readModel[keyPath: \M[_metadata: storage]]` inside the TestAccess closure
+    /// Reading `readModel[keyPath: \M._ModelState[_metadata: storage.key]]` inside the TestAccess closure
     /// re-enters `willAccessStorage` through the context getter. This flag breaks that cycle.
     var isAccessingMetadataStorage = false
     /// Set while `TestAccess` is applying `Access.apply` closures to snapshot copies inside

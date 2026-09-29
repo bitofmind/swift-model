@@ -272,7 +272,7 @@ jobs:
     # (ObjectiveC, AppKit, UIKit) evaluate against the container OS, which
     # correctly reflects the WASM target's behaviour.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     container:
       image: swift:6.3.0
     # Both levers are set job-wide so every `swift` invocation evaluates the
@@ -329,10 +329,24 @@ jobs:
           swift build --build-tests \
             --swift-sdk swift-6.3-RELEASE_wasm
 
-      # Not yet done: actually *running* the bundle under wasmtime. That's no
-      # longer blocked by the toolchain — it's a test-suite question. WASI is
-      # single-threaded with no `DispatchQueue`, and `GlobalTickScheduler` (the
-      # deadline source behind `expect` / `settle` / `waitUntil`) is GCD-backed,
-      # so the wait primitives need a WASI-native scheduler path before the
-      # suite could run rather than hang. Compile + link is the useful gate
-      # until someone takes that on.
+      - name: Install xz (unpacks the wasmtime release tarball)
+        # The swift:6.3.0 container image doesn't ship xz, and the setup
+        # action below extracts a .tar.xz.
+        run: apt-get update -qq && apt-get install -y -qq xz-utils
+
+      - name: Install wasmtime
+        uses: bytecodealliance/actions/wasmtime/setup@v1
+        with:
+          version: "49.0.1"
+
+      - name: Run WASM smoke under wasmtime
+        # The test bundle above can't run on WASI yet: `GlobalTickScheduler`
+        # (the deadline source behind `expect` / `settle` / `waitUntil`) is
+        # GCD-backed and would need a WASI-native path first. A plain
+        # executable runs fine, so `Tests/WASMSmoke` exercises at runtime the
+        # code paths that have broken on wasm32 while compiling cleanly — e.g.
+        # the over-aligned key path index bug that made
+        # `LocalStorage<UInt64>` trap (see `OverAlignedKeyPathIndexTests`).
+        run: scripts/wasm-smoke
+        env:
+          SWIFT_WASM_SDK: swift-6.3-RELEASE_wasm

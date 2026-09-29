@@ -10,7 +10,7 @@ their area.
 
 SwiftModel is a Swift library for composing models that drive SwiftUI views. It uses `@Model` macros, observation tracking, lifetime management (anchors), exhaustive testing tooling (`ModelTester`), dependency injection (via `swift-dependencies`), and async task management.
 
-The library targets Apple platforms (macOS 11+, iOS 14+, tvOS 14+, watchOS 6+) and Linux. It also compiles for Android and WASM (build only; CI checks both).
+The library targets Apple platforms (macOS 11+, iOS 14+, tvOS 14+, watchOS 6+) and Linux. It also compiles for Android and WASM (CI builds both, and runs a WASM smoke executable under wasmtime).
 
 ## Repository layout
 
@@ -29,6 +29,7 @@ Tests/
   SwiftModelSnapshotTests/   # InlineSnapshotTesting-based output / diff tests
   SwiftModelBenchmarkTests/  # Performance benchmarks (skipped from regular runs)
   SwiftModelMacroTests/      # Macro expansion tests (MacroTesting)
+  WASMSmoke/                 # Separate package: wasm32 runtime smoke (scripts/wasm-smoke)
 Examples/                    # Standalone example apps (each embeds a copy of the library)
 Docs/                        # User-facing guides (linked from README)
 Docs/Contributing/           # Contributor / agent deep-dives
@@ -44,6 +45,9 @@ scripts/test
 
 # One test (forwards --filter to swift test).
 scripts/test --filter SwiftModelTests.SomeTestName
+
+# WASM runtime smoke under wasmtime (CI runs it too).
+scripts/wasm-smoke
 
 # Stress loop. Use after touching observation / coalescing / settling code.
 scripts/test --loop 100
@@ -153,6 +157,11 @@ based on evidence and progress, not wall-clock time.
   `CHANGELOG.md`, so a release only has to stamp that section.
 - Run `scripts/test` (and `--no-parallel` for anything touching
   observation or settling) before pushing.
+- CI's WASM job runs `scripts/wasm-smoke`, a small executable under wasmtime.
+  wasm32's 4-byte pointers change what the compiler generates (see
+  `OverAlignedKeyPathIndexTests`). Run it locally to reproduce a failure there;
+  it needs wasmtime, a Swift WASM SDK and the matching open-source toolchain
+  (the script's header says how it finds them).
 
 ## Further reading
 

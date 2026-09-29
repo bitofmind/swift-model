@@ -185,15 +185,26 @@ func frozenCopy<T>(_ value: T) -> T {
 }
 
 struct ContainerCursor<ID: Hashable, Root, Value>: Hashable, @unchecked Sendable {
-    let id: ID
+    // The id is boxed so this struct's layout doesn't depend on `ID`. The cursor is a key path
+    // subscript index (`\C.[cursor:]`) formed in generic code, and the Swift compiler misreads
+    // such an index when it is aligned beyond a pointer (e.g. a `UInt64` id on wasm32).
+    // See `OverAlignedKeyPathIndexTests`.
+    private let idBox: IDBox
     let get: @Sendable (Root) -> Value
     let set: @Sendable (inout Root, Value) -> Void
 
+    private final class IDBox {
+        let id: ID
+        init(_ id: ID) { self.id = id }
+    }
+
     init(id: ID, get: @escaping @Sendable (Root) -> Value, set: @escaping @Sendable (inout Root, Value) -> Void) {
-        self.id = id
+        self.idBox = IDBox(id)
         self.get = get
         self.set = set
     }
+
+    var id: ID { idBox.id }
 
     static func == (lhs: ContainerCursor, rhs: ContainerCursor) -> Bool {
         lhs.id == rhs.id

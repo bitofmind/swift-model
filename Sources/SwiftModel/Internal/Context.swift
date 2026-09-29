@@ -475,12 +475,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // Shadow gap-race detector (withObservationTracking path): subscribe on the TYPED
         // `[_metadata:]` path — that is the key `didModifyStorage`'s post-lock callbacks
         // fire (`modifyCallbacks` for the untyped path never fire). See `willAccessGapShadow`.
-        willAccessGapShadow(at: \M._ModelState[_metadata: storage] as WritableKeyPath<M._ModelState, V>&Sendable)
+        willAccessGapShadow(at: \M._ModelState[_metadata: storage.key] as WritableKeyPath<M._ModelState, V>&Sendable)
 
         // Typed writable path on M._ModelState — drives TestAccess snapshot tracking so that
         // `model.node.local.myKey`/`model.node.environment.myKey` inside expect {} is fully assertable.
-        // \M._ModelState[_metadata: storage] is a WritableKeyPath because ContextStorage<V>
-        // is Hashable (via its key), giving Swift what it needs to form and distinguish paths.
+        // \M._ModelState[_metadata: storage.key] is a WritableKeyPath<_, V> indexed by the storage's
+        // key alone, so distinct storages produce distinct paths. The index must not be the
+        // `ContextStorage<V>` itself — see `_ModelStateType[_metadata:]`.
         // Tag the access as `.metadata` so TestAccess records it under the correct exhaustivity area.
         //
         // The getter on _ModelStateType._metadata stubs have fatalError — TestAccess reads the value
@@ -488,7 +489,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // The re-entry guard (isAccessingMetadataStorage) is no longer needed since calling the getter
         // is no longer possible from TestAccess, but we keep it for clarity of intent.
         guard !threadLocals.isAccessingMetadataStorage else { return }
-        let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_metadata: storage]
+        let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_metadata: storage.key]
         let mc = metadataModelContext()
         let storageArea: _ExhaustivityBits = storage.propagation == .environment ? .environment : .local
         // Pre-compute storage value so any code that needs to read it (TestAccess's
@@ -535,7 +536,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[environmentKey: storage.key]
             // Typed writable path on M._ModelState — drives TestAccess didModify so writes are tracked.
             // Tag the modification as `.metadata` so TestAccess records it under the correct area.
-            let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_metadata: storage]
+            let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_metadata: storage.key]
             let mc = metadataModelContext()
 
             lock { self.didModify() }
@@ -612,7 +613,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // untyped path never fire). This runs per visited context during `preferenceValue`'s
         // subtree aggregation, so a contribution write on any visited descendant fires the
         // subscription registered on that same context. See `willAccessGapShadow`.
-        willAccessGapShadow(at: \M._ModelState[_preference: storage] as WritableKeyPath<M._ModelState, V>&Sendable)
+        willAccessGapShadow(at: \M._ModelState[_preference: storage.key] as WritableKeyPath<M._ModelState, V>&Sendable)
 
         // The typed writable path for TestAccess is now handled by willAccessPreferenceValue,
         // called after preferenceValue finishes aggregating with the computed value in hand.
@@ -631,7 +632,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // already in hand. This avoids re-entering preferenceValue (which acquires child
         // locks) while the caller's context lock may still be held.
         guard !threadLocals.isAccessingMetadataStorage else { return }
-        let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_preference: storage]
+        let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_preference: storage.key]
         let mc = metadataModelContext()
         // Set `precomputedPreferenceValue` both during the `willAccess` call and around
         // its returned closure — symmetric with the `precomputedStorageValue` pattern in
@@ -672,7 +673,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // Registrar call uses _StateObserver (no Model Observable conformance needed).
             let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[preferenceKey: storage.key]
             // Typed writable path on M._ModelState — drives TestAccess didModify so writes are tracked.
-            let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_preference: storage]
+            let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_preference: storage.key]
             let mc = metadataModelContext()
 
             lock { self.didModify() }
@@ -752,7 +753,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[preferenceKey: storage.key, modelID: reference.modelID])
         }
         modelContext.invokeDidModify(at: untypedPath)?()
-        let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_preference: storage]
+        let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_preference: storage.key]
         #if DEBUG
         let prefName = storage.name
         let prefPropDesc: (@Sendable () -> String?)? = { "preference.\(prefName)" }

@@ -312,17 +312,3 @@ extension AnyContext {
         }
     }
 }
-
-// MARK: - Internal Model subscript for preference storage observation
-//
-// Provides a WritableKeyPath<M, V> rooted at the Model type itself, analogous to
-// the `_metadata` subscript for context storage.
-// This subscript is internal-only — it bridges the typed preference storage system
-// and the TestAccess observation machinery. Users always use `node.preference.myKey`;
-// `Context<M>` uses this subscript internally in willAccessPreference/didModifyPreference.
-extension Model {
-    subscript<V>(_preference storage: PreferenceStorage<V>) -> V {
-        get { node.preference[storage] }
-        set { node.preference[storage] = newValue }
-    }
-}
