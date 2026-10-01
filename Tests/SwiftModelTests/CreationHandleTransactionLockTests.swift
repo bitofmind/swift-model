@@ -40,10 +40,16 @@ struct CreationHandleTransactionLockTests {
 
     /// `NSRecursiveLock.try()` from a different thread fails exactly when some thread
     /// holds the lock.
+    ///
+    /// The probe runs on a dedicated `Thread`, not a GCD queue. The caller blocks until
+    /// it answers, and it blocks a Swift-concurrency thread while holding locks. A
+    /// `DispatchQueue.global()` block took ~60 s to be scheduled on a TSan CI runner,
+    /// and parking a cooperative thread that long starved the parallel tests' model
+    /// tasks. A new thread starts at once, so the caller waits only for one `try()`.
     static func isHeldByAnotherThread(_ lock: NSRecursiveLock) -> Bool {
         let result = LockIsolated(false)
         let done = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
+        let probe = Thread {
             if lock.try() {
                 lock.unlock()
                 result.setValue(false)
@@ -52,6 +58,7 @@ struct CreationHandleTransactionLockTests {
             }
             done.signal()
         }
+        probe.start()
         done.wait()
         return result.value
     }
