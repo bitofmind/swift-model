@@ -77,6 +77,11 @@ extension TestAccess {
         /// end of a successful eval (mirrors what the old code captured
         /// before running exhaustion check).
         var capturedValueUpdates: [PartialKeyPath<Root>: [ValueUpdate]]?
+        /// Set when the predicates passed on live state but `isEqualIncludingIds`
+        /// failed: each property whose recorded value (`lastState`) differs from
+        /// the live value the predicate read, with the diff. Reported if the wait
+        /// times out in that state, which would otherwise end with no failure.
+        var laggingAccesses: [(name: String, diff: String)] = []
     }
 
     func expect(settleResetting: _ExhaustivityBits? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
@@ -169,7 +174,25 @@ extension TestAccess {
         var reports: [[(String, FileAndLine)]] = []
         // Copy out under the lock (see `EvalSnapshot`), then report on the copy
         // — the reporting below must NOT hold the lock.
-        let failures = lock { snapshot.failures }
+        let (failures, lagging) = lock { (snapshot.failures, snapshot.laggingAccesses) }
+        if failures.isEmpty, !lagging.isEmpty {
+            // The predicates hold on live state, but the tester's recorded state
+            // never caught up, so the pass could not be confirmed. Without this
+            // report the timeout would end the wait as if it had passed.
+            let details = lagging.map { "\($0.name) (live −, recorded +):\n\($0.diff)" }.joined(separator: "\n")
+            fail(
+                """
+                Expectation met on live state, but the tester's recorded state never caught up: \(lagging.map(\.name).joined(separator: ", "))
+
+                A write reached the model without notifying the tester. \
+                Please report this as a SwiftModel bug.
+
+                \(details)
+                """,
+                at: fileAndLine
+            )
+            return
+        }
         for failure in failures {
             var messages: [(String, FileAndLine)] = []
             if let (lhs, rhs) = failure.predicate.values() {
@@ -311,6 +334,7 @@ extension TestAccess {
         snapshot.failures.removeAll(keepingCapacity: true)
         snapshot.passedAccesses.removeAll(keepingCapacity: true)
         snapshot.capturedValueUpdates = nil
+        snapshot.laggingAccesses.removeAll(keepingCapacity: true)
 
         // Step 1: Evaluate all predicates.
         for predicate in predicates {
@@ -356,6 +380,10 @@ extension TestAccess {
                                currentCount > (prePredicateUpdateCounts[access.path] ?? 0) { return result }
                             let a = lastState[keyPath: access.path]
                             let d = diff(access.capturedValue(), a)
+                            if let d {
+                                let name = access.propertyName.map { "\(access.modelName).\($0)" } ?? access.modelName
+                                snapshot.laggingAccesses.append((name, d))
+                            }
                             return result && d == nil
                         }
                     }

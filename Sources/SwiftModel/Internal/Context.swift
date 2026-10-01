@@ -1079,7 +1079,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // a concurrent `subscript._modify` on another thread can deadlock
         // against an in-flight transaction that holds `context.lock` and
         // then tries to acquire `TestAccess.lock` for its nested writes.
-        let writeLockHolder = modelContext.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner  // lock only; `didModify` goes through `modelContext.invokeDidModify` below
+        let writeLockHolder = (modelContext.access ?? fallbackTestAccess)?.writeLockOwner ?? ModelAccess.current?.writeLockOwner  // lock only; `didModify` goes through `modelContext.invokeDidModify` below
         writeLockHolder?.acquireWriteLock()
         defer { writeLockHolder?.releaseWriteLock() }
         // Defer `ObservationTracking.onObservedChange` enqueues until this write's
@@ -1422,7 +1422,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // The `?? ModelAccess.current` tail is what a probe falls through to, and it is the
         // same instance the nested resolutions inside this write will pick, which is what
         // makes the recursive re-entry work.
-        let activeAccess = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
+        let activeAccess = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current ?? fallbackTestAccess
         let writeLockHolder = activeAccess?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
         writeLockHolder?.acquireWriteLock()
         // Defer `ObservationTracking.onObservedChange`'s `backgroundCallQueue(performUpdate)`
@@ -1737,7 +1737,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // The `?? ModelAccess.current` tail is what a probe falls through to, and it is the
         // same instance the nested resolutions inside this write will pick, which is what
         // makes the recursive re-entry work.
-        let activeAccess = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current
+        let activeAccess = ModelAccess.active ?? accessBox._reference?.access ?? ModelAccess.current ?? fallbackTestAccess
         let writeLockHolder = activeAccess?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
         writeLockHolder?.acquireWriteLock()
         defer { writeLockHolder?.releaseWriteLock() }
