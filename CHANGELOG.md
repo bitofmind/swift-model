@@ -8,6 +8,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ### Fixed
 
+- **1.1.4 could deadlock a test that ran `node.transaction` through a model's creation handle.** 1.1.4 made a write through a handle with no access fall back to the tree's tester, and that write takes the tester's lock. A transaction decides which lock to take before it starts, but its chain lacked the fallback. So `dup.node.transaction { dup.value = … }` took the context lock first and then waited for the tester lock, while any reader holding the tester lock (an `expect` evaluation, a model task reading state) waited for the context lock. Downstream this hung a stream-environment test every time, on 1.1.4 only.
+  - `node.transaction`, and the internal `ModelContext.transaction` / `stateTransaction`, now include the same fallback, so the transaction takes the tester lock before the context lock, the same order as every other writer.
+  - `CreationHandleTransactionLockTests` checks that, inside such a transaction, another thread finds the tester lock already held. Before the fix it found the lock free, every run.
 - **An exhaustivity report named the wrong property when the model held a collection of models before it.** The name comes from counting the model's properties as they are visited, but a collection of models (`[Item]`, `IdentifiedArray`, a collection of `@ModelContainer` enums) was never counted. Each one shifted every later property's name back by one, so a write to `trigger` after `var items: [Item]` was reported as `Root.items: 0 → 1`. Collections are now counted, so the report reads `Root.trigger: 0 → 1`.
   - `PropertyNameAfterCollectionTests` covers a property after a model array and after a collection of `@ModelContainer` enums. Before the fix, both reported the wrong name.
 

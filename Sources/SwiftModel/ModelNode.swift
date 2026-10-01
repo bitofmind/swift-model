@@ -348,7 +348,13 @@ public extension ModelNode {
                 // Use the same writeLockHolder chain that `stateTransaction`
                 // uses for nested property writes — see the comment block in
                 // `Context.transaction(writeLockHolder:_:)`.
-                let writeLockHolder = ModelAccess.active?.writeLockOwner ?? _$modelContext._access._reference?.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
+                // The trailing `fallbackTestAccess` matches the nested writes: a write
+                // whose chain resolves nothing else falls back to the tree's tester
+                // and takes its lock, so this transaction must take it first. Without
+                // it, a transaction through a creation handle held the context lock
+                // while a nested write waited for the tester lock: AB-BA against any
+                // tester-locked reader.
+                let writeLockHolder = ModelAccess.active?.writeLockOwner ?? _$modelContext._access._reference?.access?.writeLockOwner ?? ModelAccess.current?.writeLockOwner ?? context.fallbackTestAccess?.writeLockOwner
                 return context.transaction(writeLockHolder: writeLockHolder, callback)
             }
         } else {
