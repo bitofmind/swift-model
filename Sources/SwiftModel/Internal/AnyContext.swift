@@ -1,5 +1,6 @@
 import Foundation
 import Dependencies
+import IssueReporting
 import OrderedCollections
 import Observation
 
@@ -296,6 +297,22 @@ class AnyContext: @unchecked Sendable {
     /// root `TestAccess` (via `as? TestAccess<…>`) so undo restores propagate
     /// `didModify` notifications. Always `nil` in production.
     weak var modelAccess: ModelAccess?
+
+    /// The access a write notifies when its handle carries none: the root's
+    /// `TestAccess`, if this context's tree is under test.
+    ///
+    /// A handle gets its access when it is read out of a tester's tree. A model
+    /// created outside the tree and then added to it keeps an access-less handle,
+    /// yet writes through it land in the live context. Without this fallback the
+    /// tester never records them: `lastState` keeps the old value, and an
+    /// `expect` on the new value stalls on its "recorded matches live" check.
+    ///
+    /// Gated on `isTesting` (a process-wide constant), so production writes never
+    /// walk to the root.
+    var fallbackTestAccess: ModelAccess? {
+        guard isTesting else { return nil }
+        return rootParent.modelAccess
+    }
 
     /// Captured during `Context<M>.init` to call `model.onActivate()` with correct `let` values.
     /// Called once by `Context<M>.onActivate()` and then cleared.

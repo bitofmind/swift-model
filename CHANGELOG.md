@@ -13,6 +13,13 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
   - Writes to frozen copies or destructed models, reads from fully destructed models, adding an anchored, frozen or destructed model, a second `trackUndo()`, recursive dependencies, a model collection that isn't a `ModelContainer`, and `didSend` on a model outside a tester also name the model type.
   - `IssueModelNameTests` snapshots the unanchored (never anchored and removed), dependency and frozen-copy messages.
 
+### Fixed
+
+- **A write through a model's original handle, after the model was added to a tested tree, never reached the tester, and the `expect` waiting on it stalled silently.** A handle carries its access from where it was read. A model created outside the tree, e.g. a duplicate built with `init` and then appended, keeps an access-less handle, yet writes through it change the live model. `TestAccess` never saw them: its recorded state kept the old value, so an `expect` on the new value read true but failed its "recorded matches live" check, and no further wake came. The wait then ended at the drive's quiet window (2 s × `SWIFT_MODEL_TIMEOUT_SCALE`; under parallel load, never) as a timeout that reported nothing, because the predicate itself held. Downstream, split-then-duplicate tests in an editor took 20 s alone and hit the 120 s test cap on CI.
+  - A write whose handle carries no access now notifies the root's `TestAccess` of the tree it landed in. The fallback is gated on `isTesting`, so production writes are unchanged.
+  - An `expect` that times out with its predicates met on live state but the recorded state lagging now fails with `Expectation met on live state, but the tester's recorded state never caught up: Model.property` and the diff, instead of returning as if it passed.
+  - `PreAnchorHandleWriteTests` covers writes through the creation handle, from the parent and from a child method. Without the fix, both fail with the new message. `LaggingRecordedStateTimeoutTests` covers the report.
+
 ---
 
 ## [1.1.3] — `settle()` no longer spins while a task is pending its first run

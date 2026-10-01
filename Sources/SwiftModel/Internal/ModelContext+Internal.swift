@@ -189,7 +189,7 @@ extension ModelContext {
     @discardableResult
     func invokeDidModify<T>(at path: KeyPath<M._ModelState, T>&Sendable) -> (() -> Void)? {
         let callback: (() -> Void)?
-        if let activeAccess, let context {
+        if let context, let activeAccess = activeAccess ?? context.fallbackTestAccess {
             callback = activeAccess.didModify(from: context, at: path)
         } else {
             callback = nil
