@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+
+- **`SWIFT_MODEL_EXPECT_TRACE=1` reports an `expect` that only passed at the executor drive's fixpoint re-check.** A predicate on tracked state should pass on the write that makes it true. Downstream, two `expect`s on tracked state passed only at the drive's quiet-window re-check under parallel CI load, about 10 s in at `SWIFT_MODEL_TIMEOUT_SCALE=5` instead of under 1 s, which points to a missed reactive wake. With the variable set, each such pass writes one line to stderr. The line gives the call site, the time the `expect` took, how many evaluations it ran, and why the last failing evaluation failed. "predicate false" means no wake saw the change. "recorded state lags live state at `Model.property`" plus the diff means a wake arrived, but the test's recorded copy of that property hadn't caught up. The trace is off by default and costs nothing when off.
+
 ---
 
 ## [1.1.3] — `settle()` no longer spins while a task is pending its first run

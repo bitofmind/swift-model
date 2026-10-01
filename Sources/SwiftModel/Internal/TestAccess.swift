@@ -124,6 +124,12 @@ enum TestAccessOverrides {
     /// `TestAccess._settleRunawayFireBound`), so runaway-detection tests can
     /// trigger on a few hundred fires instead of burning the real bound.
     @TaskLocal static var settleRunawayFireBound: Int? = nil
+    /// Meta-test override for `expect`'s drive grace (`TestAccess._expectGraceNs`),
+    /// so tests that need a fixpoint re-check don't wait the full 2 s × scale.
+    @TaskLocal static var expectGraceNanoseconds: UInt64? = nil
+    /// Meta-test sink for the expect fixpoint trace (`SWIFT_MODEL_EXPECT_TRACE`).
+    /// Setting it enables the trace for expects started in this task scope.
+    @TaskLocal static var expectTraceSink: (@Sendable (String) -> Void)? = nil
 }
 
 // Key for tracking context storage writes on dependency models (which have no root-relative keypath).
@@ -376,6 +382,10 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// currently inside `_noteActivity` can ever observe `_isNotingActivity == true`.
     private var _isNotingActivity = false
     private var _noteActivityRerun = false
+    /// True while `_noteActivity(fromFixpoint: true)` evaluates: the expect
+    /// driver's re-check at a stable fixpoint, as opposed to a reactive wake.
+    /// Guarded by `lock`. Read by the expect trace (`SWIFT_MODEL_EXPECT_TRACE`).
+    var _isFixpointRecheck = false
 
 
     // Captures a single state transition: how to apply it to a Root snapshot, and how to
@@ -1095,7 +1105,10 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         )
     }
 
-    func _noteActivity() {
+    /// - Parameter fromFixpoint: true only for the expect driver's re-check at
+    ///   a stable fixpoint. A predicate that first passes there became true
+    ///   without a reactive wake seeing it, which the expect trace reports.
+    func _noteActivity(fromFixpoint: Bool = false) {
         var wakes: [CheckedContinuation<PredicateOutcome, Never>] = []
         lock {
             let now = monotonicNanoseconds()
@@ -1120,7 +1133,11 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 return
             }
             _isNotingActivity = true
-            defer { _isNotingActivity = false }
+            _isFixpointRecheck = fromFixpoint
+            defer {
+                _isNotingActivity = false
+                _isFixpointRecheck = false
+            }
 
             repeat {
                 _noteActivityRerun = false

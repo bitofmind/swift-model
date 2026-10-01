@@ -490,7 +490,7 @@ extension TestAccess {
     /// is the discriminator and `_driveCeilingDeadlineNs` the termination
     /// backstop.)
     static var _expectGraceNs: UInt64 {
-        UInt64(2_000_000_000 * ModelTestingTraitOptions.timeoutScale)
+        TestAccessOverrides.expectGraceNanoseconds ?? UInt64(2_000_000_000 * ModelTestingTraitOptions.timeoutScale)
     }
 
     /// Non-starvable sleep for `ns` (or until `hangDeadlineNs`), via GTS — used
@@ -561,7 +561,7 @@ extension TestAccess {
                         break
                     }
                     let reached = outcome == .reached
-                    self._noteActivity()                      // resolve now-true predicates as .passed
+                    self._noteActivity(fromFixpoint: true)    // resolve now-true predicates as .passed
                     // GLOBAL-quiescence gate on the FAIL (not per-test): only commit
                     // a fail when the WHOLE process is quiescent — no ready job in ANY
                     // parallel test's executor, and no global activity for `grace`.

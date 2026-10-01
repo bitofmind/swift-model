@@ -7,6 +7,9 @@ import IssueReporting
 import Dependencies
 import ConcurrencyExtras
 
+private let _expectTraceEnvEnabled: Bool =
+    ProcessInfo.processInfo.environment["SWIFT_MODEL_EXPECT_TRACE"] == "1"
+
 private func nowMonotonicNs() -> UInt64 {
     #if canImport(Dispatch)
     return DispatchTime.now().uptimeNanoseconds
@@ -77,6 +80,16 @@ extension TestAccess {
         /// end of a successful eval (mirrors what the old code captured
         /// before running exhaustion check).
         var capturedValueUpdates: [PartialKeyPath<Root>: [ValueUpdate]]?
+
+        // Expect trace (`SWIFT_MODEL_EXPECT_TRACE`); only written when `traceEnabled`.
+        var traceEnabled = false
+        var evalCount = 0
+        /// Set by the passing eval: true if it ran as the driver's fixpoint
+        /// re-check rather than on a reactive wake.
+        var passedByFixpoint = false
+        /// Why the most recent failing eval failed, and when.
+        var lastMiss: String?
+        var lastMissNs: UInt64 = 0
     }
 
     func expect(settleResetting: _ExhaustivityBits? = nil, at fileAndLine: FileAndLine, predicates: [AssertBuilder.Predicate], enableExhaustionTest: Bool = true) async {
@@ -90,6 +103,8 @@ extension TestAccess {
         // use failures). See `EvalSnapshot` doc-comment for the
         // synchronisation argument.
         let snapshot = EvalSnapshot()
+        let traceSink = Self._expectTraceSink
+        snapshot.traceEnabled = traceSink != nil
 
         let startNs = nowMonotonicNs()
         // With the executor drive active, the FIXPOINT decides pass/fail (the
@@ -131,6 +146,10 @@ extension TestAccess {
             // wrote it under — the resumed task may be running on a different
             // thread than the evaluator. See `EvalSnapshot`.
             let capturedUpdates = lock { snapshot.capturedValueUpdates }
+
+            if let traceSink {
+                _traceFixpointPass(snapshot: snapshot, startNs: startNs, fileAndLine: fileAndLine, sink: traceSink)
+            }
 
             if let resetting = settleResetting {
                 // Settling mode: predicate passed; now wait for the model
@@ -336,6 +355,11 @@ extension TestAccess {
         }
 
         if !snapshot.failures.isEmpty {
+            if snapshot.traceEnabled {
+                snapshot.evalCount += 1
+                snapshot.lastMiss = "predicate false"
+                snapshot.lastMissNs = nowMonotonicNs()
+            }
             return false
         }
 
@@ -356,6 +380,10 @@ extension TestAccess {
                                currentCount > (prePredicateUpdateCounts[access.path] ?? 0) { return result }
                             let a = lastState[keyPath: access.path]
                             let d = diff(access.capturedValue(), a)
+                            if let d, result, snapshot.traceEnabled {
+                                let name = access.propertyName.map { "\(access.modelName).\($0)" } ?? access.modelName
+                                snapshot.lastMiss = "recorded state lags live state at \(name) (live -, recorded +):\n\(d)"
+                            }
                             return result && d == nil
                         }
                     }
@@ -369,7 +397,16 @@ extension TestAccess {
             // which fires _noteActivity, which re-invokes us. Keep
             // passedAccesses in the snapshot so timeout-time reporting
             // has the latest captured state.
+            if snapshot.traceEnabled {
+                snapshot.evalCount += 1
+                snapshot.lastMissNs = nowMonotonicNs()
+            }
             return false
+        }
+
+        if snapshot.traceEnabled {
+            snapshot.evalCount += 1
+            snapshot.passedByFixpoint = _isFixpointRecheck
         }
 
 
@@ -402,6 +439,35 @@ extension TestAccess {
         // snapshot.
         snapshot.capturedValueUpdates = valueUpdates
         return true
+    }
+
+    /// Where the expect trace goes: the meta-test sink if set, else stderr when
+    /// `SWIFT_MODEL_EXPECT_TRACE=1`, else nil (trace off).
+    static var _expectTraceSink: (@Sendable (String) -> Void)? {
+        if let sink = TestAccessOverrides.expectTraceSink { return sink }
+        guard _expectTraceEnvEnabled else { return nil }
+        return { line in FileHandle.standardError.write(Data((line + "\n").utf8)) }
+    }
+
+    /// Reports an `expect` whose predicate first passed at the executor drive's
+    /// fixpoint re-check instead of on a reactive wake. A tracked predicate
+    /// should pass on the write that makes it true, so this marks a missed
+    /// wake: it costs the full `_expectGraceNs` (2 s × scale) and, if the
+    /// global system never goes quiet, can starve the test. The line says how
+    /// the last reactive evaluation failed, which separates "no wake arrived"
+    /// (predicate false) from "a wake arrived but the recorded state lagged".
+    fileprivate func _traceFixpointPass(snapshot: EvalSnapshot, startNs: UInt64, fileAndLine: FileAndLine, sink: @Sendable (String) -> Void) {
+        let (byFixpoint, evalCount, lastMiss, lastMissNs) = lock {
+            (snapshot.passedByFixpoint, snapshot.evalCount, snapshot.lastMiss, snapshot.lastMissNs)
+        }
+        guard byFixpoint else { return }
+        let now = nowMonotonicNs()
+        let elapsedMs = (now &- startNs) / 1_000_000
+        var line = "[swift-model expect-trace] \(fileAndLine.fileID):\(fileAndLine.line): expect passed only at the drive's fixpoint re-check, \(elapsedMs) ms after it started (\(evalCount) evaluations)."
+        if let lastMiss, lastMissNs != 0 {
+            line += " Last failing evaluation was \((now &- lastMissNs) / 1_000_000) ms before the pass: \(lastMiss)"
+        }
+        sink(line)
     }
 
     /// Tries `expression` until it returns a non-nil value, then returns
