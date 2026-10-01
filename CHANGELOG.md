@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.1.4] — Writes through a model's creation handle reach the tester + model types in issue messages
+
 ### Changed
 
 - **Issue messages about a model now name its type, and an "unanchored" report about a model that was removed says so.** Many of these reports surface far from their cause: work that outlives a model, such as an `onTeardown` handler, records its issue in whichever test runs next, at a location inside SwiftModel. Downstream, a teardown handler that read a dependency through `node` showed up as a random failure in an unrelated test. The message only said "an unanchored model node".
