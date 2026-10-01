@@ -22,14 +22,16 @@ struct IssueModelNameTests {
         }
     }
 
+    // Type-keyed: a key-keyed read names the dependency by its key path, which
+    // prints as `<computed 0x… (Int)>` on Linux.
     @Test("dependency read on a never-anchored model names its type")
     func dependencyOnUnanchoredModel() async {
         await assertIssueSnapshot {
             let model = NamedIssueModel()
-            _ = model.node.namedIssueValue
+            _ = model.node[NamedIssueDependency.self]
         } matches: {
             """
-            Accessing dependency `namedIssueValue` on an unanchored `NamedIssueModel` node is not allowed and will be redirected to the default dependency value
+            Accessing dependency `NamedIssueDependency` on an unanchored `NamedIssueModel` node is not allowed and will be redirected to the default dependency value
             """
         }
     }
@@ -65,16 +67,9 @@ struct IssueModelNameTests {
     }
 }
 
-private struct NamedIssueValueKey: DependencyKey {
-    static let liveValue = 1
-    static let testValue = 1
-}
-
-extension DependencyValues {
-    fileprivate var namedIssueValue: Int {
-        get { self[NamedIssueValueKey.self] }
-        set { self[NamedIssueValueKey.self] = newValue }
-    }
+private struct NamedIssueDependency: DependencyKey, Sendable {
+    static let liveValue = NamedIssueDependency()
+    static let testValue = NamedIssueDependency()
 }
 
 @Model private struct NamedIssueModel {
