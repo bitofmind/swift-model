@@ -6,6 +6,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **An exhaustivity report named the wrong property when the model held a collection of models before it.** The name comes from counting the model's properties as they are visited, but a collection of models (`[Item]`, `IdentifiedArray`, a collection of `@ModelContainer` enums) was never counted. Each one shifted every later property's name back by one, so a write to `trigger` after `var items: [Item]` was reported as `Root.items: 0 → 1`. Collections are now counted, so the report reads `Root.trigger: 0 → 1`.
+  - `PropertyNameAfterCollectionTests` covers a property after a model array and after a collection of `@ModelContainer` enums. Before the fix, both reported the wrong name.
+
 ---
 
 ## [1.1.4] — Writes through a model's creation handle reach the tester + model types in issue messages
