@@ -1696,7 +1696,7 @@ class AnyContext: @unchecked Sendable {
                 // Non-model dependencies are returned directly from capturedDependencies.
                 if !unprotectedIsDestructed, var model = value as? any Model {
                     if model.anyContext === self {
-                        reportIssue("Recursive dependency detected")
+                        reportIssue("Recursive dependency detected: \(modelTypeName(Swift.type(of: model))) depends on itself")
                     }
 
                     withPostActions { postActions in
@@ -1727,7 +1727,7 @@ class AnyContext: @unchecked Sendable {
                 let value = Dependency(type).wrappedValue
                 if !unprotectedIsDestructed, var model = value as? any Model {
                     if model.anyContext === self {
-                        reportIssue("Recursive dependency detected")
+                        reportIssue("Recursive dependency detected: \(modelTypeName(Swift.type(of: model))) depends on itself")
                     }
 
                     withPostActions { postActions in

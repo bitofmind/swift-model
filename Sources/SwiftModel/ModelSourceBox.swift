@@ -374,7 +374,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             return (false, get(reference.state))
         }
         if readFromClearedModel {
-            reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
+            reportIssue("Reading from a fully destructed \(modelTypeName(M.self)) model with no last-seen snapshot.")
         }
         return value
     }
@@ -397,7 +397,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
                 return (false, reference.state)
             }
             if readFromClearedModel {
-                reportIssue("Reading _modelState from a cleared model — this is a bug in SwiftModel.")
+                reportIssue("Reading _modelState from a cleared \(modelTypeName(M.self)) model — this is a bug in SwiftModel.")
             }
             return value
         }
@@ -560,14 +560,14 @@ extension _ModelSourceBox {
             switch reference.lifetime {
             case .frozenCopy:
                 if !threadLocals.isApplyingSnapshot {
-                    reportIssue("Modifying a frozen copy of a model is not allowed and has no effect")
+                    reportIssue("Modifying a frozen copy of \(modelTypeName(M.self)) is not allowed and has no effect")
                 }
             case .destructed:
                 let access = accessBox._reference?.access ?? ModelAccess.current
                 if let access = access as? LastSeenAccess, -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
                     break
                 }
-                reportIssue("Modifying a destructed model is not allowed and has no effect")
+                reportIssue("Modifying a destructed \(modelTypeName(M.self)) model is not allowed and has no effect")
             default:
                 break
             }
@@ -949,7 +949,7 @@ extension _ModelSourceBox {
             }
 
             guard newValue.isInitial || newValue.context != nil else {
-                reportIssue("It is not allowed to add a frozen model, instead create a new instance or add an already anchored model.")
+                reportIssue("It is not allowed to add a frozen \(modelTypeName(T.self)) model to \(modelTypeName(M.self)), instead create a new instance or add an already anchored model.")
                 return
             }
 
@@ -1055,7 +1055,7 @@ extension _ModelSourceBox {
             threadLocals.didReplaceModelWithDestructedOrFrozenCopy = prevDidReplace
 
             if didReplaceModelWithDestructedOrFrozenCopy {
-                reportIssue("It is not allowed to add a destructed nor frozen model.")
+                reportIssue("It is not allowed to add a destructed nor frozen model to \(modelTypeName(M.self)).")
                 return
             }
 
@@ -1154,7 +1154,7 @@ extension _ModelSourceBox {
             threadLocals.didReplaceModelWithDestructedOrFrozenCopy = prevDidReplace
 
             if didReplaceModelWithDestructedOrFrozenCopy {
-                reportIssue("It is not allowed to add a destructed nor frozen model.")
+                reportIssue("It is not allowed to add a destructed nor frozen model to \(modelTypeName(M.self)).")
                 return
             }
 
@@ -1220,7 +1220,7 @@ extension _ModelSourceBox {
                 threadLocals.didReplaceModelWithDestructedOrFrozenCopy = prevDidReplace
 
                 if didReplaceModelWithDestructedOrFrozenCopy {
-                    reportIssue("It is not allowed to add a destructed nor frozen model.")
+                    reportIssue("It is not allowed to add a destructed nor frozen model to \(modelTypeName(M.self)).")
                     return
                 }
 

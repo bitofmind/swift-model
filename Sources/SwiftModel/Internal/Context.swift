@@ -170,7 +170,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // dependency model across test runs, or re-anchoring via undo). Block `.active` (already has
         // a live context) and `.frozenCopy` snapshots which must not be anchored.
         if model.context != nil || model.lifetime == .frozenCopy {
-            reportIssue("It is not allowed to add an already anchored or frozen model, instead create a new instance.")
+            reportIssue("It is not allowed to add an already anchored or frozen \(modelTypeName(M.self)) model, instead create a new instance.")
         }
         // initialCopy transitions the source to .live without creating a new Reference.
         // All pre-anchor copies of this model share the same Reference (class). After
@@ -1229,7 +1229,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // there is no genesis — that means the model was destructed without ever being
             // anchored, which is a bug in the caller (e.g. a background performUpdate).
             if reference._stateCleared, !reference._hasGenesis {
-                reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
+                reportIssue("Reading from a fully destructed \(modelTypeName(M.self)) model with no last-seen snapshot.")
             }
             value = get(reference.state)
         } else if let override = tl.transitionOverrideValue, let typed = override as? T {
@@ -1439,7 +1439,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         if unprotectedIsDestructed {
             if reference._stateCleared {
                 if !reference._hasGenesis {
-                    reportIssue("Modifying a fully destructed model with no last-seen snapshot.")
+                    reportIssue("Modifying a fully destructed \(modelTypeName(M.self)) model with no last-seen snapshot.")
                 }
                 mode = .dropped
             } else {
@@ -1752,7 +1752,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let result: T
         if unprotectedIsDestructed {
             if reference._stateCleared, !reference._hasGenesis {
-                reportIssue("Modifying a fully destructed model with no last-seen snapshot.")
+                reportIssue("Modifying a fully destructed \(modelTypeName(M.self)) model with no last-seen snapshot.")
             }
             var value = get(reference.state)
             result = try modify(&value)
@@ -2759,7 +2759,7 @@ extension Context {
             if isDestructed {
                 tl.transitionOverrideValue = nil
                 if _stateCleared, !_hasGenesis {
-                    reportIssue("Reading from a fully destructed model with no last-seen snapshot.")
+                    reportIssue("Reading from a fully destructed \(modelTypeName(M.self)) model with no last-seen snapshot.")
                 }
                 value = get(state)
             } else if let override = tl.transitionOverrideValue, let typed = override as? T {
@@ -2794,6 +2794,13 @@ extension Context {
                 state = _genesisState
                 _stateCleared = false
             }
+        }
+
+        /// True once any `Context` has claimed this Reference (`setContext` bumps
+        /// `_generation`). With no context now, the model was removed or is being torn
+        /// down, rather than never anchored. Only read when reporting an issue.
+        var wasEverAnchored: Bool {
+            lock { _generation > 0 }
         }
 
         /// Marks the model as destructed. `state` retains its last-seen values for the TTL window.

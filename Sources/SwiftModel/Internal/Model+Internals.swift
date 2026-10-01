@@ -32,7 +32,7 @@ extension Model {
         let isPreAnchor = !src._isLive && src.reference.context == nil && !src.reference.isSnapshot
         let ok = isPreAnchor ? (lifetime == .initial || lifetime == .destructed) : (lifetime == .initial)
         if !ok {
-            reportIssue("Calling \(function) on an anchored model is not allowed and has no effect")
+            reportIssue("Calling \(function) on an anchored \(modelTypeName(Self.self)) model is not allowed and has no effect")
         }
     }
 
@@ -109,7 +109,7 @@ extension Model {
 
 extension Model {
     func enforcedContext(_ function: StaticString = #function) -> Context<Self>? {
-        enforcedContext("Calling \(function) on an unanchored model is not allowed and has no effect")
+        enforcedContext("Calling \(function) on an unanchored \(modelTypeName(Self.self)) model is not allowed and has no effect\(unanchoredHint(wasEverAnchored: modelContext._source.reference.wasEverAnchored))")
     }
 
     func enforcedContext(_ message: @autoclosure () -> String) -> Context<Self>? {

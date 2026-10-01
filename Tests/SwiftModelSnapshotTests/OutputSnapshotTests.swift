@@ -741,7 +741,7 @@ struct OutOfScopeTests {
             }
         } matches: {
             """
-            Can only call didSend on a model that is part of a ModelTester
+            Can only call didSend on a model that is part of a ModelTester (`EventSenderForOutOfScope` is not)
             """
         }
     }
