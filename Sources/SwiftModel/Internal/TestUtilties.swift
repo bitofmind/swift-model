@@ -135,6 +135,11 @@ struct IndexVisitor<State, Child>: ModelVisitor {
     mutating func visit<T>(path: WritableKeyPath<State, T>) { check(path) }
     mutating func visit<T: Model>(path: WritableKeyPath<State, T>) { check(path) }
     mutating func visit<T: ModelContainer>(path: WritableKeyPath<State, T>) { check(path) }
+    // Collections of models arrive through these instead of `visit(path:)`. The
+    // protocol defaults are no-ops, so without them a collection went uncounted and
+    // every later property was named after the one before it.
+    mutating func visitCollection<C: MutableCollection>(path: WritableKeyPath<State, C>) where C: Sendable, C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable { check(path) }
+    mutating func visitContainerCollection<C: MutableCollection>(path: WritableKeyPath<State, C>) where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable { check(path) }
 }
 
 func isSame<each T: Equatable>(_ lhs: (repeat each T), _ rhs: (repeat each T)) -> Bool {
