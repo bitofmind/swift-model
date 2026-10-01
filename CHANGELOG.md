@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.1.5] — 1.1.4 `node.transaction` deadlock fix + correct property names after model collections
+
 ### Fixed
 
 - **1.1.4 could deadlock a test that ran `node.transaction` through a model's creation handle.** 1.1.4 made a write through a handle with no access fall back to the tree's tester, and that write takes the tester's lock. A transaction decides which lock to take before it starts, but its chain lacked the fallback. So `dup.node.transaction { dup.value = … }` took the context lock first and then waited for the tester lock, while any reader holding the tester lock (an `expect` evaluation, a model task reading state) waited for the context lock. Downstream this hung a stream-environment test every time, on 1.1.4 only.
