@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import IssueReporting
 @testable import SwiftModel
 
 // MARK: - Recorder (external side-channel, survives any state reset)
@@ -175,25 +176,29 @@ private struct ContainerReanchorResetTests {
         // flags as "add a destructed nor frozen model". That `reportIssue` is the
         // INHERENT consequence of the concurrent-writer scenario under test, not a
         // failure of it (the keeper, id 0, is never in that set — its assertions
-        // below still hold). It fires INSIDE these detached tasks, so each loop owns
-        // its own `withKnownIssue` scope to absorb it (an enclosing one on the test's
-        // main task would not — `Task.detached` doesn't inherit the issue scope).
-        // `isIntermittent` because it's load-dependent (only wide race windows hit it).
+        // below still hold). It fires INSIDE these detached tasks, which have no
+        // current test: a `withKnownIssue` there can't attach the issue to this
+        // test, so Swift Testing recorded each one as an "API misused" warning on an
+        // «unknown» test (~25 per suite run). Instead each loop captures its own
+        // issues, and the test task below absorbs the expected ones and re-records
+        // anything else, so an unexpected issue still fails THIS test. The expected
+        // one fires on practically every run, a couple of dozen times.
+        let inserterIssues = CapturingIssueReporter()
         let inserter = Task.detached {
-            withKnownIssue("concurrent RMW append re-adds a just-clobbered (destructed) sibling", isIntermittent: true) {
+            withIssueReporters([inserterIssues]) {
                 for i in 1...80 {
                     parent.streams.append(parent.freshStream(i))
                 }
-            } matching: { "\($0)".contains("destructed nor frozen model") }
+            }
         }
         // A SECOND concurrent RMW writer on the same array (mirrors the device's
         // "two RMW writers" — distinct tasks both doing read-modify-write on streams).
         let inserter2 = Task.detached {
-            withKnownIssue("concurrent RMW append re-adds a just-clobbered (destructed) sibling", isIntermittent: true) {
+            withIssueReporters([inserterIssues]) {
                 for i in 1...80 {
                     parent.streams.append(parent.freshStream(i + 100_000))
                 }
-            } matching: { "\($0)".contains("destructed nor frozen model") }
+            }
         }
 
         // Watch the keeper for a nil controller while all run.
@@ -208,6 +213,9 @@ private struct ContainerReanchorResetTests {
         _ = await player.result
         _ = await inserter.result
         _ = await inserter2.result
+        for message in inserterIssues.messages where !message.contains("destructed nor frozen model") {
+            Issue.record("Unexpected issue in a concurrent appender: \(message)")
+        }
         await settle()
 
         #expect(recorder.count("LOST-CONTROLLER-IMMEDIATELY 0") == 0, "keeper read its own controller back as nil")
