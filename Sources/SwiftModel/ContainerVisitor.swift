@@ -153,7 +153,7 @@ public extension ContainerVisitor {
     }
 
     mutating func visitStatically<T: Sequence>(at path: WritableKeyPath<V.State, T>) where T.Element: Model {
-        reportIssue("Collection of models needs to conform to ModelContainer")
+        reportIssue("Collection of \(modelTypeName(T.Element.self)) models in \(V.State.self) needs to conform to ModelContainer")
         modelVisitor.visit(path: path)
     }
 

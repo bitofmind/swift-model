@@ -104,7 +104,7 @@ public extension Model {
         }
 
         guard lifetime >= .active else {
-            reportIssue("Can only call didSend on a model that is part of a ModelTester", filePath: filePath, line: line)
+            reportIssue("Can only call didSend on a model that is part of a ModelTester (\(modelTypeName(Self.self)) is not)", filePath: filePath, line: line)
             return false
         }
 

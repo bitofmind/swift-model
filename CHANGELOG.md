@@ -6,6 +6,13 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- **Issue messages about a model now name its type, and an "unanchored" report about a model that was removed says so.** Many of these reports surface far from their cause: work that outlives a model, such as an `onTeardown` handler, records its issue in whichever test runs next, at a location inside SwiftModel. Downstream, a teardown handler that read a dependency through `node` showed up as a random failure in an unrelated test. The message only said "an unanchored model node".
+  - Unanchored-node calls and dependency reads name the model, e.g. ``Accessing dependency `audioSession` on an unanchored `StreamsModel<StreamInfo>` node …``. When the model was anchored once, the message adds that it was already removed, and that work outliving a model must capture what it needs instead of using its node.
+  - Writes to frozen copies or destructed models, reads from fully destructed models, adding an anchored, frozen or destructed model, a second `trackUndo()`, recursive dependencies, a model collection that isn't a `ModelContainer`, and `didSend` on a model outside a tester also name the model type.
+  - `IssueModelNameTests` snapshots the unanchored (never anchored and removed), dependency and frozen-copy messages.
+
 ### Fixed
 
 - **A write through a model's original handle, after the model was added to a tested tree, never reached the tester, and the `expect` waiting on it stalled silently.** A handle carries its access from where it was read. A model created outside the tree, e.g. a duplicate built with `init` and then appended, keeps an access-less handle, yet writes through it change the live model. `TestAccess` never saw them: its recorded state kept the old value, so an `expect` on the new value read true but failed its "recorded matches live" check, and no further wake came. The wait then ended at the drive's quiet window (2 s × `SWIFT_MODEL_TIMEOUT_SCALE`; under parallel load, never) as a timeout that reported nothing, because the predicate itself held. Downstream, split-then-duplicate tests in an editor took 20 s alone and hit the 120 s test cap on CI.

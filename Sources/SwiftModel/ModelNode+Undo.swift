@@ -32,7 +32,7 @@ public extension ModelNode {
     func trackUndo() {
         guard let context = enforcedContext() else { return }
         guard !context[_isTrackingUndoStorage] else {
-            reportIssue("trackUndo() has already been called for this model. Call it only once in onActivate().")
+            reportIssue("trackUndo() has already been called for \(modelTypeName(M.self)). Call it only once in onActivate().")
             return
         }
         let undoSystem: ModelUndoSystem = self[dynamicMember: \.undoSystem]
@@ -64,7 +64,7 @@ public extension ModelNode {
     ) {
         guard let context = enforcedContext() else { return }
         guard !context[_isTrackingUndoStorage] else {
-            reportIssue("trackUndo() has already been called for this model. Call it only once in onActivate().")
+            reportIssue("trackUndo() has already been called for \(modelTypeName(M.self)). Call it only once in onActivate().")
             return
         }
         let undoSystem: ModelUndoSystem = self[dynamicMember: \.undoSystem]
@@ -106,7 +106,7 @@ public extension ModelNode {
     ) {
         guard let context = enforcedContext() else { return }
         guard !context[_isTrackingUndoStorage] else {
-            reportIssue("trackUndo() has already been called for this model. Call it only once in onActivate().")
+            reportIssue("trackUndo() has already been called for \(modelTypeName(M.self)). Call it only once in onActivate().")
             return
         }
         let undoSystem: ModelUndoSystem = self[dynamicMember: \.undoSystem]

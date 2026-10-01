@@ -28,7 +28,7 @@ extension ModelContext {
     }
 
     func enforcedContext(_ function: StaticString = #function) -> Context<M>? {
-        enforcedContext("Calling \(function) on an unanchored model is not allowed and has no effect")
+        enforcedContext("Calling \(function) on an unanchored \(modelTypeName(M.self)) model is not allowed and has no effect\(unanchoredHint(wasEverAnchored: _source.reference.wasEverAnchored))")
     }
 
     func enforcedContext(_ message: @autoclosure () -> String) -> Context<M>? {
@@ -49,13 +49,13 @@ extension ModelContext {
             switch src.reference.lifetime {
             case .frozenCopy:
                 if !threadLocals.isApplyingSnapshot {
-                    reportIssue("Modifying a frozen copy of a model is not allowed and has no effect")
+                    reportIssue("Modifying a frozen copy of \(modelTypeName(M.self)) is not allowed and has no effect")
                 }
             case .destructed:
                 if let access = access as? LastSeenAccess, -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
                     break // SwiftUI accessing shortly after destruction — no warning
                 }
-                reportIssue("Modifying a destructed model is not allowed and has no effect")
+                reportIssue("Modifying a destructed \(modelTypeName(M.self)) model is not allowed and has no effect")
             default:
                 break
             }

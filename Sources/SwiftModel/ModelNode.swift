@@ -398,7 +398,7 @@ public extension ModelNode {
             return Dependency(keyPath).wrappedValue
         }
 
-        guard let context = enforcedContext("Accessing dependency `\(String(describing: keyPath).replacingOccurrences(of: "\\DependencyValues.", with: ""))` on an unanchored model node is not allowed and will be redirected to the default dependency value") else {
+        guard let context = enforcedContext("Accessing dependency `\(String(describing: keyPath).replacingOccurrences(of: "\\DependencyValues.", with: ""))` on an unanchored \(modelTypeName(M.self)) node is not allowed and will be redirected to the default dependency value\(unanchoredHint(wasEverAnchored: _$modelContext._source.reference.wasEverAnchored))") else {
             return Dependency(keyPath).wrappedValue
         }
 
@@ -423,7 +423,7 @@ public extension ModelNode {
             return Dependency(type).wrappedValue
         }
 
-        guard let context = enforcedContext("Accessing dependency `\(String(describing: type))` on an unanchored model node is not allowed and will be redirected to the default dependency value") else {
+        guard let context = enforcedContext("Accessing dependency `\(String(describing: type))` on an unanchored \(modelTypeName(M.self)) node is not allowed and will be redirected to the default dependency value\(unanchoredHint(wasEverAnchored: _$modelContext._source.reference.wasEverAnchored))") else {
             return Dependency(type).wrappedValue
         }
 
@@ -543,7 +543,7 @@ extension ModelNode {
     var modelContext: ModelContext<M> { _$modelContext }
 
     func enforcedContext(_ function: StaticString = #function) -> Context<M>? {
-        enforcedContext("Calling \(function) on an unanchored model node is not allowed and has no effect")
+        enforcedContext("Calling \(function) on an unanchored \(modelTypeName(M.self)) node is not allowed and has no effect\(unanchoredHint(wasEverAnchored: _$modelContext._source.reference.wasEverAnchored))")
     }
 
     func enforcedContext(_ message: @autoclosure () -> String) -> Context<M>? {
