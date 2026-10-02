@@ -191,7 +191,27 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     //   T1 modifies count to 1 (seqNum=1), releases lock, closure reads count=1 (before T10).
     //   T10 modifies count to 10 (seqNum=10), closure writes lastState.count=10.
     //   T1's closure acquires TestAccess lock after T10 → seqNum=1 < lastWritten=10 → rejected.
-    private var lastWriteSeqNums: [DependencyMetadataKey: Int] = [:]
+    //
+    // The key is the context's address, which a later context can reuse once this one is
+    // freed (a model rebuilt in place often lands on the same address). Its counter starts
+    // again from zero, so each entry remembers its context weakly: an entry whose context
+    // is gone belongs to a dead context and doesn't order the new one's writes.
+    private var lastWriteSeqNums: [DependencyMetadataKey: WriteSeqNum] = [:]
+
+    private struct WriteSeqNum {
+        var seqNum: Int
+        weak var context: AnyContext?
+    }
+
+    /// Records `seqNum` as the latest write to `key` and returns true, unless a later
+    /// write from the same context is already recorded. Call under `lock`.
+    private func claimWrite(_ key: DependencyMetadataKey, seqNum: Int, context: AnyContext) -> Bool {
+        if let last = lastWriteSeqNums[key], last.context === context, last.seqNum >= seqNum {
+            return false
+        }
+        lastWriteSeqNums[key] = WriteSeqNum(seqNum: seqNum, context: context)
+        return true
+    }
 
     var events: [Event] = []
     var probes: [TestProbe] = []
@@ -200,8 +220,14 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     // (context, path) pairs for which a read-only-path wake subscription has been
     // registered — see `registerReadOnlyPathWake`. Dedup only; the subscriptions
     // themselves live in each context's modifyCallbacks (with `[weak self]`) and
-    // die with the context, so no cancellation handles are stored here.
-    private var readOnlyWakeKeys: Set<DependencyMetadataKey> = []
+    // die with the context, so no cancellation handles are stored here. Each entry
+    // remembers its context weakly: a later context at the same address needs its own
+    // subscription (see `lastWriteSeqNums`).
+    private var readOnlyWakeKeys: [DependencyMetadataKey: WeakContext] = [:]
+
+    private struct WeakContext {
+        weak var context: AnyContext?
+    }
 
     // Per-model-type cache of private (non-exhaustively-tracked) key paths.
     // Keyed by `ObjectIdentifier(M.self)`, values are the LOCAL (non-root-relative)
@@ -897,8 +923,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     value = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
                 }
                 self.lock {
-                    guard (self.lastWriteSeqNums[key] ?? 0) < mySeqNum else { return }
-                    self.lastWriteSeqNums[key] = mySeqNum
+                    guard self.claimWrite(key, seqNum: mySeqNum, context: context) else { return }
                     let update = ValueUpdate(
                         apply: { _ in },  // dependency storage not in Root snapshot
                         debugInfo: { "\(String(describing: M.self)).\(prefix).\(name ?? "UNKNOWN") == \(String(customDumping: value))" },
@@ -936,8 +961,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                 value = frozenCopy(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: path])
             }
             self.lock {
-                guard (self.lastWriteSeqNums[contextPathKey] ?? 0) < mySeqNum else { return }
-                self.lastWriteSeqNums[contextPathKey] = mySeqNum
+                guard self.claimWrite(contextPathKey, seqNum: mySeqNum, context: context) else { return }
                 for (rootPath, fullPath) in zip(rootPaths, fullPaths) {
                     // Private properties are not tracked for exhaustivity: tests cannot observe
                     // them from outside the declaring type, so requiring assertions would produce
@@ -1882,7 +1906,11 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// the subscription dies with the context, so no cancellation handle is kept.
     private func registerReadOnlyPathWake<M: Model, Value>(context: Context<M>, path: KeyPath<M._ModelState, Value> & Sendable) {
         let key = DependencyMetadataKey(contextID: ObjectIdentifier(context), path: path)
-        let isNew = lock { readOnlyWakeKeys.insert(key).inserted }
+        let isNew = lock {
+            if readOnlyWakeKeys[key]?.context === context { return false }
+            readOnlyWakeKeys[key] = WeakContext(context: context)
+            return true
+        }
         guard isNew else { return }
         // Registered outside the TestAccess lock — context.onModify takes the
         // context lock, and holding both here would invert the established
