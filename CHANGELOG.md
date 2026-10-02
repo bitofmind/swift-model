@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.1.6] — Tester no longer drops writes to a model rebuilt at a reused address
+
 ### Fixed
 
 - **A tester could ignore writes to a model rebuilt in place.** `TestAccess` drops a write whose sequence number is lower than the last one it recorded for the same context and property. That stops a late notification from overwriting a newer value. The entries were keyed by the context's address and never removed. A model created after another was removed often gets the freed address, and its counter starts again from zero. So its writes were dropped as stale until it had made more writes than the old model had. The live value changed but the tester's recorded value didn't, and `expect` failed with "the tester's recorded state never caught up". Before 1.1.4 that timeout passed silently, after a stall. Downstream this hit a media-player controller that is torn down and recreated.
