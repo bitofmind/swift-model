@@ -135,7 +135,7 @@ private func makePendingWorkFlag() -> any PendingWorkFlag {
 /// then cancels the task and fires idle callbacks.
 @MainActor
 private func mainCallQueueDrainLoop(
-    state: LockIsolated<CallQueueState?>,
+    state: LockedValue<CallQueueState?>,
     progress: LockIsolated<UInt64>,
     pending: any PendingWorkFlag
 ) async {
@@ -171,7 +171,7 @@ private func mainCallQueueDrainLoop(
 /// Bonus: per-test `BackgroundCallQueue` drains no longer all compete for
 /// `DispatchQueue.global(.userInitiated)`'s bounded kernel pool, removing a
 /// shared-resource contention bottleneck under parallel test load.
-private func backgroundCallQueueDrainLoop(state: LockIsolated<CallQueueState?>, progress: LockIsolated<UInt64>) async {
+private func backgroundCallQueueDrainLoop(state: LockedValue<CallQueueState?>, progress: LockIsolated<UInt64>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
             guard $0 != nil else { return ([], []) }
@@ -234,18 +234,18 @@ func scheduleAfter(deadline: UInt64, _ body: @escaping @Sendable () -> Void) -> 
     #endif
 }
 
-private func callQueueIsIdle(_ state: LockIsolated<CallQueueState?>) -> Bool {
+private func callQueueIsIdle(_ state: LockedValue<CallQueueState?>) -> Bool {
     state.value == nil
 }
 
-private func callQueueWaitUntilIdle(_ state: LockIsolated<CallQueueState?>, deadline: UInt64 = .max) async {
+private func callQueueWaitUntilIdle(_ state: LockedValue<CallQueueState?>, deadline: UInt64 = .max) async {
     await callQueueWait(state: state, deadline: deadline) { s, callback in
         s.onIdleCallbacks.append(callback)
     }
 }
 
 
-private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>, deadline: UInt64) async {
+private func callQueueWaitForCurrentItems(_ state: LockedValue<CallQueueState?>, deadline: UInt64) async {
     await callQueueWait(state: state, deadline: deadline) { s, callback in
         s.calls.append(callback)
     }
@@ -286,7 +286,7 @@ private func callQueueWaitForCurrentItems(_ state: LockIsolated<CallQueueState?>
 /// deadline, which a previous migration attempt correlated with a ~3 %
 /// hang under x100 stress.
 private func callQueueWait(
-    state: LockIsolated<CallQueueState?>,
+    state: LockedValue<CallQueueState?>,
     deadline: UInt64,
     appendCallback: @Sendable @escaping (inout CallQueueState, @escaping @Sendable () -> Void) -> Void
 ) async {
@@ -359,7 +359,7 @@ private func callQueueWait(
 /// code paths (e.g. after a model write, to flush any notifications enqueued from a
 /// background thread before this call).
 struct MainCallQueue: @unchecked Sendable {
-    private let state = LockIsolated<CallQueueState?>(nil)
+    private let state = LockedValue<CallQueueState?>(nil)
     /// Monotonic-ns of the most recent processed batch — a "this queue is
     /// making progress" signal for the `.modelTesting` trait's inactivity
     /// watchdog (a test parked waiting on a slow main drain is progressing,
@@ -528,7 +528,7 @@ struct MainCallQueue: @unchecked Sendable {
 
 /// Delivers Observed pipeline updates on a detached cooperative-pool Task.
 struct BackgroundCallQueue: @unchecked Sendable {
-    private let state = LockIsolated<CallQueueState?>(nil)
+    private let state = LockedValue<CallQueueState?>(nil)
     /// See `MainCallQueue.progress` — same progress signal, per drained batch.
     private let progress = LockIsolated<UInt64>(0)
 

@@ -664,7 +664,7 @@ internal func update<T: Sendable>(
 
 private final class AccessCollector: ModelAccess, @unchecked Sendable {
     let onModify: @Sendable (AccessCollector, Bool) -> (@Sendable () -> Void)?
-    let active = LockIsolated<(active: [Key: @Sendable () -> Void], added: Set<Key>, cancelled: Bool)>(([:], [], false))
+    let active = LockedValue<(active: [Key: @Sendable () -> Void], added: Set<Key>, cancelled: Bool)>(([:], [], false))
 
     struct Key: Hashable, @unchecked Sendable {
         var id: ModelID
@@ -779,7 +779,7 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
 /// (force=false) are ignored — they are already handled by `withObservationTracking`.
 private final class ForceObserver: ModelAccess, @unchecked Sendable {
     let onForce: @Sendable () -> Void
-    let cancels = LockIsolated<[@Sendable () -> Void]>([])
+    let cancels = LockedValue<[@Sendable () -> Void]>([])
 
     init(onForce: @Sendable @escaping () -> Void) {
         self.onForce = onForce
