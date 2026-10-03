@@ -452,4 +452,32 @@ func benchSourceLocationKeys() {
     }
 
     withExtendedLifetime(anchor) {}
+
+    if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+        benchSharedObservationKeys()
+    }
+}
+
+/// SwiftUI-style tracking over many models that read the same environment and memoize
+/// keys: install the tracking, then one write fires it and cancels it. The registrar
+/// looks every tracked key path up in one dictionary, so key paths whose hashes
+/// collide across models make both steps scan.
+@available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
+func benchSharedObservationKeys() {
+    let (root, anchor) = BenchKeyRoot(rows: (0..<400).map { BenchKeyRow(id: $0) }).returningAnchor()
+    let rows = root.rows
+    for row in rows { blackhole &+= row.shifted }
+
+    measure("track 400 rows' env + memoize, write, cancel", iterations: 100, warmup: 5) {
+        withObservationTracking {
+            blackhole &+= root.tick
+            for row in rows {
+                blackhole &+= row.mode
+                blackhole &+= row.shifted
+            }
+        } onChange: {}
+        root.tick += 1
+    }
+
+    withExtendedLifetime(anchor) {}
 }

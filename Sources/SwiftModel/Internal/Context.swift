@@ -82,8 +82,8 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     ///
     /// The `ObservationRegistrar` identifies what was accessed or changed by a key-path
     /// object, and with one registrar pair shared by the whole tree that object has to be
-    /// unique per (context, property): `\_StateObserver<_State>[contextID:propID:]`, with
-    /// this context's address and the property's index as the subscript arguments. Building
+    /// unique per (context, property): `\_StateObserver<_State>[property:]`, with
+    /// this context's address and the property's index packed into its one argument. Building
     /// that key path allocates (`_swift_getKeyPath` with arguments), so it is built once
     /// per slot and kept here. This table replaces a process-wide cache keyed by
     /// `(context, state key-path object)`: every tracked read and write in the process used
@@ -147,7 +147,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             preconditionFailure("SwiftModel: observer token requested without an ObservationRegistrar — this is a bug in SwiftModel.")
         }
         let token: KeyPath<_StateObserver<M._ModelState>, AnyHashable> =
-            \_StateObserver<M._ModelState>[contextID: UInt(bitPattern: ObjectIdentifier(self)), propID: UInt(index)]
+            \_StateObserver<M._ModelState>[property: _ObserverPropertyKey(contextID: UInt(bitPattern: ObjectIdentifier(self)), propID: UInt(index))]
         _observerTokens[index] = token
         return token
     }
@@ -428,7 +428,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
     override func willAccessParents() {
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            willAccessSyntheticPath(\_StateObserver<M._ModelState>[_parentsObservationKey: _ParentsObservationKey(), modelID: reference.modelID])
+            willAccessSyntheticPath(\_StateObserver<M._ModelState>[parentsOf: reference.modelID])
         }
         // Shadow gap-race detector (withObservationTracking path) — `didModifyParents`
         // fires `modifyCallbacks` for this same path. See `willAccessGapShadow`.
@@ -447,7 +447,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let mc = modelContext
         let modifyCallbacksForPath = modifyCallbacks[path]?.values.compactMap { $0(false, false) } ?? []
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[_parentsObservationKey: _ParentsObservationKey(), modelID: reference.modelID])
+            invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[parentsOf: reference.modelID])
         }
         callbacks.append {
             mc.invokeDidModify(at: path)?()
@@ -468,7 +468,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // Registrar call uses _StateObserver (no Model Observable conformance needed).
         let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[environmentKey: storage.key]
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            willAccessSyntheticPath(\_StateObserver<M._ModelState>[environmentKey: storage.key, modelID: reference.modelID])
+            willAccessSyntheticPath(\_StateObserver<M._ModelState>[environmentKey: _ObserverStorageKey(key: storage.key, modelID: reference.modelID)])
         }
         modelContext.willAccess(at: untypedPath)?()
 
@@ -541,7 +541,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
             lock { self.didModify() }
             if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-                invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[environmentKey: storage.key, modelID: reference.modelID])
+                invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[environmentKey: _ObserverStorageKey(key: storage.key, modelID: reference.modelID)])
             }
             modelContext.invokeDidModify(at: untypedPath)?()
             // Pre-compute new value for both TestAccess.didModify and DebugAccessCollector
@@ -603,7 +603,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         // Registrar call uses _StateObserver (no Model Observable conformance needed).
         let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[preferenceKey: storage.key]
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            willAccessSyntheticPath(\_StateObserver<M._ModelState>[preferenceKey: storage.key, modelID: reference.modelID])
+            willAccessSyntheticPath(\_StateObserver<M._ModelState>[preferenceKey: _ObserverStorageKey(key: storage.key, modelID: reference.modelID)])
         }
         modelContext.willAccess(at: untypedPath)?()
 
@@ -678,7 +678,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
 
             lock { self.didModify() }
             if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-                invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[preferenceKey: storage.key, modelID: reference.modelID])
+                invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[preferenceKey: _ObserverStorageKey(key: storage.key, modelID: reference.modelID)])
             }
             modelContext.invokeDidModify(at: untypedPath)?()
             // Pre-compute new value for both TestAccess.didModify and DebugAccessCollector
@@ -750,7 +750,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         let untypedPath: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[preferenceKey: storage.key]
         lock { self.didModify() }
         if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
-            invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[preferenceKey: storage.key, modelID: reference.modelID])
+            invokeDidModifySyntheticPath(\_StateObserver<M._ModelState>[preferenceKey: _ObserverStorageKey(key: storage.key, modelID: reference.modelID)])
         }
         modelContext.invokeDidModify(at: untypedPath)?()
         let typedPath: WritableKeyPath<M._ModelState, V>&Sendable = \M._ModelState[_preference: storage.key]

@@ -126,22 +126,39 @@ final class TypedPendingValue<V>: PendingValue, @unchecked Sendable {
 /// `(registrar, keyPath)` pair is unique, preserving fine-grained observation semantics.
 @available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *)
 struct _StateObserver<State>: Observable, Sendable {
-    /// Per-instance + per-property subscript for direct state paths: the context's address
-    /// (`ObjectIdentifier` bit pattern) and the property's tracked index. Plain `UInt`
-    /// arguments hash as trivial integers — much cheaper than a compound
-    /// `(ModelID, WritableKeyPath)` key where the key path itself is a nested argument.
-    /// Built once per (context, property) by `Context.observerToken(_:)`.
-    /// Never called — used only for keypath construction.
-    subscript(contextID _: UInt, propID _: UInt) -> AnyHashable { fatalError() }
+    // Every subscript takes ONE argument. A key path's hash covers only the first
+    // argument of a multi-argument subscript, so `[contextID:propID:]` hashed every
+    // property of a context alike, and `[environmentKey:modelID:]` every model reading
+    // the same key alike. The registrar keeps its tracked key paths in one dictionary,
+    // so 400 rows reading one environment key made a 400-long collision chain, scanned
+    // with `AnyKeyPath ==` on every tracking install and cancel.
 
-    /// Synthetic subscripts for non-`_State` observation paths.
-    /// `modelID` is included so that a single shared registrar can distinguish
-    /// observations from different context instances of the same type.
+    /// Per-instance + per-property subscript for direct state paths. Built once per
+    /// (context, property) by `Context.observerToken(_:)`.
     /// Never called — used only for keypath construction.
-    subscript(environmentKey _: AnyHashableSendable, modelID _: ModelID) -> AnyHashableSendable { fatalError() }
-    subscript(preferenceKey _: AnyHashableSendable, modelID _: ModelID) -> AnyHashableSendable { fatalError() }
-    subscript(_parentsObservationKey _: _ParentsObservationKey, modelID _: ModelID) -> [ModelID] { fatalError() }
-    subscript(memoizeKey _: AnyHashableSendable, modelID _: ModelID) -> AnyHashableSendable { fatalError() }
+    subscript(property _: _ObserverPropertyKey) -> AnyHashable { fatalError() }
+
+    /// Synthetic subscripts for non-`_State` observation paths. The model's id is part
+    /// of the key so that the tree's shared registrar tells models apart.
+    /// Never called — used only for keypath construction.
+    subscript(environmentKey _: _ObserverStorageKey) -> AnyHashableSendable { fatalError() }
+    subscript(preferenceKey _: _ObserverStorageKey) -> AnyHashableSendable { fatalError() }
+    subscript(parentsOf _: ModelID) -> [ModelID] { fatalError() }
+    subscript(memoizeKey _: _ObserverStorageKey) -> AnyHashableSendable { fatalError() }
+}
+
+/// A context's address (`ObjectIdentifier` bit pattern) and a property's tracked index:
+/// the `_StateObserver` subscript argument for a direct state path.
+struct _ObserverPropertyKey: Hashable, Sendable {
+    var contextID: UInt
+    var propID: UInt
+}
+
+/// A storage, preference or memoize key and the model it belongs to: the `_StateObserver`
+/// subscript argument for those paths.
+struct _ObserverStorageKey: Hashable, Sendable {
+    var key: AnyHashableSendable
+    var modelID: ModelID
 }
 
 // MARK: - _ModelStateType
