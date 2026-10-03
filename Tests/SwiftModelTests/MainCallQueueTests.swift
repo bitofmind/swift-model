@@ -189,7 +189,7 @@ struct MainCallQueueCoalescingTests {
     @Test func repeatedPairsForOneKeyPathDeliverOnce() async {
         guard #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) else { return }
         let queue = MainCallQueue()
-        let kp: KeyPath<_StateObserver<Int>, AnyHashable> = \_StateObserver<Int>[contextID: 1, propID: 1]
+        let kp: KeyPath<_StateObserver<Int>, AnyHashable> = \_StateObserver<Int>[property: _ObserverPropertyKey(contextID: 1, propID: 1)]
         let counter = DeliveryCounter(keyPath: kp)
         nonisolated(unsafe) let kpRef = kp
 
@@ -207,7 +207,7 @@ struct MainCallQueueCoalescingTests {
         guard #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) else { return }
         let queue = MainCallQueue()
         let registrar = ObservationRegistrar()
-        let kps: [KeyPath<_StateObserver<Int>, AnyHashable>] = (0..<3).map { \_StateObserver<Int>[contextID: 7, propID: UInt($0)] }
+        let kps: [KeyPath<_StateObserver<Int>, AnyHashable>] = (0..<3).map { \_StateObserver<Int>[property: _ObserverPropertyKey(contextID: 7, propID: UInt($0))] }
         nonisolated(unsafe) let kpsRef = kps
         let depth = LockIsolated(-1)
 
@@ -227,7 +227,7 @@ struct MainCallQueueCoalescingTests {
     @Test func distinctPairsDeliverInFirstInsertionOrder() async {
         guard #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) else { return }
         let queue = MainCallQueue()
-        let kps: [KeyPath<_StateObserver<Int>, AnyHashable>] = (0..<4).map { \_StateObserver<Int>[contextID: 3, propID: UInt($0)] }
+        let kps: [KeyPath<_StateObserver<Int>, AnyHashable>] = (0..<4).map { \_StateObserver<Int>[property: _ObserverPropertyKey(contextID: 3, propID: UInt($0))] }
         let order = LockIsolated<[Int]>([])
         // One registrar per key path so each delivery can be attributed.
         let registrars = (0..<4).map { _ in ObservationRegistrar() }
@@ -262,8 +262,8 @@ struct MainCallQueueCoalescingTests {
     @Test func bundleDeliveredAtFirstPairPosition() async {
         guard #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) else { return }
         let queue = MainCallQueue()
-        let kpA: KeyPath<_StateObserver<Int>, AnyHashable> = \_StateObserver<Int>[contextID: 5, propID: 0]
-        let kpB: KeyPath<_StateObserver<Int>, AnyHashable> = \_StateObserver<Int>[contextID: 5, propID: 1]
+        let kpA: KeyPath<_StateObserver<Int>, AnyHashable> = \_StateObserver<Int>[property: _ObserverPropertyKey(contextID: 5, propID: 0)]
+        let kpB: KeyPath<_StateObserver<Int>, AnyHashable> = \_StateObserver<Int>[property: _ObserverPropertyKey(contextID: 5, propID: 1)]
         let log = LockIsolated<[String]>([])
         let regA = ObservationRegistrar(), regB = ObservationRegistrar()
         withObservationTracking { regA.access(_StateObserver<Int>(), keyPath: kpA) } onChange: { log.withValue { $0.append("A") } }
@@ -298,7 +298,7 @@ struct MainCallQueueCoalescingTests {
         return
         #endif
         let queue = MainCallQueue()
-        let kp: KeyPath<_StateObserver<Int>, AnyHashable> = \_StateObserver<Int>[contextID: 9, propID: 0]
+        let kp: KeyPath<_StateObserver<Int>, AnyHashable> = \_StateObserver<Int>[property: _ObserverPropertyKey(contextID: 9, propID: 0)]
         let counter = DeliveryCounter(keyPath: kp)
         queue.notifyRegistrar(counter.registrar, contextID: 9, keyPath: kp)
         queue.notifyRegistrar(counter.registrar, contextID: 9, keyPath: kp)

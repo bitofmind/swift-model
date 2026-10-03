@@ -6,6 +6,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Observation key paths collided across models, which made SwiftUI tracking slow in a large tree.** SwiftModel identifies what a view read by key paths such as `\_StateObserver[environmentKey: key, modelID: id]`. A Swift key path's hash covers only the first argument of a multi-argument subscript, though. So every model reading the same environment, preference or memoize key had the same hash, as did every property of one model and every model's parents path. `ObservationRegistrar` keeps tracked key paths in one dictionary per tree. With 400 rows reading one environment key, each tracking install and cancel walked a 400-long collision chain with `AnyKeyPath ==`. In a 400-segment editor that was most of the main thread during zoom.
+  - Each `_StateObserver` subscript now takes one `Hashable` struct argument, so the whole key is hashed. A track, write and cancel over 400 rows reading a shared environment and memoize key went from 124–135 ms to 9 ms.
+  - `ObserverKeyPathHashTests` checks that these key paths hash apart across properties, contexts and models. `SwiftModelBenchmarks --source-keys` includes the 400-row case.
+
 ---
 
 ## [1.1.7] — Fast keyed cancellation + allocation-free source-location keys

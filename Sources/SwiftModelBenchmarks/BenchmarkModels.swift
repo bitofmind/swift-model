@@ -119,3 +119,27 @@ import IdentifiedCollections
         node.onCancel {}.cancel()
     }
 }
+
+// MARK: - Shared observation keys
+
+extension EnvironmentKeys {
+    var benchMode: EnvironmentStorage<Int> { .init(defaultValue: 1) }
+}
+
+/// A row that reads the same environment key and memoize key as every other row,
+/// the shape of a large editor timeline.
+@Model struct BenchKeyRow: Identifiable {
+    let id: Int
+    var value = 0
+
+    var mode: Int { node.environment.benchMode }
+
+    var shifted: Int {
+        node.memoize(for: "shifted") { value + 1 }
+    }
+}
+
+@Model struct BenchKeyRoot {
+    var rows: [BenchKeyRow]
+    var tick = 0
+}
