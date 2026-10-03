@@ -12,6 +12,7 @@ import ConcurrencyExtras
 @Suite(.modelTesting(exhaustivity: .off))
 struct MemoizeFirstEvaluationLockTests {
 
+#if canImport(Dispatch)
     @Test func treeLockIsFreeDuringFirstProduce() async {
         let model = LockProbeModel().withAnchor()
         let lock = model.node._context!.lock
@@ -21,6 +22,7 @@ struct MemoizeFirstEvaluationLockTests {
 
         #expect(model.lockWasFree.value == [true])
     }
+#endif
 
     @Test func dependencyChangeDuringFirstProduceIsNotLost() async {
         let model = WriteDuringProduceModel().withAnchor()
@@ -43,6 +45,7 @@ struct MemoizeFirstEvaluationLockTests {
     }
 }
 
+#if canImport(Dispatch)
 /// `lock.try()` from a dedicated thread: `true` if no other thread holds the lock.
 private func tryLockFromAnotherThread(_ lock: NSRecursiveLock) -> Bool {
     let result = LockIsolated(false)
@@ -73,6 +76,8 @@ private func tryLockFromAnotherThread(_ lock: NSRecursiveLock) -> Bool {
         }
     }
 }
+
+#endif
 
 @Model private struct WriteDuringProduceModel {
     var value = 1
