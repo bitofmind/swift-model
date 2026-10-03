@@ -25,7 +25,7 @@ extension TestAccess {
     // loop). See `awaitPredicate`.
     //
     // Predicates that depend on state outside the reactive system —
-    // raw `LockIsolated` counters mutated from `forEach` callbacks,
+    // raw `LockedValue` counters mutated from `forEach` callbacks,
     // etc. — belong in `waitUntil` (Tests/SwiftModelTests/Utilities.swift).
     //
     // 5 s gives runaway tests fast feedback. `expect` is **purely reactive**:

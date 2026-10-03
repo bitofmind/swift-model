@@ -40,7 +40,7 @@ struct SettlePendingStartSpinTests {
         await withTaskExecutorPreference(thread) {
             // Hop onto `thread` first: the preference only takes effect at a suspension point.
             await Task.yield()
-            let started = LockIsolated(false)
+            let started = LockedValue(false)
             _ = TaskCancellable(
                 modelName: "Counter", taskName: "pending start", fileAndLine: FileAndLine(fileID: #fileID, filePath: #filePath, line: #line, column: #column),
                 cancellations: model.node._context!.cancellations, hasStartedRunningBox: started

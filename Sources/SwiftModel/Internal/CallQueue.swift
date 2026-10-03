@@ -86,7 +86,7 @@ private func runBatch(_ calls: [@Sendable () -> Void], bundle: RegistrarBundle) 
 ///
 /// Every main-thread write calls `drainIfOnMain()` to flush notifications that
 /// background writers may have bridged over since the last flush. Almost always
-/// there are none, and taking the `LockIsolated` lock just to find an empty
+/// there are none, and taking the `LockedValue` lock just to find an empty
 /// queue was ~10 % of a single-threaded write. The flag lets that common case
 /// return after one atomic load.
 ///
@@ -136,7 +136,7 @@ private func makePendingWorkFlag() -> any PendingWorkFlag {
 @MainActor
 private func mainCallQueueDrainLoop(
     state: LockedValue<CallQueueState?>,
-    progress: LockIsolated<UInt64>,
+    progress: LockedValue<UInt64>,
     pending: any PendingWorkFlag
 ) async {
     while !Task.isCancelled {
@@ -171,7 +171,7 @@ private func mainCallQueueDrainLoop(
 /// Bonus: per-test `BackgroundCallQueue` drains no longer all compete for
 /// `DispatchQueue.global(.userInitiated)`'s bounded kernel pool, removing a
 /// shared-resource contention bottleneck under parallel test load.
-private func backgroundCallQueueDrainLoop(state: LockedValue<CallQueueState?>, progress: LockIsolated<UInt64>) async {
+private func backgroundCallQueueDrainLoop(state: LockedValue<CallQueueState?>, progress: LockedValue<UInt64>) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
             guard $0 != nil else { return ([], []) }
@@ -223,7 +223,7 @@ func scheduleAfter(deadline: UInt64, _ body: @escaping @Sendable () -> Void) -> 
     #if canImport(Dispatch)
     return GlobalTickScheduler.shared.schedule(deadlineNs: deadline, callback: body)
     #else
-    let cancelled = LockIsolated(false)
+    let cancelled = LockedValue(false)
     Task.detached {
         let nowNs = UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
         let delayNs = deadline > nowNs ? deadline - nowNs : 0
@@ -290,9 +290,9 @@ private func callQueueWait(
     deadline: UInt64,
     appendCallback: @Sendable @escaping (inout CallQueueState, @escaping @Sendable () -> Void) -> Void
 ) async {
-    let resumed = LockIsolated(false)
-    let contSlot = LockIsolated<CheckedContinuation<Void, Never>?>(nil)
-    let timerCancel = LockIsolated<(@Sendable () -> Void)?>(nil)
+    let resumed = LockedValue(false)
+    let contSlot = LockedValue<CheckedContinuation<Void, Never>?>(nil)
+    let timerCancel = LockedValue<(@Sendable () -> Void)?>(nil)
 
     @Sendable func resolve() {
         let toResume: CheckedContinuation<Void, Never>? = resumed.withValue { r in
@@ -365,7 +365,7 @@ struct MainCallQueue: @unchecked Sendable {
     /// watchdog (a test parked waiting on a slow main drain is progressing,
     /// not stalled). Stamped once per drained batch, so the production cost
     /// is one locked store per drain cycle, not per item.
-    private let progress = LockIsolated<UInt64>(0)
+    private let progress = LockedValue<UInt64>(0)
     /// See `PendingWorkFlag`. Set under `state`'s lock whenever something is
     /// appended; cleared under it whenever a batch is taken.
     private let pending = makePendingWorkFlag()
@@ -391,7 +391,7 @@ struct MainCallQueue: @unchecked Sendable {
             callback()
             return
         }
-        state.withValue {
+        state.withValueInPlace {
             if $0 == nil {
                 $0 = makeState(calls: [callback])
             } else {
@@ -449,7 +449,7 @@ struct MainCallQueue: @unchecked Sendable {
         }
         let key = RegistrarBundle.Key(contextID: contextID, keyPathID: ObjectIdentifier(keyPath))
         nonisolated(unsafe) let keyPath = keyPath
-        state.withValue {
+        state.withValueInPlace {
             if $0 == nil {
                 $0 = makeState(calls: [])
             }
@@ -530,7 +530,7 @@ struct MainCallQueue: @unchecked Sendable {
 struct BackgroundCallQueue: @unchecked Sendable {
     private let state = LockedValue<CallQueueState?>(nil)
     /// See `MainCallQueue.progress` — same progress signal, per drained batch.
-    private let progress = LockIsolated<UInt64>(0)
+    private let progress = LockedValue<UInt64>(0)
 
     /// Monotonic-ns of the last drained batch; `0` if nothing was ever drained.
     var lastProgressNs: UInt64 { progress.value }
@@ -539,7 +539,7 @@ struct BackgroundCallQueue: @unchecked Sendable {
 
     /// Enqueues `callback`. Starts a drain if the queue was idle.
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
-        state.withValue {
+        state.withValueInPlace {
             if $0 == nil {
                 $0 = CallQueueState(task: Task.detached(priority: .userInitiated) {
                     await backgroundCallQueueDrainLoop(state: self.state, progress: self.progress)
@@ -593,7 +593,7 @@ struct BackgroundCallQueue: @unchecked Sendable {
     /// Thread-safety: callable from any thread.
     @discardableResult
     func onIdle(_ callback: @escaping @Sendable () -> Void) -> @Sendable () -> Void {
-        let fired = LockIsolated(false)
+        let fired = LockedValue(false)
         // Wrap so a late cancel can still no-op the firing, and a late
         // fire can't run twice.
         let wrapped: @Sendable () -> Void = {

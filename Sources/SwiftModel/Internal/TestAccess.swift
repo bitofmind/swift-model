@@ -553,7 +553,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// trigger that removal, so its work is neither checked nor reported — and are then
     /// driven until quiet; whatever is still parked (e.g. on a frozen clock) is cancelled.
     /// `nil` = not in harness teardown.
-    private let deferredRemovals = LockIsolated<[@Sendable () -> Void]?>(nil)
+    private let deferredRemovals = LockedValue<[@Sendable () -> Void]?>(nil)
 
     /// Cancels signal-handler runs still running at the end of a test and waits for it
     /// to unwind, so cleanup in a cancelled run (`defer { stop(); release() }`) has

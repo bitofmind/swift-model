@@ -1127,7 +1127,7 @@ class AnyContext: @unchecked Sendable {
         }
 
         // Move cache entries out of the dictionary before clearing. The entries'
-        // closures (onUpdate, cancellable) capture shared objects (LockIsolated
+        // closures (onUpdate, cancellable) capture shared objects (LockedValue
         // boxes, context references) that may also be held by in-flight
         // performUpdate closures on the GCD backgroundCallQueue. Releasing the
         // entries here (inside the lock, on the teardown thread) would race with

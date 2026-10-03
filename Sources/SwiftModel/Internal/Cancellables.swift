@@ -55,7 +55,7 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
     /// had at least one CPU slot. See the `ModelAccess.taskBodyStarted`
     /// doc-comment for why this matters.
     ///
-    /// Set via a `LockIsolated<Bool>` captured by the body wrapper in the
+    /// Set via a `LockedValue<Bool>` captured by the body wrapper in the
     /// convenience init, which creates the box BEFORE `self.init` (the factory
     /// closure is constructed before designated-init completes) and passes it
     /// in. It is a `let` assigned before `register(self)` publishes this
@@ -69,16 +69,16 @@ final class TaskCancellable: Cancellable, InternalCancellable, @unchecked Sendab
     /// racing a `forEach` task registration). Passing the box in removes the
     /// window rather than defending it; the observable value is unchanged
     /// (`false` until the body runs).
-    let _hasStartedRunningBox: LockIsolated<Bool>
+    let _hasStartedRunningBox: LockedValue<Bool>
     var hasStartedRunning: Bool { _hasStartedRunningBox.value }
 
-    convenience init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, hasStartedRunningBox: LockIsolated<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
+    convenience init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, hasStartedRunningBox: LockedValue<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
         // `context.cancellations` is resolved HERE, before the designated init takes
         // `lock` — see the AB-BA note there.
         self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, cancellations: context.cancellations, hasStartedRunningBox: hasStartedRunningBox, task: task)
     }
 
-    init(modelName: String, taskName: String, fileAndLine: FileAndLine, cancellations: Cancellations, hasStartedRunningBox: LockIsolated<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
+    init(modelName: String, taskName: String, fileAndLine: FileAndLine, cancellations: Cancellations, hasStartedRunningBox: LockedValue<Bool>, task: @escaping @Sendable (@escaping @Sendable () -> Void) -> Task<Void, Error>) {
         // Assigned before `cancellations.register(self)` below publishes this
         // instance to any settle thread — see `_hasStartedRunningBox`.
         self._hasStartedRunningBox = hasStartedRunningBox
@@ -159,7 +159,7 @@ extension TaskCancellable {
     convenience init(modelName: String, taskName: String, fileAndLine: FileAndLine, context: AnyContext, isDetached: Bool, priority: TaskPriority?, @_inheritActorContext @_implicitSelfCapture operation: @escaping @Sendable () async throws -> Void, `catch`: (@Sendable (Error) -> Void)?) {
         // Constructed BEFORE self.init so the factory closure can capture it.
         // Stored on `self` AFTER self.init completes — see `_hasStartedRunningBox`.
-        let hasStartedRunningBox = LockIsolated(false)
+        let hasStartedRunningBox = LockedValue(false)
 
         self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, context: context, hasStartedRunningBox: hasStartedRunningBox) { onDone in
             let contexts = AnyCancellable.contexts

@@ -278,7 +278,7 @@ public extension ModelNode {
         // Track the previous emission. Seed with the current value when `initial: false` so
         // the first change correctly reports (activationValue, firstChangedValue). When
         // `initial: true` the first emission has oldValue == newValue (initial call semantics).
-        let previous = LockIsolated<Value?>(initial ? nil : idClosure())
+        let previous = LockedValue<Value?>(initial ? nil : idClosure())
 
         // Construct the Observed on the caller's thread so observation registration completes
         // before this call returns — matching forEach(Observed(...)), task(id:), and the pack
@@ -423,7 +423,7 @@ public extension ModelNode {
 
         let cancelPreviousKey = UUID()
         let abortKey = UUID()
-        let hasBeenAborted = LockIsolated(false)
+        let hasBeenAborted = LockedValue(false)
         let fileAndLine = FileAndLine(fileID: fileID, filePath: filePath, line: line, column: column)
         let modelName = typeDescription
         let innerTaskName = name ?? "\(function) @ \(fileAndLine.description)"

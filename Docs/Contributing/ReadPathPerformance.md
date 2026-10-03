@@ -34,6 +34,19 @@ constant for any O(N) traversal in client apps. Key facts:
   key-path form of the write (Swift 6.3 SILGen cannot lower the closure form for a pack)
   but pass the index through. Don't reintroduce a process-global cache keyed by
   key-path object: eight cores retaining one object is the 8-thread cliff this removed.
+- **Locked state uses `LockedValue`, not `LockIsolated`.** ConcurrencyExtras'
+  `LockIsolated.withValue` copies the value out and writes it back, so a collection
+  mutated inside it is copied whole on every call. In the access collector that made
+  an observation's first evaluation quadratic in its reads. The library uses only
+  `LockedValue` (tests may still use `LockIsolated`). Its `withValue` keeps the copy
+  semantics, which tolerate re-entry. `withValueInPlace` mutates without copying; use it
+  for a growing collection on a hot path, and only when the closure cannot reach the same
+  box again. Re-entry there is an exclusivity violation, which traps in Release too: a
+  synchronous observer update re-enters `update()`'s own `last` box.
+- **Observation key paths take one subscript argument.** A key path's hash covers only
+  the first argument of a multi-argument subscript, so `[key:modelID:]` hashed every
+  model alike and the registrar's per-tree dictionary walked collision chains. Pack the
+  parts into one `Hashable` struct (`_ObserverStorageKey`, `_ObserverPropertyKey`).
 - **Benchmarks**: `swift run -c release SwiftModelBenchmarks` (sections 2/2b/2c/2d;
   run the binary with `DYLD_FRAMEWORK_PATH=$(xcode-select -p)/Platforms/MacOSX.platform/Developer/Library/Frameworks`
   if launching directly) and `swift test --filter SwiftModelBenchmarkTests.ReadPathBenchmarks`

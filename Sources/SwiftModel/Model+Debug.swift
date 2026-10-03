@@ -53,7 +53,7 @@ public extension ModelNode where M: Sendable {
             }
         }
 
-        let previous = LockIsolated<String?>(nil)
+        let previous = LockedValue<String?>(nil)
 
         // Initialize previous snapshot with the current model value.
         previous.setValue(snapshot(context._modelSeed))

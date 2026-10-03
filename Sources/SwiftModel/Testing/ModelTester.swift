@@ -34,7 +34,7 @@ public final class ModelTester<M: Model> {
     /// The live model being tested. Use this to read state and invoke actions.
     public var model: M {
         usingActiveAccess(access) {
-            // Seed from lastState so that `let` properties (e.g. LockIsolated counters)
+            // Seed from lastState so that `let` properties (e.g. LockedValue counters)
             // carry their correct reference values.
             // lastState is a frozen copy: tracked `var` properties are stale in the struct,
             // but after _updateContext they're always read from _stateHolder.state via the

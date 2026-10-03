@@ -9,7 +9,7 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 ### Fixed
 
 - **An observation's first evaluation took time quadratic in the number of reads.** Each `onChange`, `Observed` or memoize registers every model read through an access collector. The collector kept its registrations in a dictionary and a set inside `LockIsolated`, whose `withValue` copies the value out and writes it back. So every registration copied both collections whole. Over 4,000 reads, the first evaluation took 192 ms. A memoize's first evaluation runs while holding the model tree's lock, so other threads waited on that lock meanwhile. The background call queue's pending list was grown the same way, one copy per enqueue.
-  - A new internal `LockedValue` mutates its value in place under the lock. The access collector, the `touch()` observer and the call queues use it. The first evaluation over 4,000 rows now takes 13 ms, and over 400 rows 1.3 ms instead of 3.1 ms.
+  - A new internal `LockedValue` replaces every `LockIsolated` in the library. Its `withValue` keeps `LockIsolated`'s copy semantics, which tolerate re-entry. Its `withValueInPlace` mutates without copying, and the access collector, the `touch()` observer and the call queues' enqueue use it; their closures never reach the same box again. The first evaluation over 4,000 rows now takes 13 ms, and over 400 rows 1.3 ms instead of 3.1 ms.
   - `SwiftModelBenchmarks --source-keys` includes both cases.
 
 ---

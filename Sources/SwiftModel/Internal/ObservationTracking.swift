@@ -183,7 +183,7 @@ internal func update<T: Sendable>(
     }
     // Versioning for stale update detection
     // `index` is incremented before each recomputation to invalidate in-flight updates
-    let last = LockIsolated((value: T?.none, index: 0))
+    let last = LockedValue((value: T?.none, index: 0))
     
     // updateLock ensures only one update processes at a time, preventing race conditions
     // when multiple threads trigger updates simultaneously
@@ -192,7 +192,7 @@ internal func update<T: Sendable>(
     // Shared force flag for this observer. Set to true by node.touch() (via either the
     // threadLocals.forceObservation thread-local for the synchronous AccessCollector path,
     // or the forceNext flag for the asynchronous withObservationTracking path).
-    let forceNext = LockIsolated(false)
+    let forceNext = LockedValue(false)
     
     /// Core update logic that:
     /// 1. Checks if this update is stale (index mismatch) - prevents out-of-order updates
@@ -275,11 +275,11 @@ internal func update<T: Sendable>(
     if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *), useWithObservationTracking {
         // withObservationTracking path (opt-in)
         // Uses Swift's native Observable tracking with main thread bridging for SwiftUI compatibility
-        let hasBeenCancelled = LockIsolated(false)
-        let hasPendingUpdate = LockIsolated(false)
+        let hasBeenCancelled = LockedValue(false)
+        let hasPendingUpdate = LockedValue(false)
 
         // Box for performUpdate so observe()'s onChange closure can reference it
-        let performUpdateBox = LockIsolated<(@Sendable () -> Void)?>(nil)
+        let performUpdateBox = LockedValue<(@Sendable () -> Void)?>(nil)
 
         // ── Registration-gap race fix ──────────────────────────────────────────
         // PERSISTENT shadow `AccessCollector` that lives for the observer's full
@@ -561,7 +561,7 @@ internal func update<T: Sendable>(
         )
     } else {
         // AccessCollector path (default, works on all OS versions and threads)
-        let hasPendingUpdate = LockIsolated(false)
+        let hasPendingUpdate = LockedValue(false)
         
         let collector = AccessCollector { collector, force in
             // Mirror the withObservationTracking path's hasBeenCancelled check: a
@@ -695,7 +695,7 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
     /// both before registering and when storing a registration that raced with
     /// cancel, and `reset`'s final diff drains everything once the flag is set.
     func cancel() {
-        let cancels = active.withValue { state in
+        let cancels = active.withValueInPlace { state in
             state.cancelled = true
             defer { state.active.removeAll() }
             return Array(state.active.values)
@@ -707,7 +707,7 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
     }
 
     func reset<Value>(_ access: () -> Value) -> Value {
-        let keys = active.withValue {
+        let keys = active.withValueInPlace {
             $0.added.removeAll(keepingCapacity: true)
             return Set($0.active.keys)
         }
@@ -719,7 +719,7 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
         // computed against — and applied to — one consistent snapshot, with the
         // cancelled check part of the same section. (The registrations themselves
         // happen in willAccess and stay outside this lock.)
-        let cancels = active.withValue { state -> [@Sendable () -> Void] in
+        let cancels = active.withValueInPlace { state -> [@Sendable () -> Void] in
             if state.cancelled {
                 defer { state.active.removeAll() }
                 return Array(state.active.values)
@@ -742,7 +742,7 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
         let path = path()
         let key = Key(id: context.anyModelID, path: path)
 
-        let needsRegistration = active.withValue { state in
+        let needsRegistration = active.withValueInPlace { state in
             guard !state.cancelled else { return false }
             state.added.insert(key)
             return state.active[key] == nil
@@ -760,7 +760,7 @@ private final class AccessCollector: ModelAccess, @unchecked Sendable {
         // the race while the subscription was registered outside the lock. In either
         // case this subscription must not be kept: cancel it instead of storing (or
         // overwriting, which would leak the earlier registration as a zombie).
-        let stale = active.withValue { state -> (@Sendable () -> Void)? in
+        let stale = active.withValueInPlace { state -> (@Sendable () -> Void)? in
             if state.cancelled || state.active[key] != nil {
                 return cancellation
             }
@@ -789,7 +789,7 @@ private final class ForceObserver: ModelAccess, @unchecked Sendable {
     deinit { cancel() }
 
     func cancel() {
-        let cs = cancels.withValue { cs in
+        let cs = cancels.withValueInPlace { cs in
             defer { cs = [] }
             return cs
         }
@@ -806,7 +806,7 @@ private final class ForceObserver: ModelAccess, @unchecked Sendable {
             self.onForce()
             return nil
         }
-        cancels.withValue { $0.append(cancellation) }
+        cancels.withValueInPlace { $0.append(cancellation) }
         return nil
     }
 }
