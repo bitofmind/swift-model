@@ -91,3 +91,31 @@ import IdentifiedCollections
         }
     }
 }
+
+// MARK: - Source-location keys
+
+/// Default (source-location) keys: a memoize with no explicit key, and keyed
+/// cancellables, the two places a `FileAndLine` is hashed and compared per use.
+@Model struct BenchSourceKeys {
+    var value = 1
+
+    var doubled: Int {
+        node.memoize { value * 2 }
+    }
+
+    /// Files `count` cancellables under distinct keys, like the per-row work of a large tree.
+    func fileKeyed(_ count: Int) {
+        for i in 0..<count {
+            node.onCancel {}.cancel(for: i)
+        }
+    }
+
+    /// Registers, keys by call site, and cancels the one before: `cancelInFlight()`.
+    func restartInFlight() {
+        node.onCancel {}.cancelInFlight()
+    }
+
+    func registerAndCancel() {
+        node.onCancel {}.cancel()
+    }
+}

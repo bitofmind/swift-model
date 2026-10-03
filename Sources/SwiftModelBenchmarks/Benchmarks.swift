@@ -417,3 +417,39 @@ func benchInModuleProbe() {
     print(String(format: "  in-module tracked read:   %8.1f ns/op", r.tracked))
     print(String(format: "  in-module untracked read: %8.1f ns/op", r.untracked))
 }
+
+// MARK: - Source-location keys
+
+/// `FileAndLine` is the default key of memoize and `cancelInFlight()`, so its hash and
+/// `==` run on every such use. A 400-segment editor spent most of its main thread in
+/// them, and in `Cancellations.unregister`, which visited every key per cancel.
+func benchSourceLocationKeys() {
+    printHeader("12. Source-location keys (memoize, cancellation)")
+
+    let a = FileAndLine(fileID: #fileID, filePath: #filePath, line: #line, column: #column)
+    let b = FileAndLine(fileID: #fileID, filePath: #filePath, line: #line, column: #column)
+    measure("FileAndLine hash", iterations: 1_000_000) {
+        blackhole &+= a.hashValue
+    }
+    measure("FileAndLine == (different call sites)", iterations: 1_000_000) {
+        blackhole &+= a == b ? 1 : 0
+    }
+    measure("FileAndLine == (same call site)", iterations: 1_000_000) {
+        blackhole &+= a == a ? 1 : 0
+    }
+
+    let (model, anchor) = BenchSourceKeys().returningAnchor()
+    measure("memoize read (default key)", iterations: 200_000) {
+        blackhole &+= model.doubled
+    }
+
+    model.fileKeyed(400)
+    measure("register + cancel (400 keys filed)", iterations: 20_000) {
+        model.registerAndCancel()
+    }
+    measure("cancelInFlight restart (400 keys filed)", iterations: 20_000) {
+        model.restartInFlight()
+    }
+
+    withExtendedLifetime(anchor) {}
+}

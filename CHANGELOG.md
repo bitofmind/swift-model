@@ -6,6 +6,12 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cancelling work was slow in a large model tree, and source-location keys allocated on every use.** `Cancellations.unregister` visited every key in its store on each cancel and looked each one up again several times. So one cancel cost a hash of every key filed in that model: 128 µs with 400 keys filed. A 400-segment editor spent most of its main thread there during zoom and drag. Each id now records which keys it is filed under, so unregistering touches only those: 0.5 µs.
+  - `FileAndLine`, the default key of `memoize`, context storage and `cancelInFlight()`, built two `String`s on every `==` and hash. It now compares line, column and the literals' bytes (pointer first), and hashes line, column and lengths. That makes hash 280 → 42 ns and `==` 235 → 5 ns.
+  - `SwiftModelBenchmarks --source-keys` measures these. `FileAndLineTests` checks that equality is unchanged.
+
 ---
 
 ## [1.1.6] — Tester no longer drops writes to a model rebuilt at a reused address

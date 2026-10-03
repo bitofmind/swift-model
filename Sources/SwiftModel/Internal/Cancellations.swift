@@ -5,6 +5,10 @@ final class Cancellations: @unchecked Sendable {
     fileprivate let lock = NSLock()
     fileprivate var registered: [Int: InternalCancellable] = [:]
     fileprivate var keyed: [CancellableKey: [Int]] = [:]
+    /// The keys each id is filed under in `keyed`, so removing an id touches only its
+    /// own keys. Scanning all of `keyed` on every unregister hashed every key several
+    /// times per cancel, which dominated a large model tree.
+    private var keysByID: [Int: [CancellableKey]] = [:]
     private var _sealed = false
 
     deinit {
@@ -26,7 +30,7 @@ final class Cancellations: @unchecked Sendable {
             // Keying into a context that has already been cancelled: its cancel has run
             // and will never reach this one — cancel it now instead (see `ContextToken`).
             if key.contextToken?.isCancelled == true { return true }
-            keyed[key, default: []].append(c.id)
+            file(c.id, under: key)
             return false
         }
         if cancelNow {
@@ -63,7 +67,7 @@ final class Cancellations: @unchecked Sendable {
             }
             registered[c.id] = c
             for key in contexts {
-                keyed[key, default: []].append(c.id)
+                file(c.id, under: key)
             }
             return false
         }
@@ -99,17 +103,24 @@ final class Cancellations: @unchecked Sendable {
     func unregister(_ id: Int) -> InternalCancellable? {
         lock {
             let cancellable = registered.removeValue(forKey: id)
-
-            for contextAndKey in keyed.keys {
-                while let index = keyed[contextAndKey]?.firstIndex(of: id) {
-                    keyed[contextAndKey]?.remove(at: index)
-                }
-                if keyed[contextAndKey]?.isEmpty == true {
-                    keyed[contextAndKey] = nil
-                }
-            }
-
+            unfile(id)
             return cancellable
+        }
+    }
+
+    /// Call under `lock`.
+    private func file(_ id: Int, under key: CancellableKey) {
+        keyed[key, default: []].append(id)
+        keysByID[id, default: []].append(key)
+    }
+
+    /// Removes `id` from every key it is filed under. Call under `lock`.
+    private func unfile(_ id: Int) {
+        guard let keys = keysByID.removeValue(forKey: id) else { return }
+        for key in keys {
+            guard var ids = keyed[key] else { continue }
+            ids.removeAll { $0 == id }
+            keyed[key] = ids.isEmpty ? nil : ids
         }
     }
 
@@ -121,7 +132,8 @@ final class Cancellations: @unchecked Sendable {
             // snapshot or sees it closed — never neither.
             key.contextToken?.markCancelled()
             return (keyed.removeValue(forKey: key) ?? []).compactMap { id in
-                registered.removeValue(forKey: id)
+                unfile(id)
+                return registered.removeValue(forKey: id)
             }
         }
         threadLocals.withValue(true, at: \.isDrainingCancellations) {
@@ -163,6 +175,7 @@ final class Cancellations: @unchecked Sendable {
             defer {
                 registered.removeAll()
                 keyed.removeAll()
+                keysByID.removeAll()
             }
             return registered.values
         }
@@ -241,17 +254,41 @@ package struct FileAndLine: Hashable, Sendable {
         self.column = column
     }
 
+    // `FileAndLine` is the default key of memoize, context storage and cancellation
+    // contexts, so these run on every such lookup, and on every comparison of a key
+    // path holding one. They must not allocate: building the two `String`s was most of
+    // the main thread in a 400-segment editor. Equal literals usually share storage, so
+    // the pointer check settles most comparisons; otherwise the bytes are compared.
+
     package static func == (lhs: FileAndLine, rhs: FileAndLine) -> Bool {
         lhs.line == rhs.line && lhs.column == rhs.column
-        && lhs.fileID.description == rhs.fileID.description
-        && lhs.filePath.description == rhs.filePath.description
+        && lhs.fileID.isSame(as: rhs.fileID)
+        && lhs.filePath.isSame(as: rhs.filePath)
     }
 
+    /// Line, column and the paths' lengths: equal values agree on all of them, and two
+    /// call sites rarely do (then `==` compares the bytes).
     package func hash(into hasher: inout Hasher) {
-        hasher.combine(fileID.description)
-        hasher.combine(filePath.description)
         hasher.combine(line)
         hasher.combine(column)
+        hasher.combine(fileID.byteCount)
+        hasher.combine(filePath.byteCount)
+    }
+}
+
+private extension StaticString {
+    var byteCount: Int {
+        hasPointerRepresentation ? utf8CodeUnitCount : description.utf8.count
+    }
+
+    func isSame(as other: StaticString) -> Bool {
+        guard hasPointerRepresentation, other.hasPointerRepresentation else {
+            // A single-scalar literal; never a `#fileID` / `#filePath`.
+            return description == other.description
+        }
+        let count = utf8CodeUnitCount
+        guard count == other.utf8CodeUnitCount else { return false }
+        return utf8Start == other.utf8Start || memcmp(utf8Start, other.utf8Start, count) == 0
     }
 }
 extension FileAndLine: CustomStringConvertible {
