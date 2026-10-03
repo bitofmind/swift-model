@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.1.7] — Fast keyed cancellation + allocation-free source-location keys
+
 ### Fixed
 
 - **Cancelling work was slow in a large model tree, and source-location keys allocated on every use.** `Cancellations.unregister` visited every key in its store on each cancel and looked each one up again several times. So one cancel cost a hash of every key filed in that model: 128 µs with 400 keys filed. A 400-segment editor spent most of its main thread there during zoom and drag. Each id now records which keys it is filed under, so unregistering touches only those: 0.5 µs.
