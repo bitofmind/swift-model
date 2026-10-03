@@ -3068,3 +3068,12 @@ func endLockHeldBackgroundCallsScope(_ tl: ThreadLocals, _ owned: Bool) {
     for f in calls { f() }
 }
 
+/// Runs `body` inside a `lockHeldBackgroundCalls` scope (see
+/// `beginLockHeldBackgroundCallsScope`), without taking any lock.
+func withLockHeldBackgroundCallsScope<T>(_ body: () throws -> T) rethrows -> T {
+    let tl = threadLocals
+    let owned = beginLockHeldBackgroundCallsScope(tl)
+    defer { endLockHeldBackgroundCallsScope(tl, owned) }
+    return try body()
+}
+
