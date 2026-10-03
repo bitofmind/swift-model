@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.1.8] — Observation key paths no longer collide across models
+
 ### Fixed
 
 - **Observation key paths collided across models, which made SwiftUI tracking slow in a large tree.** SwiftModel identifies what a view read by key paths such as `\_StateObserver[environmentKey: key, modelID: id]`. A Swift key path's hash covers only the first argument of a multi-argument subscript, though. So every model reading the same environment, preference or memoize key had the same hash, as did every property of one model and every model's parents path. `ObservationRegistrar` keeps tracked key paths in one dictionary per tree. With 400 rows reading one environment key, each tracking install and cancel walked a 400-long collision chain with `AnyKeyPath ==`. In a 400-segment editor that was most of the main thread during zoom.
