@@ -20,6 +20,9 @@ import Foundation
 //   # Off-main write burst to one main-tracked model, main draining vs blocked:
 //   swift run -c release SwiftModelBenchmarks --burst
 //
+//   # Only the source-location key section (memoize / cancellation keys):
+//   swift run -c release SwiftModelBenchmarks --source-keys
+//
 //   # Or build first, then profile with xctrace directly:
 //   swift build -c release --product SwiftModelBenchmarks
 //   xcrun xctrace record \
@@ -67,6 +70,11 @@ if #available(macOS 15.0, *) {
     }
 }
 
+if CommandLine.arguments.contains("--source-keys") {
+    benchSourceLocationKeys()
+    exit(0)
+}
+
 func runAll() {
     benchActivation()
     benchPropertyAccess()
@@ -82,6 +90,7 @@ func runAll() {
     benchContainerCollectionMutation()
     benchDependencyAccess()
     benchAnchorDependencies()
+    benchSourceLocationKeys()
     print("")
 }
 
