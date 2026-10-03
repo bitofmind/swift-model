@@ -90,7 +90,7 @@ final class SignalHandler: Cancellable, InternalCancellable, @unchecked Sendable
         let executor = self.executor
         let priority = self.priority
         let taskName = self.taskName
-        let started = LockIsolated(false)
+        let started = LockedValue(false)
 
         // Read the previous run AND publish this one in the same critical section:
         // two concurrent `signal`s must see each other, or both run unserialized.

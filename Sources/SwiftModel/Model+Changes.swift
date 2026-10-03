@@ -456,7 +456,7 @@ private extension ModelNode {
         // property reads inside produce() during the first update() call.
         // debugLabel and memoizeDebugSetup are only evaluated when debug is non-nil so that
         // String(describing: M.self) — which is slow — is never paid in the common no-debug path.
-        let (debugPrint, debugPreviousValue, debugCollectorBox): ((@Sendable (T, T?) -> Void)?, LockIsolated<T?>?, LockIsolated<DebugAccessCollector?>?)
+        let (debugPrint, debugPreviousValue, debugCollectorBox): ((@Sendable (T, T?) -> Void)?, LockedValue<T?>?, LockedValue<DebugAccessCollector?>?)
         if let debug {
             let debugLabel = debug.name ?? "\(context.typeDescription)[memoize: \"\(key.base)\"]"
             (debugPrint, debugPreviousValue, debugCollectorBox) = memoizeDebugSetup(options: debug, label: debugLabel)
@@ -484,7 +484,7 @@ private extension ModelNode {
         // Note: `forceNextBox` and `didModifyCallback` are built lazily inside the
         // first-access branch below, not here — they're only consumed by the
         // `update()` setup on first access. Constructing them on every access
-        // (a `LockIsolated` allocation + a closure capture) was pure waste on the
+        // (a `LockedValue` allocation + a closure capture) was pure waste on the
         // common cache-hit path. See `MemoizeAccessBenchmarks`.
 
         // Check for cached value with dirty state. `capturedVersion` is the entry's
@@ -619,7 +619,7 @@ private extension ModelNode {
             // arrives, ensuring memoize's own update() instance bypasses isSame and
             // propagates downstream. Built here (not per-access) — only the first-access
             // `update()` setup consumes it.
-            let forceNextBox = LockIsolated<(@Sendable () -> Void)?>(nil)
+            let forceNextBox = LockedValue<(@Sendable () -> Void)?>(nil)
 
             // Create didModify callback that marks the cache dirty (bumps dirtyVersion)
             // and, when the change is forced (e.g. via node.touch()), signals memoize's
@@ -654,7 +654,7 @@ private extension ModelNode {
 
                 // The last value `produce()` returned, served instead of re-producing once
                 // this model has been torn down (see the destructed check below).
-                let lastProduced = LockIsolated<T?>(nil)
+                let lastProduced = LockedValue<T?>(nil)
 
                 return update(
                     initial: true,
@@ -728,7 +728,7 @@ private extension ModelNode {
                         typeErasedIsSame = nil
                     }
                     let typeID = ObjectIdentifier(T.self)
-                    let hasInitialized = LockIsolated(false)
+                    let hasInitialized = LockedValue(false)
 
                     context.lock {
                         let entry = context._memoizeCache[key]

@@ -210,8 +210,8 @@ func memoizeDebugSetup<T: Sendable>(
     label: String
 ) -> (
     debugPrint: (@Sendable (T, T?) -> Void)?,
-    debugPreviousValue: LockIsolated<T?>?,
-    debugCollectorBox: LockIsolated<DebugAccessCollector?>?
+    debugPreviousValue: LockedValue<T?>?,
+    debugCollectorBox: LockedValue<DebugAccessCollector?>?
 ) {
     guard let options else {
         return (nil, nil, nil)
@@ -223,8 +223,8 @@ func memoizeDebugSetup<T: Sendable>(
     let debugPrinterBox = PrinterBox(options.effectivePrinter)
     // Store lazy closures so that expensive operations (e.g. LCS diff) run in debugPrint,
     // outside the context lock, rather than blocking it during the onModify callback.
-    let debugPendingTriggers = LockIsolated<[@Sendable () -> String]>([])
-    let collectorBox = LockIsolated<DebugAccessCollector?>(nil)
+    let debugPendingTriggers = LockedValue<[@Sendable () -> String]>([])
+    let collectorBox = LockedValue<DebugAccessCollector?>(nil)
 
     // The collector is needed whenever debug needs to observe accesses — either to
     // register trigger callbacks, fire the user's `accessObserver`, or capture
@@ -287,7 +287,7 @@ func memoizeDebugSetup<T: Sendable>(
         }
     }
 
-    return (debugPrint, LockIsolated<T?>(nil), collectorBox)
+    return (debugPrint, LockedValue<T?>(nil), collectorBox)
 }
 
 // MARK: - DebugAccessCollector
@@ -326,7 +326,7 @@ final class DebugAccessCollector: ModelAccess, @unchecked Sendable {
         /// trivially `Sendable` for capture in `@Sendable` `onTrigger` closures.
         var accessStack: [UInt]
     }
-    let subscriptions = LockIsolated<[Key: Subscription]>([:])
+    let subscriptions = LockedValue<[Key: Subscription]>([:])
 
     /// `nil` when the collector is installed solely to fire `accessObserver` — in that
     /// case no `onModify` callbacks are registered and `onTrigger` is never called.
@@ -704,7 +704,7 @@ func debugObserve<T: Sendable>(
     // Collect lazy trigger closures fired by the DebugAccessCollector's onModify callbacks.
     // Using closures (rather than pre-computed strings) defers expensive work (e.g. LCS diff)
     // to wrappedOnUpdate, which runs outside the context lock.
-    let pendingTriggers = LockIsolated<[@Sendable () -> String]>([])
+    let pendingTriggers = LockedValue<[@Sendable () -> String]>([])
 
     // The collector is needed whenever debug needs to observe accesses — for trigger
     // registration, to fire the user's `accessObserver`, or to capture access stacks
@@ -738,7 +738,7 @@ func debugObserve<T: Sendable>(
     }
 
     // Previous rendered snapshot for diff computation.
-    let previous = LockIsolated<String?>(snapshot(access()))
+    let previous = LockedValue<String?>(snapshot(access()))
 
     let wrappedOnUpdate: @Sendable (T) -> Void = { value in
         var lines: [String] = []

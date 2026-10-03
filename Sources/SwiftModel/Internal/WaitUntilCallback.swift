@@ -19,7 +19,7 @@ package struct WaitUntilTimeoutError: Error, CustomStringConvertible {
 /// Task is cancelled.
 ///
 /// Use for predicates that read state **outside** the reactive system —
-/// typically a `TestResult` / `LockIsolated` counter mutated from a
+/// typically a `TestResult` / `LockedValue` counter mutated from a
 /// `forEach` callback. Predicates against tracked `@Model` state should
 /// use `expect` / `require` / `settle`, which wake reactively via
 /// `_noteActivity` and don't poll.

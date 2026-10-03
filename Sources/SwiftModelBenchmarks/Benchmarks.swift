@@ -456,6 +456,25 @@ func benchSourceLocationKeys() {
     if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
         benchSharedObservationKeys()
     }
+
+    // A fresh observation over 400 rows: its first evaluation registers every read
+    // with the access collector (the shape of a memoize computed over a large tree).
+    let (keyRoot, keyAnchor) = BenchKeyRoot(rows: (0..<400).map { BenchKeyRow(id: $0) }).returningAnchor()
+    let keyRows = keyRoot.rows
+    measure("first observation of 400 rows (Observed)", iterations: 200, warmup: 10) {
+        let observed = Observed { keyRows.reduce(0) { $0 + $1.value } }
+        withExtendedLifetime(observed) {}
+    }
+    withExtendedLifetime(keyAnchor) {}
+
+    // Ten times the reads: the collector's cost per read stays flat instead of growing.
+    let (bigRoot, bigAnchor) = BenchKeyRoot(rows: (0..<4_000).map { BenchKeyRow(id: $0) }).returningAnchor()
+    let bigRows = bigRoot.rows
+    measure("first observation of 4000 rows (Observed)", iterations: 20, warmup: 2) {
+        let observed = Observed { bigRows.reduce(0) { $0 + $1.value } }
+        withExtendedLifetime(observed) {}
+    }
+    withExtendedLifetime(bigAnchor) {}
 }
 
 /// SwiftUI-style tracking over many models that read the same environment and memoize

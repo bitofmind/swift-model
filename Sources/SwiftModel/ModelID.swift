@@ -35,7 +35,7 @@ extension ModelID {
         }
     }
 
-    private static let last = LockIsolated(ModelID(low: 0, high: 0))
+    private static let last = LockedValue(ModelID(low: 0, high: 0))
     static func generate() -> Self {
         last.withValue {
             $0.increment()

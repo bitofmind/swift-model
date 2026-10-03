@@ -158,7 +158,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// across tests).
     private var referenceGeneration: Int = 0
 
-    // Seed model with correct `let` property values (e.g. LockIsolated counters).
+    // Seed model with correct `let` property values (e.g. LockedValue counters).
     // Set to localModel after withContextAdded so that var properties are backed by
     // _stateHolder (live source). context.model switches this to .reference source
     // so that reading tracked properties triggers trackedRead → observation.
@@ -822,7 +822,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     override var selfPath: AnyKeyPath { \M.self }
 
     var model: M {
-        // Start from _modelSeed (has correct `let` values, e.g. LockIsolated counters),
+        // Start from _modelSeed (has correct `let` values, e.g. LockedValue counters),
         // then switch to .reference source so that reading tracked properties triggers
         // trackedRead → observation registration (required for Observed/mapHierarchy).
         // No lock needed: _modelSeed is written once during init (before the object is
