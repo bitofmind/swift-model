@@ -1,5 +1,6 @@
 #if canImport(SwiftUI)
 import SwiftUI
+import Combine
 import Observation
 
 /// Sets up a model for observation to invalidate the view when state changes.
@@ -500,6 +501,15 @@ private struct ViewAccessDebug: Sendable {
 #endif
 
 internal final class ViewAccess: ModelAccess, ObservableObject, @unchecked Sendable {
+    /// Declared rather than synthesized. For an `ObservableObject` with no `@Published`
+    /// properties, the synthesized `objectWillChange` is looked up in a process-wide side
+    /// table, and each lookup sweeps the whole table's weak references: time linear in
+    /// the number of live such objects. SwiftUI reads it on every `@ObservedObject`
+    /// update, and there is one `ViewAccess` per `@ObservedModel` view, so a list of
+    /// 4,000 rows paid ~370 µs per read; a stored publisher is ~12 ns. A 400-segment
+    /// editor spent ~40 % of its main thread in that sweep.
+    let objectWillChange = ObservableObjectPublisher()
+
     private let lock = NSLock()
     private var observers: [ModelID: AnyObject] = [:]
     private var root: AnyContext?
