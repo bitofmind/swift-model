@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.1.10] — @ObservedModel no longer slows down with the number of live views
+
 ### Fixed
 
 - **`@ObservedModel` views got slower the more of them were alive.** Each `@ObservedModel` keeps a `ViewAccess`, an `ObservableObject` with no `@Published` properties. For such an object, the synthesized `objectWillChange` is looked up in a process-wide side table, and each lookup sweeps every live entry's weak reference. SwiftUI reads `objectWillChange` on every `@ObservedObject` update, so each read cost time proportional to the number of live views: ~9 µs at 100, ~87 µs at 1,000, ~370 µs at 4,000. A 400-segment editor spent about 40 % of its main thread in that sweep during a layer switch.
