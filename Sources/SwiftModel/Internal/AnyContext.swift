@@ -418,6 +418,12 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
+    /// Memoize keys whose first evaluation is running, each with the number of dependency
+    /// changes seen meanwhile. That first `produce()` runs without the tree lock, so a
+    /// dependency write can land before the cache entry exists; the count lets the entry
+    /// start out dirty instead of losing the change. Guarded by `lock`.
+    var memoizeSetupsInProgress: [AnyHashableSendable: UInt64] = [:]
+
     // Typed per-context storage for internal features (undo, environment, etc.).
     // Keyed by AnyHashableSendable (source location or explicit key from ContextStorage).
     // Access via the typed subscript defined in ModelContextStorage.swift (ContextStorage subscript).

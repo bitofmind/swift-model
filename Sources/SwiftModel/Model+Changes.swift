@@ -605,14 +605,47 @@ private extension ModelNode {
         let memoizeWriteLockHolder = ModelAccess.active?.writeLockOwner ?? ModelAccess.current?.writeLockOwner
         memoizeWriteLockHolder?.acquireWriteLock()
         defer { memoizeWriteLockHolder?.releaseWriteLock() }
-        return context.lock {
 
-            // Double-check: another thread may have set up tracking between our nil check above
-            // and acquiring the lock here.
+        // Claim the setup under the tree lock, then run it WITHOUT the lock. The first
+        // `produce()` is user code of any cost, and holding the tree lock across it stalled
+        // every other thread's reads of the tree: an editor's main thread spent a third of a
+        // layer switch waiting on a background memoize's first evaluation. `update()` is
+        // built for evaluations that race writes (`updateInitial` drops a stale initial
+        // value, the gap shadow catches writes during the evaluation), so the only thing the
+        // lock still has to cover is a dependency write landing before the cache entry
+        // exists: `didModifyCallback` counts those in `memoizeSetupsInProgress`, and the
+        // entry starts dirty.
+        let (cachedValue, isClaimed): (T?, Bool) = context.lock {
+            // Double-check: another thread may have set up tracking between our nil check
+            // above and acquiring the lock here.
             if let existingEntry = context._memoizeCache[key] {
                 assert(existingEntry.typeID == ObjectIdentifier(T.self), "memoize key '\(key.base)' was previously used with a different type")
-                return existingEntry.value as! T
+                return (existingEntry.value as? T, false)
             }
+            if context.memoizeSetupsInProgress[key] != nil {
+                return (nil, false)
+            }
+            context.memoizeSetupsInProgress[key] = 0
+            return (nil, true)
+        }
+        if let cachedValue {
+            return cachedValue
+        }
+        guard isClaimed else {
+            // Another evaluation is setting this key up (on another thread, or this one
+            // re-entering through `produce()`). Compute without caching or tracking, as the
+            // dirty path below does.
+            return threadLocals.withValue(true, at: \.isInsideMemoizeProduce) {
+                produce()
+            }
+        }
+        defer {
+            context.lock {
+                _ = context.memoizeSetupsInProgress.removeValue(forKey: key)
+            }
+        }
+
+        do {
 
             // Box that will hold the `forceNextUpdate` closure returned by `update()`.
             // Used so that `didModifyCallback` can call it when a forced (touch) change
@@ -629,6 +662,9 @@ private extension ModelNode {
                     if var entry = context._memoizeCache[key] {
                         entry.dirtyVersion &+= 1
                         context._memoizeCache[key] = entry
+                    } else if context.memoizeSetupsInProgress[key] != nil {
+                        // The first evaluation is still running: the entry will start dirty.
+                        context.memoizeSetupsInProgress[key]! &+= 1
                     }
                 }
                 if force {
@@ -636,12 +672,12 @@ private extension ModelNode {
                 }
             }
 
-            // First access: set up tracking with didModify callback.
-            // memoize setup doesn't issue user-property writes via stateTransaction,
-            // so we don't need an accessBox here — `memoizeWriteLockHolder` (the
-            // same `active ?? current` chain `Context.transaction` uses) was
-            // acquired above, BEFORE the context lock, to preserve the A→B order.
-            let (cancellable, forceNextUpdate) = context.transaction(writeLockHolder: memoizeWriteLockHolder) {
+            // First access: set up tracking with didModify callback, outside the tree lock
+            // (see the claim above). `memoizeWriteLockHolder` (the same `active ?? current`
+            // chain `Context.transaction` uses) is held, so the test write lock is still taken
+            // before the context lock. The background-call scope keeps what a transaction
+            // gave this setup: performUpdates enqueued during it start only after it ends.
+            let (cancellable, forceNextUpdate) = withLockHeldBackgroundCallsScope {
                 // Enable coalescing by default to batch multiple dependency changes during transactions
                 // Can be disabled via ModelOption.disableMemoizeCoalescing for testing
                 let useCoalescing = !context.options.contains(.disableMemoizeCoalescing)
@@ -895,7 +931,9 @@ private extension ModelNode {
                         context._memoizeCache[key] = AnyContext.MemoizeCacheEntry(
                             value: commitValue,
                             cancellable: prevCancellable ?? {},
-                            dirtyVersion: entry?.dirtyVersion ?? 0,
+                            // A new entry inherits the dependency changes counted while the
+                            // first evaluation ran without the lock, so it starts dirty.
+                            dirtyVersion: entry?.dirtyVersion ?? context.memoizeSetupsInProgress[key] ?? 0,
                             cleanVersion: max(entry?.cleanVersion ?? 0, commitVersion),
                             notifiedValue: commitValue,
                             onUpdate: wrappedOnUpdate,
@@ -966,16 +1004,14 @@ private extension ModelNode {
 
             // Get the cached value that should have been set by onUpdate
             // In rare cases (e.g., if produce() calls resetMemoization), the entry might not exist
-            guard var entry = context._memoizeCache[key] else {
-                // Fallback: compute without tracking if cache wasn't set
-                return produce()
+            let value: T? = context.lock {
+                guard var entry = context._memoizeCache[key] else { return nil }
+                entry.cancellable = cancellable
+                context._memoizeCache[key] = entry
+                return entry.value as? T
             }
-
-            let value = entry.value as! T
-            entry.cancellable = cancellable
-            context._memoizeCache[key] = entry
-
-            return value
+            // Fallback: compute without tracking if cache wasn't set
+            return value ?? produce()
         }
     }
 }
