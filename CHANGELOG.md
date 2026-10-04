@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.1.9] — Memoize first evaluation off the tree lock + no quadratic access collection
+
 ### Fixed
 
 - **A memoize's first evaluation no longer holds the model tree's lock while `produce()` runs.** The first access to a memoize key set it up inside `context.transaction`, which holds the tree's lock, and called `produce()` there. Any other thread reading or writing the tree waited until `produce()` finished. In a large editor, a background memoize whose `produce()` evaluated a nested memoize for the first time held the lock through about 1.5 s of arithmetic, and the main thread spent a third of a layer switch waiting.
