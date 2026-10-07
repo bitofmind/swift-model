@@ -109,7 +109,10 @@ struct RemovedModelWriteTests {
         let child = root.child!
         let binding = ObservedModel(wrappedValue: child).projectedValue.name
         root.child = nil
-        await child.waitUntilRemoved()
+        // No waiting for the child's context to go away: the binding's `@ObservedModel`
+        // still references the model, the way a view about to disappear does. A removed
+        // model drops writes from the moment it is removed.
+        #expect(child.lifetime == .destructed)
         let lastName = child.name
 
         binding.wrappedValue = "from a dismissing view"
