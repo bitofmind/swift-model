@@ -393,7 +393,9 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // last state, as it does during production's TTL. The scope belongs to the
             // tree's root, reached through the ancestor that survived this removal (or
             // this context, when it is the root). Weak: a removed model nothing holds
-            // has no cycle to break.
+            // has no cycle to break. Dependency models release at once as before: a
+            // `static let testValue` is shared by every test, and the next one must not
+            // read this one's last state while setting up its dependencies.
             let contextLock = self.lock
             let generation = referenceGeneration
             let release: @Sendable () -> Void = { [weak reference] in
@@ -403,7 +405,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
                 contextLock.unlock()
                 _fixLifetime(stateToRelease)
             }
-            let scopeAccess = (lastParent?.parent ?? self).rootParent.modelAccess
+            let scopeAccess = isDepContext ? nil : (lastParent?.parent ?? self).rootParent.modelAccess
             if scopeAccess?.deferLastSeenRelease(release) != true {
                 callbacks.append(release)
             }
