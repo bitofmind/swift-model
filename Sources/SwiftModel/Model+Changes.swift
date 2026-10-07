@@ -445,7 +445,10 @@ private extension ModelNode {
     /// The dirty tracking optimization provides immediate fresh values when cache is dirty,
     /// while still ensuring all external observers are notified via the onUpdate callback.
     func memoize<T: Sendable>(for key: some Hashable&Sendable, produce: @Sendable @escaping () -> T, isSame: (@Sendable (T, T) -> Bool)?, debug: DebugOptions? = nil) -> T {
-        guard let context = enforcedContext() else { return produce() }
+        // A removed model computes uncached and silently — memoize is a read, and a read
+        // racing removal (a recompute iterating a list that still holds this model) gets
+        // its last state. Only a model that was never anchored reports.
+        guard let context = readContext() else { return produce() }
 
         let key = AnyHashableSendable(key)
         let path: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[memoizeKey: key]
@@ -492,9 +495,15 @@ private extension ModelNode {
         // change up to it, so the write-back advances cleanVersion to exactly this
         // value (a change arriving DURING produce() keeps the entry dirty). See the
         // versioning doc comment on `MemoizeCacheEntry`.
-        let (cachedEntry, shouldRecompute, capturedVersion): (AnyContext.MemoizeCacheEntry?, Bool, UInt64) = context.lock {
+        let (cachedEntry, shouldRecompute, capturedVersion, isTornDown): (AnyContext.MemoizeCacheEntry?, Bool, UInt64, Bool) = context.lock {
+            // Torn down (removed, context not yet deallocated): `onRemoval` emptied the
+            // cache and cancelled its entries. Creating a new entry here would set up
+            // tracking on a dead context, so compute uncached like a removed model does.
+            if context.unprotectedIsDestructed {
+                return (nil, false, 0, true)
+            }
             guard let entry = context._memoizeCache[key] else {
-                return (nil, false, 0)
+                return (nil, false, 0, false)
             }
 
             let shouldRecompute = entry.isDirty
@@ -511,8 +520,10 @@ private extension ModelNode {
                 }
             }
 
-            return (entry, shouldRecompute, entry.dirtyVersion)
+            return (entry, shouldRecompute, entry.dirtyVersion, false)
         }
+
+        if isTornDown { return produce() }
 
         if let entry = cachedEntry {
             // If dirty tracking enabled and cache WAS dirty, recompute and return fresh value

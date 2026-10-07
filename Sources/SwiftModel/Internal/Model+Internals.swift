@@ -97,11 +97,6 @@ extension Model {
             copy.modelContext.makeFrozen(id: ref.modelID)
             copy.modelContext.access = nil
             return copy
-        } else if ref.isSnapshot {
-            // lastSeen snapshot (destructed) — freeze without clearing access.
-            var copy = self
-            copy.modelContext.makeFrozen(id: ref.modelID)
-            return copy
         }
         return self  // pre-anchor unlinked copy
     }

@@ -6,6 +6,18 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- **A removed model can be read without reports, and its reads return the tree's values instead of stand-ins.** Reads that reach a removed model are normal: a memoized recompute on a live model iterating a list that still held the removed child, a SwiftUI body rendering once more, teardown work. Before, such a read reported "Calling memoize on an unanchored model", and its ancestor lookups found nothing. A non-optional `node.memoize { ancestor ?? standIn }` accessor then silently returned the empty stand-in, which is wrong data rather than old data. Dependency reads quietly returned the default value instead of the tree's override. Now a model that was in a tree acts as a read-only view of its last state:
+  - `mapHierarchy` / `reduceHierarchy` for `.parent` and `.ancestors`, and environment-style lookups, continue from the parent the model was removed from, held weakly, as long as it is alive. The ancestors returned are the live ones. When a whole subtree is removed, its descendants continue from the nearest ancestor that stays in the tree, and skip the removed models in between.
+  - `memoize` computes uncached and does not report. That includes the short window where the model is torn down but its context still exists; before, `memoize` could create a cache entry on the dead context there.
+  - Dependencies resolve to the values the model's tree used, test overrides included.
+  - Effects still report, with the "already removed" hint: tasks, `onChange` / `Observed`, `send`, `signal`, cancellation. `onTeardown`, `onCancel` and `signal(.removed)` handlers can now read their ancestors and dependencies through `node`.
+  - A model that was never anchored still reports every node access.
+  - **A removed model reads its last state in tests too.** A removed model's state is reset to its initial values at some point, which breaks retain cycles through it, for example a stored closure that captures the model. In production that reset comes 2 s after removal, but in tests it came right at teardown. So tests read initial values where users see the last ones. Under `.modelTesting` the reset now runs at the end of the test scope. Without a test scope, as in plain `withAnchor()` tests, it stays immediate, and so it does for dependency models, since a `static let testValue` is shared by every test. A removed model whose state captures itself stays in memory until the scope ends. The internal `_testing_keepLastSeenAround` workaround is gone.
+  - The unreachable last-seen snapshot code (`LastSeenAccess`, unused since the `@Model` layout redesign) is gone. Production's 2 s window is unchanged.
+  - `RemovedModelReadTests` covers the read, dependency and teardown cases (all fail without the change), plus a descendant of a removed subtree, and guards that effects and never-anchored models still report.
+
 ---
 
 ## [1.1.10] — @ObservedModel no longer slows down with the number of live views

@@ -555,6 +555,34 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// `nil` = not in harness teardown.
     private let deferredRemovals = LockedValue<[@Sendable () -> Void]?>(nil)
 
+    /// Last-seen state releases of models removed from this tree (see
+    /// `ModelAccess.deferLastSeenRelease`), run by `releaseLastSeen()` once the scope's
+    /// teardown is done. `nil` once released: a later removal releases at once.
+    private let lastSeenReleases = LockedValue<[@Sendable () -> Void]?>([])
+
+    override func deferLastSeenRelease(_ release: @escaping @Sendable () -> Void) -> Bool {
+        lastSeenReleases.withValueInPlace { pending in
+            guard pending != nil else { return false }
+            pending!.append(release)
+            return true
+        }
+    }
+
+    /// A scope that ends without its teardown (a tester dropped mid-way) still releases.
+    deinit {
+        releaseLastSeen()
+    }
+
+    /// Resets every model removed during the scope to its initial values. Last step of
+    /// the scope's teardown, after anything that might still read them has run.
+    func releaseLastSeen() {
+        let releases = lastSeenReleases.withValueInPlace { pending in
+            defer { pending = nil }
+            return pending ?? []
+        }
+        for release in releases { release() }
+    }
+
     /// Cancels signal-handler runs still running at the end of a test and waits for it
     /// to unwind, so cleanup in a cancelled run (`defer { stop(); release() }`) has
     /// happened before `withModelTesting` returns. Evidence-based bound: stops waiting

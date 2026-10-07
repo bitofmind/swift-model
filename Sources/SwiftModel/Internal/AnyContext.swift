@@ -46,6 +46,13 @@ class AnyContext: @unchecked Sendable {
     // write can be racing an observation read.
     private let parentsLock = NSLock()
     private(set) var weakParents: [WeakParent] = []
+    /// The most recently removed parent, held weakly. Once the last parent goes the model
+    /// is removed but still readable, and reads that walk upwards (ancestor lookups,
+    /// environment values) continue from here. When a whole subtree is removed this is
+    /// the nearest ancestor that stays in the tree, not the removed parent: the removed
+    /// models in between are skipped, since their contexts are gone right after. Written under the hierarchy lock and
+    /// `parentsLock`, like `weakParents`, so reading under either is enough.
+    private(set) var lastParent: WeakParent?
     var children: OrderedDictionary<AnyKeyPath, OrderedDictionary<ModelRef, AnyContext>> = [:]
 
     // Protects `_dependencyContexts` and `_dependencyCache` independently of the hierarchy
@@ -672,7 +679,19 @@ class AnyContext: @unchecked Sendable {
             parentsLock {
                 for i in weakParents.indices {
                     if weakParents[i].parent === parent {
-                        weakParents.remove(at: i)
+                        // Only read once the model is removed (see `lastParent`). A parent
+                        // torn down together with this model deinits right after the
+                        // teardown, so remember the ancestor that survives the removal
+                        // instead: teardown runs top-down, so the parent has already
+                        // recorded it (nil when the whole tree went). The caller holds
+                        // the parent's lock, which guards both reads. Otherwise reuse the
+                        // removed entry: no allocation on the removal path.
+                        if parent.unprotectedIsDestructed {
+                            lastParent = parent.lastParent
+                            weakParents.remove(at: i)
+                        } else {
+                            lastParent = weakParents.remove(at: i)
+                        }
                         found = true
                         break
                     }
@@ -1208,6 +1227,26 @@ class AnyContext: @unchecked Sendable {
         return result
     }
 
+    /// The upward half of `reduceHierarchy` for a removed model whose context is already
+    /// gone: walks `.parent` / `.ancestors` from `parent` (the one it was removed from)
+    /// as if it were still its child. Downward relations find nothing — a removed model
+    /// has no children left — and `.self` is the caller's to visit.
+    static func reduceHierarchy<Result, Element>(fromLastParent parent: AnyContext, for relation: ModelRelation, transform: (AnyContext) throws -> Element?, into initialResult: Result, _ updateAccumulatingResult: (inout Result, Element) throws -> ()) rethrows -> Result {
+        let dependencies: ModelRelation = relation.contains(.dependencies) ? .dependencies : []
+        let upward: ModelRelation
+        if relation.contains(.ancestors) {
+            upward = dependencies.union([.self, .ancestors])
+        } else if relation.contains(.parent) {
+            upward = dependencies.union(.self)
+        } else {
+            return initialResult
+        }
+        var result = initialResult
+        var uniques = Set<ObjectIdentifier>()
+        try parent.reduce(for: upward, transform: transform, into: &result, updateAccumulatingResult: updateAccumulatingResult, uniques: &uniques)
+        return result
+    }
+
     // Recursive core of the hierarchy traversal.
     //
     // Design notes:
@@ -1255,7 +1294,15 @@ class AnyContext: @unchecked Sendable {
                 // the same `TestAccess.lock → context.lock` order; the parents list itself
                 // is still read under the lock just below.
                 willAccessParents()
-                parents = lock { weakParents.compactMap(\.parent) }
+                // A removed context reads upwards from the parent it had (see
+                // `lastParent`). Only observation traversals do: they are reads. Event and
+                // signal routing (`observeParents: false`) are effects, and a removed model
+                // must not start them.
+                parents = lock {
+                    unprotectedIsDestructed && weakParents.isEmpty
+                        ? (lastParent?.parent).map { [$0] } ?? []
+                        : weakParents.compactMap(\.parent)
+                }
             } else {
                 parents = parentsLock { weakParents.compactMap(\.parent) }
             }
@@ -1513,8 +1560,6 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    @TaskLocal static var keepLastSeenAround = false
-
     /// Walks up the context hierarchy from self to rootParent, returning the first
     /// dependency context found for the given type ID. This ensures child-level
     /// withDependencies overrides take precedence over root-level ones.
@@ -1549,7 +1594,7 @@ class AnyContext: @unchecked Sendable {
         let modelRef = modelSrc.reference
 
         guard !modelRef.isSnapshot else {
-            // Snapshot reference (frozen/lastSeen) — no dependency setup needed.
+            // Snapshot reference (frozen copies) — no dependency setup needed.
             return
         }
 

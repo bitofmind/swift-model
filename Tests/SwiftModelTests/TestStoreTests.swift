@@ -55,25 +55,24 @@ struct TestStoreTests {
     }
 
     @Test func testChildOptionalLeaf() async throws {
-        try await _testing_keepLastSeenAround {
-            let child = Child(leaf: Leaf(count: 5)).withAnchor()
+        let child = Child(leaf: Leaf(count: 5)).withAnchor()
 
-            let prevLeaf = try await require(child.leaf)
+        let prevLeaf = try await require(child.leaf)
 
-            prevLeaf.count = 9
-            await expect(prevLeaf.count == 9)
+        prevLeaf.count = 9
+        await expect(prevLeaf.count == 9)
 
-            child.leaf = nil
-            await expect(child.leaf == nil)
+        child.leaf = nil
+        await expect(child.leaf == nil)
 
-            child.leaf = Leaf(count: 6, isEnabled: true)
-            await expect {
-                child.leaf?.count == 6
-                child.leaf?.isEnabled == true
-            }
-
-            #expect(prevLeaf.count == 9)
+        child.leaf = Leaf(count: 6, isEnabled: true)
+        await expect {
+            child.leaf?.count == 6
+            child.leaf?.isEnabled == true
         }
+
+        // The removed leaf still reads its last state until the test scope ends.
+        #expect(prevLeaf.count == 9)
     }
 }
 

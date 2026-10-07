@@ -348,6 +348,7 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
             _ = await tester.access.waitUntilSettled(cleanup: true, at: fileAndLine)
         }
         await tester.access.cancelSignalWorkAndAwaitUnwind(at: fileAndLine)
+        tester.access.releaseLastSeen()
     }
 
     package func cancelAndCleanup() {
@@ -357,6 +358,7 @@ package final class _ConcreteModelTestScope<M: Model>: _AnyModelTestScope, @unch
         tester.access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
         tester.access.context.onRemoval()
         tester.access.signalWork.cancelAll()
+        tester.access.releaseLastSeen()
     }
 
     package func waitForTeardown() async {

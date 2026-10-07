@@ -51,11 +51,6 @@ extension ModelContext {
                 if !threadLocals.isApplyingSnapshot {
                     reportIssue("Modifying a frozen copy of \(modelTypeName(M.self)) is not allowed and has no effect")
                 }
-            case .destructed:
-                if let access = access as? LastSeenAccess, -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
-                    break // SwiftUI accessing shortly after destruction — no warning
-                }
-                reportIssue("Modifying a destructed \(modelTypeName(M.self)) model is not allowed and has no effect")
             default:
                 break
             }
@@ -72,16 +67,6 @@ extension ModelContext {
             ref._stateCleared ? nil : ref.state
         }) else { return }
         _source = _ModelSourceBox(frozen: state, id: id)
-    }
-
-    /// Transitions source to a lastSeen snapshot — used by lastSeen snapshot.
-    mutating func makeLastSeen(id: ModelID) {
-        let ref = _source.reference
-        // Same locked-copy discipline as `makeFrozen`.
-        guard let state = ref.withHierarchyLockIfLive({ () -> M._ModelState? in
-            ref._stateCleared ? nil : ref.state
-        }) else { return }
-        _source = _ModelSourceBox(lastSeen: state, id: id)
     }
 
     /// Sets the source to a new Reference (non-live) — used by anchoring and MakeInitialTransformer.

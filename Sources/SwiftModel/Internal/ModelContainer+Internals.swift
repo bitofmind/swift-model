@@ -23,10 +23,6 @@ extension ModelContainer {
         transformModel(with: MakeInitialDependencyCopyTransformer())
     }
 
-    func lastSeen(at timestamp: Date, dependencyCache: [AnyHashable: Any]) -> Self {
-        transformModel(with: LastSeenTransformer(lastSeenAccess: LastSeenAccess(timestamp: timestamp, dependencyCache: dependencyCache)))
-    }
-
     func reduceValue<Reducer: ValueReducer>(with reducer: Reducer.Type, initialValue: Reducer.Value) -> Reducer.Value {
         var visitor = ReduceValueVisitor(root: self, path: \.self, reducer: reducer, value: initialValue)
         visit(with: &visitor, includeSelf: true)
@@ -117,7 +113,7 @@ private struct MakeInitialDependencyCopyTransformer: ModelTransformer {
         }
 
         // No genesis — the Reference was never anchored (pre-anchor value, or a
-        // frozen/lastSeen snapshot). `shallowCopy` cannot reach a live context's hierarchy
+        // frozen snapshot). `shallowCopy` cannot reach a live context's hierarchy
         // lock from here; it either returns `self` or freezes a snapshot Reference, whose
         // `_context` is always nil.
         model = model.shallowCopy
@@ -136,26 +132,6 @@ private struct FrozenCopyTransformer: ModelTransformer {
     func transform<M: Model>(_ model: inout M) -> Void {
         model = model.shallowCopy.noAccess
         model.modelContext.makeFrozen(id: model.modelID)
-    }
-}
-
-private struct LastSeenTransformer: ModelTransformer {
-    let lastSeenAccess: LastSeenAccess
-
-    func transform<M: Model>(_ model: inout M) -> Void {
-        model = model.shallowCopy.withAccess(lastSeenAccess)
-        model.modelContext.makeLastSeen(id: model.modelID)
-    }
-}
-
-final class LastSeenAccess: ModelAccess, @unchecked Sendable {
-    let timestamp: Date
-    let dependencyCache: [AnyHashable: Any]
-
-    init(timestamp: Date, dependencyCache: [AnyHashable: Any]) {
-        self.timestamp = timestamp
-        self.dependencyCache = dependencyCache
-        super.init(useWeakReference: false)
     }
 }
 
