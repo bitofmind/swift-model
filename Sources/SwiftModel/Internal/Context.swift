@@ -377,7 +377,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             }
         }
 
-        let keepLastSeen = !isTesting || AnyContext.keepLastSeenAround
+        let keepLastSeen = !isTesting
         reference.destruct(lastParent: lastParent, lastDependencies: capturedDependencies)
 
         guard keepLastSeen else {
@@ -387,14 +387,25 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
             // same order used by destruct() above) to prevent a concurrent Context.subscript._read
             // from racing on reference.state. Release old state after both locks drop so that
             // deinits triggered by state release can re-enter the lock without exclusivity violations.
-            let ref = reference
+            //
+            // Under a test scope the release waits for the scope's end instead (see
+            // `ModelAccess.deferLastSeenRelease`): until then the removed model reads its
+            // last state, as it does during production's TTL. The scope belongs to the
+            // tree's root, reached through the ancestor that survived this removal (or
+            // this context, when it is the root). Weak: a removed model nothing holds
+            // has no cycle to break.
             let contextLock = self.lock
             let generation = referenceGeneration
-            callbacks.append {
+            let release: @Sendable () -> Void = { [weak reference] in
+                guard let reference else { return }
                 contextLock.lock()
-                let stateToRelease = ref.clear(ifGeneration: generation)
+                let stateToRelease = reference.clear(ifGeneration: generation)
                 contextLock.unlock()
                 _fixLifetime(stateToRelease)
+            }
+            let scopeAccess = (lastParent?.parent ?? self).rootParent.modelAccess
+            if scopeAccess?.deferLastSeenRelease(release) != true {
+                callbacks.append(release)
             }
             return
         }
@@ -2998,18 +3009,6 @@ extension Context {
                 }
             }
         }
-    }
-}
-
-func _testing_keepLastSeenAround<T>(_ operation: () async throws -> T) async rethrows -> T {
-    try await AnyContext.$keepLastSeenAround.withValue(true) {
-        try await operation()
-    }
-}
-
-func _testing_keepLastSeenAround<T>(_ operation: () throws -> T) rethrows -> T {
-    try AnyContext.$keepLastSeenAround.withValue(true) {
-        try operation()
     }
 }
 

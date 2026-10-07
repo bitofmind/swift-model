@@ -148,6 +148,13 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
     /// nor reported). Returns `true` if `start` was deferred. Production: `false`.
     func deferRemovalCall(_ start: @escaping @Sendable () -> Void) -> Bool { false }
 
+    /// A removed model keeps its last state until `release` resets it to its initial
+    /// values (which breaks any retain cycle through its state). In production that is
+    /// the last-seen TTL; under a test it is the end of the test scope, so tests read
+    /// removed models the way production does, deterministically. Returns `true` if
+    /// `release` was deferred; `false` to run it now. Production: `false`.
+    func deferLastSeenRelease(_ release: @escaping @Sendable () -> Void) -> Bool { false }
+
     /// Records that a reactive body (`node.forEach` / `node.onChange`) delivered
     /// an element, keyed by its source location. Powers `settle()`'s runaway
     /// diagnostic: a registration that keeps firing right up to a settle timeout

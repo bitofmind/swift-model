@@ -136,7 +136,7 @@ The `cause` tells a handler whether its model is still live (`.requested`: use `
 
 ### Reading a model after it is removed
 
-A removed model stays readable. Its properties keep their last values, `memoize` computes (uncached), dependencies resolve to the values its tree used, and ancestor lookups (`mapHierarchy(for: .ancestors)`, environment values) still find the parents it was removed from, as long as those are alive. None of this reports an issue. It is what lets a SwiftUI view that outlives its model render once more, a memoized recompute on a live model iterate a list that still held the removed child, and teardown work read what it needs.
+A removed model stays readable. Its properties keep their last values (for about 2 s, or until the end of the test under `.modelTesting`, after which they read as their initial values), `memoize` computes (uncached), dependencies resolve to the values its tree used, and ancestor lookups (`mapHierarchy(for: .ancestors)`, environment values) still find the parents it was removed from, as long as those are alive. None of this reports an issue. It is what lets a SwiftUI view that outlives its model render once more, a memoized recompute on a live model iterate a list that still held the removed child, and teardown work read what it needs.
 
 What a removed model can't do is start anything: tasks, `onChange`/`Observed` observation, `send`, `signal` and cancellation report an issue that names the model and says it was already removed. Those are work that outlived its model, and the report is how you find it.
 

@@ -113,6 +113,19 @@ struct RemovedModelReadTests {
         #expect(child.rootTitle == "renamed")
     }
 
+    @Test func removedChildReadsItsLastStateUntilTheScopeEnds() async {
+        let root = RemovedReadRoot().withAnchor()
+        let child = root.child!
+        child.name = "edited"
+
+        root.child = nil
+        await child.waitUntilRemoved()
+
+        // Under a test scope the reset to initial values waits for the scope's end, so
+        // the removed child reads its last state, as during production's last-seen TTL.
+        #expect(child.name == "edited")
+    }
+
     @Test func removedChildReadsTheDependenciesItsTreeUsed() async {
         let root = RemovedReadRoot().withAnchor {
             $0.removedReadGreeting = RemovedReadGreeting(text: "override")

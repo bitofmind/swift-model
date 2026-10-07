@@ -54,6 +54,7 @@ public final class ModelTester<M: Model> {
         access.context.cancelAllRecursively(for: ContextCancellationKey.onActivate)
         access.checkExhaustion(at: fileAndLine, includeUpdates: false, checkTasks: true)
         access.context.onRemoval()
+        access.releaseLastSeen()
     }
 }
 

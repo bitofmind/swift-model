@@ -1560,8 +1560,6 @@ class AnyContext: @unchecked Sendable {
         }
     }
 
-    @TaskLocal static var keepLastSeenAround = false
-
     /// Walks up the context hierarchy from self to rootParent, returning the first
     /// dependency context found for the given type ID. This ensures child-level
     /// withDependencies overrides take precedence over root-level ones.
