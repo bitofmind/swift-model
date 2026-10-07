@@ -36,9 +36,6 @@ class ModelAccessReference: @unchecked Sendable {
 ///   via `ModelAccess.$current` task-local — not on model values.
 ///   `shouldPropagateToChildren = false`.
 ///
-/// - `LastSeenAccess`: Carries a timestamp and dependency cache on snapshot copies after
-///   model destruction. Pure data carrier — no willAccess/didModify behaviour.
-///
 /// # The three homes of access
 ///
 /// 1. **Model value** (`ModelContext._access: _ModelAccessBox`): Primary home. Carried

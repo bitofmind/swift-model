@@ -392,16 +392,27 @@ public extension ModelNode {
         return !src._isLive && src.reference.isDestructed && src.reference.context == nil
     }
 
+    /// A removed model reads the dependencies its tree used, without a report: the
+    /// values it resolved against when it was removed, or — once those are released with
+    /// the last-seen state, and for dependency models, which only exist anchored in the
+    /// tree — its last parent's. The default value only when no parent is left either.
+    private func removedModelDependency<Value>(lookup: (AnyContext) -> Value, fallback: () -> Value) -> Value {
+        let reference = _$modelContext._source.reference
+        if let dependencies = reference.lastDependencies {
+            let value = DependencyValues.$_current.withValue(dependencies, operation: fallback)
+            if !(value is any Model) { return value }
+        }
+        guard let parent = reference.lastLiveParent else { return fallback() }
+        let value = lookup(parent)
+        if let dependencyModel = value as? any Model {
+            return dependencyModel.withAccessIfPropagateToChildren(access) as! Value
+        }
+        return value
+    }
+
     subscript<Value>(dynamicMember keyPath: KeyPath<DependencyValues, Value>&Sendable) -> Value {
         if isDestructed {
-            // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
-            if let access = _$modelContext.access as? LastSeenAccess,
-               -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive,
-               let value = access.dependencyCache[keyPath] as? Value {
-                return value
-            }
-
-            return Dependency(keyPath).wrappedValue
+            return removedModelDependency(lookup: { $0.dependency(for: keyPath) }, fallback: { Dependency(keyPath).wrappedValue })
         }
 
         guard let context = enforcedContext("Accessing dependency `\(String(describing: keyPath).replacingOccurrences(of: "\\DependencyValues.", with: ""))` on an unanchored \(modelTypeName(M.self)) node is not allowed and will be redirected to the default dependency value\(unanchoredHint(wasEverAnchored: _$modelContext._source.reference.wasEverAnchored))") else {
@@ -418,15 +429,7 @@ public extension ModelNode {
 
     subscript<Value: DependencyKey>(type: Value.Type) -> Value where Value.Value == Value {
         if isDestructed {
-            // Most likely being accessed by SwiftUI shortly after being destructed, no need for runtime warning.
-            let key = ObjectIdentifier(type)
-            if let access = _$modelContext.access as? LastSeenAccess,
-               -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive,
-               let value = access.dependencyCache[key] as? Value {
-                return value
-            }
-
-            return Dependency(type).wrappedValue
+            return removedModelDependency(lookup: { $0.dependency(for: type) }, fallback: { Dependency(type).wrappedValue })
         }
 
         guard let context = enforcedContext("Accessing dependency `\(String(describing: type))` on an unanchored \(modelTypeName(M.self)) node is not allowed and will be redirected to the default dependency value\(unanchoredHint(wasEverAnchored: _$modelContext._source.reference.wasEverAnchored))") else {
@@ -513,9 +516,22 @@ public extension ModelNode {
     ///   - updateAccumulatingResult: A closure that folds an element into the accumulator.
     /// - Returns: The final accumulated result.
     func reduceHierarchy<Result, Element>(for relation: ModelRelation, transform: (any Model) throws -> Element?, into initialResult: Result, _ updateAccumulatingResult: (inout Result, Element) throws -> ()) rethrows -> Result {
-        try _context?.reduceHierarchy(for: relation, transform: {
+        if let context = _context {
+            return try context.reduceHierarchy(for: relation, transform: {
+                try $0.mapModel(access: access, transform)
+            }, into: initialResult, updateAccumulatingResult)
+        }
+        // Removed, and its context already gone: still answer from where it was in the
+        // tree — itself (when this node knows its model) and the parent it was removed
+        // from, while that is alive. A model that was never anchored has none.
+        guard let lastParent = _$modelContext._source.reference.lastLiveParent else { return initialResult }
+        var result = initialResult
+        if relation.contains(.self), let model = _model, let element = try transform(model) {
+            try updateAccumulatingResult(&result, element)
+        }
+        return try AnyContext.reduceHierarchy(fromLastParent: lastParent, for: relation, transform: {
             try $0.mapModel(access: access, transform)
-        }, into: initialResult, updateAccumulatingResult) ?? initialResult
+        }, into: result, updateAccumulatingResult)
     }
 
     /// Traverses the model hierarchy and returns all non-nil transform results as an array.
@@ -550,6 +566,18 @@ extension ModelNode {
 
     func enforcedContext(_ function: StaticString = #function) -> Context<M>? {
         enforcedContext("Calling \(function) on an unanchored \(modelTypeName(M.self)) node is not allowed and has no effect\(unanchoredHint(wasEverAnchored: _$modelContext._source.reference.wasEverAnchored))")
+    }
+
+    /// The context for an operation that only reads. A removed model still answers reads
+    /// (from its last state), so only a model that was never anchored reports.
+    func readContext(_ function: StaticString = #function) -> Context<M>? {
+        guard let context = _context else {
+            if !_$modelContext._source.reference.wasEverAnchored {
+                reportIssue("Calling \(function) on an unanchored \(modelTypeName(M.self)) node is not allowed and has no effect")
+            }
+            return nil
+        }
+        return context
     }
 
     func enforcedContext(_ message: @autoclosure () -> String) -> Context<M>? {

@@ -47,7 +47,7 @@ struct IssueModelNameTests {
             model.node.cancelAll(for: "key")
         } matches: {
             """
-            Calling cancelAll(for:) on an unanchored `NamedIssueModel` node is not allowed and has no effect (it was already removed: work that outlives a model, such as onTeardown(), must capture what it needs instead of using its node)
+            Calling cancelAll(for:) on an unanchored `NamedIssueModel` node is not allowed and has no effect (it was already removed: a removed model can still be read, but work that outlives it, such as onTeardown() or a task, cannot start anything through its node)
             """
         }
     }

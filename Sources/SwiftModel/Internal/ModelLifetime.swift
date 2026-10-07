@@ -14,11 +14,12 @@ extension ModelLifetime {
 
 /// Appended to an "unanchored" report about a model that was in a tree once: it was
 /// removed (or is being torn down), so it was most likely reached from work that
-/// outlived it. That report usually lands in whichever test runs next, so it says
+/// outlived it. Only effects report on a removed model (tasks, events, observation,
+/// cancellation); reads answer from its last state and last parents. That report usually lands in whichever test runs next, so it says
 /// where to look. Empty for a model that was never anchored.
 func unanchoredHint(wasEverAnchored: Bool) -> String {
     wasEverAnchored
-        ? " (it was already removed: work that outlives a model, such as onTeardown(), must capture what it needs instead of using its node)"
+        ? " (it was already removed: a removed model can still be read, but work that outlives it, such as onTeardown() or a task, cannot start anything through its node)"
         : ""
 }
 

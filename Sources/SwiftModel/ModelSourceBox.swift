@@ -279,7 +279,7 @@ extension _ModelStateType {
 ///   Context for observation tracking and lock-protected state updates.
 /// - `.regular` with `reference.context == nil && !reference.isSnapshot`: pre-anchor
 ///   or re-anchorable destructed model — direct reads/writes, no lock needed.
-/// - `.regular` with `reference.isSnapshot`: frozen/lastSeen snapshot — reads are direct;
+/// - `.regular` with `reference.isSnapshot`: frozen snapshot — reads are direct;
 ///   writes are no-ops (with `reportIssue`) unless `isApplyingSnapshot` is set.
 ///
 /// **Pending storage design**:
@@ -349,7 +349,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             // This call locks that element's own hierarchy; a `hierarchyLockHeld` skip
             // would hold an unrelated lock and reopen the use-after-free.
             //
-            // Snapshot references (frozen / lastSeen) short-circuit: `clear()` only ever runs
+            // Snapshot references (frozen copies) short-circuit: `clear()` only ever runs
             // against a Context's own reference and a snapshot has no context, so no concurrent
             // clearer can exist. `_snapshotLifetime` is an immutable `let`, so this check needs
             // no lock and skips the lock resolution entirely.
@@ -363,7 +363,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
                 // Allow writes when isApplyingSnapshot is set (TestAccess lastState updates).
                 reference.state[keyPath: path] = newValue
             }
-            // Anchored writes go through ModelContext subscript; lastSeen snapshots are immutable.
+            // Anchored writes go through ModelContext subscript; snapshots are immutable.
         }
     }
 
@@ -514,11 +514,6 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
         _mode = .regular(Context<M>.Reference(modelID: id, state: state, lifetime: .frozenCopy))
     }
 
-    /// Used by `lastSeen` (post-destruction snapshot).
-    init(lastSeen state: M._ModelState, id: ModelID) {
-        _mode = .regular(Context<M>.Reference(modelID: id, state: state, lifetime: .destructed))
-    }
-
     // MARK: Live transition
 
     /// Switches this source box to a live/internal direct-access copy (formerly `.live` SourceKind).
@@ -579,12 +574,6 @@ extension _ModelSourceBox {
                 if !threadLocals.isApplyingSnapshot {
                     reportIssue("Modifying a frozen copy of \(modelTypeName(M.self)) is not allowed and has no effect")
                 }
-            case .destructed:
-                let access = accessBox._reference?.access ?? ModelAccess.current
-                if let access = access as? LastSeenAccess, -access.timestamp.timeIntervalSinceNow < lastSeenTimeToLive {
-                    break
-                }
-                reportIssue("Modifying a destructed \(modelTypeName(M.self)) model is not allowed and has no effect")
             default:
                 break
             }

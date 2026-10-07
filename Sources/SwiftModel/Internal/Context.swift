@@ -378,7 +378,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
 
         let keepLastSeen = !isTesting || AnyContext.keepLastSeenAround
-        reference.destruct()
+        reference.destruct(lastParent: lastParent, lastDependencies: capturedDependencies)
 
         guard keepLastSeen else {
             // No last-seen needed: zero state to break retain cycles, but defer until after the
@@ -1412,7 +1412,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         //
         // `activeAccess` is the access this write NOTIFIES (`finishWrite` → `didModify`) —
         // the first access in the chain, probe or not. `ViewAccess` (SwiftUI's re-render
-        // signal), `AccessCollector` and `LastSeenAccess` all learn about writes this way,
+        // signal), and `AccessCollector` both learn about writes this way,
         // so narrowing it drops observation on the floor.
         //
         // `writeLockHolder` is the access whose write LOCK is taken before `lock`, and it
@@ -1727,7 +1727,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         //
         // `activeAccess` is the access this write NOTIFIES (`finishWrite` → `didModify`) —
         // the first access in the chain, probe or not. `ViewAccess` (SwiftUI's re-render
-        // signal), `AccessCollector` and `LastSeenAccess` all learn about writes this way,
+        // signal), and `AccessCollector` both learn about writes this way,
         // so narrowing it drops observation on the floor.
         //
         // `writeLockHolder` is the access whose write LOCK is taken before `lock`, and it
@@ -2383,6 +2383,18 @@ extension Context {
         /// under precisely the same condition as before.
         @exclusivity(unchecked) private var _hierarchyLock: NSRecursiveLock?
         @exclusivity(unchecked) private var _isDestructed = false
+        /// The parent this model was removed from, held weakly. A removed model stays
+        /// readable: its ancestor walks continue from that parent while it is alive, so a read that races its removal (a memoize recompute iterating a list
+        /// that still holds it, a SwiftUI body, teardown work) finds the real ancestors
+        /// rather than none. Lives here rather than on the Context because the Context
+        /// deinits shortly after removal while the model value can outlive it. Weak, so
+        /// it never extends a parent's lifetime. Reset when the model is anchored again.
+        private var _lastParent: AnyContext.WeakParent?
+        /// The dependencies this model resolved against when it was removed, so a removed
+        /// model reads the values its tree used (test overrides included) instead of the
+        /// default ones. Released together with the last-seen state in `clear(ifGeneration:)`:
+        /// a dependency value could capture the model and keep it alive.
+        private var _lastDependencies: DependencyValues?
         /// Monotonically-increasing generation counter. Incremented each time `setContext` runs
         /// (including re-anchoring). `Context` stores its own generation so `deinit` can call
         /// `clearStateForGeneration` without affecting state claimed by a newer Context.
@@ -2426,7 +2438,7 @@ extension Context {
         /// (recording the missing key path on the frame) while a required property is unassigned.
         private var _factory: ((PendingStorage<M._ModelState>) -> M._ModelState?)?
 
-        /// Live/lastSeen/snapshot state. After `clear()`, replaced with genesis state to release
+        /// Live, last-seen (removed) or snapshot state. After `clear()`, replaced with genesis state to release
         /// live-model references.
         ///
         /// Whole-state access on an unmaterialised Reference materialises it first, trapping
@@ -2470,9 +2482,9 @@ extension Context {
         /// the parent's `capturedDependencies` — even when Swift's compound-access optimization
         /// bypasses the outer `ModelDependencies.subscript` write-back.
         var _stateVersion: Int = 0
-        /// Non-nil only for snapshot references (frozen/lastSeen). Immutable after init.
+        /// Non-nil only for snapshot references (frozen copies). Immutable after init.
         private let _snapshotLifetime: ModelLifetime?
-        /// True when this Reference backs a snapshot (frozen copy or lastSeen) rather than a live model.
+        /// True when this Reference backs a snapshot (a frozen copy) rather than a live model.
         var isSnapshot: Bool { _snapshotLifetime != nil }
 
         /// True when a lazy context factory is pending (not yet materialized).
@@ -2577,7 +2589,7 @@ extension Context {
             }
         }
 
-        /// Creates a snapshot Reference (frozen or lastSeen) with independent state.
+        /// Creates a snapshot Reference (a frozen copy) with independent state.
         init(modelID: ModelID, state: M._ModelState, lifetime: ModelLifetime) {
             self.modelID = modelID
             _stateStorage.initialize(to: state)
@@ -2737,7 +2749,7 @@ extension Context {
         ///
         /// `_isDestructed` stands in for `Context.unprotectedIsDestructed` here. Both are
         /// flipped by the same `onRemoval` pass (`modeLifeTime = .destructed` in
-        /// `AnyContext.onRemoval`, then `reference.destruct()` in `Context.onRemoval`), and
+        /// `AnyContext.onRemoval`, then `reference.destruct(…)` in `Context.onRemoval`), and
         /// the only thing the flag gates besides the override is the "cleared with no
         /// genesis" report, which needs `_stateCleared` — set by `clear`, which runs from a
         /// deferred callback long after both flags are up. `_hierarchyLock` is non-nil
@@ -2804,10 +2816,23 @@ extension Context {
         }
 
         /// Marks the model as destructed. `state` retains its last-seen values for the TTL window.
-        func destruct() {
+        func destruct(lastParent: AnyContext.WeakParent?, lastDependencies: DependencyValues) {
             lock {
                 _isDestructed = true
+                _lastParent = lastParent
+                _lastDependencies = lastDependencies
             }
+        }
+
+        /// The parent recorded at removal, while it is alive. Nil for a model that is live
+        /// or was never anchored.
+        var lastLiveParent: AnyContext? {
+            lock { _isDestructed ? _lastParent?.parent : nil }
+        }
+
+        /// The dependencies recorded at removal, until the last-seen state is released.
+        var lastDependencies: DependencyValues? {
+            lock { _isDestructed ? _lastDependencies : nil }
         }
 
         /// Replaces `state` with genesis to release live-model references and break retain
@@ -2840,6 +2865,7 @@ extension Context {
             lock {
                 guard generation == _generation else { return nil }
                 _stateCleared = true
+                _lastDependencies = nil
                 let old = state
                 if _hasGenesis {
                     state = _genesisState
@@ -2853,7 +2879,7 @@ extension Context {
         /// (property writes hold the hierarchy lock; `clear` holds it plus this
         /// Reference's lock). For read paths reached OUTSIDE any locked scope —
         /// deep-access visitors walking a value copy after `subscript.read`'s lock
-        /// scope ended, frozen/lastSeen whole-state copies — the raw read can tear
+        /// scope ended, frozen whole-state copies — the raw read can tear
         /// against a concurrent collection-write clearing a removed child
         /// (TSan-confirmed). With no live context there is no locked concurrent
         /// writer left to race: pre-anchor construction is thread-confined,
@@ -2936,6 +2962,8 @@ extension Context {
                         _stateCleared = false
                     }
                     _isDestructed = false
+                    _lastParent = nil
+                    _lastDependencies = nil
                 } else if !_hasGenesis {
                     // First anchor: capture genesis state. At this point `withContextAdded` has
                     // run so all property values (including MIDDLE properties from user-written
