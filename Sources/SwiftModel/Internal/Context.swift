@@ -378,7 +378,7 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         }
 
         let keepLastSeen = !isTesting
-        reference.destruct(lastParent: lastParent, lastDependencies: capturedDependencies)
+        reference.destruct(lastParent: lastParent, lastDependencies: capturedDependencies, isDependency: isDepContext)
 
         guard keepLastSeen else {
             // No last-seen needed: zero state to break retain cycles, but defer until after the
@@ -2408,6 +2408,8 @@ extension Context {
         /// default ones. Released together with the last-seen state in `clear(ifGeneration:)`:
         /// a dependency value could capture the model and keep it alive.
         private var _lastDependencies: DependencyValues?
+        /// Whether the context removed last was a dependency context (see `isRemoved`).
+        @exclusivity(unchecked) private var _wasDependency = false
         /// Monotonically-increasing generation counter. Incremented each time `setContext` runs
         /// (including re-anchoring). `Context` stores its own generation so `deinit` can call
         /// `clearStateForGeneration` without affecting state claimed by a newer Context.
@@ -2718,6 +2720,24 @@ extension Context {
             return _context
         }
 
+        /// The write path's `context`: the live context, plus `isRemoved` (see below) for a
+        /// model removed from its tree, whose context may still be finishing the teardown.
+        /// One lock window, the one `context` already takes.
+        var writeTarget: (context: Context<M>?, isRemoved: Bool) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (_context, _isDestructed && !_wasDependency)
+        }
+
+        /// True for a model removed from its tree: writes to it have no effect. Not for a
+        /// dependency model, which a later test re-anchors (`static let testValue`) and
+        /// whose dependency setup writes to it before that. A model that was never
+        /// anchored skips the lock (`_hasGenesis` is set once, at first anchoring).
+        var isRemoved: Bool {
+            guard _hasGenesis else { return false }
+            return lock { _isDestructed && !_wasDependency }
+        }
+
         /// The live context together with its registrar identity token for the tracked
         /// property at `index` (nil token when the tree has no registrar), or nil when no
         /// context is live — the tracked read's replacement for `context`. Both are
@@ -2829,9 +2849,10 @@ extension Context {
         }
 
         /// Marks the model as destructed. `state` retains its last-seen values for the TTL window.
-        func destruct(lastParent: AnyContext.WeakParent?, lastDependencies: DependencyValues) {
+        func destruct(lastParent: AnyContext.WeakParent?, lastDependencies: DependencyValues, isDependency: Bool) {
             lock {
                 _isDestructed = true
+                _wasDependency = isDependency
                 _lastParent = lastParent
                 _lastDependencies = lastDependencies
             }
