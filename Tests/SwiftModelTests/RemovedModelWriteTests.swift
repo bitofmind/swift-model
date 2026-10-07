@@ -24,12 +24,17 @@ import SwiftUI
 
 @Model private struct WriteChild {
     var name = "child"
+}
+
+@Model private struct CleanupRoot {
+    var child: CleanupChild?
+}
+
+/// Writes itself while removal cancels its work.
+@Model private struct CleanupChild {
+    var name = "child"
     var isLoading = false
     let cleanedUp: TestProbe
-
-    init(cleanedUp: TestProbe = TestProbe()) {
-        self.cleanedUp = cleanedUp
-    }
 
     func onActivate() {
         node.task {
@@ -53,6 +58,7 @@ struct RemovedModelWriteTests {
         let root = WriteRoot().withAnchor()
         let child = root.child!
         root.child = nil
+        // Also covers a model whose context is already gone (no tasks keep it alive).
         await child.waitUntilRemoved()
         let lastName = child.name
 
@@ -68,7 +74,6 @@ struct RemovedModelWriteTests {
         let root = WriteRoot().withAnchor()
         let child = root.child!
         root.child = nil
-        await child.waitUntilRemoved()
 
         await withKnownIssue {
             root.write("late", to: child)
@@ -83,15 +88,13 @@ struct RemovedModelWriteTests {
         let root = WriteRoot().withAnchor()
         let child = root.child!
         root.child = nil
-        await child.waitUntilRemoved()
 
         child.name = child.name
-        child.isLoading = child.isLoading
     }
 
     @Test func ownCleanupAsRemovalCancelsItIsSilent() async {
         let cleanedUp = TestProbe()
-        let root = WriteRoot(child: WriteChild(cleanedUp: cleanedUp)).withAnchor()
+        let root = CleanupRoot(child: CleanupChild(cleanedUp: cleanedUp)).withAnchor()
         let child = root.child!
         await settle()
 
