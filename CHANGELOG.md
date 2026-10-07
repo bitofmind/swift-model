@@ -9,13 +9,13 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 ### Changed
 
 - **A removed model can be read without reports, and its reads return the tree's values instead of stand-ins.** Reads that reach a removed model are normal: a memoized recompute on a live model iterating a list that still held the removed child, a SwiftUI body rendering once more, teardown work. Before, such a read reported "Calling memoize on an unanchored model", and its ancestor lookups found nothing. A non-optional `node.memoize { ancestor ?? standIn }` accessor then silently returned the empty stand-in, which is wrong data rather than old data. Dependency reads quietly returned the default value instead of the tree's override. Now a model that was in a tree acts as a read-only view of its last state:
-  - `mapHierarchy` / `reduceHierarchy` for `.parent` and `.ancestors`, and environment-style lookups, continue from the parents the model was removed from, held weakly, as long as those are alive. The ancestors returned are the live ones.
+  - `mapHierarchy` / `reduceHierarchy` for `.parent` and `.ancestors`, and environment-style lookups, continue from the parent the model was removed from, held weakly, as long as it is alive. The ancestors returned are the live ones. When a whole subtree is removed, its descendants continue from the nearest ancestor that stays in the tree, and skip the removed models in between.
   - `memoize` computes uncached and does not report. That includes the short window where the model is torn down but its context still exists; before, `memoize` could create a cache entry on the dead context there.
   - Dependencies resolve to the values the model's tree used, test overrides included.
   - Effects still report, with the "already removed" hint: tasks, `onChange` / `Observed`, `send`, `signal`, cancellation. `onTeardown`, `onCancel` and `signal(.removed)` handlers can now read their ancestors and dependencies through `node`.
   - A model that was never anchored still reports every node access.
   - The unreachable last-seen snapshot code (`LastSeenAccess`, unused since the `@Model` layout redesign) is gone. The 2 s window that keeps a removed model's last state outside tests is unchanged.
-  - `RemovedModelReadTests` covers the read, dependency and teardown cases (all three fail without the change), plus guards that effects and never-anchored models still report.
+  - `RemovedModelReadTests` covers the read, dependency and teardown cases (all fail without the change), plus a descendant of a removed subtree, and guards that effects and never-anchored models still report.
 
 ---
 

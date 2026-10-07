@@ -51,6 +51,23 @@ extension DependencyValues {
     var greeting: String { node.removedReadGreeting.text }
 }
 
+@Model private struct RemovedReadSubtreeRoot {
+    var title = "root"
+    var middle: RemovedReadMiddle? = RemovedReadMiddle()
+}
+
+@Model private struct RemovedReadMiddle {
+    var leaf = RemovedReadSubtreeLeaf()
+}
+
+@Model private struct RemovedReadSubtreeLeaf {
+    var rootTitle: String {
+        node.mapHierarchy(for: .ancestors) { $0 as? RemovedReadSubtreeRoot }.first?.title ?? "none"
+    }
+
+    var greeting: String { node.removedReadGreeting.text }
+}
+
 @Model private struct TeardownReader {
     let seen: TestProbe
 
@@ -107,6 +124,22 @@ struct RemovedModelReadTests {
         await child.waitUntilRemoved()
 
         #expect(child.greeting == "override")
+    }
+
+    @Test func descendantOfARemovedSubtreeReadsTheSurvivingAncestors() async {
+        let root = RemovedReadSubtreeRoot().withAnchor {
+            $0.removedReadGreeting = RemovedReadGreeting(text: "override")
+        }
+        let leaf = root.middle!.leaf
+
+        // Removing `middle` removes `leaf` with it; `middle`'s context is gone right after.
+        root.middle = nil
+        await leaf.waitUntilRemoved()
+
+        #expect(leaf.rootTitle == "root")
+        #expect(leaf.greeting == "override")
+        root.title = "renamed"
+        #expect(leaf.rootTitle == "renamed")
     }
 
     @Test func teardownCanReadAncestorsAndDependencies() async {

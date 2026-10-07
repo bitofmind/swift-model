@@ -48,7 +48,9 @@ class AnyContext: @unchecked Sendable {
     private(set) var weakParents: [WeakParent] = []
     /// The most recently removed parent, held weakly. Once the last parent goes the model
     /// is removed but still readable, and reads that walk upwards (ancestor lookups,
-    /// environment values) continue from here. Written under the hierarchy lock and
+    /// environment values) continue from here. When a whole subtree is removed this is
+    /// the nearest ancestor that stays in the tree, not the removed parent: the removed
+    /// models in between are skipped, since their contexts are gone right after. Written under the hierarchy lock and
     /// `parentsLock`, like `weakParents`, so reading under either is enough.
     private(set) var lastParent: WeakParent?
     var children: OrderedDictionary<AnyKeyPath, OrderedDictionary<ModelRef, AnyContext>> = [:]
@@ -677,9 +679,19 @@ class AnyContext: @unchecked Sendable {
             parentsLock {
                 for i in weakParents.indices {
                     if weakParents[i].parent === parent {
-                        // Reuses the removed entry: no allocation on the removal path.
-                        // Only read once the model is removed (see `lastParent`).
-                        lastParent = weakParents.remove(at: i)
+                        // Only read once the model is removed (see `lastParent`). A parent
+                        // torn down together with this model deinits right after the
+                        // teardown, so remember the ancestor that survives the removal
+                        // instead: teardown runs top-down, so the parent has already
+                        // recorded it (nil when the whole tree went). The caller holds
+                        // the parent's lock, which guards both reads. Otherwise reuse the
+                        // removed entry: no allocation on the removal path.
+                        if parent.unprotectedIsDestructed {
+                            lastParent = parent.lastParent
+                            weakParents.remove(at: i)
+                        } else {
+                            lastParent = weakParents.remove(at: i)
+                        }
                         found = true
                         break
                     }
