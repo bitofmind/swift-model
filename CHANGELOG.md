@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.2.0] — Reading and writing a model after it is removed
+
 ### Changed
 
 - **A write to a removed model has no effect and reports, unless it is expected.** Before, a write to a model removed from its tree silently changed its state, and later reads saw a value no tree had. Now the write is dropped and the model keeps reading its last state. It reports "Modifying a removed model" when it most likely is a bug: work that outlived the model (a `Task`, a callback, `onTeardown`, another model's task) and most likely meant to write to the model that replaced it.
