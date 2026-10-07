@@ -180,6 +180,9 @@ class ModelAccess: ModelAccessReference, @unchecked Sendable {
     func propagatingAccess() -> ModelAccess? { shouldPropagateToChildren ? self : nil }
 
     @TaskLocal static var isInModelTaskContext = false
+    /// The model whose `node.task` / `forEach` / `onChange` body is running (see
+    /// `isRemovedModelWork`).
+    @TaskLocal static var taskOwner: TaskOwner?
     @TaskLocal static var current: ModelAccess?
     @TaskLocal static var active: ModelAccess?
 
@@ -253,4 +256,26 @@ func usingAccess<T>(_ access: ModelAccess?, operation: () throws -> T) rethrows 
 
 func usingActiveAccess<T>(_ access: ModelAccess?, operation: () throws -> T) rethrows -> T {
     try ModelAccess.$active.withValue(access, operation: operation)
+}
+
+/// Which model a piece of work belongs to, held weakly so that work running past its
+/// model's removal neither keeps the context alive nor loses track of whose it was.
+final class TaskOwner: @unchecked Sendable {
+    weak var context: AnyContext?
+
+    init(_ context: AnyContext) {
+        self.context = context
+    }
+}
+
+extension ModelAccess {
+    /// True while the running work belongs to a model that is being (or was) torn down:
+    /// its tasks unwinding after removal cancelled them (`defer { isLoading = false }`),
+    /// or its `onCancel` running during teardown. Such work writing the removed models
+    /// is expected cleanup, so those writes are dropped without a report.
+    static var isRemovedModelWork: Bool {
+        guard let owner = threadLocals.cancellingOwner ?? taskOwner else { return false }
+        guard let context = owner.context else { return true }
+        return context.isDestructed
+    }
 }

@@ -277,7 +277,7 @@ extension _ModelStateType {
 ///   observation or go through the context lock. (Formerly `_isLive == true`.)
 /// - `.regular` with `reference.context != nil`: anchored — reads/writes route through
 ///   Context for observation tracking and lock-protected state updates.
-/// - `.regular` with `reference.context == nil && !reference.isSnapshot`: pre-anchor
+/// - `.regular` with `reference.context == nil && !reference.isSnapshot && !reference.isRemoved`: pre-anchor
 ///   or re-anchorable destructed model — direct reads/writes, no lock needed.
 /// - `.regular` with `reference.isSnapshot`: frozen snapshot — reads are direct;
 ///   writes are no-ops (with `reportIssue`) unless `isApplyingSnapshot` is set.
@@ -356,7 +356,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             _directRead({ $0[keyPath: path] }, path: { path })
         }
         set {
-            if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
+            if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.isRemoved && !reference.hasLazyContextCreator) {
                 // Pre-anchor or internal direct-access: write directly to reference.state.
                 reference.state[keyPath: path] = newValue
             } else if reference.lifetime == .frozenCopy, threadLocals.isApplyingSnapshot {
@@ -419,7 +419,7 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             return value
         }
         nonmutating set {
-            if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
+            if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.isRemoved && !reference.hasLazyContextCreator) {
                 reference.state = newValue
             } else if reference.lifetime == .frozenCopy, threadLocals.isApplyingSnapshot {
                 reference.state = newValue
@@ -559,12 +559,19 @@ extension _ModelSourceBox {
 
     /// Resolves the modify context for writes.
     /// Returns the Context when this is a live anchored model.
-    /// Returns nil (with `reportIssue` for snapshots) when writes should be direct or no-ops.
-    func _modifyContext(accessBox: _ModelAccessBox) -> Context<M>? {
+    /// Returns nil (with `reportIssue` for snapshots and removed models) when writes should
+    /// be direct or no-ops. A removed model's write is a no-op; pass `reportRemoved: false`
+    /// when the caller reports it itself, once it knows the write changes the value.
+    func _modifyContext(accessBox: _ModelAccessBox, reportRemoved: Bool = true) -> Context<M>? {
         if _isLive {
             return nil  // internal direct-access copy — bypass context
         }
-        if let context = reference.context { return context }
+        let (liveContext, isRemoved) = reference.writeTarget
+        if isRemoved {
+            if reportRemoved { _reportRemovedWrite() }
+            return nil
+        }
+        if let context = liveContext { return context }
         // Try lazy materialization before falling through to pre-anchor/snapshot path.
         if let context = reference.materializeLazyContext() { return context }
         // No live context — check for snapshot (warn) vs pre-anchor (silent).
@@ -579,6 +586,16 @@ extension _ModelSourceBox {
             }
         }
         return nil
+    }
+
+    /// A write to a removed model has no effect. Reported unless it is expected: a
+    /// SwiftUI binding writing back after its model went away, or the model's own work
+    /// cleaning up as the removal cancels it (see `ModelAccess.isRemovedModelWork`).
+    /// What is left is work that outlived the model and most likely meant to write to
+    /// the model that replaced it.
+    func _reportRemovedWrite() {
+        guard !threadLocals.isBindingWrite, !threadLocals.isApplyingSnapshot, !ModelAccess.isRemovedModelWork else { return }
+        reportIssue("Modifying a removed \(modelTypeName(M.self)) model is not allowed and has no effect: it was already removed from its tree. Work that outlives a model (a Task, a callback, onTeardown()) should write to the model that replaced it.")
     }
 
     // MARK: Read subscripts
@@ -747,7 +764,7 @@ extension _ModelSourceBox {
                     yield &value
                     set(&reference.state, value)
                     reference._stateVersion &+= 1
-                } else if reference.context == nil && !reference.isSnapshot {
+                } else if reference.context == nil && !reference.isSnapshot && !reference.isRemoved {
                     // Pre-anchor in-place mutation. Inside a user-written init body the
                     // `_State` value may not exist yet (a required property is still
                     // unassigned); the frame then holds this property's box, and we yield
@@ -788,7 +805,7 @@ extension _ModelSourceBox {
                 if _isLive {
                     set(&reference.state, newValue)
                     reference._stateVersion &+= 1
-                } else if reference.context == nil && !reference.isSnapshot {
+                } else if reference.context == nil && !reference.isSnapshot && !reference.isRemoved {
                     reference._writeDirect(path(), newValue)
                     reference._stateVersion &+= 1
                 }
@@ -802,14 +819,15 @@ extension _ModelSourceBox {
     public subscript<T: Equatable>(write index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> T, set set: (inout M._ModelState, T) -> Void, path path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
         _read { fatalError("Use read subscript for reads") }
         nonmutating _modify {
-            guard let context = _modifyContext(accessBox: accessBox) else {
+            // A removed model reports only a write that changes the value (see below).
+            guard let context = _modifyContext(accessBox: accessBox, reportRemoved: false) else {
                 if _isLive {
                     // See disfavoured generic overload for rationale.
                     var value = get(reference.state)
                     yield &value
                     set(&reference.state, value)
                     reference._stateVersion &+= 1
-                } else if reference.context == nil && !reference.isSnapshot {
+                } else if reference.context == nil && !reference.isSnapshot && !reference.isRemoved {
                     // Pre-anchor: direct-yield, into the construction frame while the
                     // `_State` value doesn't exist yet. See disfavoured generic overload.
                     if reference._hasMaterializedState {
@@ -820,7 +838,9 @@ extension _ModelSourceBox {
                     reference._stateVersion &+= 1
                 } else {
                     var value = _directRead(get, path: path)
+                    let oldValue = value
                     yield &value
+                    if value != oldValue, reference.isRemoved { _reportRemovedWrite() }
                 }
                 return
             }
@@ -834,14 +854,17 @@ extension _ModelSourceBox {
             context.endDirectWrite(scope, index: index, value: value, oldValue: oldValue, isSame: value == oldValue, set: set, path: path())
         }
         nonmutating set {
-            // See disfavoured generic overload.
-            guard let context = _modifyContext(accessBox: accessBox) else {
+            // See disfavoured generic overload. Writing a removed model the value it
+            // already has (SwiftUI and reset code do) is not reported.
+            guard let context = _modifyContext(accessBox: accessBox, reportRemoved: false) else {
                 if _isLive {
                     set(&reference.state, newValue)
                     reference._stateVersion &+= 1
-                } else if reference.context == nil && !reference.isSnapshot {
+                } else if reference.context == nil && !reference.isSnapshot && !reference.isRemoved {
                     reference._writeDirect(path(), newValue)
                     reference._stateVersion &+= 1
+                } else if reference.isRemoved, _directRead(get, path: path) != newValue {
+                    _reportRemovedWrite()
                 }
                 return
             }
@@ -871,7 +894,7 @@ extension _ModelSourceBox {
                     yield &value
                     reference.state[keyPath: statePath] = value
                     reference._stateVersion &+= 1
-                } else if reference.context == nil && !reference.isSnapshot {
+                } else if reference.context == nil && !reference.isSnapshot && !reference.isRemoved {
                     // Pre-anchor: direct-yield, into the construction frame while the
                     // `_State` value doesn't exist yet. See disfavoured generic overload.
                     if reference._hasMaterializedState {
@@ -895,7 +918,7 @@ extension _ModelSourceBox {
                 if _isLive {
                     reference.state[keyPath: statePath] = newValue
                     reference._stateVersion &+= 1
-                } else if reference.context == nil && !reference.isSnapshot {
+                } else if reference.context == nil && !reference.isSnapshot && !reference.isRemoved {
                     reference._writeDirect(statePath, newValue)
                     reference._stateVersion &+= 1
                 }
@@ -917,7 +940,7 @@ extension _ModelSourceBox {
                 // compound write through a child `@Model` property during `init()` whose
                 // RHS reads `self` — e.g. `self.child.field = self.child.foo` — can
                 // therefore still trip Swift's exclusivity check, which is rare in practice.
-                if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
+                if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.isRemoved && !reference.hasLazyContextCreator) {
                     if reference._hasMaterializedState {
                         yield &reference.state[keyPath: path()]
                     } else {
@@ -941,7 +964,7 @@ extension _ModelSourceBox {
         nonmutating set {
             // Pre-anchor or live: store directly without anchoring semantics.
             // _modifyContext returns nil for this case and would silently drop the write.
-            if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator) {
+            if _isLive || (reference.context == nil && !reference.isSnapshot && !reference.isRemoved && !reference.hasLazyContextCreator) {
                 reference._writeDirect(path(), newValue)
                 return
             }
@@ -1033,7 +1056,7 @@ extension _ModelSourceBox {
         set: (inout M._ModelState, C) -> Void,
         path: @autoclosure () -> WritableKeyPath<M._ModelState, C>
     ) where C.Element: Model & Identifiable & Sendable, C.Index: Sendable, C.Element.ID: Sendable {
-        if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
+        if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.isRemoved && !reference.hasLazyContextCreator {
             reference._writeDirect(path(), newValue)
             return
         }
@@ -1124,7 +1147,7 @@ extension _ModelSourceBox {
         set: (inout M._ModelState, C) -> Void,
         path: @autoclosure () -> WritableKeyPath<M._ModelState, C>
     ) where C.Element: ModelContainer & Identifiable & Sendable, C: Sendable, C.Index: Sendable, C.Element.ID: Sendable {
-        if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
+        if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.isRemoved && !reference.hasLazyContextCreator {
             reference._writeDirect(path(), newValue)
             return
         }
@@ -1188,7 +1211,7 @@ extension _ModelSourceBox {
         nonmutating set {
             // Pre-anchor: store directly without anchoring semantics.
             // _modifyContext returns nil for this case and would silently drop the write.
-            if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.hasLazyContextCreator {
+            if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.isRemoved && !reference.hasLazyContextCreator {
                 reference._writeDirect(path(), newValue)
                 return
             }

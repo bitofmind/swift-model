@@ -163,6 +163,7 @@ extension TaskCancellable {
 
         self.init(modelName: modelName, taskName: taskName, fileAndLine: fileAndLine, context: context, hasStartedRunningBox: hasStartedRunningBox) { onDone in
             let contexts = AnyCancellable.contexts
+            let owner = TaskOwner(context)
             let operation = { @Sendable in
                 do {
                     // Use context.capturedDependencies directly (not withDependencies(from: context))
@@ -170,6 +171,7 @@ extension TaskCancellable {
                     // would merge against DependencyValues._current, potentially losing overrides.
                     try await DependencyValues.$_current.withValue(context.capturedDependencies) {
                         try await ModelAccess.$isInModelTaskContext.withValue(true) {
+                            try await ModelAccess.$taskOwner.withValue(owner) {
                             try await AnyCancellable.$inheritedContexts.withValue(contexts) {
                                 try await AnyCancellable.$contexts.withValue([]) {
                                     defer { onDone() }
@@ -187,6 +189,7 @@ extension TaskCancellable {
 
                                     try await operation()
                                 }
+                            }
                             }
                         }
                     }

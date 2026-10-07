@@ -5,9 +5,14 @@ public extension ModelNode {
     /// - Returns: A cancellable to optionally allow cancelling before deactivation.
     @discardableResult
     func onCancel(perform: @Sendable @escaping () -> Void) -> Cancellable {
-        guard let cancellations = enforcedContext()?.cancellations else { return EmptyCancellable() }
+        guard let context = enforcedContext() else { return EmptyCancellable() }
 
-        return AnyCancellable(cancellations: cancellations, onCancel: perform)
+        // Teardown runs `perform` after the model is removed; a write it makes to the
+        // removed model is cleanup, not a bug (see `ModelAccess.isRemovedModelWork`).
+        let owner = TaskOwner(context)
+        return AnyCancellable(cancellations: context.cancellations) {
+            threadLocals.withValue(owner, at: \.cancellingOwner, perform: perform)
+        }
     }
 
 

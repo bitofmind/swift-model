@@ -168,7 +168,9 @@ public struct ObservedModel<M: Model>: DynamicProperty, Equatable {
             wrappedValue[keyPath: path]
         } set: { newValue in
             var model = wrappedValue
-            model[keyPath: path] = newValue
+            threadLocals.withValue(true, at: \.isBindingWrite) {
+                model[keyPath: path] = newValue
+            }
         }
     }
 

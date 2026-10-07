@@ -171,8 +171,12 @@ private struct PostTransactionActivateTornReadTests {
                 case 0: optionalHost.controller = TornReadController(id: i + 1)
                 case 1: modelHost.child = TornReadChild(id: i + 1)
                 default:
-                    optionalHost.controller?.outcome = i
-                    modelHost.child.outcome = i
+                    // A chained write reads the child out of its host, then writes into
+                    // the child: two steps. Under the host's transaction a concurrent
+                    // replacement can't land in between and leave the write on a removed
+                    // child (which has no effect and is reported).
+                    optionalHost.node.transaction { optionalHost.controller?.outcome = i }
+                    modelHost.node.transaction { modelHost.child.outcome = i }
                 }
             }
         }

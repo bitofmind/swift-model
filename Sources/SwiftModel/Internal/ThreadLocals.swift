@@ -64,6 +64,12 @@ final class ThreadLocals: @unchecked Sendable {
     /// runtime lock is already held. This flag causes those re-entrant `willAccess*` calls
     /// to return early, since snapshot comparison has no need for observation side effects.
     var isApplyingSnapshot = false
+    /// The model whose `onCancel` closure is running (see `ModelAccess.isRemovedModelWork`).
+    var cancellingOwner: TaskOwner? = nil
+    /// Set while a SwiftUI binding from `@ObservedModel` writes back. SwiftUI can do that
+    /// after the model was removed (a sheet resetting `isPresented` as it dismisses, a
+    /// text field committing on focus loss); such writes are dropped without a report.
+    var isBindingWrite = false
     /// When non-nil, the TestAccess `willAccess` closure for a preference keypath should use
     /// this pre-computed aggregated value instead of re-reading via `model.context![path]`.
     /// Set by `Context.willAccessPreferenceValue` before invoking the TestAccess closure,
