@@ -144,7 +144,7 @@ private extension ModelNode {
             modelName: typeDescription,
             taskName: name ?? "\(function) @ \(fileAndLine.description)",
             fileAndLine: fileAndLine,
-            host: access?.signalWorkStore, access: access,
+            host: access?.signalWorkStore, access: access, owner: TaskOwner(context),
             dependencies: context.capturedDependencies,
             executor: _TestExecutorBox.current,
             priority: priority, operation: perform

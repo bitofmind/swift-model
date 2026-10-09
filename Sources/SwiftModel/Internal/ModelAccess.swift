@@ -271,7 +271,8 @@ final class TaskOwner: @unchecked Sendable {
 extension ModelAccess {
     /// True while the running work belongs to a model that is being (or was) torn down:
     /// its tasks unwinding after removal cancelled them (`defer { isLoading = false }`),
-    /// or its `onCancel` running during teardown. Such work writing the removed models
+    /// its `onCancel` running during teardown, or its signal handlers' runs (`onTeardown`,
+    /// the `.removed` call, a run still unwinding). Such work writing the removed models
     /// is expected cleanup, so those writes are dropped without a report.
     static var isRemovedModelWork: Bool {
         guard let owner = threadLocals.cancellingOwner ?? taskOwner else { return false }

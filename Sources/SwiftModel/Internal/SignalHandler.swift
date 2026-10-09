@@ -22,6 +22,9 @@ final class SignalHandler: Cancellable, InternalCancellable, @unchecked Sendable
     let fileAndLine: FileAndLine
     let host: Cancellations?
     let access: ModelAccess?
+    /// The registering model. Its runs are its work: once it is removed, their writes to
+    /// removed models are cleanup, like its tasks' (see `ModelAccess.isRemovedModelWork`).
+    let owner: TaskOwner
     let dependencies: DependencyValues
     let executor: (any Sendable)?
     let priority: TaskPriority?
@@ -32,7 +35,7 @@ final class SignalHandler: Cancellable, InternalCancellable, @unchecked Sendable
     private var isUnregistered = false
     private var tail: Task<Void, Error>?
 
-    init(cancellations: Cancellations, match: Match, once: Bool, cancelPrevious: Bool, modelName: String, taskName: String, fileAndLine: FileAndLine, host: Cancellations?, access: ModelAccess?, dependencies: DependencyValues, executor: (any Sendable)?, priority: TaskPriority?, operation: @escaping @Sendable (SignalCause) async -> Void) {
+    init(cancellations: Cancellations, match: Match, once: Bool, cancelPrevious: Bool, modelName: String, taskName: String, fileAndLine: FileAndLine, host: Cancellations?, access: ModelAccess?, owner: TaskOwner, dependencies: DependencyValues, executor: (any Sendable)?, priority: TaskPriority?, operation: @escaping @Sendable (SignalCause) async -> Void) {
         self.cancellations = cancellations
         self.id = cancellations.nextId
         self.match = match
@@ -43,6 +46,7 @@ final class SignalHandler: Cancellable, InternalCancellable, @unchecked Sendable
         self.fileAndLine = fileAndLine
         self.host = host
         self.access = access
+        self.owner = owner
         self.dependencies = dependencies
         self.executor = executor
         self.priority = priority
@@ -87,6 +91,7 @@ final class SignalHandler: Cancellable, InternalCancellable, @unchecked Sendable
         let operation = self.operation
         let dependencies = self.dependencies
         let access = self.access
+        let owner = self.owner
         let executor = self.executor
         let priority = self.priority
         let taskName = self.taskName
@@ -110,10 +115,12 @@ final class SignalHandler: Cancellable, InternalCancellable, @unchecked Sendable
                 let body = { @Sendable () async throws -> Void in
                     defer { onDone() }
                     _ = try? await serialized?.value
-                    await DependencyValues.$_current.withValue(dependencies) {
-                        started.setValue(true)
-                        access?.taskBodyStarted()
-                        await operation(cause)
+                    await ModelAccess.$taskOwner.withValue(owner) {
+                        await DependencyValues.$_current.withValue(dependencies) {
+                            started.setValue(true)
+                            access?.taskBodyStarted()
+                            await operation(cause)
+                        }
                     }
                 }
                 #if canImport(Dispatch)
