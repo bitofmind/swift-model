@@ -6,6 +6,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `node.task`'s `catch:` handler counts as the model's work too.** It ran outside the task's ownership, so when the model was removed while the handler ran (a load error racing the model's removal), its writes to the model reported "Modifying a removed … model". The body of the same task was already silent. Now the handler is silent as well. It still doesn't run for a task that removal cancelled, as before.
+  - `RemovedModelCatchWriteTests` holds the handler until the model is removed. It fails without the fix.
+
 ---
 
 ## [1.2.1] — Teardown handlers can write to removed models
