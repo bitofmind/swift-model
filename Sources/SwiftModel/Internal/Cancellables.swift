@@ -195,7 +195,10 @@ extension TaskCancellable {
                     }
                 } catch {
                     if Task.isCancelled || error is CancellationError { return }
-                    `catch`?(error)
+                    // Still the model's work: removal can land while the handler runs.
+                    ModelAccess.$taskOwner.withValue(owner) {
+                        `catch`?(error)
+                    }
                 }
             }
 

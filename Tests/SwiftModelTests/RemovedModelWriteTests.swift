@@ -199,3 +199,57 @@ struct RemovedModelWriteTests {
     }
 #endif
 }
+
+#if canImport(Dispatch)
+import Dispatch
+
+private struct LoadFailed: Error {}
+
+/// Holds a `node.task`'s `catch:` handler until the test has removed the model, the way
+/// a load error races the model's removal.
+private final class CatchGate: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let proceed = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+
+    /// Blocking waits, for a detached task to run off the test's own.
+    func waitUntilEntered() { entered.wait() }
+    func waitUntilFinished() { finished.wait() }
+}
+
+@Model private struct CatchRoot {
+    var child: CatchChild?
+}
+
+@Model private struct CatchChild {
+    var loadError: String?
+    let gate: CatchGate
+
+    func onActivate() {
+        node.task {
+            throw LoadFailed()
+        } catch: { _ in
+            gate.entered.signal()
+            gate.proceed.wait()
+            loadError = "failed"   // the model was removed while the handler ran
+            gate.finished.signal()
+        }
+    }
+}
+
+// Without `.modelTesting`: the handler blocks its thread, which must not be the
+// harness's executor.
+struct RemovedModelCatchWriteTests {
+    @Test func taskCatchHandlerRacingRemovalIsSilent() async {
+        let gate = CatchGate()
+        let root = CatchRoot(child: CatchChild(gate: gate)).withAnchor()
+        let child = root.child!
+        await Task.detached { gate.waitUntilEntered() }.value
+
+        root.child = nil
+        gate.proceed.signal()
+        await Task.detached { gate.waitUntilFinished() }.value
+        #expect(child.loadError == nil)
+    }
+}
+#endif
