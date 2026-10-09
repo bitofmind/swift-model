@@ -1,5 +1,4 @@
 import Testing
-import Foundation
 import ConcurrencyExtras
 @testable import SwiftModel
 #if canImport(SwiftUI)
@@ -201,6 +200,9 @@ struct RemovedModelWriteTests {
 #endif
 }
 
+#if canImport(Dispatch)
+import Dispatch
+
 private struct LoadFailed: Error {}
 
 /// Holds a `node.task`'s `catch:` handler until the test has removed the model, the way
@@ -250,3 +252,4 @@ struct RemovedModelCatchWriteTests {
         #expect(child.loadError == nil)
     }
 }
+#endif
