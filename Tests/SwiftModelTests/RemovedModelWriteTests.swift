@@ -1,4 +1,5 @@
 import Testing
+import ConcurrencyExtras
 @testable import SwiftModel
 #if canImport(SwiftUI)
 import SwiftUI
@@ -7,7 +8,8 @@ import SwiftUI
 // A write to a removed model has no effect: the model keeps reading its last state.
 // It is reported only when it most likely is a bug — work that outlived the model and
 // meant to write to its replacement. Expected writes stay silent: the model's own work
-// cleaning up as the removal cancels it (`defer { isLoading = false }`, `onCancel`), a
+// cleaning up as the removal cancels it (`defer { isLoading = false }`, `onCancel`,
+// `onTeardown` and other signal handler runs), a
 // SwiftUI binding writing back after its view's model went away, and a write of the
 // value the model already has.
 
@@ -48,6 +50,46 @@ import SwiftUI
         node.onCancel {
             name = "cancelled"
             cleanedUp("onCancel")
+        }
+    }
+}
+
+private enum Flush: Hashable, Sendable { case now }
+
+@Model private struct TeardownRoot {
+    var writer: TeardownWriter?
+    var peer: WriteChild?
+    var child: WriteChild? = WriteChild()
+    let stale = LockIsolated<WriteChild?>(nil)
+
+    /// A live model's handler writing a removed child it held on to: work that outlived
+    /// the child.
+    func onActivate() {
+        let stale = self.stale
+        node.onSignal(Flush.now) { cause in
+            guard cause == .requested else { return }
+            stale.value?.name = "flushed"
+        }
+    }
+}
+
+/// Teardown work writing removed models: itself, and a peer captured at activation (the
+/// shape `onTeardown`'s docs recommend), removed before it.
+@Model private struct TeardownWriter {
+    var name = "writer"
+    let peer: LockIsolated<WriteChild?>
+    let wrote: TestProbe
+
+    func onActivate() {
+        let peer = self.peer
+        node.onTeardown {
+            name = "torn down"
+            wrote("onTeardown")
+        }
+        node.onSignal(Flush.now) { cause in
+            guard cause == .removed else { return }
+            peer.value?.name = "flushed on removal"
+            wrote("removed run")
         }
     }
 }
@@ -104,6 +146,40 @@ struct RemovedModelWriteTests {
             cleanedUp.wasCalled(with: "task")
             cleanedUp.wasCalled(with: "onCancel")
         }
+    }
+
+    @Test func teardownHandlersWritingRemovedModelsAreSilent() async {
+        let wrote = TestProbe()
+        let peerBox = LockIsolated<WriteChild?>(nil)
+        let root = TeardownRoot(writer: TeardownWriter(peer: peerBox, wrote: wrote), peer: WriteChild()).withAnchor()
+        let writer = root.writer!
+        let peer = root.peer!
+        peerBox.setValue(peer)
+        await settle()
+
+        // The peer goes first, as when a test releases it before the writer's teardown.
+        root.peer = nil
+        root.writer = nil
+        await expect {
+            wrote.wasCalled(with: "onTeardown")
+            wrote.wasCalled(with: "removed run")
+        }
+        #expect(writer.name == "writer")
+        #expect(peer.name == "child")
+    }
+
+    @Test func liveModelsSignalRunWritingARemovedModelIsReported() async {
+        let root = TeardownRoot().withAnchor()
+        let child = root.child!
+        root.stale.setValue(child)
+        root.child = nil
+
+        await withKnownIssue {
+            await root.node.signal(Flush.now)
+        } matching: { issue in
+            issue.description.contains("Modifying a removed `WriteChild` model")
+        }
+        #expect(child.name == "child")
     }
 
 #if canImport(SwiftUI)

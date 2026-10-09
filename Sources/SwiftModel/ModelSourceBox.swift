@@ -590,12 +590,13 @@ extension _ModelSourceBox {
 
     /// A write to a removed model has no effect. Reported unless it is expected: a
     /// SwiftUI binding writing back after its model went away, or the model's own work
-    /// cleaning up as the removal cancels it (see `ModelAccess.isRemovedModelWork`).
+    /// cleaning up as the removal cancels it, its teardown handlers included (see
+    /// `ModelAccess.isRemovedModelWork`).
     /// What is left is work that outlived the model and most likely meant to write to
     /// the model that replaced it.
     func _reportRemovedWrite() {
         guard !threadLocals.isBindingWrite, !threadLocals.isApplyingSnapshot, !ModelAccess.isRemovedModelWork else { return }
-        reportIssue("Modifying a removed \(modelTypeName(M.self)) model is not allowed and has no effect: it was already removed from its tree. Work that outlives a model (a Task, a callback, onTeardown()) should write to the model that replaced it.")
+        reportIssue("Modifying a removed \(modelTypeName(M.self)) model is not allowed and has no effect: it was already removed from its tree. Work that outlives a model (a Task, a callback, another model's work) should write to the model that replaced it.")
     }
 
     // MARK: Read subscripts

@@ -6,6 +6,13 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Changed
+
+- **A removed model's teardown handlers can write to removed models without a report.** 1.2.0 made writes to a removed model silent when the model's own work was cleaning up (its tasks unwinding, its `onCancel`), but not from its `onTeardown` or the final `.removed` call of its `onSignal` handlers. The same cleanup reported or not depending on which API it used. Now a signal handler's runs count as its model's work, like its tasks, so once the model is removed their writes to removed models are dropped silently.
+  - This covers teardown work writing to a peer it captured, which a test often releases first. For example, a flush handler whose `.removed` run kicks a drain on a sender model whose anchor the test dropped when it returned.
+  - A handler run on a live model that writes to a removed model is still reported, as is any other work that outlived the model it writes to.
+  - `RemovedModelWriteTests` covers both. The teardown test fails without the change.
+
 ---
 
 ## [1.2.0] — Reading and writing a model after it is removed
