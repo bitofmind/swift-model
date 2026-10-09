@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.2.2] — A task's catch handler counts as its model's work
+
 ### Fixed
 
 - **A `node.task`'s `catch:` handler counts as the model's work too.** It ran outside the task's ownership, so when the model was removed while the handler ran (a load error racing the model's removal), its writes to the model reported "Modifying a removed … model". The body of the same task was already silent. Now the handler is silent as well. It still doesn't run for a task that removal cancelled, as before.
