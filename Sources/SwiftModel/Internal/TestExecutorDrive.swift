@@ -132,8 +132,41 @@ func _makeTestExecutorBox() -> (any Sendable)? {
 /// `.concurrent` queue would explode GCD's worker pool under full-parallel test
 /// runs. Each executor keeps its own `outstanding` counter, so per-test
 /// quiescence detection stays isolated.
+///
+/// `.userInitiated` on Apple OS 27 and later, above the cooperative pool's default QoS.
+/// GCD gives a concurrent queue a thread only while its QoS level has a CPU to spare. At
+/// the default QoS the cooperative pool, whose width is the core count, takes them all
+/// whenever the test bodies are CPU-busy, and the queue got no thread at all: thousands of
+/// model jobs sat for tens of seconds with none running, and every `settle`/teardown in the
+/// process waited until the test bodies finished (parallel-apple SessionTests, sampled).
+///
+/// Only on runtimes where a task resuming from `Task.yield` re-enqueues straight onto its
+/// preferred executor. Older Swift runtimes enqueue every `yield` and `sleep` resume on the
+/// global executor (the cooperative pool), which then hops the job to the task executor:
+/// a known runtime bug, swiftlang/swift#74395. The drive can't see that hop, so the 30 ms
+/// grace has to cover it. With this queue above the pool, the hop outlasted the grace on
+/// macOS 15, and `settle()` returned with children mid-chain
+/// (`settleIsLoadIndependentAcrossChildTasks` under TSan on CI).
+///
+/// The gate is on the OS because on Apple platforms the concurrency runtime ships with the
+/// OS, not the binary: a test built with Swift 6.4 and run on macOS 15 gets macOS 15's
+/// runtime, so a compile-time `#if swift(...)` would be wrong here. Measured with a probe on
+/// the drain executor (2026-10): on macOS 15 every resume came from the cooperative pool; on
+/// macOS 27.0.1 a `yield` resume re-enqueues from inside the running job, while `Task.sleep`
+/// still resumes via the pool (as the Swift team expects; only `yield` was fixed) and a
+/// continuation resumes straight from the resuming thread. #74395 reports the `yield` fix in
+/// the Swift 6.2 runtime (OS 26), unconfirmed, so 26 keeps the default until measured. So
+/// does Linux, where the runtime ships with the toolchain and a Swift-version check would
+/// be the right gate.
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
-private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.shared", attributes: .concurrent)
+private let _sharedDrainQueue: DispatchQueue = {
+    #if canImport(Darwin)
+    if #available(macOS 27.0, iOS 27.0, tvOS 27.0, watchOS 27.0, *) {
+        return DispatchQueue(label: "swift-model.test-drain.shared", qos: .userInitiated, attributes: .concurrent)
+    }
+    #endif
+    return DispatchQueue(label: "swift-model.test-drain.shared", attributes: .concurrent)
+}()
 
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
 final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
@@ -147,6 +180,12 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     private let _birthNs: UInt64 = _drainMonotonicNs()
     private var _lastEnqueueNs: UInt64 = 0
     private var _lastCompletionNs: UInt64 = 0
+    /// Enqueues that arrived while a job was running. A task resuming from `Task.yield`
+    /// re-enqueues from inside its own job on runtimes that keep it on its preferred
+    /// executor (macOS 27); older ones (macOS 15) enqueue the resume on the global
+    /// executor first, swiftlang/swift#74395. Tests use it to tell the two apart (see
+    /// `_sharedDrainQueue`).
+    private(set) var enqueuesWhileBusy = 0
     /// Closures that fire (at most once each) when `outstanding` hits 0.
     private var idleWaiters: [(id: UInt64, fire: @Sendable () -> Void)] = []
     private var nextWaiterId: UInt64 = 0
@@ -203,7 +242,11 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
 
     func enqueue(_ job: consuming ExecutorJob) {
         let unowned = UnownedJob(job)
-        lock.withLock { outstanding += 1; _lastEnqueueNs = _drainMonotonicNs() }
+        lock.withLock {
+            if outstanding > 0 { enqueuesWhileBusy += 1 }
+            outstanding += 1
+            _lastEnqueueNs = _drainMonotonicNs()
+        }
         Self._globalOutstanding.wrappingAdd(1, ordering: .relaxed)
         Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
         _sharedDrainQueue.async {

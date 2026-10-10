@@ -6,6 +6,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **`settle()` and end-of-test teardown no longer stall while other tests keep the CPU busy.** Under `.modelTesting`, model tasks run on one shared dispatch queue, and `settle()` waits for them. That queue ran at the default QoS, the same as the Swift concurrency thread pool. When CPU-bound test bodies filled that pool, which has one thread per core, GCD gave the queue no thread at all. Model work then made no progress until those tests finished. In parallel-apple's SessionTests (4 workers, under load) a process sampled ~1,000 queued model jobs and no thread running them for 5 s and more, and one test's 0.2 s body spent 30–60 s in teardown. On macOS/iOS/tvOS/watchOS 27 and later the queue now runs at `.userInitiated`, above test bodies, which wait on it. Older runtimes and Linux keep the default. Older Swift runtimes resume a task from `Task.yield` through the cooperative pool before its own executor ([swiftlang/swift#74395](https://github.com/swiftlang/swift/issues/74395)), a hop `settle()` can't see. On macOS 15 a faster queue let that hop outlast `settle()`'s grace, so it returned before child tasks finished. The concurrency runtime ships with the OS, so the gate is on the OS version.
+  - `DrainQueueStarvationTests` fills the pool with CPU-busy tasks, then settles a model. Without the fix, settle only returns once the busy tasks reach their 10 s cap (3/3 runs). With it, it returns in under 0.1 s. It runs only where resumes stay on the test executor.
+
 ---
 
 ## [1.2.2] — A task's catch handler counts as its model's work
