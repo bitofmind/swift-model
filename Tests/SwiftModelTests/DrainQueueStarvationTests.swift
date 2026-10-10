@@ -33,7 +33,8 @@ private func resumesStayOnTheTestExecutor() async -> Bool {
 @Suite(.modelTesting(exhaustivity: .off))
 struct DrainQueueStarvationTests {
     @Test func settleIsNotStarvedByBusyCooperativePool() async {
-        guard #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
+        // The drain queue runs above the pool only on OS 27 and later (see `_sharedDrainQueue`).
+        guard #available(macOS 27.0, iOS 27.0, tvOS 27.0, watchOS 27.0, *),
               await resumesStayOnTheTestExecutor() else { return }
         let stop = LockIsolated(false)
         let spinnersHitCap = LockIsolated(false)

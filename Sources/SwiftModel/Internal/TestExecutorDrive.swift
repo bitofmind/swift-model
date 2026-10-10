@@ -133,15 +133,28 @@ func _makeTestExecutorBox() -> (any Sendable)? {
 /// runs. Each executor keeps its own `outstanding` counter, so per-test
 /// quiescence detection stays isolated.
 ///
-/// `.userInitiated`, above the cooperative pool's default QoS. GCD gives a concurrent
-/// queue a thread only while its QoS level has a CPU to spare. At the default QoS the
-/// cooperative pool, whose width is the core count, takes them all whenever the test
-/// bodies are CPU-busy, and the queue got no thread at all: thousands of model jobs sat
-/// for tens of seconds with none running, and every `settle`/teardown in the process
-/// waited until the test bodies finished (parallel-apple SessionTests, sampled). Test
-/// bodies wait on these jobs, so the jobs rank above them.
+/// `.userInitiated` on Apple OS 27 and later, above the cooperative pool's default QoS.
+/// GCD gives a concurrent queue a thread only while its QoS level has a CPU to spare. At
+/// the default QoS the cooperative pool, whose width is the core count, takes them all
+/// whenever the test bodies are CPU-busy, and the queue got no thread at all: thousands of
+/// model jobs sat for tens of seconds with none running, and every `settle`/teardown in the
+/// process waited until the test bodies finished (parallel-apple SessionTests, sampled).
+///
+/// Only where a task resuming from a suspension re-enqueues straight onto this executor.
+/// On the macOS 15 runtime every resume first passes through the cooperative pool, a hop
+/// the drive can't see. There a faster queue let that hop outlast the drive's grace, and
+/// `settle()` returned with children mid-chain (`settleIsLoadIndependentAcrossChildTasks`
+/// under TSan on CI). Verified on macOS 27; 26 is unverified and keeps the default, as
+/// does Linux.
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
-private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.shared", qos: .userInitiated, attributes: .concurrent)
+private let _sharedDrainQueue: DispatchQueue = {
+    #if canImport(Darwin)
+    if #available(macOS 27.0, iOS 27.0, tvOS 27.0, watchOS 27.0, *) {
+        return DispatchQueue(label: "swift-model.test-drain.shared", qos: .userInitiated, attributes: .concurrent)
+    }
+    #endif
+    return DispatchQueue(label: "swift-model.test-drain.shared", attributes: .concurrent)
+}()
 
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
 final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
