@@ -140,12 +140,24 @@ func _makeTestExecutorBox() -> (any Sendable)? {
 /// model jobs sat for tens of seconds with none running, and every `settle`/teardown in the
 /// process waited until the test bodies finished (parallel-apple SessionTests, sampled).
 ///
-/// Only where a task resuming from a suspension re-enqueues straight onto this executor.
-/// On the macOS 15 runtime every resume first passes through the cooperative pool, a hop
-/// the drive can't see. There a faster queue let that hop outlast the drive's grace, and
-/// `settle()` returned with children mid-chain (`settleIsLoadIndependentAcrossChildTasks`
-/// under TSan on CI). Verified on macOS 27; 26 is unverified and keeps the default, as
-/// does Linux.
+/// Only on runtimes where a task resuming from `Task.yield` re-enqueues straight onto its
+/// preferred executor. Older Swift runtimes enqueue every `yield` and `sleep` resume on the
+/// global executor (the cooperative pool), which then hops the job to the task executor:
+/// a known runtime bug, swiftlang/swift#74395. The drive can't see that hop, so the 30 ms
+/// grace has to cover it. With this queue above the pool, the hop outlasted the grace on
+/// macOS 15, and `settle()` returned with children mid-chain
+/// (`settleIsLoadIndependentAcrossChildTasks` under TSan on CI).
+///
+/// The gate is on the OS because on Apple platforms the concurrency runtime ships with the
+/// OS, not the binary: a test built with Swift 6.4 and run on macOS 15 gets macOS 15's
+/// runtime, so a compile-time `#if swift(...)` would be wrong here. Measured with a probe on
+/// the drain executor (2026-10): on macOS 15 every resume came from the cooperative pool; on
+/// macOS 27.0.1 a `yield` resume re-enqueues from inside the running job, while `Task.sleep`
+/// still resumes via the pool (as the Swift team expects; only `yield` was fixed) and a
+/// continuation resumes straight from the resuming thread. #74395 reports the `yield` fix in
+/// the Swift 6.2 runtime (OS 26), unconfirmed, so 26 keeps the default until measured. So
+/// does Linux, where the runtime ships with the toolchain and a Swift-version check would
+/// be the right gate.
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
 private let _sharedDrainQueue: DispatchQueue = {
     #if canImport(Darwin)
@@ -170,8 +182,9 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     private var _lastCompletionNs: UInt64 = 0
     /// Enqueues that arrived while a job was running. A task resuming from `Task.yield`
     /// re-enqueues from inside its own job on runtimes that keep it on its preferred
-    /// executor; older ones (macOS 15) route the resume through the cooperative pool
-    /// first. Tests use it to tell the two apart.
+    /// executor (macOS 27); older ones (macOS 15) enqueue the resume on the global
+    /// executor first, swiftlang/swift#74395. Tests use it to tell the two apart (see
+    /// `_sharedDrainQueue`).
     private(set) var enqueuesWhileBusy = 0
     /// Closures that fire (at most once each) when `outstanding` hits 0.
     private var idleWaiters: [(id: UInt64, fire: @Sendable () -> Void)] = []

@@ -17,9 +17,9 @@ import ConcurrencyExtras
 /// CPU-busy test bodies fill the cooperative pool. The harness's drain queue must still
 /// get a thread: `settle` waits on model jobs that run there, not on the pool.
 /// Whether a task resuming from `Task.yield` goes straight back to its preferred executor.
-/// On older runtimes (macOS 15) every resume passes through the cooperative pool first,
-/// so a full pool delays the model's own work whatever the drain queue's QoS, and this
-/// test's premise does not hold there.
+/// Older Swift runtimes (macOS 15) enqueue it on the global executor first
+/// (swiftlang/swift#74395), so a full pool delays the model's own work whatever the drain
+/// queue's QoS, and this test's premise does not hold there.
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
 private func resumesStayOnTheTestExecutor() async -> Bool {
     let exec = _DrainTestExecutor()
