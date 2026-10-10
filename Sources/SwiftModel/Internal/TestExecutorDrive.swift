@@ -132,8 +132,16 @@ func _makeTestExecutorBox() -> (any Sendable)? {
 /// `.concurrent` queue would explode GCD's worker pool under full-parallel test
 /// runs. Each executor keeps its own `outstanding` counter, so per-test
 /// quiescence detection stays isolated.
+///
+/// `.userInitiated`, above the cooperative pool's default QoS. GCD gives a concurrent
+/// queue a thread only while its QoS level has a CPU to spare. At the default QoS the
+/// cooperative pool, whose width is the core count, takes them all whenever the test
+/// bodies are CPU-busy, and the queue got no thread at all: thousands of model jobs sat
+/// for tens of seconds with none running, and every `settle`/teardown in the process
+/// waited until the test bodies finished (parallel-apple SessionTests, sampled). Test
+/// bodies wait on these jobs, so the jobs rank above them.
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
-private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.shared", attributes: .concurrent)
+private let _sharedDrainQueue = DispatchQueue(label: "swift-model.test-drain.shared", qos: .userInitiated, attributes: .concurrent)
 
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
 final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
@@ -147,6 +155,11 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     private let _birthNs: UInt64 = _drainMonotonicNs()
     private var _lastEnqueueNs: UInt64 = 0
     private var _lastCompletionNs: UInt64 = 0
+    /// Enqueues that arrived while a job was running. A task resuming from `Task.yield`
+    /// re-enqueues from inside its own job on runtimes that keep it on its preferred
+    /// executor; older ones (macOS 15) route the resume through the cooperative pool
+    /// first. Tests use it to tell the two apart.
+    private(set) var enqueuesWhileBusy = 0
     /// Closures that fire (at most once each) when `outstanding` hits 0.
     private var idleWaiters: [(id: UInt64, fire: @Sendable () -> Void)] = []
     private var nextWaiterId: UInt64 = 0
@@ -203,7 +216,11 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
 
     func enqueue(_ job: consuming ExecutorJob) {
         let unowned = UnownedJob(job)
-        lock.withLock { outstanding += 1; _lastEnqueueNs = _drainMonotonicNs() }
+        lock.withLock {
+            if outstanding > 0 { enqueuesWhileBusy += 1 }
+            outstanding += 1
+            _lastEnqueueNs = _drainMonotonicNs()
+        }
         Self._globalOutstanding.wrappingAdd(1, ordering: .relaxed)
         Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
         _sharedDrainQueue.async {
