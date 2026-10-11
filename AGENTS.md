@@ -157,6 +157,11 @@ based on evidence and progress, not wall-clock time.
   `CHANGELOG.md`, so a release only has to stamp that section.
 - Run `scripts/test` (and `--no-parallel` for anything touching
   observation or settling) before pushing.
+- After opening a PR, watch its CI until every check has finished
+  (`gh pr checks <n> --watch`). When a check fails, find the root cause, fix
+  it and push, and repeat until CI is green. Never fix a failure by raising a
+  timeout or skipping a test. If the failure isn't caused by the PR (it is red
+  on `main` too), say so on the PR instead of working around it.
 - CI's WASM job runs `scripts/wasm-smoke`, a small executable under wasmtime.
   wasm32's 4-byte pointers change what the compiler generates (see
   `OverAlignedKeyPathIndexTests`). Run it locally to reproduce a failure there;
