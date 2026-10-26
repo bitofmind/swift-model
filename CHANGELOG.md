@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.3.0] — node.ifAlive for work that may land after its model was removed
+
 ### Added
 
 - **`node.ifAlive { … }` runs work the model doesn't own and drops the writes that land after the model was removed.** A write to a removed model has no effect and reports "Modifying a removed … model", since it usually means work outlived its model. Work arriving from outside the model, such as a view's `onDisappear`, a KVO or delegate callback, or a view's `.refreshable`, can legitimately land after the removal, and there was no public way to say so. Checking liveness first would race a removal on another thread, so `ifAlive` decides per write instead. It skips `body` if the model is already removed. Writes in `body` that land on the model after a removal racing it are dropped without a report. It returns `nil` unless `body` ran to the end with the model alive, so a caller can clean up what the model never received. The async version also cancels `body` when the model is removed. Both versions use typed throws, so a non-throwing `body` needs no `try`. Only writes are silenced: starting work on a removed model still reports, and so does a `Task` that `body` starts and that outlives it. In an async context Swift picks the async version even for a synchronous closure, so the call needs `await` there.
