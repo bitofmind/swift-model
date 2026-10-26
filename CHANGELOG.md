@@ -6,6 +6,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+
+- **`node.ifAlive { … }` runs work the model doesn't own and drops the writes that land after the model was removed.** A write to a removed model has no effect and reports "Modifying a removed … model", since it usually means work outlived its model. Work arriving from outside the model, such as a view's `onDisappear`, a KVO or delegate callback, or a view's `.refreshable`, can legitimately land after the removal, and there was no public way to say so. Checking liveness first would race a removal on another thread, so `ifAlive` decides per write instead. It skips `body` if the model is already removed. Writes in `body` that land on the model after a removal racing it are dropped without a report. It returns `nil` unless `body` ran to the end with the model alive, so a caller can clean up what the model never received. The async overloads also cancel `body` when the model is removed. Only writes are silenced: starting work on a removed model still reports, and so does a `Task` that `body` starts and that outlives it. In an async context Swift picks the async overload even for a synchronous closure, so the call needs `await` there.
+  - `IfAliveTests` removes the model from inside `body`, so the race is covered deterministically. It also covers nesting, a leaked `Task`, removal cancelling an async `body`, and caller cancellation rethrowing.
+
 ---
 
 ## [1.2.3] — Model work keeps running while test bodies are CPU-bound
