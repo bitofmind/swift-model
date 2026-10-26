@@ -273,8 +273,10 @@ extension ModelAccess {
     /// its tasks unwinding after removal cancelled them (`defer { isLoading = false }`),
     /// its `onCancel` running during teardown, or its signal handlers' runs (`onTeardown`,
     /// the `.removed` call, a run still unwinding). Such work writing the removed models
-    /// is expected cleanup, so those writes are dropped without a report.
+    /// is expected cleanup, so those writes are dropped without a report. So is a
+    /// `node.ifAlive` body whose model was removed while it ran (see `AliveScope`).
     static var isRemovedModelWork: Bool {
+        if AliveScope.current?.coversRemovedModelWork == true { return true }
         guard let owner = threadLocals.cancellingOwner ?? taskOwner else { return false }
         guard let context = owner.context else { return true }
         return context.isDestructed
