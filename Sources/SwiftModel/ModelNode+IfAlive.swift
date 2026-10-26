@@ -38,14 +38,17 @@ public extension ModelNode {
     /// - Returns: The result of `body`, or `nil` if the model was removed before `body` ran
     ///   or before it returned.
     @discardableResult
-    func ifAlive<R>(_ body: () throws -> R) rethrows -> R? {
+    func ifAlive<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R? {
         guard let context = aliveContext() else { return nil }
 
         let scope = AliveScope(owner: TaskOwner(context), parent: AliveScope.current)
         defer { scope.close() }
-        let result = try AliveScope.$current.withValue(scope) { try body() }
+        let result: Result<R, E> = AliveScope.$current.withValue(scope) {
+            do throws(E) { return .success(try body()) } catch { return .failure(error) }
+        }
         // Removal is permanent: alive now means every write in `body` landed.
-        return context.isDestructed ? nil : result
+        let value = try result.get()
+        return context.isDestructed ? nil : value
     }
 
     /// Runs async `body` unless the model was already removed from its tree, and cancels it
@@ -64,61 +67,28 @@ public extension ModelNode {
     /// model are dropped without a report, as in the synchronous `ifAlive(_:)`.
     /// Cancelling the calling task cancels `body` too.
     ///
-    /// - Returns: The result of `body`, or `nil` if the model was removed before `body` ran
-    ///   or before it returned.
-    @discardableResult
-    func ifAlive<R: Sendable>(_ body: sending @escaping () async -> R) async -> R? {
-        guard let context = aliveContext() else { return nil }
-        switch await runAlive(context, { .success(await body()) }) {
-        case .success(let value): return value
-        case .failure: return nil   // unreachable: `body` cannot throw
-        case nil: return nil
-        }
-    }
-
-    /// Runs async throwing `body` unless the model was already removed from its tree, and
-    /// cancels it if the model is removed while it runs.
+    /// An error `body` throws is rethrown, except a `CancellationError` once the model was
+    /// removed: that is the removal cancelling `body`, and it returns `nil`. A
+    /// `CancellationError` while the model is alive comes from the calling task being
+    /// cancelled and is rethrown.
     ///
-    /// Works like the non-throwing version. An error `body` throws is rethrown, except a
-    /// `CancellationError` once the model was removed: that is the removal cancelling
-    /// `body`, and it returns `nil`. A `CancellationError` while the model is alive comes
-    /// from the calling task being cancelled and is rethrown.
+    /// In an async context Swift picks this version even for a synchronous closure.
     ///
     /// - Returns: The result of `body`, or `nil` if the model was removed before `body` ran
     ///   or before it returned.
     @discardableResult
-    func ifAlive<R: Sendable>(_ body: sending @escaping () async throws -> R) async throws -> R? {
+    func ifAlive<R: Sendable, E: Error>(_ body: sending @escaping () async throws(E) -> R) async throws(E) -> R? {
         guard let context = aliveContext() else { return nil }
-        let result = await runAlive(context) {
-            do { return .success(try await body()) } catch { return .failure(error) }
-        }
-        switch result {
-        case .success(let value): return value
-        case .failure(let error) where error is CancellationError && context.isDestructed: return nil
-        case .failure(let error): throw error
-        case nil: return nil
-        }
-    }
-}
 
-extension ModelNode {
-    /// The context of a model that is anchored and not removed. A model never anchored
-    /// reports (as other node operations do); a removed one does not.
-    func aliveContext(_ function: StaticString = #function) -> Context<M>? {
-        guard let context = readContext(function), !context.isDestructed else { return nil }
-        return context
-    }
-
-    /// Runs `body` in its own task, cancelled when the model is removed or the caller is
-    /// cancelled. Returns nil (for a successful `body`) when the model was removed before
-    /// it returned; a failure is passed on for the caller to classify.
-    private func runAlive<R: Sendable>(_ context: Context<M>, _ body: sending @escaping () async -> Result<R, Error>) async -> Result<R, Error>? {
         let scope = AliveScope(owner: TaskOwner(context), parent: AliveScope.current)
         defer { scope.close() }
 
-        // A child task, so the removal can cancel `body` without cancelling the caller.
-        let task = Task {
-            await AliveScope.$current.withValue(scope) { await body() }
+        // A child task, so the removal can cancel `body` without cancelling the caller. It
+        // returns a `Result` rather than throwing, which keeps the error typed.
+        let task = Task { () async -> Result<R, E> in
+            await AliveScope.$current.withValue(scope) {
+                do throws(E) { return .success(try await body()) } catch { return .failure(error) }
+            }
         }
         // Registering on a store the removal already sealed cancels at once.
         let cancellable = AnyCancellable(cancellations: context.cancellations) { task.cancel() }
@@ -129,8 +99,22 @@ extension ModelNode {
         }
         _ = context.cancellations.unregister(cancellable.id)
 
-        if case .success = result, context.isDestructed { return nil }
-        return result
+        switch result {
+        case .success(let value):
+            return context.isDestructed ? nil : value
+        case .failure(let error):
+            if error is CancellationError, context.isDestructed { return nil }
+            throw error
+        }
+    }
+}
+
+extension ModelNode {
+    /// The context of a model that is anchored and not removed. A model never anchored
+    /// reports (as other node operations do); a removed one does not.
+    func aliveContext(_ function: StaticString = #function) -> Context<M>? {
+        guard let context = readContext(function), !context.isDestructed else { return nil }
+        return context
     }
 }
 

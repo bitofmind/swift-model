@@ -19,7 +19,7 @@ import ConcurrencyExtras
 
 /// Calls `body` from a synchronous context, so `ifAlive` in it resolves to the synchronous
 /// overload (an async context picks the async one even for a synchronous closure).
-private func inSyncContext<R>(_ body: () -> R) -> R { body() }
+private func inSyncContext<R, E: Error>(_ body: () throws(E) -> R) throws(E) -> R { try body() }
 
 private func isRemovedWrite(_ issue: Issue) -> Bool {
     issue.description.contains("Modifying a removed `AliveChild` model")
@@ -141,6 +141,21 @@ struct IfAliveTests {
             open.yield()
             await task?.value
         } matching: { isRemovedWrite($0) }
+    }
+
+    @Test func errorKeepsItsType() async {
+        struct Failure: Error {}
+        let host = AliveHost().withAnchor()
+        let child = host.child!
+
+        do throws(Failure) {
+            _ = try inSyncContext { () throws(Failure) -> Int? in
+                try child.node.ifAlive { () throws(Failure) -> Int in throw Failure() }
+            }
+            Issue.record("expected a throw")
+        } catch {
+            let _: Failure = error   // typed: no cast needed
+        }
     }
 
     @Test func unanchoredModelIsReported() {
