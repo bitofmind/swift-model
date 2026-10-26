@@ -142,6 +142,17 @@ What a removed model can't do is start anything: tasks, `onChange`/`Observed` ob
 
 Nor can it be changed: a write to a removed model has no effect, and it keeps reading its last state. Some writes after removal are expected and stay silent: the model's own work cleaning up as the removal cancels it (a `defer { isLoading = false }` in its `node.task`, its `onCancel`, its `onTeardown` and other signal handlers), a SwiftUI binding from `@ObservedModel` writing back after the model went away, and a write of the value the model already has. Any other write reports an issue. It comes from work that outlived the model, such as a `Task`, a callback or another model's task, and that work most likely meant to write to the model that replaced it.
 
+Work the model doesn't own can legitimately arrive after its removal: a view's `onDisappear`, a KVO or delegate callback, a view's `.refreshable`. Run it in `node.ifAlive { … }`. It skips the work if the model is already removed, and drops without a report the writes that land after a removal racing it. Checking liveness yourself before writing would race a removal on another thread. It returns `nil` unless the work ran to the end with the model alive, so you can clean up what the model never received. The async version also cancels the work when the model is removed:
+
+```swift
+.onDisappear {
+    model.node.ifAlive { model.clearReadyForDisplay(view: viewID) }
+}
+.refreshable {
+    await model.node.ifAlive { await model.reload() }
+}
+```
+
 A chained write such as `host.child?.value = x` is two steps: it reads `child` out of `host`, then writes into that child. If another thread replaces `child` in between, the write lands on the removed one and reports. When a child can be replaced concurrently, do the chain inside the parent's transaction, `host.node.transaction { host.child?.value = x }`, so the replacement can't land in between.
 
 A model that was never anchored is different: every node access reports, since it has no tree to answer from.
