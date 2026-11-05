@@ -1,14 +1,12 @@
 import Testing
 import Foundation
+import ConcurrencyExtras
 @testable import SwiftModel
 
 /// A memoize that reads another memoize must be fresh right after a write. It used to learn of
 /// the change only when the inner memoize's coalesced update ran, so a read in between returned
 /// its old value. Each write-then-read below races that update, hence the iterations; a pass
 /// never depends on timing, because the value must be fresh whenever it is read.
-///
-/// `disableObservationRegistrar` only covers a first write: a rapid second write on that path
-/// can still read stale. See the [Unreleased] entry in CHANGELOG.md.
 @Suite(.serialized, .backgroundCallIsolation)
 struct MemoizeChainFreshnessTests {
     private static let iterations = 10
@@ -28,9 +26,10 @@ struct MemoizeChainFreshnessTests {
         }
     }
 
-    @Test func writeAfterUpdatesHaveRun() async {
+    @Test(arguments: UpdatePath.allCases)
+    func writeAfterUpdatesHaveRun(updatePath: UpdatePath) async {
         for _ in 0..<Self.iterations {
-            let (model, anchor) = ChainModel().returningAnchor()
+            let (model, anchor) = updatePath.withOptions { ChainModel().returningAnchor() }
             #expect(model.middle == 20)
             model.base = 2
             #expect(model.middle == 40)
@@ -41,9 +40,10 @@ struct MemoizeChainFreshnessTests {
         }
     }
 
-    @Test func rapidWrites() async {
+    @Test(arguments: UpdatePath.allCases)
+    func rapidWrites(updatePath: UpdatePath) async {
         for _ in 0..<Self.iterations {
-            let (model, anchor) = ChainModel().returningAnchor()
+            let (model, anchor) = updatePath.withOptions { ChainModel().returningAnchor() }
             #expect(model.middle == 20)
             model.base = 2
             #expect(model.middle == 40)
@@ -97,7 +97,90 @@ struct MemoizeChainFreshnessTests {
         #expect(model.b == 2)
         withExtendedLifetime(anchor) {}
     }
+
+    #if canImport(Dispatch)
+    /// While one reader recomputes a dirty memoize, another reader must not get the old value
+    /// as if it were fresh. The reader holding the recompute, and any background update, wait
+    /// on the gate, so the second read lands inside that window every time.
+    @Test(arguments: UpdatePath.allCases)
+    func readDuringAnotherReadersRecomputeIsFresh(updatePath: UpdatePath) async throws {
+        let gate = ProduceGate()
+        let (model, anchor) = updatePath.withOptions { GatedModel(gate: gate).returningAnchor() }
+        #expect(model.value == 2)
+
+        gate.close()
+        defer { gate.open() }
+        model.base = 2
+        Thread.detachNewThread {
+            Thread.current.threadDictionary[ProduceGate.roleKey] = ProduceGate.holderRole
+            _ = model.value
+        }
+        try await waitUntil(gate.holderIsInside)
+
+        let secondRead = LockIsolated<Int?>(nil)
+        Thread.detachNewThread {
+            Thread.current.threadDictionary[ProduceGate.roleKey] = ProduceGate.bypassRole
+            secondRead.setValue(model.value)
+        }
+        try await waitUntil(secondRead.value != nil)
+
+        #expect(secondRead.value == 4)
+        withExtendedLifetime(anchor) {}
+    }
+    #endif
 }
+
+#if canImport(Dispatch)
+/// Holds every `produce()` while closed, except on the thread with `bypassRole`.
+private final class ProduceGate: @unchecked Sendable {
+    static let roleKey = "ProduceGate.role"
+    static let holderRole = "holder"
+    static let bypassRole = "bypass"
+
+    private let condition = NSCondition()
+    private var isClosed = false
+    private var holderEntered = false
+
+    var holderIsInside: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return holderEntered
+    }
+
+    func close() {
+        condition.lock()
+        defer { condition.unlock() }
+        isClosed = true
+    }
+
+    func open() {
+        condition.lock()
+        defer { condition.unlock() }
+        isClosed = false
+        condition.broadcast()
+    }
+
+    func pass() {
+        let role = Thread.current.threadDictionary[Self.roleKey] as? String
+        guard role != Self.bypassRole else { return }
+        condition.lock()
+        defer { condition.unlock() }
+        if role == Self.holderRole { holderEntered = true }
+        while isClosed { condition.wait() }
+    }
+}
+
+@Model private struct GatedModel {
+    var base = 1
+    let gate: ProduceGate
+    var value: Int {
+        node.memoize(for: "value") {
+            gate.pass()
+            return base * 2
+        }
+    }
+}
+#endif
 
 @Model private struct ChainModel {
     var base = 1

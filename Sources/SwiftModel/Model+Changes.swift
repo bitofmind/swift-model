@@ -518,21 +518,9 @@ private extension ModelNode {
                 return (nil, false, 0, false)
             }
 
-            let shouldRecompute = entry.isDirty
-
-            if shouldRecompute {
-                // For sync tracking (AccessCollector): claim the recompute up front
-                // (advance cleanVersion to the captured dirtyVersion) so concurrent
-                // readers don't all produce. A dependency change during produce()
-                // bumps dirtyVersion past the claim and re-dirties the entry.
-                if !entry.usesAsyncTracking {
-                    var freshEntry = entry
-                    freshEntry.cleanVersion = entry.dirtyVersion
-                    context._memoizeCache[key] = freshEntry
-                }
-            }
-
-            return (entry, shouldRecompute, entry.dirtyVersion, false)
+            // The entry stays dirty until a recompute's result is stored, so a concurrent
+            // reader recomputes too rather than getting the old value as if it were fresh.
+            return (entry, entry.isDirty, entry.dirtyVersion, false)
         }
 
         if isTornDown { return produce() }

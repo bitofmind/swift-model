@@ -9,8 +9,9 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 ### Fixed
 
 - **A memoize could stay wrong permanently if it was first read while another memoize recomputed.** That recompute suppresses dependency tracking, and the suppression also covered the inner memoize's first evaluation, so it registered no dependencies and never updated. This typically hit a memoize that switched to reading a different one, like `useSecond ? secondMemo : firstMemo`.
-- **A memoize that reads another memoize is now fresh right after a write.** It used to learn of the change only when the inner memoize's coalesced update ran, so a read in between returned its old value. A memoize that becomes dirty now marks its readers dirty at once. Without a registrar (below iOS 17, macOS 14) a rapid second write can still read a stale value until the update has run.
-  - `MemoizeChainFreshnessTests` covers both.
+- **A memoize that reads another memoize is now fresh right after a write.** It used to learn of the change only when the inner memoize's coalesced update ran, so a read in between returned its old value. A memoize that becomes dirty now marks its readers dirty at once.
+- **Without a registrar (below iOS 17, macOS 14), a read during another thread's memoize recompute no longer returns the old value.** The recomputing reader marked the memoize clean before it finished, so another thread got the old value as if it were fresh. Concurrent readers may now each recompute until the first result is stored.
+  - `MemoizeChainFreshnessTests` covers all three.
 - **Reading a live model no longer crashes on OS versions without `ObservationRegistrar` (below iOS 17, macOS 14, tvOS 17, watchOS 10).** Since 1.0.17 a tracked read fetches a registrar token whenever `useObservationRegistrar` is true, but that flag only checked the internal test option, not the OS. On iOS 16 the read therefore reached the `preconditionFailure` at the token's `#available` guard ("observer token requested without an ObservationRegistrar"), in Release builds too. The flag now also requires the OS to have a registrar, so these OS versions use the `AccessCollector` path that `.disableObservationRegistrar` tests already cover. CI does not run an OS without a registrar, so no test here reproduces the crash itself.
 
 ---
