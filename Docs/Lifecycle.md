@@ -170,6 +170,8 @@ node.transaction {
 
 Mutations inside the block apply atomically; observation callbacks (and `observeModifications()` emissions) are deferred until it completes. The closure is non-throwing by design — there's no rollback. `withAnimation { model.x = y }` works as expected from a SwiftUI/`@MainActor` context.
 
+A transaction holds the model tree's lock for the whole block, so it is also the tool for deriving a value from current state and writing it back: no other write can land in between. Reads and writes on other threads, including SwiftUI view bodies, wait until it ends, so keep it short and do slow work before it.
+
 ### Observing modifications
 
 `observeModifications()` emits whenever *anything* in a model or its subtree changes, without naming a property — ideal for cross-cutting concerns like dirty tracking or debounced autosave:
