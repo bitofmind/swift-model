@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.3.1] — iOS 16 crash + memoize freshness fixes
+
 ### Fixed
 
 - **A memoize could stay wrong permanently if it was first read while another memoize recomputed.** That recompute suppresses dependency tracking, and the suppression also covered the inner memoize's first evaluation, so it registered no dependencies and never updated. This typically hit a memoize that switched to reading a different one, like `useSecond ? secondMemo : firstMemo`.
