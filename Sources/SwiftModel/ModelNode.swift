@@ -199,12 +199,28 @@ public extension ModelNode {
 
 public extension ModelNode {
     /// Runs `callback` as one atomic step: other threads see none or all of its writes, and
-    /// observers are notified once, after it ends. Nested transactions join the outermost one.
-    /// There is no rollback.
+    /// observers are notified once, after it ends. There is no rollback.
+    ///
+    /// ```swift
+    /// model.node.transaction {
+    ///     for item in items {
+    ///         model.add(item)   // observers see one change, not one per item
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Nested transactions join the outermost one, and observers are notified when it ends.
     ///
     /// It holds the model tree's lock for the whole closure, so reads and writes on other
     /// threads, anywhere in the tree, wait until it ends. That includes SwiftUI view bodies on
-    /// the main thread, so keep it short and do slow work before it.
+    /// the main thread, so keep it short and do slow work before it:
+    ///
+    /// ```swift
+    /// let data = await fetchData()
+    /// model.node.transaction {
+    ///     model.data = data
+    /// }
+    /// ```
     ///
     /// Use it for writes that must stay consistent, and to derive a value from current state
     /// and write it back, where no other write can land in between:
