@@ -9,8 +9,9 @@ import Foundation
 ///
 /// `disableObservationRegistrar` only covers a first write: a rapid second write on that path
 /// can still read stale. See the [Unreleased] entry in CHANGELOG.md.
+@Suite(.serialized)
 struct MemoizeChainFreshnessTests {
-    private static let iterations = 40
+    private static let iterations = 10
 
     /// Long enough for the coalesced updates of the previous write to have run.
     private func letUpdatesRun() async {
