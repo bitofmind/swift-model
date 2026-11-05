@@ -453,6 +453,18 @@ private extension ModelNode {
         let key = AnyHashableSendable(key)
         let path: KeyPath<M._ModelState, AnyHashableSendable>&Sendable = \M._ModelState[memoizeKey: key]
 
+        if let enclosing = threadLocals.enclosingMemoize {
+            context.lock { context.memoizeDependents[key, default: [:]][enclosing.id] = enclosing.markDirty }
+        }
+        /// `produce()` with this memoize registered as the reader of any memoize it reads.
+        @Sendable func produceRegisteringDependencies() -> T {
+            let dependent = AnyContext.MemoizeDependent(
+                id: .init(context: ObjectIdentifier(context), key: key),
+                markDirty: { [weak context] in context?.markMemoizeDirty(key) }
+            )
+            return threadLocals.withValue(dependent, at: \.enclosingMemoize) { produce() }
+        }
+
 #if DEBUG
         // Set up debug observation once (only on first access, when cache entry doesn't yet exist).
         // We do this before the external willAccess so that the debug collector can intercept
@@ -546,7 +558,7 @@ private extension ModelNode {
                 // `withObservationTracking` path re-tracks via the async `performUpdate`
                 // (which calls `observe()` — not flagged).
                 let fresh: T = threadLocals.withValue(true, at: \.isInsideMemoizeProduce) {
-                    produce()
+                    produceRegisteringDependencies()
                 }
 
                 if !entry.usesAsyncTracking {
@@ -669,15 +681,7 @@ private extension ModelNode {
             // and, when the change is forced (e.g. via node.touch()), signals memoize's
             // update() to bypass isSame on its next run.
             let didModifyCallback: @Sendable (Bool) -> Void = { @Sendable force in
-                context.lock {
-                    if var entry = context._memoizeCache[key] {
-                        entry.dirtyVersion &+= 1
-                        context._memoizeCache[key] = entry
-                    } else if context.memoizeSetupsInProgress[key] != nil {
-                        // The first evaluation is still running: the entry will start dirty.
-                        context.memoizeSetupsInProgress[key]! &+= 1
-                    }
-                }
+                context.markMemoizeDirty(key)
                 if force {
                     forceNextBox.value?()
                 }
@@ -755,7 +759,12 @@ private extension ModelNode {
                     if !threadLocals.isInsideAsyncPerformUpdate, let entry = entry, !entry.isDirty {
                         return (entry.value as! T, version)
                     }
-                    let value = produce()
+                    // An evaluation that sets up tracking must register what it reads, even when
+                    // an outer memoize's dirty recompute is what first reached this memoize.
+                    // Otherwise this memoize would have no dependencies and stay stale for good.
+                    let value = threadLocals.withValue(false, at: \.isInsideMemoizeProduce) {
+                        produceRegisteringDependencies()
+                    }
                     lastProduced.setValue(value)
                     return (value, version)
                 } onUpdate: { @Sendable (produced: (value: T, version: UInt64)) in

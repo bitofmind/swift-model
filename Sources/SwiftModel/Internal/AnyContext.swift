@@ -433,6 +433,41 @@ class AnyContext: @unchecked Sendable {
     /// start out dirty instead of losing the change. Guarded by `lock`.
     var memoizeSetupsInProgress: [AnyHashableSendable: UInt64] = [:]
 
+    /// A memoize that read another memoize in its `produce()`.
+    struct MemoizeDependent {
+        struct ID: Hashable, Sendable {
+            var context: ObjectIdentifier
+            var key: AnyHashableSendable
+        }
+        var id: ID
+        var markDirty: @Sendable () -> Void
+    }
+
+    /// Per memoize key, the memoizes that read it. An outer memoize otherwise only learns of
+    /// a change when the inner memoize's coalesced update fires its sentinel, so a read in
+    /// between returned the outer's old value. An edge can outlive the dependency (a later
+    /// `produce()` may no longer read it); that costs one extra recompute. Guarded by `lock`.
+    var memoizeDependents: [AnyHashableSendable: [MemoizeDependent.ID: @Sendable () -> Void]] = [:]
+
+    /// Marks the memoize `key` dirty, and on its clean-to-dirty transition every memoize that
+    /// read it. An already dirty memoize has already marked its dependents, which also ends
+    /// the walk on a cycle of stale edges. Reading a dirty memoize recomputes it.
+    func markMemoizeDirty(_ key: AnyHashableSendable) {
+        let dependents: [@Sendable () -> Void]? = lock {
+            var becameDirty = true
+            if var entry = _memoizeCache[key] {
+                becameDirty = !entry.isDirty
+                entry.dirtyVersion &+= 1
+                _memoizeCache[key] = entry
+            } else if memoizeSetupsInProgress[key] != nil {
+                // The first evaluation is still running: the entry will start dirty.
+                memoizeSetupsInProgress[key]! &+= 1
+            }
+            return becameDirty ? memoizeDependents[key].map { Array($0.values) } : nil
+        }
+        dependents?.forEach { $0() }
+    }
+
     // Typed per-context storage for internal features (undo, environment, etc.).
     // Keyed by AnyHashableSendable (source location or explicit key from ContextStorage).
     // Access via the typed subscript defined in ModelContextStorage.swift (ContextStorage subscript).
@@ -1172,6 +1207,7 @@ class AnyContext: @unchecked Sendable {
         // are released on a single thread.
         let memoizeEntries = Array(_memoizeCache.values)
         _memoizeCache.removeAll()
+        memoizeDependents.removeAll()
 
         for entry in contextStorage.values {
             entry.cleanup?()
