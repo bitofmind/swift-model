@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reading a live model no longer crashes on OS versions without `ObservationRegistrar` (below iOS 17, macOS 14, tvOS 17, watchOS 10).** Since 1.0.17 a tracked read fetches a registrar token whenever `useObservationRegistrar` is true, but that flag only checked the internal test option, not the OS. On iOS 16 the read therefore reached the `preconditionFailure` at the token's `#available` guard ("observer token requested without an ObservationRegistrar"), in Release builds too. The flag now also requires the OS to have a registrar, so these OS versions use the `AccessCollector` path that `.disableObservationRegistrar` tests already cover. On that path, a memoize that reads another memoize can return its previous value right after a write, until the coalesced update has run. CI does not run an OS without a registrar, so no test here reproduces the crash itself.
+
 ---
 
 ## [1.3.0] — node.ifAlive for work that may land after its model was removed
