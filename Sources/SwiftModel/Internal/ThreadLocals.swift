@@ -140,6 +140,11 @@ final class ThreadLocals: @unchecked Sendable {
     /// first-access path also goes through `observe()` and isn't flagged.
     @exclusivity(unchecked) var isInsideMemoizeProduce = false
 
+    /// The memoize whose `produce()` is running on this thread, if any. A memoize read here
+    /// registers it as a dependent, so a dependency change can mark it dirty synchronously.
+    /// See `AnyContext.markMemoizeDirty(_:)`.
+    @exclusivity(unchecked) var enclosingMemoize: AnyContext.MemoizeDependent?
+
     /// Sibling of `isInsideMemoizeProduce`, set during the *async* memoize
     /// `observe()` path (registrar / `withObservationTracking` branch). Unlike
     /// `isInsideMemoizeProduce`, this flag only suppresses the SwiftModel-side
