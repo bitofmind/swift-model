@@ -98,6 +98,7 @@ struct MemoizeChainFreshnessTests {
         withExtendedLifetime(anchor) {}
     }
 
+    #if canImport(Dispatch)
     /// While one reader recomputes a dirty memoize, another reader must not get the old value
     /// as if it were fresh. The reader holding the recompute, and any background update, wait
     /// on the gate, so the second read lands inside that window every time.
@@ -108,30 +109,33 @@ struct MemoizeChainFreshnessTests {
         #expect(model.value == 2)
 
         gate.close()
+        defer { gate.open() }
         model.base = 2
         Thread.detachNewThread {
-            Thread.current.name = ProduceGate.holderName
+            Thread.current.threadDictionary[ProduceGate.roleKey] = ProduceGate.holderRole
             _ = model.value
         }
         try await waitUntil(gate.holderIsInside)
 
         let secondRead = LockIsolated<Int?>(nil)
         Thread.detachNewThread {
-            Thread.current.name = ProduceGate.bypassName
+            Thread.current.threadDictionary[ProduceGate.roleKey] = ProduceGate.bypassRole
             secondRead.setValue(model.value)
         }
         try await waitUntil(secondRead.value != nil)
-        gate.open()
 
         #expect(secondRead.value == 4)
         withExtendedLifetime(anchor) {}
     }
+    #endif
 }
 
-/// Holds every `produce()` while closed, except on the thread named `bypassName`.
+#if canImport(Dispatch)
+/// Holds every `produce()` while closed, except on the thread with `bypassRole`.
 private final class ProduceGate: @unchecked Sendable {
-    static let holderName = "ProduceGate.holder"
-    static let bypassName = "ProduceGate.bypass"
+    static let roleKey = "ProduceGate.role"
+    static let holderRole = "holder"
+    static let bypassRole = "bypass"
 
     private let condition = NSCondition()
     private var isClosed = false
@@ -157,11 +161,11 @@ private final class ProduceGate: @unchecked Sendable {
     }
 
     func pass() {
-        let name = Thread.current.name
-        guard name != Self.bypassName else { return }
+        let role = Thread.current.threadDictionary[Self.roleKey] as? String
+        guard role != Self.bypassRole else { return }
         condition.lock()
         defer { condition.unlock() }
-        if name == Self.holderName { holderEntered = true }
+        if role == Self.holderRole { holderEntered = true }
         while isClosed { condition.wait() }
     }
 }
@@ -176,6 +180,7 @@ private final class ProduceGate: @unchecked Sendable {
         }
     }
 }
+#endif
 
 @Model private struct ChainModel {
     var base = 1
