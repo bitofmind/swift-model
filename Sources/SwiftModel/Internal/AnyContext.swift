@@ -191,6 +191,8 @@ class AnyContext: @unchecked Sendable {
             }
         }
     }
+    /// Whether this context uses an `ObservationRegistrar`: the OS has one and the test
+    /// option hasn't disabled it. False routes observation through `AccessCollector`.
     let useObservationRegistrar: Bool
 
     /// Whether to bridge observation notifications through the main thread for SwiftUI/UIKit/AppKit.
@@ -887,7 +889,11 @@ class AnyContext: @unchecked Sendable {
         self.isDepContext = isDepContext
         self.options = parent?.options ?? ModelOption.current
         self.mainCallQueue = parent?.mainCallQueue ?? MainCallQueue()
-        self.useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
+        if #available(macOS 14.0, iOS 17.0, watchOS 10.0, tvOS 17.0, *) {
+            self.useObservationRegistrar = !self.options.contains(.disableObservationRegistrar)
+        } else {
+            self.useObservationRegistrar = false
+        }
         self.useMainThreadObservation = Self.shouldEnableMainThreadObservation(options: self.options)
 
         // Share a single RegistrarBox across the whole tree. The box is cheap to create (1 alloc);
