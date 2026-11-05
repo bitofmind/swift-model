@@ -9,7 +9,7 @@ import Foundation
 ///
 /// `disableObservationRegistrar` only covers a first write: a rapid second write on that path
 /// can still read stale. See the [Unreleased] entry in CHANGELOG.md.
-@Suite(.serialized)
+@Suite(.serialized, .backgroundCallIsolation)
 struct MemoizeChainFreshnessTests {
     private static let iterations = 10
 
