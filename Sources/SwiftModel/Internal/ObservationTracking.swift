@@ -56,8 +56,8 @@ extension Model {
 /// // Without coalescing: 100 mutations → 100 onUpdate calls
 /// for i in 1...100 { model.value = i }  // 100 updates fired
 ///
-/// // With coalescing: 100 mutations → 1-3 onUpdate calls
-/// for i in 1...100 { model.value = i }  // 1-3 updates fired (coalesced)
+/// // With coalescing: 100 mutations → far fewer onUpdate calls
+/// for i in 1...100 { model.value = i }  // one per drain cycle the loop spans
 /// ```
 ///
 /// ### Transaction Handling
@@ -76,7 +76,9 @@ extension Model {
 /// - First mutation sets `hasPendingUpdate = true`, schedules coalesced update
 /// - Subsequent mutations skip scheduling (update already pending)
 /// - Coalesced update clears `hasPendingUpdate` flag when complete
-/// - Result: 10 mutations → 1-3 background updates (coalesced)
+/// - Result: mutations that land while an update is pending share it. The drain runs in
+///   parallel with the writer, so a long burst gets one update per drain cycle it spans
+///   (100 back-to-back writes → roughly 10-50 on an M-series Mac), not a single update.
 ///
 /// This ensures:
 /// - Transactions are atomic: no partial state visible to observers during transaction
@@ -116,7 +118,8 @@ extension Model {
 ///   - This ensures fresh values are always available while reducing redundant recomputations
 ///
 /// ### Performance Impact
-/// - With coalescing + dirty tracking: 100 mutations → 1-2 recomputes (regardless of transaction)
+/// - With coalescing + dirty tracking: 100 mutations in a transaction → 1-2 recomputes; outside a
+///   transaction, one per background drain cycle the burst spans (see above)
 /// - Without coalescing: 100 mutations → 100 recomputes
 /// - The `didModify` callback enables coalescing to work safely inside transactions by providing
 ///   immediate dirty flag updates, while `backgroundCall` batches the observation notifications
