@@ -137,6 +137,16 @@ struct AppView: View {
 
 It also vends bindings to model properties (`$model.count`) for use with `Stepper`, `TextField`, and the rest.
 
+### How a view observes a model
+
+A view must read a model through `@ObservedModel` or inside a `ModelScope` to update when the model changes. On iOS 17+ (macOS 14+) SwiftUI observes any model read in a view's `body`, so a plain `let model: AppModel` works there too. On iOS 14–16 it doesn't:
+
+- A view observes reads of a model it holds as `@ObservedModel`, and reads of every model reached through it (`model.counters`, `model.child`).
+- A model reached through an `@ObservedModel` keeps that view's observation when you pass it to a plain child view. The child's reads still update the UI, but they invalidate the ancestor view that holds the `@ObservedModel`, which re-renders the whole subtree. Give the child its own `@ObservedModel` (or a `ModelScope`) to update only the child.
+- A model that never passes through an `@ObservedModel` or a `ModelScope`, such as one created in `App` and passed down as a plain property, is not observed at all: its changes show only when something else makes the view re-render.
+
+So, to work on every supported OS, declare models in views as `@ObservedModel`, and use `ModelScope` where a plain property is deliberate (see below).
+
 ### ModelScope
 
 `ModelScope` confines observation to its content, so only that sub-tree re-renders when its reads change — rather than the whole enclosing view:

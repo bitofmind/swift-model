@@ -113,12 +113,12 @@ Because tests assert the *outcome* — not the sequence of steps that produced i
 | Context propagation | View `@Environment` only | None | **Model-layer environment + preferences** |
 | Shared state | Manual | `@Shared` (value sync) | **Model dependency (live instance)** |
 | Thread safety | `@MainActor` discipline | `@MainActor` discipline | **Lock-based, any thread** |
-| Fine-grained observation | iOS 17+ | iOS 16 needs view wrappers² | **iOS 14+, in plain views** |
+| Fine-grained observation | iOS 17+ | iOS 16 needs view wrappers² | **iOS 14+, via `@ObservedModel`²** |
 | Learning curve | Minimal | Steep | **Moderate** |
 
 ¹ SwiftModel tests assert final state, so restructuring internals — renaming a method, splitting an effect — leaves them passing. Action-sequence tests (as in TCA) deliberately encode those steps instead: a different trade-off, not a flaw.
 
-² On iOS 16 and earlier, TCA observes state via the [swift-perception](https://github.com/pointfreeco/swift-perception) back-port, which requires wrapping view bodies in `WithPerceptionTracking`. SwiftModel needs no body wrapper; the one exception is model reads inside lazy `@ViewBuilder` closures (`.sheet`, `NavigationStack` destinations) on iOS 16, which use a `ModelScope`.
+² On iOS 16 and earlier, TCA observes state via the [swift-perception](https://github.com/pointfreeco/swift-perception) back-port, which requires wrapping view bodies in `WithPerceptionTracking`. SwiftModel needs no body wrapper: a view declares its model as `@ObservedModel`, which below iOS 17 is what observes it (a plain model property is observed only on iOS 17+; see [How a view observes a model](Docs/Models.md#how-a-view-observes-a-model)). The one exception is model reads inside lazy `@ViewBuilder` closures (`.sheet`, `NavigationStack` destinations) on iOS 16, which use a `ModelScope`.
 
 ## What's in the box
 
