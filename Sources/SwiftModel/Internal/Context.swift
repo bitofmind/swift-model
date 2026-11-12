@@ -854,6 +854,13 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
         model
     }
 
+    override var anyModelWithoutAccess: any Model {
+        var m = _modelSeed
+        m.modelContext.setReference(reference)
+        m.modelContext.access = nil
+        return m
+    }
+
     override func mapModel<T>(access: ModelAccess?, _ body: (any Model) throws -> T?) rethrows -> T? {
         try body(model.withAccessIfPropagateToChildren(access))
     }

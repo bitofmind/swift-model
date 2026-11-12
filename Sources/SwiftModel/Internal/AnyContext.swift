@@ -45,7 +45,24 @@ class AnyContext: @unchecked Sendable {
     // because writers always hold the hierarchy lock when parentsLock is taken — no concurrent
     // write can be racing an observation read.
     private let parentsLock = NSLock()
-    private(set) var weakParents: [WeakParent] = []
+    private(set) var weakParents: [WeakParent] = [] {
+        // Always mutated under `parentsLock`, which also guards the stamp.
+        didSet { parentsStamp = nextStructureStamp() }
+    }
+
+    /// Stamps for the `rootPaths` cache, both guarded by `parentsLock`. Each mutation takes
+    /// a fresh value from a process-wide counter, so a stamp is never reused. They start at 0
+    /// (no counter cost on context creation): an ancestor can only be swapped for another
+    /// context, even one at a reused address, by changing the parents of the context below
+    /// it, which stamps that context with a fresh value. `parentsStamp` changes with
+    /// `weakParents`; `childrenStamp` with `children` and `collectionElementPathMakersStore`,
+    /// the parts of a parent that a child's root path is built from.
+    nonisolated(unsafe) private var parentsStamp: UInt64 = 0
+    nonisolated(unsafe) private var childrenStamp: UInt64 = 0
+
+    /// Last `rootPaths` result and the stamps of every context it was built from. Guarded by
+    /// `parentsLock`.
+    nonisolated(unsafe) private var rootPathsCache: (stamps: [UInt64], paths: [AnyKeyPath])?
     /// The most recently removed parent, held weakly. Once the last parent goes the model
     /// is removed but still readable, and reads that walk upwards (ancestor lookups,
     /// environment values) continue from here. When a whole subtree is removed this is
@@ -53,7 +70,9 @@ class AnyContext: @unchecked Sendable {
     /// models in between are skipped, since their contexts are gone right after. Written under the hierarchy lock and
     /// `parentsLock`, like `weakParents`, so reading under either is enough.
     private(set) var lastParent: WeakParent?
-    var children: OrderedDictionary<AnyKeyPath, OrderedDictionary<ModelRef, AnyContext>> = [:]
+    var children: OrderedDictionary<AnyKeyPath, OrderedDictionary<ModelRef, AnyContext>> = [:] {
+        didSet { bumpChildrenStamp() }
+    }
 
     // Protects `_dependencyContexts` and `_dependencyCache` independently of the hierarchy
     // lock — the same leaf-lock pattern as `parentsLock` above. The hierarchy lock alone
@@ -169,7 +188,9 @@ class AnyContext: @unchecked Sendable {
     /// is concurrently being removed from the parent collection. Without the
     /// fallback, `cursor.get` would crash with a force-unwrap. Type-erased to
     /// `Any` because the generic element type isn't visible at this layer.
-    nonisolated(unsafe) var collectionElementPathMakersStore: [AnyKeyPath: @Sendable (AnyHashable, Any) -> AnyKeyPath]?
+    nonisolated(unsafe) var collectionElementPathMakersStore: [AnyKeyPath: @Sendable (AnyHashable, Any) -> AnyKeyPath]? {
+        didSet { bumpChildrenStamp() }
+    }
 
     /// `@exclusivity(unchecked)`: read on every tracked/untracked read and every property
     /// write (`unprotectedIsDestructed`) and only ever accessed by plain get/set under the
@@ -775,6 +796,9 @@ class AnyContext: @unchecked Sendable {
 
     var anyModel: any Model { fatalError() }
 
+    /// `anyModel` with no access attached, for values that outlive the current call.
+    var anyModelWithoutAccess: any Model { fatalError() }
+
     /// Calls `body` with the model this context backs, with `access` applied if it propagates to children.
     /// Used by `reduceHierarchy` to hand a correctly-configured model value to the user's transform closure.
     func mapModel<T>(access: ModelAccess?, _ body: (any Model) throws -> T?) rethrows -> T? { fatalError() }
@@ -791,7 +815,40 @@ class AnyContext: @unchecked Sendable {
         // takes each parent's lock in child → parent direction, which is the reverse of
         // teardown's parent → child order — safe only because at most one lock is held
         // at a time.
+        //
+        // Cached: composing the paths costs a key-path append per ancestor level, and
+        // TestAccess asks on every tracked read and write. The stamps are collected BEFORE
+        // the tree is read, so a structural change racing the build leaves the entry with
+        // stamps that no longer match, and the next call rebuilds.
+        var stamps: [UInt64] = []
+        appendRootPathStamps(to: &stamps)
+        if let cached = parentsLock({ rootPathsCache }), cached.stamps == stamps {
+            return cached.paths
+        }
+        let paths = composeRootPaths(from: rootPathTree())
+        parentsLock { rootPathsCache = (stamps, paths) }
+        return paths
+    }
+
+    /// `rootPaths` computed without the cache. Tests compare the two.
+    var _uncachedRootPaths: [AnyKeyPath] {
         composeRootPaths(from: rootPathTree())
+    }
+
+    /// The stamps a root path depends on: this context's parents and, for each parent,
+    /// its children and makers, then the same for that parent, up to the root.
+    private func appendRootPathStamps(to stamps: inout [UInt64]) {
+        let (parents, stamp) = parentsLock { (weakParents.compactMap(\.parent), parentsStamp) }
+        stamps.append(stamp)
+        for parent in parents {
+            stamps.append(parent.parentsLock { parent.childrenStamp })
+            parent.appendRootPathStamps(to: &stamps)
+        }
+    }
+
+    private func bumpChildrenStamp() {
+        let stamp = nextStructureStamp()
+        parentsLock { childrenStamp = stamp }
     }
 
     /// Intermediate representation of the path hierarchy — raw segments with no
@@ -856,7 +913,11 @@ class AnyContext: @unchecked Sendable {
                 // elementPath (cursor-based or sentinel \C.self for non-collection
                 // children). Pass the child's current live model as the fallback for
                 // the cursor's `get` closure — see `collectionElementPathMakersStore` doc.
-                let elementPath = segment.maker.map { $0(segment.modelRef.id, anyModel) } ?? segment.modelRef.elementPath
+                //
+                // The fallback carries no access: the composed path is cached on this
+                // context, and an access such as TestAccess can keep the tree alive, so
+                // capturing it would form a retain cycle.
+                let elementPath = segment.maker.map { $0(segment.modelRef.id, anyModelWithoutAccess) } ?? segment.modelRef.elementPath
                 return (childPath: segment.childPath, elementPath: elementPath, parentTree: parentTree)
             }
         })
@@ -1872,4 +1933,11 @@ func withPostActions<T>(perform: (inout [() -> Void]) throws -> T) rethrows -> T
         }
     }
     return try perform(&postActions)
+}
+
+/// Process-wide source of `rootPaths` cache stamps. Values are never reused.
+private let structureStampCounter = LockedValue<UInt64>(0)
+
+private func nextStructureStamp() -> UInt64 {
+    structureStampCounter.withValue { $0 &+= 1; return $0 }
 }
