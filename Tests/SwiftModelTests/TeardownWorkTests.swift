@@ -142,7 +142,15 @@ struct TeardownWorkReleaseTests {
                 $0.continuousClock = InlineClock()
             }
         }
-        try await waitUntil(events.values.map { "\($0)" } == ["stopped"])
+        // The fade always ends with exactly one event, "stopped" or "cancelled at
+        // N", so that event is the verdict. This suite has no drive, so a fixed
+        // `waitUntil` budget here was a wall-clock verdict: it failed on the macOS
+        // TSan runner after 30 s (5 s × scale 6) while the fade was still waiting
+        // for a thread. The trait's absolute ceiling is only the hang catcher, for
+        // a teardown handler that never starts.
+        let hangCeilingNs = UInt64(30 * ModelTestingTraitOptions.absoluteCeilingMultiple) * 1_000_000_000
+        try await waitUntil(!events.values.isEmpty, timeout: hangCeilingNs)
+        #expect(events.values.map { "\($0)" } == ["stopped"])
     }
 }
 
