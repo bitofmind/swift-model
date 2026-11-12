@@ -446,11 +446,17 @@ extension TestAccess {
     /// public API T-agnostic.
     func require<T>(_ expression: @escaping @Sendable () -> T?, at fileAndLine: FileAndLine) async throws -> T {
         let startNs = nowMonotonicNs()
-        let deadlineNs = startNs &+ Self.expectDefaultBudgetNs
+        // Same verdict as `expect`: with the executor drive active, the fixpoint
+        // decides pass/fail and the wall clock is only a far-out hang catcher.
+        // A fixed budget here failed a `require` whose writer was simply not
+        // scheduled yet on a saturated runner (macOS TSan, 30 s at scale 6).
+        let deadlineNs = _isExecutorDriveActive ? (startNs &+ 600_000_000_000) : (startNs &+ Self.expectDefaultBudgetNs)
 
+        let executorDriver = _startExecutorDrive()
         let outcome = await self.awaitPredicate(deadlineNs: deadlineNs) { @Sendable in
             expression() != nil
         }
+        executorDriver?.cancel()
 
         switch outcome {
         case .passed:

@@ -6,6 +6,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **`require` in a `.modelTesting` test no longer fails because the runner was slow.** `expect` takes its verdict from the executor drive: it fails only once the model is quiet and the predicate is still false. `require` still failed after a fixed 5 s × `SWIFT_MODEL_TIMEOUT_SCALE`, so under heavy load it reported "Failed to unwrap" while the task that would set the value was waiting for a thread. It now uses the drive's verdict like `expect`. Without the drive (before macOS 15 / iOS 18, or on WASM) it keeps the fixed budget.
+  - `RequireVerdictTests` covers a writer that is busy past the budget and a `require` that can never be met.
+
 ---
 
 ## [1.3.1] — iOS 16 crash + memoize freshness fixes

@@ -142,16 +142,15 @@ struct ModelContextTests {
         }
     }
 
-    @Test func testActivate() async throws {
+    @Test(.modelTesting(exhaustivity: .off)) func testActivate() async throws {
         let test = TestModel().withAnchor()
         #expect(test.activateCount == 1)
         #expect(test.child.activateCount == 2)
 
-        try await Task.sleep(nanoseconds: 2_000_000)
-
+        // `totalCount *= 3*count` runs in an onActivate Task once the Observed
+        // stream delivers the child's activation, so wait for that write.
         let result = (-1 + 2*1)*(3*2)
-        #expect(test.totalCount == result)
-        //try await Task.sleep(nanoseconds: NSEC_PER_MSEC * 1102)
+        await expect(test.totalCount == result)
     }
 }
 

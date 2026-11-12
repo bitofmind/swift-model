@@ -132,12 +132,28 @@ struct TeardownWorkReleaseTests {
     @Test func fadeRunsWhenWholeTreeIsReleased() async throws {
         let events = TestProbe()
         await waitUntilRemoved {
-            // A real clock: `ImmediateClock.sleep` hops through detached `.background`
-            // tasks (`megaYield`), which starve under parallel load.
+            // Not `ImmediateClock`: its `sleep` hops through detached `.background`
+            // tasks (`megaYield`), which starve under parallel load. Not a real clock
+            // either: ten 30 ms wake-ups each queue for a pool thread, and on the
+            // macOS TSan runner that took the test to 25 s of its 30 s `waitUntil`.
+            // `InlineClock` still throws if the fade were cancelled, which is the
+            // point of the test.
             PlayerHost(player: FadingPlayer(events: events)).withAnchor {
-                $0.continuousClock = ContinuousClock()
+                $0.continuousClock = InlineClock()
             }
         }
         try await waitUntil(events.values.map { "\($0)" } == ["stopped"])
+    }
+}
+
+/// A clock whose `sleep` returns at once on the calling task, throwing only if
+/// the task is cancelled.
+@available(macOS 13, iOS 16, tvOS 16, watchOS 9, *)
+private struct InlineClock: Clock {
+    typealias Instant = ContinuousClock.Instant
+    var now: Instant { ContinuousClock.now }
+    var minimumResolution: Duration { .zero }
+    func sleep(until deadline: Instant, tolerance: Duration?) async throws {
+        try Task.checkCancellation()
     }
 }
