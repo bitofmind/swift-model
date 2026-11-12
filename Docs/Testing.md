@@ -27,6 +27,24 @@ Assertions `await` because state and event propagation are asynchronous.
 
 > On Swift 6.0 the `.modelTesting` trait isn't available (it needs 6.1+); wrap the body in `await withModelTesting { … }` instead.
 
+#### Link `IssueReportingTestSupport` into every test target
+
+Every test target that tests models should link the `IssueReportingTestSupport` product. Tests pass without it but run much slower, especially in parallel:
+
+```swift
+.testTarget(
+    name: "MyFeatureTests",
+    dependencies: [
+        "MyFeature",
+        .product(name: "IssueReportingTestSupport", package: "swift-issue-reporting"),
+    ]
+)
+```
+
+On toolchains before Swift 6.4 the product comes from the `xctest-dynamic-overlay` package instead. Linking `DependenciesTestSupport` from swift-dependencies works too, since it links `IssueReportingTestSupport`. In an Xcode project, add the same product to the test target's frameworks. SwiftModel can't link it for you, because it would then ship inside your app.
+
+Why it matters: the first time a model resolves a dependency, swift-dependencies asks which test is running (`TestContext.current`). swift-issue-reporting answers that through a symbol in `IssueReportingTestSupport`. Without the library linked, the lookup fails, isn't cached, and repeats a full dynamic-linker search on every call. A large model tree resolves many dependencies, so in one 1,236-test suite this lookup was about a quarter of all CPU time and pushed tests past the 30 s cap. Linking the product cut the suite's CPU time by about 27%, and the timeouts went away.
+
 ### One anchored root per scope
 
 A test scope tracks exactly one anchored model: `expect { }` wakes on that model's activity, and exhaustivity is checked against its tree. A second `withAnchor()` in the same scope is reported as an issue — it cannot be connected, and the model it returns is torn down immediately.
