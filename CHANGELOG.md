@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.3.3] — faster .modelTesting for large model trees
+
 ### Changed
 
 - **`.modelTesting` tests of large model trees run much faster.** The test harness describes every read and write by its key path from the root model, and rebuilt that path, one key-path append per ancestor, on every tracked read and write. Anchoring a ~120-model tree took 0.42 s under the harness against 0.1 s without it. Each model now caches its root paths and drops them when its parents, or any ancestor's children, change. App code doesn't use these paths; it only pays a small stamp update when a child is added or removed. Measured: `deepConcurrentActivationReadAndWriteStaySettled` dropped from 16–21 s to 9–11 s, swift-model's parallel suite from 37 s to 14 s, and parallel-apple's `ParallelEditorTests` used 24% less CPU (121 s → 92 s).
