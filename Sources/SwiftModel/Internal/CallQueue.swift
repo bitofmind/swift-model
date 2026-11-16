@@ -171,7 +171,7 @@ private func mainCallQueueDrainLoop(
 /// Bonus: per-test `BackgroundCallQueue` drains no longer all compete for
 /// `DispatchQueue.global(.userInitiated)`'s bounded kernel pool, removing a
 /// shared-resource contention bottleneck under parallel test load.
-private func backgroundCallQueueDrainLoop(state: LockedValue<CallQueueState?>, progress: LockedValue<UInt64>) async {
+private func backgroundCallQueueDrainLoop(state: LockedValue<CallQueueState?>, progress: LockedValue<UInt64>, testExecutorBox: (any Sendable)?) async {
     while !Task.isCancelled {
         let (batch, onIdle): ([@Sendable () -> Void], [@Sendable () -> Void]) = state.withValue {
             guard $0 != nil else { return ([], []) }
@@ -187,7 +187,15 @@ private func backgroundCallQueueDrainLoop(state: LockedValue<CallQueueState?>, p
         }
         for f in onIdle { f() }
         guard !batch.isEmpty else { break }
-        for call in batch { call() }
+        if let testExecutorBox {
+            _TestExecutorBox.$current.withValue(testExecutorBox) {
+                _GlobalJobRouting.$bypass.withValue(false) {
+                    for call in batch { call() }
+                }
+            }
+        } else {
+            for call in batch { call() }
+        }
         progress.setValue(monotonicNanoseconds())
         await Task.yield()
     }
@@ -529,6 +537,14 @@ struct MainCallQueue: @unchecked Sendable {
 /// Delivers Observed pipeline updates on a detached cooperative-pool Task.
 struct BackgroundCallQueue: @unchecked Sendable {
     private let state = LockedValue<CallQueueState?>(nil)
+    /// The `.modelTesting` drain executor box of the test that owns this queue, if any.
+    /// Each delivered call runs with it as `_TestExecutorBox.current`, so that tasks the
+    /// call wakes (e.g. an `Observed` consumer inside a third-party operator's own
+    /// `Task`) are attributed to the test by `GlobalJobRouting.swift`. The drain task's
+    /// own jobs are not routed: the drive tracks this queue itself (`isIdle`), and
+    /// counting its jobs as executor work kept `expect`'s global-quiescence fail gate
+    /// busy for the whole run.
+    var testExecutorBox: (any Sendable)? = nil
     /// See `MainCallQueue.progress` — same progress signal, per drained batch.
     private let progress = LockedValue<UInt64>(0)
 
@@ -541,8 +557,13 @@ struct BackgroundCallQueue: @unchecked Sendable {
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
         state.withValueInPlace {
             if $0 == nil {
-                $0 = CallQueueState(task: Task.detached(priority: .userInitiated) {
-                    await backgroundCallQueueDrainLoop(state: self.state, progress: self.progress)
+                let box = testExecutorBox
+                $0 = CallQueueState(task: _GlobalJobRouting.$bypass.withValue(true) {
+                    Task.detached(priority: .userInitiated) {
+                        await _GlobalJobRouting.$bypass.withValue(true) {
+                            await backgroundCallQueueDrainLoop(state: self.state, progress: self.progress, testExecutorBox: box)
+                        }
+                    }
                 }, calls: [callback])
             } else {
                 $0!.calls.append(callback)

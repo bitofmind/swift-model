@@ -134,6 +134,8 @@ A model that does async work during activation — loading in `onActivate()`, su
 
 Pass a predicate (`settle { model.isReady }`) to also wait on a condition, or `resetting:` to keep some categories visible — e.g. `settle(resetting: .full.removing(.events))` lets events sent during activation still be asserted afterward.
 
+`settle()` and `expect` wait for all work the test starts: model tasks, and also a plain `Task {}` started from the test or from model code. That includes the tasks that third-party async operators start internally, such as AsyncAlgorithms' `combineLatest`, `merge` and `zip`. They can't see work woken from outside the test: a real-time `Task.sleep`, a GCD or delegate callback, or a network reply. Inject controlled dependencies for those.
+
 ### Time control
 
 Inject a clock to test timers without real delays. A `TestClock` (from [swift-clocks](https://github.com/pointfreeco/swift-clocks)) advances explicitly; an `ImmediateClock` fires everything synchronously when you only care about the end state:
