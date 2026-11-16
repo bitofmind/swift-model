@@ -144,9 +144,12 @@ Inject a clock to test timers without real delays. A `TestClock` (from [swift-cl
 let clock = TestClock()
 let model = TimerModel().withAnchor { $0.continuousClock = clock }
 
+await settle()   // the timer has registered its first sleep
 await clock.advance(by: .seconds(1))
 await expect(model.secondsElapsed == 1)
 ```
+
+A `TestClock` only wakes sleeps that were already registered when you call `advance`. A sleep that starts later gets its deadline from the clock's advanced time, so the advance never reaches it and the test waits until it times out. Call `settle()` before each `advance` so the model's tasks reach their `sleep` first.
 
 Prefer `TestClock` for anything that sleeps inside model work. `ImmediateClock` "sleeps" by awaiting detached background tasks, which run outside the test's scheduler and can starve when tests run in parallel.
 
