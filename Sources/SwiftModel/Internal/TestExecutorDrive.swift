@@ -121,6 +121,7 @@ func _DrainTestExecutorGlobalSnapshot() -> (outstanding: Int, sinceActivityNs: U
 func _makeTestExecutorBox() -> (any Sendable)? {
     #if canImport(Dispatch)
     if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) {
+        _ensureGlobalJobRouting()
         return _DrainTestExecutor()
     }
     #endif
@@ -166,6 +167,12 @@ private let _sharedDrainQueue: DispatchQueue = {
     }
     #endif
     return DispatchQueue(label: "swift-model.test-drain.shared", attributes: .concurrent)
+}()
+
+private let _runningExecutorKey: pthread_key_t = {
+    var key = pthread_key_t()
+    pthread_key_create(&key, nil)
+    return key
 }()
 
 @available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
@@ -241,7 +248,17 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     }
 
     func enqueue(_ job: consuming ExecutorJob) {
-        let unowned = UnownedJob(job)
+        enqueueCounted(UnownedJob(job), routed: false)
+    }
+
+    /// A job routed here from the global executor by `GlobalJobRouting.swift`. Its task
+    /// has no executor preference, so it must run as if on the global executor: run on
+    /// this executor, the runtime would hop it straight back to the global one.
+    func enqueueRouted(_ job: UnownedJob) {
+        enqueueCounted(job, routed: true)
+    }
+
+    private func enqueueCounted(_ unowned: UnownedJob, routed: Bool) {
         lock.withLock {
             if outstanding > 0 { enqueuesWhileBusy += 1 }
             outstanding += 1
@@ -250,7 +267,16 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
         Self._globalOutstanding.wrappingAdd(1, ordering: .relaxed)
         Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
         _sharedDrainQueue.async {
-            unowned.runSynchronously(on: self.asUnownedTaskExecutor())
+            // While the job runs, this thread belongs to this test. The runtime enqueues an
+            // executor hop with no current task, so `GlobalJobRouting` can't read the task-local
+            // then; this thread-local still attributes it.
+            let previous = _DrainTestExecutor.setRunningOnThisThread(self)
+            if routed {
+                unowned.runSynchronously(on: globalConcurrentExecutor.asUnownedTaskExecutor())
+            } else {
+                unowned.runSynchronously(on: self.asUnownedTaskExecutor())
+            }
+            _ = _DrainTestExecutor.setRunningOnThisThread(previous)
             let toFire: [@Sendable () -> Void] = self.lock.withLock {
                 self.outstanding -= 1
                 self._lastCompletionNs = _drainMonotonicNs()
@@ -263,6 +289,20 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
             Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
             for f in toFire { f() }
         }
+    }
+
+    /// The drain executor whose job is running on the current thread, if any.
+    static var runningOnThisThread: _DrainTestExecutor? {
+        guard let raw = pthread_getspecific(_runningExecutorKey) else { return nil }
+        return Unmanaged<_DrainTestExecutor>.fromOpaque(raw).takeUnretainedValue()
+    }
+
+    /// Sets `runningOnThisThread`, returning the previous value. Unretained: only set
+    /// for the duration of a job this executor itself runs.
+    static func setRunningOnThisThread(_ exec: _DrainTestExecutor?) -> _DrainTestExecutor? {
+        let previous = runningOnThisThread
+        pthread_setspecific(_runningExecutorKey, exec.map { Unmanaged.passUnretained($0).toOpaque() })
+        return previous
     }
 
     /// No executor job is ready/running this instant.

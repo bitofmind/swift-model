@@ -529,6 +529,11 @@ struct MainCallQueue: @unchecked Sendable {
 /// Delivers Observed pipeline updates on a detached cooperative-pool Task.
 struct BackgroundCallQueue: @unchecked Sendable {
     private let state = LockedValue<CallQueueState?>(nil)
+    /// The `.modelTesting` drain executor box of the test that owns this queue, if any.
+    /// The drain task runs with it as `_TestExecutorBox.current`, so that tasks it wakes
+    /// (e.g. an `Observed` consumer inside a third-party operator's own `Task`) are
+    /// attributed to the test by `GlobalJobRouting.swift`.
+    var testExecutorBox: (any Sendable)? = nil
     /// See `MainCallQueue.progress` — same progress signal, per drained batch.
     private let progress = LockedValue<UInt64>(0)
 
@@ -541,8 +546,10 @@ struct BackgroundCallQueue: @unchecked Sendable {
     func callAsFunction(_ callback: @escaping @Sendable () -> Void) {
         state.withValueInPlace {
             if $0 == nil {
-                $0 = CallQueueState(task: Task.detached(priority: .userInitiated) {
-                    await backgroundCallQueueDrainLoop(state: self.state, progress: self.progress)
+                $0 = CallQueueState(task: Task.detached(priority: .userInitiated) { [testExecutorBox] in
+                    await _TestExecutorBox.$current.withValue(testExecutorBox) {
+                        await backgroundCallQueueDrainLoop(state: self.state, progress: self.progress)
+                    }
                 }, calls: [callback])
             } else {
                 $0!.calls.append(callback)

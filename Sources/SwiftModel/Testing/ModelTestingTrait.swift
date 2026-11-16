@@ -463,8 +463,9 @@ private func _withModelTestingImpl(
         dependencies: mergedDependencies,
         exhaustionNote: exhaustionNote
     )
-    let testQueue = BackgroundCallQueue()
     let execBox = _makeTestExecutorBox()
+    var testQueue = BackgroundCallQueue()
+    testQueue.testExecutorBox = execBox
     try await _BackgroundCallLocals.$queue.withValue(testQueue) {
         try await _TestExecutorBox.$current.withValue(execBox) {
             try await _ModelTestingLocals.$scope.withValue(pending) {
@@ -516,9 +517,10 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
         let pending = _PendingModelTestScope(exhaustivity: resolvedExhaustivity, dependencies: dependencies)
         // Give each test its own BackgroundCallQueue so parallel tests cannot observe
         // each other's in-flight Observed pipeline updates.
-        let testQueue = BackgroundCallQueue()
         let testTag = test.name
         let execBox = _makeTestExecutorBox()
+        var testQueue = BackgroundCallQueue()
+        testQueue.testExecutorBox = execBox
         try await _BackgroundCallLocals.$queue.withValue(testQueue) {
             // Per-test wall-clock cap.
             //
