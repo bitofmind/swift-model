@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.3.4] — settle() and expect count plain Task {} work
+
 ### Fixed
 
 - **`settle()` and `expect` now wait for work in a plain `Task {}`, including the tasks third-party async operators start internally.** A `Task {}` doesn't inherit the test's executor, so its jobs ran where the test harness couldn't see them. AsyncAlgorithms' `combineLatest`, `merge`, `zip` and others start such a task, so in a chain like `node.forEach(combineLatest(Observed { a }, Observed { b })) { try await clock.sleep(…) }`, `settle()` could return before the sleep was registered. The following `TestClock.advance` then missed it and the test hung. It passed on an idle machine and hung on a loaded CI runner. Under `.modelTesting`, jobs that a test's tasks send to the global executor now run on that test's executor and are counted. App code is unaffected: the routing is installed only in test processes. `SWIFT_MODEL_ROUTE_GLOBAL_JOBS=0` turns it off.
