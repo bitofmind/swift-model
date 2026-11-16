@@ -151,8 +151,6 @@ await expect(model.secondsElapsed == 1)
 
 A `TestClock` only wakes sleeps that were already registered when you call `advance`. A sleep that starts later gets its deadline from the clock's advanced time, so the advance never reaches it and the test waits until it times out. Call `settle()` before each `advance` so the model's tasks reach their `sleep` first.
 
-`settle()` sees work started through `node` (`forEach`, `task`, `Observed`, model streams). It can't see a plain `Task {}`, and that includes the tasks some third-party async operators start internally. AsyncAlgorithms' `combineLatest`, `merge`, `zip`, `debounce` and `throttle` all start one. If such an operator sits between a write and a clock sleep, `settle()` can return before the sleep is registered. On an idle machine the test passes, and on a loaded CI runner it hangs. Build those triggers from `Observed` and other model streams instead. For example, read both inputs in one `Observed { (a, b) }`, not `combineLatest(Observed { a }, Observed { b })`.
-
 Prefer `TestClock` for anything that sleeps inside model work. `ImmediateClock` "sleeps" by awaiting detached background tasks, which run outside the test's scheduler and can starve when tests run in parallel.
 
 ### Signals and teardown work
