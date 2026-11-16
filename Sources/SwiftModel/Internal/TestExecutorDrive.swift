@@ -169,6 +169,17 @@ private let _sharedDrainQueue: DispatchQueue = {
     return DispatchQueue(label: "swift-model.test-drain.shared", attributes: .concurrent)
 }()
 
+/// The dispatch QoS matching a job's priority, so a routed job runs as it would have on the
+/// global executor.
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
+private func _dispatchQoS(for priority: JobPriority) -> DispatchQoS {
+    let raw = priority.rawValue
+    if raw >= TaskPriority.userInitiated.rawValue { return .userInitiated }
+    if raw >= TaskPriority.medium.rawValue { return .default }
+    if raw >= TaskPriority.utility.rawValue { return .utility }
+    return .background
+}
+
 private let _runningExecutorKey: pthread_key_t = {
     var key = pthread_key_t()
     pthread_key_create(&key, nil)
@@ -266,7 +277,7 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
         }
         Self._globalOutstanding.wrappingAdd(1, ordering: .relaxed)
         Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
-        _sharedDrainQueue.async {
+        let run: @Sendable () -> Void = {
             // While the job runs, this thread belongs to this test. The runtime enqueues an
             // executor hop with no current task, so `GlobalJobRouting` can't read the task-local
             // then; this thread-local still attributes it.
@@ -288,6 +299,16 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
             Self._globalOutstanding.wrappingSubtract(1, ordering: .relaxed)
             Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
             for f in toFire { f() }
+        }
+        if routed {
+            // Routing counts a job; it must not change when the job runs. On the global
+            // executor it runs at its own priority (the background-call pump is
+            // `.userInitiated`). Below OS 27 this queue is default QoS (see
+            // `_sharedDrainQueue`), which GCD starves while CPU-bound test bodies hold the
+            // cooperative pool.
+            _sharedDrainQueue.async(qos: _dispatchQoS(for: unowned.priority), flags: .enforceQoS, execute: run)
+        } else {
+            _sharedDrainQueue.async(execute: run)
         }
     }
 
