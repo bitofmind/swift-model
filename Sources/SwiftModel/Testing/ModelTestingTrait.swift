@@ -464,6 +464,7 @@ private func _withModelTestingImpl(
         exhaustionNote: exhaustionNote
     )
     let execBox = _makeTestExecutorBox()
+    defer { _retireTestExecutorBox(execBox) }
     var testQueue = BackgroundCallQueue()
     testQueue.testExecutorBox = execBox
     try await _BackgroundCallLocals.$queue.withValue(testQueue) {
@@ -519,6 +520,7 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
         // each other's in-flight Observed pipeline updates.
         let testTag = test.name
         let execBox = _makeTestExecutorBox()
+        defer { _retireTestExecutorBox(execBox) }
         var testQueue = BackgroundCallQueue()
         testQueue.testExecutorBox = execBox
         try await _BackgroundCallLocals.$queue.withValue(testQueue) {
@@ -724,11 +726,14 @@ package func _withTestTimeout<R: Sendable>(
                     var message = "[TRAIT timeout — ABSOLUTE CEILING] test=\"\(testTag)\" ran "
                     message += "\(ceilingSeconds)s without completing, and the inactivity watchdog "
                     message += "never fired. That combination is diagnostic: the executor reported "
-                    message += "itself busy the whole time, i.e. a job entered `runSynchronously` "
-                    message += "and never returned. Almost certainly a DEADLOCK in model code (a "
-                    message += "lock-order inversion), not slowness — the watchdog cannot see this "
+                    message += "itself busy the whole time. Either a job entered `runSynchronously` "
+                    message += "and never returned — a DEADLOCK in model code (a lock-order "
+                    message += "inversion) — or a task never stopped running: a busy loop, such as "
+                    message += "a timer loop sleeping on a clock that returns at once (an "
+                    message += "`ImmediateClock`). Not slowness — the watchdog cannot see either "
                     message += "class, which is why this ceiling exists. Capture a stack with "
-                    message += "`sample <pid>` to find the two inverted acquisitions."
+                    message += "`sample <pid>`: two inverted lock acquisitions mean a deadlock, a "
+                    message += "hot loop of task creation or resumption means a busy loop."
                     reportIssue(
                         "\(message)",
                         fileID: fileID, filePath: filePath, line: line, column: column
