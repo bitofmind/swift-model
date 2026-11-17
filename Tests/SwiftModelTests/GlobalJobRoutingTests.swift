@@ -91,4 +91,27 @@ struct GlobalJobRoutingTests {
         await settle()
         #expect(model.value == 1)
     }
+
+    /// A busy loop that outlives its test must not stall later tests. Here the loop is
+    /// started in an inner `withModelTesting` scope and keeps running after that scope
+    /// ends (as a timer loop on an `ImmediateClock`, in a model something else keeps
+    /// alive, does). An unmet `expect` afterwards must fail at its normal grace. Before
+    /// the scope's executor was retired, the loop's routed jobs kept the process-wide
+    /// fail-gate shut and the `expect` hung until the trait's absolute ceiling.
+    @Test func leakedBusyLoopDoesNotStallLaterExpect() async {
+        let stop = LockIsolated(false)
+        defer { stop.setValue(true) }
+        await withModelTesting {
+            Task {
+                while !stop.value {
+                    _ = await Task { 1 }.value
+                }
+            }
+        }
+
+        let model = PlainTaskModel().withAnchor()
+        await withKnownIssue {
+            await expect(model.value == 1)
+        }
+    }
 }

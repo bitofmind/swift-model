@@ -6,6 +6,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **A busy loop that outlives its test no longer stalls later tests' `expect`.** Under `.modelTesting`, an `expect` that isn't met fails only once the whole test process has gone quiet, so that a slow but healthy test elsewhere isn't failed early. A loop that never stops kept the process from going quiet. An example is a timer loop sleeping on an `ImmediateClock`, in a model that something else keeps alive after its test ends. Every later unmet `expect` then hung until the trait's absolute ceiling (900 s at CI's timeout scale), and back-to-back such failures stalled a run for hours. 1.3.4 made this much more likely: it routes the loop's plain `Task {}` jobs onto the test's executor. When a test or `withModelTesting` scope ends, its executor is now retired. It takes no more routed jobs, and its remaining work no longer counts toward other tests' quiet check.
+  - The absolute-ceiling message no longer says a deadlock is the only likely cause. It now names a busy loop (for example a timer loop on an `ImmediateClock`) as the other one, and says how to tell the two apart in a `sample`.
+
 ---
 
 ## [1.3.4] — settle() and expect count plain Task {} work

@@ -128,6 +128,16 @@ func _makeTestExecutorBox() -> (any Sendable)? {
     return nil
 }
 
+/// Ends a test executor box made by `_makeTestExecutorBox`, once its test or scope has
+/// finished: see `_DrainTestExecutor.retire()`.
+func _retireTestExecutorBox(_ box: (any Sendable)?) {
+    #if canImport(Dispatch)
+    if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *) {
+        (box as? _DrainTestExecutor)?.retire()
+    }
+    #endif
+}
+
 #if canImport(Dispatch)
 /// ONE process-wide concurrent queue backs every per-test executor — a per-test
 /// `.concurrent` queue would explode GCD's worker pool under full-parallel test
@@ -207,6 +217,17 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     /// Closures that fire (at most once each) when `outstanding` hits 0.
     private var idleWaiters: [(id: UInt64, fire: @Sendable () -> Void)] = []
     private var nextWaiterId: UInt64 = 0
+    /// Set once the test (or `withModelTesting` scope) that owns this executor has ended.
+    /// Work it leaves behind (a task that outlives its test, such as a loop in a model
+    /// something else keeps alive) must not stall later tests. So from then on this
+    /// executor takes no routed global jobs (`GlobalJobRouting` hands them to the global
+    /// executor again) and counts none of its jobs toward the process-wide activity that
+    /// `expect`'s fail-gate waits out. Before this, a busy loop leaked from one test kept
+    /// that gate shut for the rest of the run, so every later unmet `expect` hung until
+    /// the trait's absolute ceiling.
+    private let _retired = Atomic<Bool>(false)
+    var isRetired: Bool { _retired.load(ordering: .relaxed) }
+    func retire() { _retired.store(true, ordering: .relaxed) }
 
     // Process-wide executor activity across ALL per-test drain executors. Powers
     // `expect`'s GLOBAL-quiescence fail-gate: a still-unmet `expect` is failed
@@ -275,8 +296,13 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
             outstanding += 1
             _lastEnqueueNs = _drainMonotonicNs()
         }
-        Self._globalOutstanding.wrappingAdd(1, ordering: .relaxed)
-        Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
+        // Decided once per job, so a job enqueued before `retire()` and completed after
+        // it still balances `_globalOutstanding`.
+        let countsGlobally = !isRetired
+        if countsGlobally {
+            Self._globalOutstanding.wrappingAdd(1, ordering: .relaxed)
+            Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
+        }
         let run: @Sendable () -> Void = {
             // While the job runs, this thread belongs to this test. The runtime enqueues an
             // executor hop with no current task, so `GlobalJobRouting` can't read the task-local
@@ -296,8 +322,10 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
                 self.idleWaiters.removeAll()
                 return fns
             }
-            Self._globalOutstanding.wrappingSubtract(1, ordering: .relaxed)
-            Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
+            if countsGlobally {
+                Self._globalOutstanding.wrappingSubtract(1, ordering: .relaxed)
+                Self._globalLastActivityNs.store(_drainMonotonicNs(), ordering: .relaxed)
+            }
             for f in toFire { f() }
         }
         if routed {
