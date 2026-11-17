@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **A model task that loops without end now fails `settle()` and `expect` within seconds, naming the task.** One example is a timer loop (`while … { try await clock.sleep(…); … }`) on a clock whose sleep returns at once, such as an `ImmediateClock`. Such a loop never lets the model go quiet. `settle()` and an unmet `expect` then waited until the trait's absolute ceiling (900 s at CI's timeout scale). Since 1.3.4 this hit any loop that hops through a plain `Task {}`, including the tasks inside async operators. Under `.modelTesting`, each model task (`node.task`, `forEach`, ...) now counts its resumes per call site. When one site starts or resumes more than the runaway bound (50 000) within one wait, and is still running, the wait fails with a message naming the task and its line. It suggests anchoring with a `TestClock`. `settle()` reports it at the `settle()` call; `expect` reports it at the task's own line, and the `expect` fails as unmet. The bound counts work rather than time, the same as `settle()`'s existing runaway check for reactive call sites. So a loaded machine only reaches it later, and a finite loop below the bound is unaffected.
+
 ---
 
 ## [1.3.5] — A busy loop left by one test no longer stalls later tests' expect

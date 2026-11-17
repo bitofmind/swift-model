@@ -42,6 +42,10 @@ enum _DriveFixpointOutcome: Sendable, Equatable {
     /// began and was still firing — unbounded same-site work (feedback loop /
     /// non-`isSame` source). Evidence-based: judged on work done, not time.
     case runaway(site: FileAndLine, fires: Int)
+    /// One model task's call-site started or resumed `resumes` times since the wait
+    /// began and was still resuming: a task looping without end (typically a timer
+    /// loop on a clock that returns at once). Evidence-based, like `.runaway`.
+    case runawayTask(site: FileAndLine, resumes: Int)
     /// Cancelled (the canceller owns the report), or the last-resort
     /// termination ceiling elapsed.
     case gaveUp
@@ -226,6 +230,12 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     /// that gate shut for the rest of the run, so every later unmet `expect` hung until
     /// the trait's absolute ceiling.
     private let _retired = Atomic<Bool>(false)
+    /// Per-call-site job counts for model tasks (`node.task`, `forEach`, ...): how often
+    /// each site's tasks were enqueued to run, i.e. started or resumed. Counted by
+    /// `_ModelTaskExecutor`. A task that resumes without end within one wait is the
+    /// runaway the drive fails on (`.runawayTask`); a busy loop on a clock that
+    /// returns at once is the usual cause.
+    private var _taskResumes: [FileAndLine: (count: Int, lastFireNs: UInt64)] = [:]
     var isRetired: Bool { _retired.load(ordering: .relaxed) }
     func retire() { _retired.store(true, ordering: .relaxed) }
 
@@ -283,6 +293,25 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
         enqueueCounted(UnownedJob(job), routed: false)
     }
 
+    /// A job of a model task created at `site`, enqueued on that task's
+    /// `_ModelTaskExecutor`. Runs exactly like `enqueue`, but on `runOn` (the task's
+    /// preferred executor), and counts the resume for `site`.
+    func enqueueModelTaskJob(_ job: UnownedJob, site: FileAndLine, runOn: UnownedTaskExecutor) {
+        let now = _drainMonotonicNs()
+        lock.withLock {
+            var s = _taskResumes[site] ?? (count: 0, lastFireNs: 0)
+            s.count += 1
+            s.lastFireNs = now
+            _taskResumes[site] = s
+        }
+        enqueueCounted(job, routed: false, runOn: runOn)
+    }
+
+    /// Snapshot of `_taskResumes`.
+    var taskResumeStats: [FileAndLine: (count: Int, lastFireNs: UInt64)] {
+        lock.withLock { _taskResumes }
+    }
+
     /// A job routed here from the global executor by `GlobalJobRouting.swift`. Its task
     /// has no executor preference, so it must run as if on the global executor: run on
     /// this executor, the runtime would hop it straight back to the global one.
@@ -290,7 +319,7 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
         enqueueCounted(job, routed: true)
     }
 
-    private func enqueueCounted(_ unowned: UnownedJob, routed: Bool) {
+    private func enqueueCounted(_ unowned: UnownedJob, routed: Bool, runOn: UnownedTaskExecutor? = nil) {
         lock.withLock {
             if outstanding > 0 { enqueuesWhileBusy += 1 }
             outstanding += 1
@@ -311,7 +340,7 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
             if routed {
                 unowned.runSynchronously(on: globalConcurrentExecutor.asUnownedTaskExecutor())
             } else {
-                unowned.runSynchronously(on: self.asUnownedTaskExecutor())
+                unowned.runSynchronously(on: runOn ?? self.asUnownedTaskExecutor())
             }
             _ = _DrainTestExecutor.setRunningOnThisThread(previous)
             let toFire: [@Sendable () -> Void] = self.lock.withLock {
@@ -408,6 +437,25 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
 }
 #endif
 
+/// The executor preference of one model task (`node.task`, `forEach`, ...) under
+/// `.modelTesting`. It runs every job on the test's drain executor, exactly as the drain
+/// executor itself would, and counts each one for the call site that created the task,
+/// so the drive can name a task that resumes without end.
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
+final class _ModelTaskExecutor: TaskExecutor, @unchecked Sendable {
+    let base: _DrainTestExecutor
+    let site: FileAndLine
+
+    init(base: _DrainTestExecutor, site: FileAndLine) {
+        self.base = base
+        self.site = site
+    }
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        base.enqueueModelTaskJob(UnownedJob(job), site: site, runOn: asUnownedTaskExecutor())
+    }
+}
+
 extension TestAccess {
     /// True when a per-test harness executor is installed (flag on, macOS 15+).
     var _isExecutorDriveActive: Bool {
@@ -474,11 +522,18 @@ extension TestAccess {
             // re-check cadence (not the ceiling) so a runaway that never lets
             // the executor go idle is still inspected periodically.
             let fireBaseline = runawayBound != nil ? _reactiveFireStats() : [:]
+            // Same baseline for model-task resumes: a `node.task` loop that never waits
+            // for anything (a timer loop on a clock whose sleep returns at once) keeps
+            // the executor busy without ever firing a reactive site.
+            let resumeBaseline = runawayBound != nil ? exec.taskResumeStats : [:]
             while !Task.isCancelled {
                 let now = _drainMonotonicNs()
                 if now >= hangDeadlineNs { return .gaveUp }
                 if let runawayBound, let runaway = _runawayFireDelta(since: fireBaseline, bound: runawayBound) {
                     return .runaway(site: runaway.site, fires: runaway.fires)
+                }
+                if let runawayBound, let runaway = Self._runawayDelta(of: exec.taskResumeStats, since: resumeBaseline, bound: runawayBound) {
+                    return .runawayTask(site: runaway.site, resumes: runaway.count)
                 }
                 let checkDeadline = min(hangDeadlineNs, now &+ Self._runawayCheckIntervalNs)
                 await exec.waitUntilIdleOrDeadline(checkDeadline)
@@ -551,15 +606,26 @@ extension TestAccess {
         since baseline: [FileAndLine: (count: Int, lastFireNs: UInt64)],
         bound: Int
     ) -> (site: FileAndLine, fires: Int)? {
+        Self._runawayDelta(of: _reactiveFireStats(), since: baseline, bound: bound).map { ($0.site, $0.count) }
+    }
+
+    /// The call-site in `stats` with the largest count delta since `baseline`, if any
+    /// site both crossed `bound` and was last counted within the last second. Shared by
+    /// the reactive-fire and the model-task-resume runaway checks.
+    static func _runawayDelta(
+        of stats: [FileAndLine: (count: Int, lastFireNs: UInt64)],
+        since baseline: [FileAndLine: (count: Int, lastFireNs: UInt64)],
+        bound: Int
+    ) -> (site: FileAndLine, count: Int)? {
         let now = _drainMonotonicNs()
         let stillFiringWindowNs: UInt64 = 1_000_000_000
-        var best: (site: FileAndLine, fires: Int)?
-        for (fl, s) in _reactiveFireStats() {
+        var best: (site: FileAndLine, count: Int)?
+        for (fl, s) in stats {
             let delta = s.count - (baseline[fl]?.count ?? 0)
             guard delta >= bound,
                   s.lastFireNs != 0, now >= s.lastFireNs,
                   now &- s.lastFireNs <= stillFiringWindowNs else { continue }
-            if best == nil || delta > best!.fires { best = (fl, delta) }
+            if best == nil || delta > best!.count { best = (fl, delta) }
         }
         return best
     }
@@ -689,6 +755,13 @@ extension TestAccess {
                     // the process busy). Fail the pending predicates now —
                     // evidence-based, not wall-clock — and stop driving.
                     if case .runaway = outcome {
+                        self._resolveUnmetPredicatesAtFixpoint()
+                        break
+                    }
+                    // Same for a model task that loops without end; name it at its own
+                    // call site, since the unmet `expect` alone would not point there.
+                    if case let .runawayTask(site, resumes) = outcome {
+                        self._noteRunawayTask(site: site, resumes: resumes)
                         self._resolveUnmetPredicatesAtFixpoint()
                         break
                     }

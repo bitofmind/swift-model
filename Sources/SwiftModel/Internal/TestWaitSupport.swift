@@ -110,6 +110,11 @@ extension TestAccess {
                     fail("settle() timed out: model never reached a fixpoint — a reactive source fired \(fires)× within this settle without a single quiet gap (runaway).\n\(settleDiagnostics())", at: fileAndLine)
                 }
                 return false
+            case .runawayTask(let site, let resumes):
+                if !cleanup {
+                    fail("settle() timed out: model never reached a fixpoint.\n\(_runawayTaskMessage(site: site, resumes: resumes))", at: fileAndLine)
+                }
+                return false
             case .gaveUp:
                 // Cancellation (the trait cap tearing the test down, or an
                 // external kill) is the canceller's report, not settle's —
@@ -207,6 +212,30 @@ extension TestAccess {
             return runaway + "\n" + listing
         }
         return listing
+    }
+
+    /// Explains a `.runawayTask` verdict: the task created at `site` resumed `resumes`
+    /// times within one wait without the model going quiet.
+    func _runawayTaskMessage(site: FileAndLine, resumes: Int) -> String {
+        var label = "@ \(site.fileID):\(site.line)"
+        for info in context.activeTasks {
+            for (taskName, fl) in info.tasks where fl == site {
+                label = "\(info.modelName): \"\(taskName)\""
+            }
+        }
+        return """
+          ⚠️ runaway task: \(label) started or resumed \(resumes)× within one wait and was still running.
+             A task that loops without ever waiting for anything never lets the model go quiet.
+             The usual cause is a timer loop (`while … { try await clock.sleep(…); … }`) on a
+             clock whose sleep returns at once, such as an `ImmediateClock`: anchor the model
+             with a `TestClock` and advance it, or end the loop when there is nothing to do.
+        """
+    }
+
+    /// Reports a runaway task found while an `expect` was waiting, at the task's own
+    /// call site. The `expect` then fails as unmet.
+    func _noteRunawayTask(site: FileAndLine, resumes: Int) {
+        fail("expect could not complete: the model never went quiet.\n\(_runawayTaskMessage(site: site, resumes: resumes))", at: site)
     }
 
     /// If exactly the failure shape "a reactive body that never stops firing"
