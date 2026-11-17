@@ -437,6 +437,7 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
 }
 #endif
 
+#if canImport(Dispatch)
 /// The executor preference of one model task (`node.task`, `forEach`, ...) under
 /// `.modelTesting`. It runs every job on the test's drain executor, exactly as the drain
 /// executor itself would, and counts each one for the call site that created the task,
@@ -455,6 +456,7 @@ final class _ModelTaskExecutor: TaskExecutor, @unchecked Sendable {
         base.enqueueModelTaskJob(UnownedJob(job), site: site, runOn: asUnownedTaskExecutor())
     }
 }
+#endif
 
 extension TestAccess {
     /// True when a per-test harness executor is installed (flag on, macOS 15+).
