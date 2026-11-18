@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.3.6] — Busy loops in plain tasks no longer starve parallel tests
+
 ### Fixed
 
 - **Tests with a busy loop of plain tasks no longer slow down or stall other tests running in parallel.** 1.3.4 routes the jobs of a `.modelTesting` test's plain `Task {}`s onto the queue that runs its model work. On Apple OS 27 that queue runs at `.userInitiated`, above the cooperative pool. A test that spun on an `ImmediateClock` in a plain task (about 200k jobs a second) then starved every other test's pool work: URLSession and NIO completions, `Task.sleep` wakeups. parallel-apple's lobby tests took 20–40 s instead of under 5 s and hit the 30 s trait cap. Routed jobs now run on a queue of their own at their task's priority, which always gets a thread but shares the CPU with the pool rather than preempting it. On Apple platforms that is libdispatch's overcommit root queue; on Linux the drain queue is already default QoS, so nothing changes there. The test body's own task is no longer routed, as it is the one waiting in `settle`/`expect`. Measured on parallel-apple's lobby set (68 tests, alternating runs): 5.7 s median, against 5.3 s with routing turned off and 20–40 s on 1.3.4.
