@@ -18,7 +18,8 @@ import Glibc
 // the enqueuing thread. If the enqueuing task belongs to a `.modelTesting` test,
 // the job is handed to that test's drain executor instead, so it is counted like
 // any model job. Its task keeps no preference: when it next suspends, its resume
-// goes through this hook again. Once the test has ended its executor is retired and
+// goes through this hook again. The test body's own task is left alone: it is the
+// one waiting in settle/expect, not work they wait for. Once the test has ended its executor is retired and
 // routes nothing more: a task that outlives its test runs on the global executor again.
 
 #if canImport(Dispatch) && (canImport(Darwin) || canImport(Glibc))
@@ -42,7 +43,8 @@ private let _installGlobalJobRouting: Bool = {
         if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
            !_GlobalJobRouting.bypass,
            let exec = (_TestExecutorBox.current as? _DrainTestExecutor) ?? _DrainTestExecutor.runningOnThisThread,
-           !exec.isRetired {
+           !exec.isRetired,
+           !exec.isTestBodyJob(job) {
             exec.enqueueRouted(job)
             return
         }
