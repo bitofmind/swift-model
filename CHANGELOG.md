@@ -12,6 +12,16 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ---
 
+## [1.3.6] — Busy loops in plain tasks no longer starve parallel tests
+
+### Fixed
+
+- **Tests with a busy loop of plain tasks no longer slow down or stall other tests running in parallel.** 1.3.4 routes the jobs of a `.modelTesting` test's plain `Task {}`s onto the queue that runs its model work. On Apple OS 27 that queue runs at `.userInitiated`, above the cooperative pool. A test that spun on an `ImmediateClock` in a plain task (about 200k jobs a second) then starved every other test's pool work: URLSession and NIO completions, `Task.sleep` wakeups. parallel-apple's lobby tests took 20–40 s instead of under 5 s and hit the 30 s trait cap. Routed jobs now run on a queue of their own at their task's priority, which always gets a thread but shares the CPU with the pool rather than preempting it. On Apple platforms that is libdispatch's overcommit root queue; on Linux the drain queue is already default QoS, so nothing changes there. The test body's own task is no longer routed, as it is the one waiting in `settle`/`expect`. Measured on parallel-apple's lobby set (68 tests, alternating runs): 5.7 s median, against 5.3 s with routing turned off and 20–40 s on 1.3.4.
+  - `GlobalJobRoutingTests.routedTaskDoesNotRunAboveItsPriority` fails on 1.3.4/1.3.5; `DrainQueueStarvationTests` checks that routed work still gets a thread while CPU-bound tests fill the pool.
+- **`exhaustivity: .off` tests no longer keep every write in memory.** The tester recorded each write to a path until an assertion consumed it, even where nothing would ever read the history. A model writing in a loop grew it without bound, and the end-of-test exhaustion check then dumped every entry. Where neither exhaustivity, transitions nor skipped-assertion display reads a path's history, only its latest write is kept, and dumps nobody sees are skipped.
+
+---
+
 ## [1.3.5] — A busy loop left by one test no longer stalls later tests' expect
 
 ### Fixed

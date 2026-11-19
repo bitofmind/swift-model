@@ -142,6 +142,20 @@ func _retireTestExecutorBox(_ box: (any Sendable)?) {
     #endif
 }
 
+/// Records the calling task as the test body of the test executor box, so global-job
+/// routing leaves its jobs alone: see `_DrainTestExecutor.isTestBodyJob`.
+func _markTestBodyTask(of box: (any Sendable)?) {
+    #if canImport(Dispatch)
+    if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
+       let exec = box as? _DrainTestExecutor {
+        withUnsafeCurrentTask { task in
+            guard let task else { return }
+            exec.setTestBodyTask(unsafeBitCast(task, to: UInt.self))
+        }
+    }
+    #endif
+}
+
 #if canImport(Dispatch)
 /// ONE process-wide concurrent queue backs every per-test executor — a per-test
 /// `.concurrent` queue would explode GCD's worker pool under full-parallel test
@@ -181,6 +195,43 @@ private let _sharedDrainQueue: DispatchQueue = {
     }
     #endif
     return DispatchQueue(label: "swift-model.test-drain.shared", attributes: .concurrent)
+}()
+
+/// Routed global jobs run here, not on `_sharedDrainQueue`. They came from the global
+/// executor, so they must compete for the CPU as they would have there: neither above the
+/// cooperative pool nor starved by it.
+///
+/// - Above it: on `_sharedDrainQueue` (`.userInitiated` on OS 27) a test's busy loop of
+///   plain tasks ran above the pool and starved every other test's work there: URLSession
+///   and NIO completions, `Task.sleep` wakeups (parallel-apple SessionTests, 1.3.4).
+/// - Starved by it: an ordinary concurrent queue at default QoS gets no thread while
+///   CPU-bound work fills the pool, so a routed task can't even start
+///   (`settleIsNotStarvedByBusyCooperativePool`).
+///
+/// On Darwin this is therefore the OVERCOMMIT default-QoS root queue: it is given a thread
+/// whenever it has work, whatever the pool is doing, and the kernel then time-slices those
+/// threads with the pool's at equal priority. That is what every serial queue targets, but
+/// `DispatchQueue` exposes no overcommit concurrent queue, so this asks libdispatch
+/// directly: `dispatch_get_global_queue` with `DISPATCH_QUEUE_OVERCOMMIT` (0x2, from
+/// libdispatch's private header; the concurrency runtime passes the same kind of flag for
+/// its cooperative pool). It is looked up with `dlsym` because Swift marks the C function
+/// unavailable. Should a future libdispatch reject the flag (it returns NULL), routed jobs
+/// fall back to `_sharedDrainQueue`.
+///
+/// Elsewhere (Linux) the shared queue is already default QoS and Linux libdispatch has no
+/// QoS-ordered thread pool, so routed jobs simply share `_sharedDrainQueue`.
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *)
+private let _routedDrainQueue: DispatchQueue = {
+    #if canImport(Darwin)
+    typealias GetGlobalQueue = @convention(c) (Int, UInt) -> UnsafeMutableRawPointer?
+    let overcommit: UInt = 0x2
+    if let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "dispatch_get_global_queue"), // RTLD_DEFAULT
+       let queue = unsafeBitCast(sym, to: GetGlobalQueue.self)(Int(QOS_CLASS_DEFAULT.rawValue), overcommit),
+       let dispatchQueue = Unmanaged<AnyObject>.fromOpaque(queue).takeUnretainedValue() as? DispatchQueue {
+        return dispatchQueue
+    }
+    #endif
+    return _sharedDrainQueue
 }()
 
 /// The dispatch QoS matching a job's priority, so a routed job runs as it would have on the
@@ -238,6 +289,21 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
     private var _taskResumes: [FileAndLine: (count: Int, lastFireNs: UInt64)] = [:]
     var isRetired: Bool { _retired.load(ordering: .relaxed) }
     func retire() { _retired.store(true, ordering: .relaxed) }
+
+    /// The address of the test body's own task (0 until `_markTestBodyTask`).
+    /// The body inherits `_TestExecutorBox.current` like any task it starts, but it is the
+    /// one waiting in `settle`/`expect`, never work they wait for. So its own jobs are not
+    /// routed: they run on the global executor, as they did before routing.
+    private let _testBodyTask = Atomic<UInt>(0)
+    func setTestBodyTask(_ address: UInt) { _testBodyTask.store(address, ordering: .relaxed) }
+
+    /// Whether `job` runs the test body's own task. A task's run job is the task object
+    /// itself in the Swift runtime (`AsyncTask` derives from `Job`), so the job's address
+    /// is the task's address.
+    func isTestBodyJob(_ job: UnownedJob) -> Bool {
+        let body = _testBodyTask.load(ordering: .relaxed)
+        return body != 0 && unsafeBitCast(job, to: UInt.self) == body
+    }
 
     // Process-wide executor activity across ALL per-test drain executors. Powers
     // `expect`'s GLOBAL-quiescence fail-gate: a still-unmet `expect` is failed
@@ -360,10 +426,9 @@ final class _DrainTestExecutor: TaskExecutor, @unchecked Sendable {
         if routed {
             // Routing counts a job; it must not change when the job runs. On the global
             // executor it runs at its own priority (the background-call pump is
-            // `.userInitiated`). Below OS 27 this queue is default QoS (see
-            // `_sharedDrainQueue`), which GCD starves while CPU-bound test bodies hold the
-            // cooperative pool.
-            _sharedDrainQueue.async(qos: _dispatchQoS(for: unowned.priority), flags: .enforceQoS, execute: run)
+            // `.userInitiated`), on a queue that is neither above the cooperative pool nor
+            // starved by it (see `_routedDrainQueue`).
+            _routedDrainQueue.async(qos: _dispatchQoS(for: unowned.priority), flags: .enforceQoS, execute: run)
         } else {
             _sharedDrainQueue.async(execute: run)
         }

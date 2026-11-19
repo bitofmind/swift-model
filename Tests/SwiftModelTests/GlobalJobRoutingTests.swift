@@ -114,4 +114,15 @@ struct GlobalJobRoutingTests {
             await expect(model.value == 1)
         }
     }
+
+    #if canImport(Darwin)
+    /// A routed job must not run at a higher QoS than its task's priority, as it would
+    /// not have on the global executor. In 1.3.4 routed jobs ran on the `.userInitiated`
+    /// drain queue (OS 27), so a test's busy loop of plain tasks ran above the cooperative
+    /// pool and starved every other test's work there (parallel-apple SessionTests).
+    @Test func routedTaskDoesNotRunAboveItsPriority() async {
+        let qos = await Task(priority: .medium) { qos_class_self() }.value
+        #expect(qos.rawValue <= QOS_CLASS_DEFAULT.rawValue)
+    }
+    #endif
 }

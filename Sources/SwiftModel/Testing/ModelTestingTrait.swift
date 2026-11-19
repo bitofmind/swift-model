@@ -469,6 +469,7 @@ private func _withModelTestingImpl(
     testQueue.testExecutorBox = execBox
     try await _BackgroundCallLocals.$queue.withValue(testQueue) {
         try await _TestExecutorBox.$current.withValue(execBox) {
+            _markTestBodyTask(of: execBox)
             try await _ModelTestingLocals.$scope.withValue(pending) {
                 try await body()
             }
@@ -571,6 +572,7 @@ extension ModelTestingTrait: TestScoping, TestTrait, SuiteTrait {
             try await withoutActuallyEscaping(function) { escapingFunction in
                 try await _withTestTimeout(seconds: ModelTestingTraitOptions.testWallClockSeconds, testTag: testTag, activityProbe: activityProbe) {
                     try await _TestExecutorBox.$current.withValue(execBox) {
+                        _markTestBodyTask(of: execBox)
                         try await _ModelTestingLocals.$scope.withValue(pending) {
                             try await escapingFunction()
                         }
