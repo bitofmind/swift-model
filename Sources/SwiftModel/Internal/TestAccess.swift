@@ -1014,15 +1014,6 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     // behaviour where a transaction also produces a single update notification.
                     let isTransactionReplacement = capturedTxID != 0
                         && self.valueUpdates[fullPath]?.last?.transactionID == capturedTxID
-                    // When nothing reads this path's write history — its area isn't checked
-                    // for exhaustivity, transitions aren't matched, and skipped assertions
-                    // aren't shown — keep only the latest write instead of every one. A model
-                    // that writes in a loop (a timer loop on an `ImmediateClock`) otherwise
-                    // grows this queue without bound between assertions.
-                    let keepsLatestOnly = !self.exhaustivity.contains(area)
-                        && !self.exhaustivity.contains(.transitions)
-                        && !self.showSkippedAssertions
-                        && !(self.valueUpdates[fullPath]?.isEmpty ?? true)
 
                     // The "from" description:
                     //   • When replacing: keep the original first-write "from" so the transition
@@ -1030,7 +1021,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                     //   • When appending after an existing entry: chain from its "to".
                     //   • First write to this path: capture current lastState.
                     let capturedFrom: (() -> String)?
-                    if isTransactionReplacement || keepsLatestOnly {
+                    if isTransactionReplacement {
                         capturedFrom = self.valueUpdates[fullPath]!.last!.fromDescription
                     } else if let lastEntry = self.valueUpdates[fullPath]?.last,
                               let lastTo = lastEntry.toDescription {
@@ -1085,7 +1076,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
                         rawValue: value as Any,
                         transactionID: capturedTxID
                     )
-                    if isTransactionReplacement || keepsLatestOnly {
+                    if isTransactionReplacement {
                         self.valueUpdates[fullPath]![self.valueUpdates[fullPath]!.count - 1] = entry
                     } else {
                         self.valueUpdates[fullPath, default: []].append(entry)
@@ -1697,28 +1688,6 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
         lock { exhaustionNote = note }
     }
 
-    /// Whether an exhaustion failure in `area` would be shown at all, as a failure or as a
-    /// skipped assertion. Describing an unasserted write `customDump`s its values, so the
-    /// exhaustion check skips that work for an area nobody will see.
-    func _reportsExhaustion(of area: _ExhaustivityBits) -> Bool {
-        lock { exhaustivity.contains(area) || showSkippedAssertions }
-    }
-
-    /// Most unasserted writes an exhaustion failure lists one by one.
-    static var _unassertedListLimit: Int { 50 }
-
-    /// The "Modifications not asserted" list, capped at `_unassertedListLimit` entries. A
-    /// model that wrote thousands of times between assertions (a loop) would otherwise
-    /// `customDump` every write.
-    func _unassertedList(_ updates: [ValueUpdate]) -> String {
-        let limit = Self._unassertedListLimit
-        var lines = updates.prefix(limit).map { $0.debugInfo().indent(by: 4) }
-        if updates.count > limit {
-            lines.append("… and \(updates.count - limit) more".indent(by: 4))
-        }
-        return lines.joined(separator: "\n\n")
-    }
-
     func fail(_ message: String, for area: _ExhaustivityBits, at fileAndLine: FileAndLine) {
         // Every exhaustion failure routes through here, so this is the one place the
         // scope provenance needs to be attached.
@@ -1896,7 +1865,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             // independently and respect their respective exhaustivity flags.
             for area: _ExhaustivityBits in [.state, .local, .environment, .preference] {
                 let updates = allUpdates.filter { $0.area == area }
-                if !updates.isEmpty, _reportsExhaustion(of: area) {
+                if !updates.isEmpty {
+                    let descriptions = updates.map { $0.debugInfo() }
                     let areaTitle: String
                     switch area {
                     case .local: areaTitle = "Local not exhausted"
@@ -1909,7 +1879,7 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
                         Modifications not asserted:
 
-                        \(_unassertedList(updates))
+                        \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
                         """, for: area, at: fileAndLine)
                 }
             }
@@ -1920,28 +1890,30 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             let depMetaUpdates = lock { dependencyMetadataUpdates }
             if !depMetaUpdates.isEmpty {
                 for area: _ExhaustivityBits in [.local, .environment] {
-                    let updates = Array(depMetaUpdates.values.filter { $0.area == area })
-                    if !updates.isEmpty, _reportsExhaustion(of: area) {
+                    let updates = depMetaUpdates.values.filter { $0.area == area }
+                    if !updates.isEmpty {
+                        let descriptions = updates.map { $0.debugInfo() }
                         let areaTitle = area == .local ? "Local not exhausted" : "Environment not exhausted"
                         fail("""
                             \(areaTitle): …
 
                             Modifications not asserted:
 
-                            \(_unassertedList(updates))
+                            \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
                             """, for: area, at: fileAndLine)
                     }
                 }
             }
 
             let depPrefUpdates = lock { dependencyPreferenceUpdates }
-            if !depPrefUpdates.isEmpty, _reportsExhaustion(of: .preference) {
+            if !depPrefUpdates.isEmpty {
+                let descriptions = depPrefUpdates.values.map { $0.debugInfo() }
                 fail("""
                     Preference not exhausted: …
 
                     Modifications not asserted:
 
-                    \(_unassertedList(Array(depPrefUpdates.values)))
+                    \(descriptions.map { $0.indent(by: 4) }.joined(separator: "\n\n"))
                     """, for: .preference, at: fileAndLine)
             }
         }
