@@ -326,11 +326,11 @@ public struct _ModelSourceBox<M: Model>: @unchecked Sendable {
             // The `_stateCleared` check and the projection must be in the SAME locked scope:
             // checking the flag and then projecting outside the lock just moves the TOCTOU.
             //
-            // `withHierarchyLockIfLive` only locks when a context is discoverable. That is
-            // sound because every `clear(ifGeneration:)` runs while the old context is still
-            // alive — verified by instrumenting `clear` and finding 0 of 8700+ calls with a
-            // nil `_context` across the suite. The issue report stays OUTSIDE the lock
-            // (`reportIssue` can re-enter model reads).
+            // `withHierarchyLockIfLive` takes the hierarchy lock when a context is
+            // discoverable, and this Reference's own lock when it is not: a removed model's
+            // deferred `clear(ifGeneration:)` can run after its Context deinitialised (see
+            // its doc comment). The issue report stays OUTSIDE the lock (`reportIssue` can
+            // re-enter model reads).
             //
             // PERF: for non-snapshot references this costs one hierarchy-lock acquisition.
             // The anchored+tracked path is unaffected (it already locks via

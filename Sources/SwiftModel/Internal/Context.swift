@@ -2922,15 +2922,22 @@ extension Context {
         /// deep-access visitors walking a value copy after `subscript.read`'s lock
         /// scope ended, frozen whole-state copies — the raw read can tear
         /// against a concurrent collection-write clearing a removed child
-        /// (TSan-confirmed). With no live context there is no locked concurrent
-        /// writer left to race: pre-anchor construction is thread-confined,
-        /// snapshot state is immutable, and both deferred `clear(ifGeneration:)`
-        /// paths run while the old context (and thus a discoverable lock) is
-        /// still alive.
+        /// (TSan-confirmed).
         ///
-        /// Lock-order note: the `_hierarchyLock` read takes and releases `Reference.lock`
-        /// BEFORE the hierarchy lock is acquired — no held-across violation of the
-        /// AnyContext.lock → Reference.lock convention.
+        /// With no live context, `body` runs under this Reference's own lock instead.
+        /// "No context" does NOT mean "no concurrent writer": a removed model's deferred
+        /// last-seen release (`clear(ifGeneration:)`) can run after its Context has
+        /// deinitialised — under a test scope it waits for the scope's end, and measured
+        /// that way about half of all releases find `_context` already nil. The release
+        /// swaps `state` under the old hierarchy lock plus this Reference's lock, so
+        /// taking this lock is what orders the read against it (an unlocked read here
+        /// was a use-after-free: see `ScopeEndReleaseRaceTests`).
+        ///
+        /// Lock-order note: with a live context, the `_hierarchyLock` read takes and
+        /// releases `Reference.lock` BEFORE the hierarchy lock is acquired — no
+        /// held-across violation of the AnyContext.lock → Reference.lock convention.
+        /// Without one, only `Reference.lock` is held, and `body` must take no
+        /// hierarchy lock (every caller only copies `state` and reads flags).
         ///
         /// PERF: this is the per-read cost of the locked `dynamicMember` projection, paid
         /// O(N) times during collection reconciliation, so it is written for cost rather
@@ -2946,10 +2953,16 @@ extension Context {
         /// one PR #50 established.
         func withHierarchyLockIfLive<R>(_ body: () -> R) -> R {
             lock.lock()
-            let hierarchyLock = _hierarchyLock
+            guard let hierarchyLock = _hierarchyLock else {
+                // No live context: run under this Reference's own lock, which every
+                // whole-state swap (`clear`, `setContext`, `prepareForReanchoring`) holds.
+                // A removed model's deferred last-seen release can run AFTER its Context
+                // deinitialised (under a test scope it waits for the scope's end), so
+                // "no context" does not mean "no concurrent writer".
+                defer { lock.unlock() }
+                return body()
+            }
             lock.unlock()
-
-            guard let hierarchyLock else { return body() }
 
             hierarchyLock.lock()
             defer { hierarchyLock.unlock() }

@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reading a removed model in a test no longer risks a use-after-free crash (`EXC_BAD_ACCESS` in `swift_retain` under `_directRead`).** Under `.modelTesting`, a removed model keeps its last state until the test scope ends, and is then reset to its initial values. By that point the removed model's context has usually been released, and a read with no context took no lock at all. So a read on another thread (a task, a view, a detached reader) could copy a property at the moment the reset freed it. Such a read now takes the model's own lock, which the reset also holds. It only affected tests: in production the reset runs while the context is still alive, and reads already took its lock.
+
 ---
 
 ## [1.3.7] — A model task that loops without end fails fast
