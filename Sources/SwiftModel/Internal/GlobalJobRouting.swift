@@ -33,12 +33,20 @@ private nonisolated(unsafe) let _enqueueGlobalHookSlot: UnsafeMutablePointer<_En
 
 /// The hook installed before ours, if any (e.g. ConcurrencyExtras'
 /// `withMainSerialExecutor`); jobs we don't route go to it.
-private nonisolated(unsafe) var _previousEnqueueGlobalHook: _EnqueueGlobalHook?
+///
+/// A lazily initialised global `let`, not a `var` assigned at install: our hook reads
+/// it on whatever thread enqueues, and the hook slot is published with a plain store,
+/// so a `var` written just before that store had no happens-before edge to those
+/// reads (TSan-reported). A global `let` is read through `swift_once`, which orders
+/// every read after its one initialisation. `_installGlobalJobRouting` forces it
+/// before installing our hook, so it captures the hook in place before ours.
+private nonisolated(unsafe) let _previousEnqueueGlobalHook: _EnqueueGlobalHook? = _enqueueGlobalHookSlot?.pointee
 
 private let _installGlobalJobRouting: Bool = {
     if ProcessInfo.processInfo.environment["SWIFT_MODEL_ROUTE_GLOBAL_JOBS"] == "0" { return false }
     guard let slot = _enqueueGlobalHookSlot else { return false }
-    _previousEnqueueGlobalHook = slot.pointee
+    // Capture the hook in place now, before ours replaces it.
+    withExtendedLifetime(_previousEnqueueGlobalHook) {}
     slot.pointee = { job, original in
         if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
            !_GlobalJobRouting.bypass,
