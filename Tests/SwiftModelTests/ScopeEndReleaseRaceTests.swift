@@ -1,3 +1,4 @@
+#if canImport(Dispatch)
 import Testing
 @testable import SwiftModel
 import Foundation
@@ -66,3 +67,4 @@ final class ScopeEndRacePayload: Sendable {
     var payload = ScopeEndRacePayload()
 }
 
+#endif
