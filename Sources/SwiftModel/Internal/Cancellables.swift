@@ -211,7 +211,10 @@ extension TaskCancellable {
             // (Name is dropped here only because the `name:`+`executorPreference:`
             // combined initializer isn't available across all supported toolchains.)
             if #available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, *),
-               let exec = _TestExecutorBox.current as? _DrainTestExecutor {
+               let drain = _TestExecutorBox.current as? _DrainTestExecutor {
+                // Wrapped per task so the drive can count this site's resumes and name
+                // a task that loops without end (see `_ModelTaskExecutor`).
+                let exec = _ModelTaskExecutor(base: drain, site: fileAndLine)
                 if isDetached {
                     return Task.detached(executorPreference: exec, priority: priority, operation: operation)
                 } else {
