@@ -124,6 +124,9 @@ enum TestAccessOverrides {
     /// `TestAccess._settleRunawayFireBound`), so runaway-detection tests can
     /// trigger on a few hundred fires instead of burning the real bound.
     @TaskLocal static var settleRunawayFireBound: Int? = nil
+    /// Meta-test override for how long a test must be quiet on its own before an unmet
+    /// `expect` fails while other tests are busy (`TestAccess._expectOwnQuietBoundNs`).
+    @TaskLocal static var expectOwnQuietBoundNanoseconds: UInt64? = nil
 }
 
 // Key for tracking context storage writes on dependency models (which have no root-relative keypath).
@@ -402,6 +405,8 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     /// currently inside `_noteActivity` can ever observe `_isNotingActivity == true`.
     private var _isNotingActivity = false
     private var _noteActivityRerun = false
+    /// Set when a re-entrant `_noteActivity` that was skipped was real model activity.
+    private var _noteActivityRerunIsModelActivity = false
 
 
     // Captures a single state transition: how to apply it to a Root snapshot, and how to
@@ -1157,10 +1162,25 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
     }
 
     func _noteActivity() {
+        _noteActivity(isModelActivity: true)
+    }
+
+    /// Re-evaluates the pending `expect` predicates WITHOUT recording model activity.
+    ///
+    /// For the executor drive's own polling (`_startExecutorDrive`): re-checking a
+    /// predicate is not progress. Stamping it as activity made every polling pass look
+    /// like the test was working, which kept the trait cap's inactivity watchdog (fed by
+    /// `_progressNs`) from ever firing on an `expect` that waited forever, and re-armed
+    /// pending quiet windows for no reason.
+    func _reevaluatePendingPredicates() {
+        _noteActivity(isModelActivity: false)
+    }
+
+    private func _noteActivity(isModelActivity: Bool) {
         var wakes: [CheckedContinuation<PredicateOutcome, Never>] = []
         lock {
             let now = monotonicNanoseconds()
-            _lastActivityNs = now
+            if isModelActivity { _lastActivityNs = now }
 
             // Same-thread re-entrancy guard. `evaluate()` below runs user predicates
             // under the (recursive) lock, and a predicate READ can synchronously fire
@@ -1178,14 +1198,20 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
             // evaluator contract on `awaitPredicate`).
             if _isNotingActivity {
                 _noteActivityRerun = true
+                if isModelActivity { _noteActivityRerunIsModelActivity = true }
                 return
             }
             _isNotingActivity = true
             defer { _isNotingActivity = false }
 
+            var predicatesOnly = !isModelActivity
             repeat {
                 _noteActivityRerun = false
-                _noteActivityPass(now: now, wakes: &wakes)
+                _noteActivityRerunIsModelActivity = false
+                _noteActivityPass(now: now, predicatesOnly: predicatesOnly, wakes: &wakes)
+                // A re-entrant call that was real model activity upgrades the rerun to a
+                // full pass, so the quiet windows it should re-arm still are.
+                if _noteActivityRerunIsModelActivity { predicatesOnly = false }
             } while _noteActivityRerun
         }
         // Resume outside the lock — resumed Tasks may synchronously call
@@ -1198,11 +1224,16 @@ final class TestAccess<Root: Model>: ModelAccess, @unchecked Sendable {
 
     /// One evaluation pass over `_pendingExpects`. Must be called under `lock`
     /// with `_isNotingActivity` set (only `_noteActivity` calls this).
-    private func _noteActivityPass(now: UInt64, wakes: inout [CheckedContinuation<PredicateOutcome, Never>]) {
+    /// With `predicatesOnly`, only `.predicate` entries are evaluated: the quiet-window
+    /// entries are left alone, since no model activity happened to re-arm them.
+    private func _noteActivityPass(now: UInt64, predicatesOnly: Bool, wakes: inout [CheckedContinuation<PredicateOutcome, Never>]) {
         // Iterate in reverse so removals don't shift indices we haven't
         // visited yet.
         for i in (0..<_pendingExpects.count).reversed() {
             let pending = _pendingExpects[i]
+            if predicatesOnly {
+                guard case .predicate = pending.mode else { continue }
+            }
             switch pending.mode {
             case .predicate(let evaluate):
                 let passed = evaluate()

@@ -758,6 +758,15 @@ extension TestAccess {
         UInt64(2_000_000_000 * ModelTestingTraitOptions.timeoutScale)
     }
 
+    /// How long THIS test must show no activity of its own (executor, model writes and
+    /// events, observation queues) before `expect` fails an unmet predicate even though
+    /// other tests in the process are still busy. Evidence-based like the grace: any
+    /// activity of this test restarts it, so a slow-but-progressing test never trips it.
+    /// Five grace windows give a load-delayed resume ample room (10 s at scale 1).
+    static var _expectOwnQuietBoundNs: UInt64 {
+        TestAccessOverrides.expectOwnQuietBoundNanoseconds ?? _expectGraceNs &* 5
+    }
+
     /// Non-starvable sleep for `ns` (or until `hangDeadlineNs`), via GTS — used
     /// by the drive's debounce. Cancellation-aware.
     func _gtsSleep(_ ns: UInt64, hangDeadlineNs: UInt64) async {
@@ -798,6 +807,8 @@ extension TestAccess {
            _TestExecutorBox.current is _DrainTestExecutor {
             let hang = _driveCeilingDeadlineNs()
             let grace = Self._expectGraceNs
+            let ownQuietBound = Self._expectOwnQuietBoundNs
+            let exec = _TestExecutorBox.current as? _DrainTestExecutor
             return Task { [weak self] in
                 guard let self else { return }
                 while !Task.isCancelled {
@@ -833,7 +844,7 @@ extension TestAccess {
                         break
                     }
                     let reached = outcome == .reached
-                    self._noteActivity()                      // resolve now-true predicates as .passed
+                    self._reevaluatePendingPredicates()       // resolve now-true predicates as .passed
                     // GLOBAL-quiescence gate on the FAIL (not per-test): only commit
                     // a fail when the WHOLE process is quiescent — no ready job in ANY
                     // parallel test's executor, and no global activity for `grace`.
@@ -850,7 +861,19 @@ extension TestAccess {
                     // directly (per-test quiescence), not this driver.
                     let g = _DrainTestExecutorGlobalSnapshot()
                     let globalQuiescent = g.outstanding == 0 && g.sinceActivityNs >= grace
-                    if globalQuiescent {
+                    // The deferral is bounded by THIS test's own evidence. It exists for
+                    // a child of this test whose resume is delayed by load elsewhere, and
+                    // such a resume lands as this test's own activity, which restarts the
+                    // bound. A test whose own executor, model and observation queues have
+                    // all been still for `ownQuietBound` (five graces, far beyond a
+                    // load-delayed resume) fails its unmet predicate however busy the
+                    // rest of the process is. Without
+                    // this bound, a busy neighbour (or a whole parallel run) kept the
+                    // gate shut and the expect waited silently until the run ended or an
+                    // outer kill (an xcodebuild per-test allowance) fired first.
+                    let ownLastActivity = max(self._progressNs, exec?.activityNs ?? 0)
+                    let ownQuietNs = _drainMonotonicNs() &- ownLastActivity
+                    if globalQuiescent || (reached && ownQuietNs >= ownQuietBound) {
                         self._resolveUnmetPredicatesAtFixpoint()  // fail still-unmet predicates
                         if !reached { break }                     // ceiling tripped (deadlock)
                         await Task.yield()
