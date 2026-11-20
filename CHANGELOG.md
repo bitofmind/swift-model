@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.3.9] — An unmet expect fails on its own test's quiet
+
 ### Fixed
 
 - **An unmet `expect` (or `settle { predicate }`) no longer waits silently while other tests are busy.** An unmet predicate used to fail only once the whole test process had gone quiet. So while other tests in the same process kept working, as they do through a parallel run, it waited without a message until they finished, or until an outer per-test kill (such as xcodebuild's execution-time allowance) ended the test first. It now also fails once its own test has been quiet for five grace windows (10 s at the default timeout scale): no work on its executor, no model writes or events, and nothing in its observation queues. Any activity of its own restarts that window, so a slow but progressing test is unaffected. The whole-process check still applies first, so an `expect` whose satisfying work is merely delayed by load still passes.
