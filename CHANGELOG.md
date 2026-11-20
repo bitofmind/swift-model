@@ -6,6 +6,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reading a removed model in a test no longer risks a use-after-free crash (`EXC_BAD_ACCESS` in `swift_retain` under `_directRead`).** Under `.modelTesting`, a removed model keeps its last state until the test scope ends, and is then reset to its initial values. By that point the removed model's context has usually been released, and a read with no context took no lock at all. So a read on another thread (a task, a view, a detached reader) could copy a property at the moment the reset freed it. Such a read now takes the model's own lock, which the reset also holds. It only affected tests: in production the reset runs while the context is still alive, and reads already took its lock.
+- **Fixed a data race when the test harness installs its global job routing (since 1.3.4).** The hook passes jobs it doesn't route to a hook installed before it (such as ConcurrencyExtras' `withMainSerialExecutor`). It read that previous hook from a global that was written just before the hook was published, with nothing ordering the two. A job enqueued on another thread at that moment could miss the previous hook. ThreadSanitizer reported it intermittently. The previous hook is now a once-initialised constant, read through Swift's one-time initialisation.
+
 ---
 
 ## [1.3.7] — A model task that loops without end fails fast
