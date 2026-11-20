@@ -40,7 +40,7 @@ private nonisolated(unsafe) let _enqueueGlobalHookSlot: UnsafeMutablePointer<_En
 /// reads (TSan-reported). A global `let` is read through `swift_once`, which orders
 /// every read after its one initialisation. `_installGlobalJobRouting` forces it
 /// before installing our hook, so it captures the hook in place before ours.
-private nonisolated(unsafe) let _previousEnqueueGlobalHook: _EnqueueGlobalHook? = _enqueueGlobalHookSlot?.pointee
+private let _previousEnqueueGlobalHook: _EnqueueGlobalHook? = _enqueueGlobalHookSlot?.pointee
 
 private let _installGlobalJobRouting: Bool = {
     if ProcessInfo.processInfo.environment["SWIFT_MODEL_ROUTE_GLOBAL_JOBS"] == "0" { return false }
