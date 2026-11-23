@@ -6,6 +6,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Fixed
+
+- **An `expect` in a test no longer risks a use-after-free crash while building its exhaustivity diff (`EXC_BAD_ACCESS` in `swift_retain` under `_directRead`, from `customMirror` in `checkExhaustion`).** To walk the model's state outside its lock, the harness takes a deep copy of its recorded state. Only the top model was actually copied, though: every child, collection element and optional child still pointed at the recorded tree's own storage. The harness updates those child nodes in place as the model is written, so a write on another thread could free a value the diff was copying. Frozen copies are now copied all the way down. One visible side effect: the recorded state's children now hold snapshots rather than pointing at the live models, so changes to them are tracked like changes to the top model.
+- **A model held by two parents stays one model under `.modelTesting`.** The harness copies the root model before anchoring it, and the shallow copy wrote frozen grandchildren into the unanchored source's own children. A model shared by two parents (for example, a pool held directly and through a child model) was then anchored as two separate models in tests, with writes through one parent invisible through the other. Production anchoring was not affected. Tests that relied on the split may now see the two parents' writers meet on one model.
+
 ---
 
 ## [1.3.9] — An unmet expect fails on its own test's quiet

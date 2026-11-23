@@ -73,11 +73,14 @@ struct LifetimeTests {
 
         a.child = i.child
 
-        // Assigning a frozen child to a live model works: the framework
-        // re-anchors the child with a fresh context.
-        i.child = fi.child
+        // A frozen copy is frozen all the way down, so its children are frozen too
+        // and can't be added to a live model.
+        #expect(fi.child.lifetime == .frozenCopy)
+        #expect(fa.child.lifetime == .frozenCopy)
 
-        a.child = fa.child
+        withKnownIssue {
+            a.child = fa.child
+        }
     }
 
     @Test func testChildrenLifetime() {
@@ -114,11 +117,14 @@ struct LifetimeTests {
 
         a.children[0] = i.children[0]
 
-        // Assigning a frozen child to a live model works: the framework
-        // re-anchors the child with a fresh context.
-        i.children[0] = fi.children[0]
+        // A frozen copy is frozen all the way down, so its children are frozen too
+        // and can't be added to a live model.
+        #expect(fi.children[0].lifetime == .frozenCopy)
+        #expect(fa.children[0].lifetime == .frozenCopy)
 
-        a.children[0] = fa.children[0]
+        withKnownIssue {
+            a.children[0] = fa.children[0]
+        }
     }
 }
 

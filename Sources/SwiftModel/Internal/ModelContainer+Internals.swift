@@ -12,7 +12,13 @@ extension ModelContainer {
     }
 
     var frozenCopy: Self {
-        transformModel(with: FrozenCopyTransformer())
+        // The visitor transforms a parent before its children, then writes each frozen child
+        // back into the parent — which is by then a frozen copy, whose setters drop writes
+        // unless a snapshot is being applied. Without this flag every child kept its source
+        // `Reference`, so a "deep" frozen copy shared all non-root nodes with its source.
+        threadLocals.withValue(true, at: \.isApplyingSnapshot) {
+            transformModel(with: FrozenCopyTransformer())
+        }
     }
 
     var initialCopy: Self {
