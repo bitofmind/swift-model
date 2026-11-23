@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.3.10] — Exhaustivity diffs copy the whole tree
+
 ### Fixed
 
 - **An `expect` in a test no longer risks a use-after-free crash while building its exhaustivity diff (`EXC_BAD_ACCESS` in `swift_retain` under `_directRead`, from `customMirror` in `checkExhaustion`).** To walk the model's state outside its lock, the harness takes a deep copy of its recorded state. Only the top model was actually copied, though: every child, collection element and optional child still pointed at the recorded tree's own storage. The harness updates those child nodes in place as the model is written, so a write on another thread could free a value the diff was copying. Frozen copies are now copied all the way down. One visible side effect: the recorded state's children now hold snapshots rather than pointing at the live models, so changes to them are tracked like changes to the top model.
