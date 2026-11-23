@@ -54,6 +54,24 @@ struct FrozenCopyDepthTests {
         #expect(copy.items[0].value == 0)
     }
 
+    // The shallow copy also wrote INTO a pre-anchor source. Its write-back into the frozen
+    // root was dropped, so the visitor then descended through the source's own child and
+    // stored each frozen grandchild in that child's pre-anchor state. `TestAccess` copies the
+    // root before anchoring it, so a model shared by two parents was anchored as two
+    // separate models under `.modelTesting` (production anchoring was unaffected).
+    @Test func copyOfPreAnchorModelLeavesSourceUntouched() {
+        let editor = SharingEditor()
+        _ = frozenCopy(editor)
+        #expect(editor.show.pool.lifetime != .frozenCopy)
+        #expect(ref(editor.show.pool) == ref(editor.pool))
+    }
+
+    @Test(.modelTesting(exhaustivity: .off)) func sharedChildStaysSharedUnderTestAnchor() async {
+        let editor = SharingEditor().withAnchor()
+        editor.show.pool.items = [1, 2]
+        #expect(editor.pool.items == [1, 2])
+    }
+
     private func ref<M: Model>(_ model: M) -> ObjectIdentifier {
         ObjectIdentifier(model.modelContext._source.reference)
     }
@@ -72,4 +90,22 @@ struct FrozenCopyDepthTests {
 
 @Model private struct DepthGrandchild {
     var value = 0
+}
+
+/// One pool held twice: directly and through `show`, as an editor shares its stream pool
+/// with the show model it drives.
+@Model private struct SharingEditor {
+    var pool = SharedPool()
+    var show: SharingShow
+    init() {
+        show = SharingShow(pool: pool)
+    }
+}
+
+@Model private struct SharingShow {
+    var pool: SharedPool
+}
+
+@Model private struct SharedPool {
+    var items: [Int] = []
 }
