@@ -6,6 +6,10 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+---
+
+## [1.4.1] — Collections of child models behind a protocol
+
 ### Added
 
 - **Collections of child models behind a protocol: `var overlays: [any Overlay]`, `[Key: any Overlay]`, `[(any Overlay)?]`, where `protocol Overlay: Model`.** Each model in the collection is a full child, as for a single `(any Overlay)?` since 1.4.0. Appending anchors and activates it, removing or replacing it removes it and cancels its tasks, and reordering keeps the live children. Its events reach the parent, and frozen copies and undo cover it. Any `MutableCollection` and `Dictionary` works. A write costs about twice what it costs for a collection of a concrete model type, because each element is opened at runtime. Debug builds still report other sequences that hold models.
