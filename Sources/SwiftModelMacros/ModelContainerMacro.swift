@@ -20,8 +20,10 @@ public struct ModelContainerMacro: ExtensionMacro {
             }
 
             let visits = memberList.compactMap { member in
-                if let identifier = member.decl.as(VariableDeclSyntax.self)?.identifier {
-                    return "visitor.visitStatically(at: \\.\(identifier))"
+                if let variable = member.decl.as(VariableDeclSyntax.self), let identifier = variable.identifier {
+                    // An `any` existential may hold a model whose type is only known at runtime.
+                    let verb = variable.hasExistentialType && !variable.isImmutable ? "visitExistential" : "visitStatically"
+                    return "visitor.\(verb)(at: \\.\(identifier))"
                 }
                 return nil
             }
@@ -108,8 +110,12 @@ public struct ModelContainerMacro: ExtensionMacro {
                 }
 
                 let visits = (0..<params.count).map { index in
-                    """
-                    visitor.visitStatically(at: path(caseName: "\(element.name)\(params.count == 1 ? "" : ".\(index)")", value: value\(index+1)) { root in
+                    // An `any` existential payload may hold a model whose type is only known at runtime.
+                    let isExistential = params[params.index(params.startIndex, offsetBy: index)].type
+                        .tokens(viewMode: .sourceAccurate).contains { $0.tokenKind == .keyword(.any) }
+                    let verb = isExistential ? "visitExistential" : "visitStatically"
+                    return """
+                    visitor.\(verb)(at: path(caseName: "\(element.name)\(params.count == 1 ? "" : ".\(index)")", value: value\(index+1)) { root in
                             if case let .\(element.name)(\(parameters(onlyIndex: index))) = root {
                                 value\(index+1)
                             } else {

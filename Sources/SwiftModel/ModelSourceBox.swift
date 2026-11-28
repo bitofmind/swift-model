@@ -1281,6 +1281,106 @@ extension _ModelSourceBox {
             }
         }
     }
+
+    // MARK: Existential subscripts
+
+    /// Read of a tracked property whose declared type is an `any` existential (`any P`,
+    /// `(any P)?`). Same as the `ModelContainer` read, with the value viewed as an
+    /// `_ExistentialChild` so a `Model` it holds gets the deep access a typed child would.
+    public subscript<T>(existentialRead index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> T, path path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
+        get {
+            let tl = threadLocals
+            if tl.forceDirectAccess || _isLive {
+                return _directRead(get, path: path)
+            }
+            if tl.untrackedReads {
+                if let value = reference.readUntracked(tl: tl, get: get) { return value }
+                return _directRead(get, path: path)
+            }
+            if let live = reference.liveContextAndObserverToken(index) {
+                let access = accessBox._reference?.access ?? ModelAccess.current
+                let value: T = live.0.trackedRead(index, token: live.1, accessBox: accessBox, tl: tl, get: get, path: path())
+                if let access, access.shouldPropagateToChildren, value is any Model {
+                    return _ExistentialChild(value: value).withDeepAccess(access).value
+                }
+                return value
+            }
+            return _directRead(get, path: path)
+        }
+    }
+
+    /// Write of a tracked property whose declared type is an `any` existential. Mirrors the
+    /// `ModelContainer` write: the new value is reconciled as an `_ExistentialChild` under the
+    /// property's `Model._existentialChildPath`, the bucket the anchoring traversal registered
+    /// the child in, so a replaced or cleared child is removed and a new one anchored and
+    /// activated. Assigning a child with the same concrete type and `id` continues the live one.
+    public subscript<T>(existentialWrite index: Int, access accessBox: _ModelAccessBox, get get: (M._ModelState) -> T, set set: (inout M._ModelState, T) -> Void, path path: @autoclosure () -> WritableKeyPath<M._ModelState, T>) -> T {
+        get { self[existentialRead: index, access: accessBox, get: get, path: path()] }
+        nonmutating set {
+            if !_isLive && reference.context == nil && !reference.isSnapshot && !reference.isRemoved && !reference.hasLazyContextCreator {
+                reference._writeDirect(path(), newValue)
+                return
+            }
+            let context: Context<M>
+            if _isLive {
+                guard let ctx = reference.context else { return }
+                context = ctx
+            } else {
+                guard let ctx = _modifyContext(accessBox: accessBox) else { return }
+                context = ctx
+            }
+
+            // Neither the stored nor the new value holds a model: a plain value write, exactly
+            // as for a non-existential property.
+            if !(newValue is any Model), !(_snapshotUnderLock(context, get) is any Model) {
+                context.setValue(newValue, index: index, isSame: { _, _ in false }, accessBox: accessBox, get: get, set: set, path: path())
+                return
+            }
+
+            let statePath = path()
+            let childPath = M._existentialChildPath(statePath)
+            var postLockCallbacks: [() -> Void] = []
+            var structuralChange = false
+            context.stateTransaction(index: index, isSame: {
+                existentialChildIsSame($0, $1)
+            }, accessBox: accessBox, get: get, set: set, path: statePath, modify: { value in
+                var newChild = _ExistentialChild(value: newValue)
+                let prevDidReplace = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
+                threadLocals.didReplaceModelWithDestructedOrFrozenCopy = false
+                let oldContexts = context.updateContext(for: &newChild, at: childPath)
+                let didReplaceModelWithDestructedOrFrozenCopy = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
+                threadLocals.didReplaceModelWithDestructedOrFrozenCopy = prevDidReplace
+
+                if didReplaceModelWithDestructedOrFrozenCopy {
+                    reportIssue("It is not allowed to add a destructed nor frozen model to \(modelTypeName(M.self)).")
+                    return
+                }
+
+                structuralChange = true
+                value = newChild.value
+
+                for oldContext in oldContexts {
+                    context.removeChild(oldContext, at: childPath, callbacks: &postLockCallbacks)
+                }
+            })
+
+            for callback in postLockCallbacks {
+                callback()
+            }
+
+            if structuralChange {
+                let child = _ExistentialChild(value: _snapshotUnderLock(context, get))
+                let access = accessBox._reference?.access ?? ModelAccess.current
+                if let access, access.shouldPropagateToChildren {
+                    usingAccess(access) {
+                        child.activate()
+                    }
+                } else {
+                    child.activate()
+                }
+            }
+        }
+    }
 }
 
 // MARK: - _PendingStack (thread-local, type-erased)

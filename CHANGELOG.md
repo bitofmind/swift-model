@@ -6,6 +6,11 @@ All notable changes are documented here. The format follows [Keep a Changelog](h
 
 ## [Unreleased]
 
+### Added
+
+- **A `@Model` can store a child model behind a protocol: `var overlay: (any Overlay)?` where `protocol Overlay: Model`.** Whatever model the property holds at runtime is now a full child. It is anchored and activated, its reads and writes are observed and tracked by `ModelTester`, its events reach the parent, undo restores it, and replacing or clearing it removes the previous child and cancels its tasks. Before, such a property compiled and ran without any diagnostic, but the model in it was never anchored: `onActivate` never ran, the parent's hierarchy queries didn't see it, and writes to it were not observed. The same works for `@ModelContainer` enum case payloads (`case overlay(any Overlay)`) and struct fields. The macros recognise these by the `any` in the declared type. Existential properties that hold plain values (`any Service`, `any Clock<Duration>`) behave as before.
+- **Debug builds report a collection of existential models (`[any P]`, `[Key: any P]`), which is not supported yet: the models in it are not anchored.** Before, it failed silently.
+
 ---
 
 ## [1.3.10] — Exhaustivity diffs copy the whole tree

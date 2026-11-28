@@ -463,3 +463,40 @@ extension Array: _DebugCollectionCheck {}
 extension Set: _DebugCollectionCheck {}
 extension ContiguousArray: _DebugCollectionCheck {}
 #endif
+
+// MARK: - Existential children
+
+public extension ContainerVisitor {
+    /// Visits a `@ModelContainer` struct property or enum case payload whose declared type is an
+    /// `any` existential. A `Model` the value holds is opened to its concrete type and visited as
+    /// a child; any other value holds none. Emitted by the `@ModelContainer` macro.
+    mutating func visitExistential<T>(at path: WritableKeyPath<V.State, T>) where V.State: ModelContainer {
+        modelVisitor.visit(path: V.State._existentialChildPath(path))
+    }
+}
+
+public extension ContainerVisitor where V.State: Model {
+    /// Visits a tracked property whose declared type is an `any` existential (`any P`, `(any P)?`).
+    ///
+    /// The `@Model` macro emits this instead of `visitStatically(statePath:)` for such properties.
+    /// The property is visited as a `ModelContainer` (`_ExistentialChild`) reached through a
+    /// model-level key path, so a `Model` it holds is opened to its concrete type and anchored,
+    /// activated, transformed and removed exactly like a statically typed child. The write path
+    /// (`ModelSourceBox[existentialWrite:]`) reconciles through the same key path.
+    mutating func visitExistential<T>(statePath: WritableKeyPath<V.State._ModelState, T>) {
+        if modelVisitor._isModelStateVisitor {
+            // State-path visitors (undo installation) see the stored value at its state path.
+            modelVisitor._visitModelExistentialStatePath(statePath, forState: V.State.self)
+        } else {
+            modelVisitor.visit(path: V.State._existentialChildPath(statePath))
+        }
+    }
+
+    mutating func visitExistential<T>(statePath: WritableKeyPath<V.State._ModelState, T>, visibility: PropertyVisibility) {
+        if modelVisitor._isModelStateVisitor {
+            modelVisitor._visitModelExistentialStatePath(statePath, forState: V.State.self)
+        } else {
+            modelVisitor.visit(path: V.State._existentialChildPath(statePath))
+        }
+    }
+}

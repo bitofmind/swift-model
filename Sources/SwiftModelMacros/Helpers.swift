@@ -74,6 +74,14 @@ extension VariableDeclSyntax {
     }
 
 
+    /// True when the declared type spells an `any` existential (`any P`, `(any P)?`,
+    /// `Optional<any P & Q>`). Such a property may hold a `Model` whose concrete type is only
+    /// known at runtime, so `visit(with:)` dispatches it dynamically (`visitExistential`).
+    var hasExistentialType: Bool {
+        guard let type = bindings.first?.typeAnnotation?.type else { return false }
+        return type.tokens(viewMode: .sourceAccurate).contains { $0.tokenKind == .keyword(.any) }
+    }
+
     var isImmutable: Bool {
         return bindingSpecifier.tokenKind == .keyword(.let)
     }

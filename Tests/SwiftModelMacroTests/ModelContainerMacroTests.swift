@@ -580,6 +580,85 @@ struct ModelContainerMacroTests {
             """
         }
     }
+
+    /// `any` existential payloads and fields may hold a model whose type is only known at
+    /// runtime: they are visited with `visitExistential`.
+    @Test func testExistentialPayloads() {
+        assertMacro {
+            """
+            @ModelContainer enum Slot {
+                case hook(any HookModel)
+                case plain(ChildModel)
+            }
+            """
+        } expansion: {
+            """
+            enum Slot {
+                case hook(any HookModel)
+                case plain(ChildModel)
+            }
+
+            extension Slot: SwiftModel.ModelContainer {
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                    switch self {
+                    case let .hook(value1):
+                        visitor.visitExistential(at: path(caseName: "hook", value: value1) { root in
+                                if case let .hook(value1) = root {
+                                    value1
+                                } else {
+                                    nil
+                                }
+                            } set: { root, value in
+                                if case  .hook(_) = root {
+                                    let value1 = value
+                                    root = .hook(value1)
+                                }
+                            })
+
+                    case let .plain(value1):
+                        visitor.visitStatically(at: path(caseName: "plain", value: value1) { root in
+                                if case let .plain(value1) = root {
+                                    value1
+                                } else {
+                                    nil
+                                }
+                            } set: { root, value in
+                                if case  .plain(_) = root {
+                                    let value1 = value
+                                    root = .plain(value1)
+                                }
+                            })
+
+
+                    }
+                }
+
+              }
+            """
+        }
+        assertMacro {
+            """
+            @ModelContainer struct Pair {
+                var first: any HookModel
+                var second: ChildModel
+            }
+            """
+        } expansion: {
+            #"""
+            struct Pair {
+                var first: any HookModel
+                var second: ChildModel
+            }
+
+            extension Pair: SwiftModel.ModelContainer {
+                public func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                    visitor.visitExistential(at: \.first)
+                    visitor.visitStatically(at: \.second)
+                }
+            }
+            """#
+        }
+    }
 }
 
 #endif // canImport(SwiftModelMacros)

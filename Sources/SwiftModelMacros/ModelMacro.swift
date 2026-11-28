@@ -196,6 +196,9 @@ extension ModelMacro: MemberMacro {
                 return "visitor.visitStatically(at: \\.\(identifier))"
             } else {
                 let visibilityArg = member.isPrivateGetter ? ", visibility: .private" : ""
+                if member.hasExistentialType {
+                    return "visitor.visitExistential(statePath: \\.\(identifier)\(visibilityArg))"
+                }
                 return "visitor.visitStatically(statePath: \\.\(identifier)\(visibilityArg))"
             }
         }

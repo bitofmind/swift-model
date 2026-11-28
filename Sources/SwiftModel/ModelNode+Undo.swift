@@ -185,6 +185,12 @@ private struct InstallUndoVisitor<M: Model>: ModelVisitor {
         let useInitialCopy = T.self is any Model.Type || T.self is any ModelContainer.Type
         installPropertyUndoUnchecked(statePath: typedPath, context: context, backend: backend, modelContext: modelContext, useInitialCopy: useInitialCopy)
     }
+
+    mutating func _visitModelExistentialStatePath<N: Model, T>(_ statePath: WritableKeyPath<N._ModelState, T>, forState _: N.Type) {
+        let typedPath = unsafeDowncast(statePath, to: WritableKeyPath<M._ModelState, T>.self)
+        guard shouldInstall(statePath: typedPath) else { return }
+        installPropertyUndoUnchecked(statePath: typedPath, context: context, backend: backend, modelContext: modelContext, isExistential: true)
+    }
 }
 
 // MARK: - Per-property undo installation
@@ -204,7 +210,8 @@ private func installPropertyUndoUnchecked<M: Model, T>(
     context: Context<M>,
     backend: any UndoBackend,
     modelContext: ModelContext<M>,
-    useInitialCopy: Bool = false
+    useInitialCopy: Bool = false,
+    isExistential: Bool = false
 ) {
     // All @Model stored properties are Sendable in practice (the macro enforces this).
     // We use nonisolated(unsafe) / unsafeBitCast to satisfy the Swift concurrency checker
@@ -219,7 +226,11 @@ private func installPropertyUndoUnchecked<M: Model, T>(
     // For Model/ModelContainer typed properties we use initialCopy (not frozenCopy) so that
     // restored values can be re-anchored by the context assignment path. Frozen copies are
     // rejected by the setter ("It is not allowed to add a destructed nor frozen model.").
-    let baseline = LockedSendableBox(snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: statePath], useInitialCopy: useInitialCopy))
+    // An `any` existential property snapshots a model it holds as a model property would.
+    @Sendable func snapshot(_ value: T) -> T {
+        snapshotValue(value, useInitialCopy: useInitialCopy || (isExistential && value is any Model))
+    }
+    let baseline = LockedSendableBox(snapshot(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: statePath]))
     // Compose M-level path for Model/ModelContainer restore (triggers updateContext for re-anchoring).
     let mPath = M._modelStateKeyPath.appending(path: statePath) as WritableKeyPath<M, T>
     let sendableMPath = unsafeBitCast(mPath, to: (WritableKeyPath<M, T> & Sendable).self)
@@ -229,7 +240,7 @@ private func installPropertyUndoUnchecked<M: Model, T>(
         guard !threadLocals.isRestoringState else { return nil }
 
         let oldValue = baseline.value
-        let newValue = snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: sendableStatePath], useInitialCopy: useInitialCopy)
+        let newValue = snapshot(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: sendableStatePath])
         guard !areEqual(oldValue, newValue) else { return nil }
 
         // Builds a closure that writes `value` back into the live model.
@@ -253,7 +264,12 @@ private func installPropertyUndoUnchecked<M: Model, T>(
                 let rootAccess = context.rootParent.modelAccess
                 usingAccess(rootAccess) {
                     threadLocals.withValue(true, at: \.isRestoringState) {
-                        if useInitialCopy {
+                        if isExistential {
+                            // The existential write path reconciles a child the value holds
+                            // (removes the current one, re-anchors the restored one).
+                            guard let index = context.lock({ context.trackedIndex(of: sendableStatePath) }) else { return }
+                            modelContext._source[existentialWrite: index, access: .init(), get: { $0[keyPath: sendableStatePath] }, set: { $0[keyPath: sendableStatePath] = $1 }, path: sendableStatePath] = v
+                        } else if useInitialCopy {
                             // Model/ModelContainer: go through the full write path so that
                             // updateContext fires and child contexts are properly re-anchored.
                             if let ctx = ModelNode(_$modelContext: modelContext)._context {
@@ -278,7 +294,7 @@ private func installPropertyUndoUnchecked<M: Model, T>(
                 // Context is gone — return a no-op restore.
                 return {}
             }
-            let currentValue = snapshotValue(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: sendableStatePath], useInitialCopy: useInitialCopy)
+            let currentValue = snapshot(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: sendableStatePath])
             return makeRestore(value: currentValue)
         }
 
