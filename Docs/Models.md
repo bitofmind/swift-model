@@ -67,6 +67,21 @@ For SwiftModel to discover composed models, any container holding them must conf
 
 It works on structs too, which makes reusable wrappers (a generic paginated list, say) transparent to the hierarchy — SwiftModel traverses into their model-typed properties for activation, observation, and event propagation.
 
+A child can also be stored behind a protocol, which lets a module plug in a model the parent's module doesn't know. Declare the protocol as refining `Model` and store it as `any P` or `(any P)?`:
+
+```swift
+public protocol Overlay: Model {
+    var dim: Double { get }
+}
+
+@Model public struct Screen {
+    public var overlay: (any Overlay)? = nil   // set by a downstream module
+    var dim: Double { overlay?.dim ?? 0 }
+}
+```
+
+Whatever model the property holds at runtime is a full child: it is anchored, activated, observed and undoable, its events reach the parent, and replacing or clearing it removes the previous one. The same holds for `@ModelContainer` enum case payloads and struct fields typed `any P`. This needs the `any` spelled in the declared type. Collections of existentials (`[any P]`, `[Key: any P]`) are not supported yet; in debug builds SwiftModel reports one that holds models.
+
 ### Anchoring and lifetime
 
 A model is backed by a behind-the-scenes *context* holding its shared state, hierarchy relationships, and overridden dependencies. The context is held *weakly* by the model (this is what avoids cycles with callback closures); a model holds *strong* references to its children, but something has to anchor the root. That's `withAnchor()`:

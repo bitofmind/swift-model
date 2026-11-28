@@ -1233,6 +1233,130 @@ struct ModelMacroTests {
     }
 
     /// Model with only a child model property.
+    /// An `any` existential property may hold a child model whose type is only known at
+    /// runtime: it is visited with `visitExistential` and read/written through the
+    /// existential subscripts.
+    @Test func testModelExistentialProperty() {
+        assertMacro {
+            """
+            @Model struct HostModel {
+                var hook: (any HookModel)?
+            }
+            """
+        } expansion: {
+            #"""
+            struct HostModel {
+                var hook: (any HookModel)? {
+                    @storageRestrictions(initializes: _$modelAccess, _$modelSource)
+                    init(newValue) {
+                        _$modelAccess = _ModelAccessBox()
+                        _ModelSourceBox<Self>._threadLocalStoreFirst(\.hook, newValue)
+                        _$modelSource = ._popFromThreadLocal(Self._makeState)
+                    }
+                    _read {
+                        yield _$modelSource[existentialRead: 0, access: _$modelAccess, get: {
+                            $0.hook
+                        }, path: \_State.hook]
+                    }
+                    nonmutating set {
+                        _$modelSource[existentialWrite: 0, access: _$modelAccess, get: {
+                            $0.hook
+                        }, set: {
+                            $0.hook = $1
+                        }, path: \_State.hook] = newValue
+                    }
+                    nonmutating _modify {
+                        yield &_$modelSource[existentialWrite: 0, access: _$modelAccess, get: {
+                            $0.hook
+                        }, set: {
+                            $0.hook = $1
+                        }, path: \_State.hook]
+                    }
+                }
+
+                public nonisolated func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+                    visitor.visitExistential(statePath: \.hook)
+                }
+
+                public nonisolated struct _State: _ModelStateType {
+                    var hook: (any HookModel)?
+                    public static var _trackedPropertyCount: Int {
+                        1
+                    }
+                    public static var _trackedPropertyKeyPaths: [PartialKeyPath<Self>] {
+                        [\Self.hook]
+                    }
+                }
+
+                public typealias _ModelState = _State
+
+                private nonisolated static func _makeState(from pending: PendingStorage<_State>) -> _State? {
+                    guard pending.hasValue(for: \.hook) else {
+                        return nil
+                    }
+                    return _State(hook: pending.value(for: \.hook))
+                }
+
+                private nonisolated var _modelState: _State {
+                    get {
+                        _$modelSource._modelState
+                    }
+                    nonmutating set {
+                        _$modelSource._modelState = newValue
+                    }
+                }
+
+                private var _$modelAccess: _ModelAccessBox = _ModelAccessBox()
+
+                private var _$modelSource: _ModelSourceBox<Self> = ._popFromThreadLocal(Self._makeState)
+
+                public nonisolated static var _modelStateKeyPath: WritableKeyPath<Self, _State> {
+                    \Self._modelState
+                }
+
+                private nonisolated var _$modelContext: ModelContext<Self> {
+                    get {
+                        ModelContext(_access: _$modelAccess, _source: _$modelSource)
+                    }
+                }
+
+                public nonisolated var _context: ModelContextAccess<Self> {
+                    ModelContextAccess(_$modelContext)
+                }
+
+                public nonisolated mutating func _updateContext(_ update: ModelContextUpdate<Self>) {
+                    _$modelAccess = update._$modelContext._access
+                    _$modelSource = update._$modelContext._source
+                }
+            }
+
+            nonisolated extension HostModel: SwiftModel.Model {
+            }
+
+            nonisolated extension HostModel: @unchecked Sendable {
+            }
+
+            nonisolated extension HostModel: Identifiable {
+            }
+
+            nonisolated extension HostModel: CustomReflectable {
+                public var customMirror: Mirror {
+                    node.mirror(of: self, children: [("hook", hook as Any)])
+                }
+            }
+
+            nonisolated extension HostModel: CustomStringConvertible, CustomDebugStringConvertible {
+                public var description: String {
+                    node.description(of: self)
+                }
+                public var debugDescription: String {
+                    description
+                }
+            }
+            """#
+        }
+    }
+
     @Test func testModelChildModel() {
         assertMacro {
             """

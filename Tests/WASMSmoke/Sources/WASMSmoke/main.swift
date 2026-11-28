@@ -57,6 +57,30 @@ struct Root {
     }
 }
 
+// A child behind a protocol (`(any P)?`, an enum payload): opened at runtime and reached
+// through generic key-path subscripts, the shape wasm32's 4-byte pointers have broken before.
+protocol SmokeHook: Model {
+    var count: Int { get nonmutating set }
+}
+
+@Model
+struct HookRow: SmokeHook, Identifiable {
+    let id: UInt64
+    var count: Int = 0
+}
+
+@ModelContainer
+enum HookSlot {
+    case empty
+    case hook(any SmokeHook)
+}
+
+@Model
+struct HookHost {
+    var hook: (any SmokeHook)? = nil
+    var slot: HookSlot = .empty
+}
+
 let root = Root().withAnchor()
 
 check("LocalStorage<UInt64> default", root.node.local.smokeUInt64, 1)
@@ -88,6 +112,21 @@ check("memoize over [Row]", root.total, 4)
 root.rows.removeFirst()
 check("[Row] remove", root.rows.map(\.id), [20, .max])
 check("memoize after remove", root.total, 3)
+
+let hookHost = HookHost().withAnchor()
+hookHost.hook = HookRow(id: .max)
+let firstHook = hookHost.hook as? HookRow
+check("(any P)? child anchored", firstHook?.node.ifAlive { true } == true, true)
+hookHost.hook?.count = 5
+check("(any P)? child write", hookHost.hook?.count, 5)
+hookHost.hook = HookRow(id: 7)
+check("(any P)? replaced child removed", firstHook?.node.ifAlive { true } == nil, true)
+hookHost.slot = .hook(HookRow(id: 8))
+if case let .hook(slotHook) = hookHost.slot {
+    check("enum payload child anchored", (slotHook as? HookRow)?.node.ifAlive { true } == true, true)
+} else {
+    check("enum payload child anchored", false, true)
+}
 
 if failures > 0 {
     print("wasm smoke: \(failures) check(s) failed")

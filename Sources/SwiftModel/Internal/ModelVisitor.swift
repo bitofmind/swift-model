@@ -58,6 +58,10 @@ public protocol ModelVisitor<State> {
     /// `M`-specific path type. Default is a no-op; only `_isModelStateVisitor` visitors override it.
     mutating func _visitModelStatePath<M: Model, T>(_ statePath: WritableKeyPath<M._ModelState, T>, forState: M.Type)
     mutating func _visitModelStatePath<M: Model, T>(_ statePath: WritableKeyPath<M._ModelState, T>, forState: M.Type, visibility: PropertyVisibility)
+    /// Visits the `_ModelState`-level path of a property whose declared type is an `any`
+    /// existential, which may hold a child model (see `ContainerVisitor.visitExistential`).
+    /// Default forwards to `_visitModelStatePath`.
+    mutating func _visitModelExistentialStatePath<M: Model, T>(_ statePath: WritableKeyPath<M._ModelState, T>, forState: M.Type)
 }
 
 public extension ModelVisitor {
@@ -73,6 +77,9 @@ public extension ModelVisitor {
     var _isModelStateVisitor: Bool { false }
     mutating func _visitModelStatePath<M: Model, T>(_ statePath: WritableKeyPath<M._ModelState, T>, forState: M.Type) { }
     mutating func _visitModelStatePath<M: Model, T>(_ statePath: WritableKeyPath<M._ModelState, T>, forState: M.Type, visibility: PropertyVisibility) { }
+    mutating func _visitModelExistentialStatePath<M: Model, T>(_ statePath: WritableKeyPath<M._ModelState, T>, forState: M.Type) {
+        _visitModelStatePath(statePath, forState: forState)
+    }
 }
 
 public extension ModelVisitor where State: Model {

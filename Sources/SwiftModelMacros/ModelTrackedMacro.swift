@@ -57,11 +57,15 @@ private func makeGetSet(
     index: Int,
     didSet: CodeBlockItemListSyntax?,
     willSet: CodeBlockItemListSyntax?,
-    isFunctionType: Bool
+    isFunctionType: Bool,
+    isExistential: Bool
 ) -> [AccessorDeclSyntax] {
-    // The argument lists shared by every read / write call of this property.
-    let readArgs = "read: \(index), access: _$modelAccess, get: { $0.\(identifier) }, path: \\_State.\(identifier)"
-    let writeArgs = "write: \(index), access: _$modelAccess, get: { $0.\(identifier) }, set: { $0.\(identifier) = $1 }, path: \\_State.\(identifier)"
+    // The argument lists shared by every read / write call of this property. An `any`
+    // existential property goes through the existential subscripts, which manage a `Model`
+    // the value holds as a child (see `ModelSourceBox[existentialWrite:]`).
+    let prefix = isExistential ? "existential" : ""
+    let readArgs = "\(prefix.isEmpty ? "read" : "\(prefix)Read"): \(index), access: _$modelAccess, get: { $0.\(identifier) }, path: \\_State.\(identifier)"
+    let writeArgs = "\(prefix.isEmpty ? "write" : "\(prefix)Write"): \(index), access: _$modelAccess, get: { $0.\(identifier) }, set: { $0.\(identifier) = $1 }, path: \\_State.\(identifier)"
 
     let readCoroutine: AccessorDeclSyntax =
     """
@@ -229,7 +233,7 @@ public struct ModelTrackedMacro: AccessorMacro, PeerMacro {
             """
         }
 
-        return [initAccessor] + makeGetSet(identifier: identifier, index: index, didSet: didSet, willSet: willSet, isFunctionType: property.hasFunctionType)
+        return [initAccessor] + makeGetSet(identifier: identifier, index: index, didSet: didSet, willSet: willSet, isFunctionType: property.hasFunctionType, isExistential: property.hasExistentialType)
     }
 
     public static func expansion<C: MacroExpansionContext, D: DeclSyntaxProtocol>(
