@@ -253,3 +253,32 @@ struct ExistentialChildContainerTests {
         } matching: { $0.description.contains("collections of existential models are not supported") }
     }
 }
+
+/// A hand-written container that visits existential elements with `visitDynamically`.
+private struct HookBag: ModelContainer, @unchecked Sendable {
+    var items: [any ExistentialHook]
+    func visit<V: ModelVisitor<Self>>(with visitor: inout ContainerVisitor<V>) {
+        for index in items.indices {
+            visitor.visitDynamically(with: items[index], at: \Self.items[index])
+        }
+    }
+}
+
+@Model private struct BagHost {
+    var bag = HookBag(items: [])
+}
+
+@Suite(.modelTesting(exhaustivity: .off))
+struct ExistentialVisitDynamicallyTests {
+    /// Used to trap with "invalid unsafeDowncast": the path's value type is the existential.
+    @Test func visitDynamicallyAnchorsAnExistentialElement() async throws {
+        let host = BagHost(bag: HookBag(items: [HookA()])).withAnchor()
+        let a = try #require(host.bag.items.first as? HookA)
+        #expect(a.lifetime == .active)
+        await expect(a.activated)
+        host.bag = HookBag(items: [HookB()])
+        #expect(a.lifetime == .destructed)
+        let b = try #require(host.bag.items.first as? HookB)
+        #expect(b.lifetime == .active)
+    }
+}
