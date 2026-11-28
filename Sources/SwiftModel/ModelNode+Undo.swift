@@ -226,9 +226,13 @@ private func installPropertyUndoUnchecked<M: Model, T>(
     // For Model/ModelContainer typed properties we use initialCopy (not frozenCopy) so that
     // restored values can be re-anchored by the context assignment path. Frozen copies are
     // rejected by the setter ("It is not allowed to add a destructed nor frozen model.").
-    // An `any` existential property snapshots a model it holds as a model property would.
+    // An `any` existential property snapshots the models it holds (one, or a collection of
+    // them) as initial copies, as a model property would, so a restore can re-anchor them.
     @Sendable func snapshot(_ value: T) -> T {
-        snapshotValue(value, useInitialCopy: useInitialCopy || (isExistential && value is any Model))
+        if isExistential, existentialHoldsModels(value) {
+            return _ExistentialChild(value: value).initialCopy.value
+        }
+        return snapshotValue(value, useInitialCopy: useInitialCopy)
     }
     let baseline = LockedSendableBox(snapshot(context._modelSeed[keyPath: M._modelStateKeyPath][keyPath: statePath]))
     // Compose M-level path for Model/ModelContainer restore (triggers updateContext for re-anchoring).

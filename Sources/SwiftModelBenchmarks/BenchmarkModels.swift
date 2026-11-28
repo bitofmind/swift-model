@@ -56,6 +56,15 @@ import IdentifiedCollections
     var items: [BenchItem] = []
 }
 
+// MARK: - Existential collection ([any BenchItemProtocol])
+
+protocol BenchItemProtocol: Model {}
+extension BenchItem: BenchItemProtocol {}
+
+@Model struct BenchExistentialList: Sendable {
+    var items: [any BenchItemProtocol] = []
+}
+
 // MARK: - ContainerCollection (IdentifiedArray<@ModelContainer enum>)
 
 /// A @ModelContainer enum whose cases hold @Model children.

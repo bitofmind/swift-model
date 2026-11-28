@@ -79,6 +79,8 @@ enum HookSlot {
 struct HookHost {
     var hook: (any SmokeHook)? = nil
     var slot: HookSlot = .empty
+    var hooks: [any SmokeHook] = []
+    var byKey: [UInt64: any SmokeHook] = [:]
 }
 
 let root = Root().withAnchor()
@@ -127,6 +129,16 @@ if case let .hook(slotHook) = hookHost.slot {
 } else {
     check("enum payload child anchored", false, true)
 }
+
+hookHost.hooks = [HookRow(id: 1), HookRow(id: .max)]
+hookHost.hooks.append(HookRow(id: 3))
+check("[any P] elements anchored", hookHost.hooks.allSatisfy { ($0 as? HookRow)?.node.ifAlive { true } == true }, true)
+let removedHook = hookHost.hooks.removeFirst() as? HookRow
+check("[any P] removed element", removedHook?.node.ifAlive { true } == nil, true)
+hookHost.hooks[0].count = 9
+check("[any P] element write", hookHost.hooks.map(\.count), [9, 0])
+hookHost.byKey[.max] = HookRow(id: 4)
+check("[K: any P] value anchored", (hookHost.byKey[.max] as? HookRow)?.node.ifAlive { true } == true, true)
 
 if failures > 0 {
     print("wasm smoke: \(failures) check(s) failed")

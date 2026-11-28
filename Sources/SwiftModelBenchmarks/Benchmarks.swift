@@ -329,6 +329,26 @@ func benchArrayHierarchyMutation() {
     }
 }
 
+/// Same as 5b2 with the elements behind a protocol (`[any BenchItemProtocol]`): each write
+/// re-walks the collection through `_ExistentialChild`, opening every element.
+func benchExistentialArrayHierarchyMutation() {
+    printHeader("5b3. Existential array hierarchy mutation ([any BenchItemProtocol] via _ExistentialChild)")
+
+    for n in [0, 100, 500] {
+        var items: [any BenchItemProtocol] = []
+        for i in 0..<n { items.append(BenchItem(id: i)) }
+        let (list, anchor) = BenchExistentialList(items: items).returningAnchor()
+        let extraID = n
+
+        measure("append+remove item (base n=\(n))", iterations: 2_000) {
+            list.items.append(BenchItem(id: extraID))
+            list.items.removeLast()
+        }
+
+        withExtendedLifetime(anchor) {}
+    }
+}
+
 // MARK: - 5c. ContainerCollection mutation (IdentifiedArray<@ModelContainer>)
 
 /// Append one BenchPath element to a live IdentifiedArray of N elements, then remove it.

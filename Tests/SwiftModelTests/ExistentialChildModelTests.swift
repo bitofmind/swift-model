@@ -207,8 +207,14 @@ private extension UndoableExistentialHost {
     var pair: HookPair? = nil
 }
 
-@Model private struct CollectionExistentialHost {
-    var hooks: [any ExistentialHook] = []
+/// A sequence that is neither a `MutableCollection` nor a `Dictionary`.
+private struct HookSequence: Sequence, @unchecked Sendable {
+    var items: [any ExistentialHook]
+    func makeIterator() -> IndexingIterator<[any ExistentialHook]> { items.makeIterator() }
+}
+
+@Model private struct SequenceExistentialHost {
+    var hooks: any Sequence<any ExistentialHook> = HookSequence(items: [])
 }
 
 @Suite(.modelTesting(exhaustivity: .off))
@@ -247,10 +253,10 @@ struct ExistentialChildContainerTests {
         #expect(a.lifetime == .destructed)
     }
 
-    @Test func aCollectionOfExistentialModelsIsReported() async {
+    @Test func anUnsupportedSequenceOfExistentialModelsIsReported() async {
         withKnownIssue {
-            _ = CollectionExistentialHost(hooks: [HookA()]).withAnchor()
-        } matching: { $0.description.contains("collections of existential models are not supported") }
+            _ = SequenceExistentialHost(hooks: HookSequence(items: [HookA()])).withAnchor()
+        } matching: { $0.description.contains("only `MutableCollection`s") }
     }
 }
 

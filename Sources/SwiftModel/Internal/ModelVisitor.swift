@@ -127,6 +127,18 @@ struct ModelTransformerVisitor<Root, Child, Transformer: ModelTransformer>: Mode
 
     mutating func visit<T: ModelContainer>(path: WritableKeyPath<Child, T>) {
         let fullPath = self.path.appending(path: path)
+        if T.self is any _ExistentialChildView.Type {
+            // An existential property (`_ExistentialChild`) is a projection, not storage: writing
+            // each element back through `root` would copy the whole value once per element.
+            // Transform a local copy rooted at the view itself and write it back once, as
+            // `visitCollection` does for typed collections.
+            var local = root[keyPath: fullPath]
+            var visitor = ModelTransformerVisitor<T, T, Transformer>(root: local, path: \.self, transformer: transformer)
+            local.visit(with: &visitor, includeSelf: false)
+            local = visitor.root
+            root[keyPath: fullPath] = local
+            return
+        }
         var visitor = ModelTransformerVisitor<Root, T, Transformer>(root: root, path: fullPath, transformer: transformer)
         root[keyPath: fullPath].visit(with: &visitor, includeSelf: false)
         root = visitor.root
