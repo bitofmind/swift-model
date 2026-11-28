@@ -1300,7 +1300,7 @@ extension _ModelSourceBox {
             if let live = reference.liveContextAndObserverToken(index) {
                 let access = accessBox._reference?.access ?? ModelAccess.current
                 let value: T = live.0.trackedRead(index, token: live.1, accessBox: accessBox, tl: tl, get: get, path: path())
-                if let access, access.shouldPropagateToChildren, value is any Model {
+                if let access, access.shouldPropagateToChildren, existentialHoldsModels(value) {
                     return _ExistentialChild(value: value).withDeepAccess(access).value
                 }
                 return value
@@ -1332,7 +1332,7 @@ extension _ModelSourceBox {
 
             // Neither the stored nor the new value holds a model: a plain value write, exactly
             // as for a non-existential property.
-            if !(newValue is any Model), !(_snapshotUnderLock(context, get) is any Model) {
+            if !existentialHoldsModels(newValue), !existentialHoldsModels(_snapshotUnderLock(context, get)) {
                 context.setValue(newValue, index: index, isSame: { _, _ in false }, accessBox: accessBox, get: get, set: set, path: path())
                 return
             }
@@ -1341,13 +1341,18 @@ extension _ModelSourceBox {
             let childPath = M._existentialChildPath(statePath)
             var postLockCallbacks: [() -> Void] = []
             var structuralChange = false
+            var registered: [AnyContext] = []
             context.stateTransaction(index: index, isSame: {
                 existentialChildIsSame($0, $1)
             }, accessBox: accessBox, get: get, set: set, path: statePath, modify: { value in
                 var newChild = _ExistentialChild(value: newValue)
                 let prevDidReplace = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
                 threadLocals.didReplaceModelWithDestructedOrFrozenCopy = false
+                let prevCollector = context.registeredChildrenCollector
+                context.registeredChildrenCollector = []
                 let oldContexts = context.updateContext(for: &newChild, at: childPath)
+                registered = context.registeredChildrenCollector ?? []
+                context.registeredChildrenCollector = prevCollector
                 let didReplaceModelWithDestructedOrFrozenCopy = threadLocals.didReplaceModelWithDestructedOrFrozenCopy
                 threadLocals.didReplaceModelWithDestructedOrFrozenCopy = prevDidReplace
 
@@ -1368,15 +1373,16 @@ extension _ModelSourceBox {
                 callback()
             }
 
-            if structuralChange {
-                let child = _ExistentialChild(value: _snapshotUnderLock(context, get))
+            if structuralChange, !registered.isEmpty {
+                // Activate only the children the reconcile registered (each activates its own
+                // descendants), as the typed collection write does with its changed elements.
                 let access = accessBox._reference?.access ?? ModelAccess.current
                 if let access, access.shouldPropagateToChildren {
                     usingAccess(access) {
-                        child.activate()
+                        for child in registered { _ = child.onActivate() }
                     }
                 } else {
-                    child.activate()
+                    for child in registered { _ = child.onActivate() }
                 }
             }
         }

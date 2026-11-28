@@ -976,8 +976,14 @@ final class Context<M: Model>: AnyContext, @unchecked Sendable {
     /// Records a child just appended to the `containerPath` bucket as seen, and stores its
     /// registration position on its `Reference` when it shares this tree's lock (as for
     /// `myModelRef` — never written across locks). Lock held.
+    /// When non-nil, every child a traversal registers is appended — so a write path that can't
+    /// tell new elements from existing ones (an existential collection) activates only those.
+    /// Set and consumed under the hierarchy lock by the caller of the traversal.
+    @exclusivity(unchecked) var registeredChildrenCollector: [AnyContext]?
+
     private func didRegisterLocked(_ child: AnyContext, at containerPath: AnyKeyPath) {
         seenChildren.insert(child.referenceIdentity)
+        registeredChildrenCollector?.append(child)
         if child.lock === lock, let bucketIndex = bucketIndexLocked(for: containerPath) {
             child.setRegisteredPosition(children.values[bucketIndex].count - 1)
         }

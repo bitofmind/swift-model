@@ -80,7 +80,7 @@ public protocol Overlay: Model {
 }
 ```
 
-Whatever model the property holds at runtime is a full child: it is anchored, activated, observed and undoable, its events reach the parent, and replacing or clearing it removes the previous one. The same holds for `@ModelContainer` enum case payloads and struct fields typed `any P`. This needs the `any` spelled in the declared type. Collections of existentials (`[any P]`, `[Key: any P]`) are not supported yet; in debug builds SwiftModel reports one that holds models.
+Whatever model the property holds at runtime is a full child: it is anchored, activated, observed and undoable, its events reach the parent, and replacing or clearing it removes the previous one. The same holds for `@ModelContainer` enum case payloads and struct fields typed `any P`. This needs the `any` spelled in the declared type. Collections work too: `[any P]`, `[(any P)?]` and `[Key: any P]` (any `MutableCollection`, and `Dictionary`) hold their models as children. A write to one costs about twice what it costs for a collection of a concrete model type, since each element is opened at runtime.
 
 ### Anchoring and lifetime
 

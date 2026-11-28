@@ -70,6 +70,12 @@ if #available(macOS 15.0, *) {
     }
 }
 
+if CommandLine.arguments.contains("--existential-arrays") {
+    benchArrayHierarchyMutation()
+    benchExistentialArrayHierarchyMutation()
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--source-keys") {
     benchSourceLocationKeys()
     exit(0)
@@ -86,6 +92,7 @@ func runAll() {
     benchEventDispatch()
     benchHierarchyMutation()
     benchArrayHierarchyMutation()
+    benchExistentialArrayHierarchyMutation()
     benchContainerValueUpdate()
     benchContainerCollectionMutation()
     benchDependencyAccess()
